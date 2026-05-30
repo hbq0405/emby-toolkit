@@ -1364,6 +1364,319 @@ def _safe_int(value, default=0):
         return default
 
 
+def _safe_float(value, default=0.0):
+    try:
+        if value in (None, ''):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _safe_json_value(value, fallback=None):
+    if value is None:
+        return fallback
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback
+        try:
+            return json.loads(text)
+        except Exception:
+            return fallback
+    return fallback
+
+
+def _asset_detail_items(value) -> List[Dict[str, Any]]:
+    parsed = _safe_json_value(value, fallback=[])
+    if isinstance(parsed, dict):
+        # asset_details_json 历史上可能是单对象，也可能包在 files/items/assets 里。
+        for key in ('items', 'files', 'assets', 'asset_details'):
+            if isinstance(parsed.get(key), list):
+                return [x for x in parsed.get(key) if isinstance(x, dict)]
+        return [parsed]
+    if isinstance(parsed, list):
+        return [x for x in parsed if isinstance(x, dict)]
+    return []
+
+
+def _norm_match_text(value: Any) -> str:
+    text = str(value or '').strip().lower()
+    if not text:
+        return ''
+    return re.sub(r'[\s._\-]+', '', text)
+
+
+def _split_display_values(value: Any) -> List[str]:
+    text = str(value or '').strip()
+    if not text:
+        return []
+    parts = re.split(r'[,，/|、]+', text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _asset_numeric_frame_rate(asset: Dict[str, Any]) -> float:
+    value = asset.get('frame_rate') or asset.get('fps') or asset.get('average_frame_rate')
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or '').strip()
+    if not text:
+        return 0.0
+    if '/' in text:
+        try:
+            a, b = text.split('/', 1)
+            b = float(b)
+            return float(a) / b if b else 0.0
+        except Exception:
+            return 0.0
+    m = re.search(r'(\d+(?:\.\d+)?)', text)
+    return float(m.group(1)) if m else 0.0
+
+
+def _parse_request_size_range(text: str):
+    text = str(text or '').strip().lower().replace('gb', '').replace('g', '').replace(' ', '')
+    if not text:
+        return None
+    try:
+        m = re.match(r'^(\d+(?:\.\d+)?)\s*[-~]\s*(\d+(?:\.\d+)?)$', text)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            return (min(a, b), max(a, b))
+        m = re.match(r'^(?:>=|≥)(\d+(?:\.\d+)?)$', text)
+        if m:
+            return (float(m.group(1)), None)
+        m = re.match(r'^(?:<=|≤)(\d+(?:\.\d+)?)$', text)
+        if m:
+            return (None, float(m.group(1)))
+        m = re.match(r'^(\d+(?:\.\d+)?)\+$', text)
+        if m:
+            return (float(m.group(1)), None)
+    except Exception:
+        return None
+    return None
+
+
+def _asset_matches_share_request_params(asset: Dict[str, Any], params: Dict[str, Any]) -> bool:
+    asset = asset or {}
+    params = params or {}
+
+    resolution = str(params.get('resolution') or '').strip()
+    if resolution and _norm_match_text(asset.get('resolution_display') or asset.get('resolution')) != _norm_match_text(resolution):
+        return False
+
+    codec = str(params.get('codec') or '').strip()
+    if codec and _norm_match_text(asset.get('codec_display') or asset.get('video_codec')) != _norm_match_text(codec):
+        return False
+
+    effect = str(params.get('effect') or '').strip()
+    if effect and _norm_match_text(asset.get('effect_display') or asset.get('effect')) != _norm_match_text(effect):
+        return False
+
+    frame_rate = str(params.get('frame_rate') or '').strip()
+    if frame_rate:
+        fps = _asset_numeric_frame_rate(asset)
+        target = _safe_float(frame_rate, 0.0)
+        if target >= 30:
+            if fps + 0.01 < target:
+                return False
+        elif target > 0:
+            # 24fps 这类偏“标准帧率”的选项按近似匹配，兼容 23.976/24.000。
+            if not (target - 1.0 <= fps <= target + 1.5):
+                return False
+
+    audio = str(params.get('audio') or '').strip()
+    if audio:
+        values = _split_display_values(asset.get('audio_display'))
+        if _norm_match_text(audio) not in {_norm_match_text(v) for v in values}:
+            return False
+
+    subtitle = str(params.get('subtitle') or '').strip()
+    if subtitle:
+        sub_display = str(asset.get('subtitle_display') or '').strip()
+        values = _split_display_values(sub_display)
+        if subtitle == '无':
+            if sub_display and _norm_match_text(sub_display) not in {'无', 'none', 'no'}:
+                return False
+        elif _norm_match_text(subtitle) not in {_norm_match_text(v) for v in values}:
+            return False
+
+    size_range = str(params.get('size_range') or '').strip()
+    if size_range:
+        bounds = _parse_request_size_range(size_range)
+        if bounds:
+            size_bytes = _safe_float(asset.get('size_bytes') or asset.get('size') or 0, 0.0)
+            size_gb = size_bytes / (1024 ** 3) if size_bytes else 0.0
+            low, high = bounds
+            if low is not None and size_gb + 1e-6 < low:
+                return False
+            if high is not None and size_gb - 1e-6 > high:
+                return False
+
+    return True
+
+
+def _load_share_request_candidate_assets(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """读取候选资源对应的 asset_details_json，用于求分享参数过滤。"""
+    candidate = candidate or {}
+    inline = _asset_detail_items(candidate.get('asset_details_json'))
+    if inline:
+        return inline
+
+    share_item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
+    share_type = str(candidate.get('share_type') or '').strip().lower()
+    tmdb_id = str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    parent_series_id = str(candidate.get('parent_series_tmdb_id') or '').strip()
+    season_number = candidate.get('season_number')
+    episode_number = candidate.get('episode_number')
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if share_item_type == 'Movie':
+                    cur.execute(
+                        """
+                        SELECT asset_details_json
+                        FROM media_metadata
+                        WHERE item_type='Movie' AND tmdb_id=%s
+                        LIMIT 1
+                        """,
+                        (tmdb_id,),
+                    )
+                    rows = cur.fetchall()
+                elif share_item_type == 'Episode' and parent_series_id and season_number not in (None, '') and episode_number not in (None, ''):
+                    cur.execute(
+                        """
+                        SELECT asset_details_json
+                        FROM media_metadata
+                        WHERE item_type='Episode'
+                          AND parent_series_tmdb_id=%s
+                          AND season_number=%s
+                          AND episode_number=%s
+                        LIMIT 5
+                        """,
+                        (str(parent_series_id), int(season_number), int(episode_number)),
+                    )
+                    rows = cur.fetchall()
+                elif (share_item_type == 'Season' or share_type in ('season_pack', 'series_pack', 'tv_pack')) and (parent_series_id or tmdb_id) and season_number not in (None, ''):
+                    cur.execute(
+                        """
+                        SELECT asset_details_json
+                        FROM media_metadata
+                        WHERE item_type='Episode'
+                          AND parent_series_tmdb_id=%s
+                          AND season_number=%s
+                          AND in_library=TRUE
+                        ORDER BY episode_number NULLS LAST, tmdb_id
+                        LIMIT 300
+                        """,
+                        (str(parent_series_id or tmdb_id), int(season_number)),
+                    )
+                    rows = cur.fetchall()
+                else:
+                    rows = []
+    except Exception as e:
+        # 老库没有 asset_details_json 字段时，直接视为无法匹配精确参数。
+        logger.debug(f"  ➜ [共享资源] 读取候选 asset_details_json 失败: {candidate.get('display_title') or candidate.get('title')} -> {e}")
+        return []
+
+    assets: List[Dict[str, Any]] = []
+    for row in rows or []:
+        assets.extend(_asset_detail_items((dict(row) if not isinstance(row, dict) else row).get('asset_details_json')))
+    return assets
+
+
+def _share_request_filter_from_args(args) -> Dict[str, Any]:
+    args = args or {}
+    params = _safe_json_value(args.get('request_params_json'), fallback={})
+    if not isinstance(params, dict):
+        params = {}
+    episode_numbers = _safe_json_value(args.get('request_episode_numbers_json'), fallback=[])
+    if not isinstance(episode_numbers, list):
+        episode_numbers = []
+    return {
+        'tmdb_id': str(args.get('request_tmdb_id') or '').strip(),
+        'media_type': str(args.get('request_media_type') or '').strip().lower(),
+        'target_type': str(args.get('request_target_type') or '').strip().lower(),
+        'season_number': _safe_int(args.get('request_season_number'), None),
+        'episode_number': _safe_int(args.get('request_episode_number'), None),
+        'episode_numbers': [_safe_int(x, None) for x in episode_numbers if _safe_int(x, None) is not None],
+        'params': params,
+    }
+
+
+def _candidate_matches_share_request_target(candidate: Dict[str, Any], request_filter: Dict[str, Any]) -> bool:
+    request_tmdb_id = str((request_filter or {}).get('tmdb_id') or '').strip()
+    if not request_tmdb_id:
+        return True
+    target_type = str((request_filter or {}).get('target_type') or '').strip().lower()
+    media_type = str((request_filter or {}).get('media_type') or '').strip().lower()
+
+    cand_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
+    cand_tmdb = str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    cand_parent = str(candidate.get('parent_series_tmdb_id') or cand_tmdb).strip()
+
+    if media_type == 'movie' or target_type == 'movie':
+        return cand_type == 'Movie' and cand_tmdb == request_tmdb_id
+
+    if cand_parent != request_tmdb_id and cand_tmdb != request_tmdb_id:
+        return False
+
+    req_season = request_filter.get('season_number')
+    req_episode = request_filter.get('episode_number')
+    req_episodes = set(request_filter.get('episode_numbers') or [])
+    cand_season = _safe_int(candidate.get('season_number'), None)
+    cand_episode = _safe_int(candidate.get('episode_number'), None)
+
+    if target_type in ('series', 'tv'):
+        return True
+    if target_type == 'season':
+        return req_season is None or cand_season == req_season
+    if target_type == 'episode':
+        if req_season is not None and cand_season != req_season:
+            return False
+        # 季包可以满足单集求分享；单集候选必须集号一致。
+        if cand_type == 'Season' or str(candidate.get('share_type') or '').lower() == 'season_pack':
+            return True
+        return req_episode is None or cand_episode == req_episode
+    if target_type == 'episode_batch':
+        if req_season is not None and cand_season != req_season:
+            return False
+        if cand_type == 'Season' or str(candidate.get('share_type') or '').lower() == 'season_pack':
+            return True
+        return not req_episodes or cand_episode in req_episodes
+    return True
+
+
+def _candidate_matches_share_request_params(candidate: Dict[str, Any], params: Dict[str, Any]) -> bool:
+    params = {k: v for k, v in (params or {}).items() if str(v or '').strip()}
+    if not params:
+        return True
+    assets = _load_share_request_candidate_assets(candidate)
+    if not assets:
+        return False
+    share_type = str(candidate.get('share_type') or '').strip().lower()
+    share_item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
+    strict_all = share_item_type == 'Season' or share_type in ('season_pack', 'series_pack', 'tv_pack') or bool(candidate.get('root_is_dir') and _safe_int(candidate.get('file_count'), 1) > 1)
+    if strict_all:
+        return all(_asset_matches_share_request_params(asset, params) for asset in assets)
+    return any(_asset_matches_share_request_params(asset, params) for asset in assets)
+
+
+def _filter_candidates_for_share_request(candidates: List[Dict[str, Any]], request_filter: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not request_filter or not request_filter.get('tmdb_id'):
+        return candidates or []
+    out = []
+    for cand in candidates or []:
+        if not _candidate_matches_share_request_target(cand, request_filter):
+            continue
+        if not _candidate_matches_share_request_params(cand, request_filter.get('params') or {}):
+            continue
+        out.append(cand)
+    return out
+
+
 def _boolish(value, default=False):
     """兼容前端传来的 bool / 0/1 / true/false / yes/no。
 
@@ -2237,7 +2550,16 @@ def api_search_shareable_media():
             row['resolvable'] = False
             row['message'] = str(e)
             items.append(row)
-    return jsonify({"success": True, "items": items[:100]})
+
+    request_filter = _share_request_filter_from_args(request.args)
+    before_filter_count = len(items)
+    items = _filter_candidates_for_share_request(items, request_filter)
+    return jsonify({
+        "success": True,
+        "items": items[:100],
+        "filtered_by_share_request": bool(request_filter.get('tmdb_id')),
+        "before_filter_count": before_filter_count,
+    })
 
 
 @shared_resource_bp.route('/config', methods=['GET', 'POST'])
@@ -3483,7 +3805,14 @@ def api_manual_create_share():
         'status': 'pending_review',
         'review_status': 'pending_review',
         'center_status': 'not_reported',
-        'raw_json': {'share_response': share_resp, 'root_info': info_resp, 'manual_payload': data, 'standard_identity': standard_identity},
+        'raw_json': {
+            'share_response': share_resp,
+            'root_info': info_resp,
+            'manual_payload': data,
+            'standard_identity': standard_identity,
+            'share_request_group_id': data.get('share_request_group_id') or None,
+            'share_request_payload': data.get('share_request_payload') or None,
+        },
     })
     count = shared_share_db.replace_share_items(record['id'], files)
     record = shared_share_db.update_share_record(record['id'], item_count=count)
@@ -3630,6 +3959,8 @@ def _source_provider_for_share_record(record: Dict[str, Any], fallback: str = 'u
     raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
     if raw.get('auto_backup_share') or raw.get('backup_share') or raw.get('backup_mirror') or raw.get('backup_instruction'):
         return 'backup_mirror'
+    if raw.get('share_request_group_id') or raw.get('share_request_payload') or ((raw.get('manual_payload') or {}).get('share_request_group_id') if isinstance(raw.get('manual_payload'), dict) else None):
+        return 'request_share'
     if raw.get('auto_gap'):
         return 'auto_gap_share'
     return fallback or 'user_share'
