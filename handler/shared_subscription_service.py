@@ -1046,6 +1046,183 @@ def _share_source_rows(src: Dict[str, Any]) -> List[Dict[str, Any]]:
         return rows
     return [src] if isinstance(src, dict) else []
 
+
+def _source_status_rank_for_retry(value: str) -> int:
+    value = str(value or '').strip().lower()
+    if value == 'alive':
+        return 0
+    if value == 'pending':
+        return 1
+    return 2
+
+
+def _source_backup_rank(src: Dict[str, Any]) -> int:
+    try:
+        return int(float((src or {}).get('_backup_rank') or 999999))
+    except Exception:
+        return 999999
+
+
+def _source_backup_count(src: Dict[str, Any]) -> int:
+    try:
+        return int(float((src or {}).get('_backup_count') or 1))
+    except Exception:
+        return 1
+
+
+def _source_success_count(src: Dict[str, Any]) -> int:
+    try:
+        return int(float((src or {}).get('success_count') or (src or {}).get('_package_success_count') or 0))
+    except Exception:
+        return 0
+
+
+def _source_fail_count(src: Dict[str, Any]) -> int:
+    try:
+        return int(float((src or {}).get('fail_count') or (src or {}).get('_package_fail_count') or 0))
+    except Exception:
+        return 0
+
+
+def _source_retry_sort_key(src: Dict[str, Any]):
+    rows = _share_source_rows(src)
+    best_rank = min([_source_backup_rank(r) for r in rows] + [_source_backup_rank(src)])
+    status_rank = min([_source_status_rank_for_retry(r.get('status')) for r in rows] + [_source_status_rank_for_retry((src or {}).get('status'))])
+    success = sum(_source_success_count(r) for r in rows) or _source_success_count(src)
+    fail = sum(_source_fail_count(r) for r in rows) or _source_fail_count(src)
+    first_time = min([str((r or {}).get('last_verified_at') or (r or {}).get('created_at') or '') for r in rows] or [''])
+    created = min([str((r or {}).get('created_at') or '') for r in rows] or [''])
+    return (best_rank, status_rank, success, fail, first_time, created, str((src or {}).get('source_id') or ''))
+
+
+def _season_pack_retry_fingerprint(rows: List[Dict[str, Any]], context: Dict[str, Any] = None) -> str:
+    rows = [dict(r or {}) for r in (rows or []) if r]
+    if not rows:
+        return ''
+    first = rows[0]
+    tmdb_id = str(
+        first.get('tmdb_id')
+        or (context or {}).get('parent_series_tmdb_id')
+        or (context or {}).get('parent_tmdb_id')
+        or (context or {}).get('tmdb_id')
+        or ''
+    ).strip()
+    season = _safe_int(first.get('season_number') if first.get('season_number') not in (None, '') else (context or {}).get('season_number'), None)
+    sha1s = sorted({_norm_sha1(r.get('sha1')) for r in rows if _norm_sha1(r.get('sha1'))})
+    if not tmdb_id or season is None or not sha1s:
+        return ''
+    return f"season_pack:{tmdb_id}:S{int(season):02d}:{'|'.join(sha1s)}"
+
+
+def _permanent_resource_key_for_rows(rows: List[Dict[str, Any]], context: Dict[str, Any] = None) -> str:
+    """永久转存冗余组 key：同 SHA1 / 同季包完整指纹归为一组。"""
+    rows = [dict(r or {}) for r in (rows or []) if r]
+    explicit_keys = [str(r.get('_resource_key') or '').strip() for r in rows if str(r.get('_resource_key') or '').strip()]
+    if explicit_keys and len(set(explicit_keys)) == 1:
+        return explicit_keys[0]
+    if not rows:
+        return ''
+    first = rows[0]
+    item_type = str(first.get('item_type') or (context or {}).get('item_type') or '').strip().lower()
+    share_code = str(first.get('share_code') or '').strip()
+    if item_type == 'season' and share_code:
+        return _season_pack_retry_fingerprint(rows, context)
+    sha1 = _norm_sha1(first.get('sha1'))
+    if not sha1:
+        return ''
+    return '|'.join([
+        item_type,
+        str(first.get('tmdb_id') or (context or {}).get('tmdb_id') or ''),
+        str(first.get('season_number') if first.get('season_number') is not None else (context or {}).get('season_number') or ''),
+        str(first.get('episode_number') if first.get('episode_number') is not None else (context or {}).get('episode_number') or ''),
+        sha1,
+    ])
+
+
+def _permanent_resource_key(src: Dict[str, Any], context: Dict[str, Any] = None) -> str:
+    return _permanent_resource_key_for_rows(_share_source_rows(src), context=context)
+
+
+def _build_permanent_import_plan(sources: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """把中心源整理为“资源版本 -> 多个备份分享码”的重试计划。"""
+    package_map: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for src in sources or []:
+        if not isinstance(src, dict):
+            continue
+        code = str(src.get('share_code') or src.get('source_id') or '').strip()
+        if not code:
+            code = f"source:{src.get('source_id') or len(order)}"
+        if code not in package_map:
+            package_map[code] = {'primary': dict(src), 'rows': []}
+            order.append(code)
+        package_map[code]['rows'].append(dict(src))
+
+    alternatives: List[Dict[str, Any]] = []
+    for code in order:
+        data = package_map.get(code) or {}
+        primary = dict(data.get('primary') or {})
+        rows = [dict(r) for r in (data.get('rows') or [])]
+        primary['_group_sources'] = rows or [primary]
+        primary['_permanent_resource_key'] = _permanent_resource_key_for_rows(primary['_group_sources'], context)
+        alternatives.append(primary)
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    group_order: List[str] = []
+    for alt in alternatives:
+        resource_key = str(alt.get('_permanent_resource_key') or _permanent_resource_key(alt, context) or '').strip()
+        if not resource_key:
+            resource_key = f"share:{alt.get('share_code') or alt.get('source_id') or len(group_order)}"
+        if resource_key not in groups:
+            groups[resource_key] = {'resource_key': resource_key, 'alternatives': []}
+            group_order.append(resource_key)
+        groups[resource_key]['alternatives'].append(alt)
+
+    plan = []
+    for resource_key in group_order:
+        group = groups[resource_key]
+        alts = sorted(group['alternatives'], key=_source_retry_sort_key)
+        plan.append({'resource_key': resource_key, 'alternatives': alts})
+    return plan
+
+
+def _filter_backup_sources_for_virtual(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """虚拟入库只取每个资源的当前公平主源，避免同 SHA1 备份反复覆盖同一个 STRM。"""
+    package_groups: Dict[str, Dict[str, Any]] = {}
+    singles: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+
+    for src in sources or []:
+        if not isinstance(src, dict):
+            continue
+        item_type = str(src.get('item_type') or '').strip().lower()
+        key = str(src.get('_resource_key') or '').strip() or _permanent_resource_key_for_rows([src], {})
+        if not key:
+            key = str(src.get('source_id') or src.get('sha1') or len(order))
+        if key not in order:
+            order.append(key)
+        if item_type == 'season' and str(src.get('share_code') or '').strip():
+            pkg_key = str(src.get('_package_key') or src.get('share_code') or src.get('source_id') or '').strip()
+            pack = package_groups.setdefault(key, {}).setdefault(pkg_key, [])
+            pack.append(src)
+        else:
+            old = singles.get(key)
+            if old is None or _source_retry_sort_key(src) < _source_retry_sort_key(old):
+                singles[key] = src
+
+    selected: List[Dict[str, Any]] = []
+    for key in order:
+        if key in package_groups:
+            packages = list((package_groups.get(key) or {}).values())
+            if not packages:
+                continue
+            packages.sort(key=lambda rows: _source_retry_sort_key({'_group_sources': rows, **(rows[0] if rows else {})}))
+            selected.extend(packages[0])
+        elif key in singles:
+            selected.append(singles[key])
+    return selected
+
+
 def _source_season_number(src: Dict[str, Any], context: Dict[str, Any] = None):
     context = context or {}
     for value in (
@@ -1669,6 +1846,7 @@ def _select_sources_by_washing_before_import(
                 'index': idx,
                 'share_code': code,
                 'rows': rows,
+                'resource_key': _permanent_resource_key_for_rows(rows, context),
                 'reasons': group_reasons,
             })
 
@@ -1677,13 +1855,23 @@ def _select_sources_by_washing_before_import(
 
     candidates.sort(key=lambda x: (x['score'], -x['index']), reverse=True)
     best = candidates[0]
+    best_resource_key = best.get('resource_key') or ''
+    selected_candidates = [c for c in candidates if best_resource_key and c.get('resource_key') == best_resource_key]
+    if not selected_candidates:
+        selected_candidates = [best]
+
+    # 洗版只决定“该入哪个版本”；同版本的多个备份分享全部保留给永久转存重试。
+    selected_candidates.sort(key=lambda x: (-x['score'], x['index']))
+    selected_rows = []
+    for candidate in selected_candidates:
+        selected_rows.extend(candidate.get('rows') or [])
 
     logger.info(
-        f"  ➜ [共享资源] 洗版预检选定中心源: share={best['share_code']}, "
-        f"score={best['score']}, reasons={best['reasons'][:3]}"
+        f"  ➜ [共享资源] 洗版预检选定中心源版本: share={best['share_code']}, "
+        f"score={best['score']}, backups={len(selected_candidates)}, reasons={best['reasons'][:3]}"
     )
 
-    return best['rows'], errors
+    return selected_rows, errors
 
 def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]], context: Dict[str, Any]) -> Dict[str, Any]:
     p115 = P115Service.get_client()
@@ -1732,104 +1920,114 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             if raw:
                 _cache_center_raw_as_local_mediainfo(src, raw)
 
-    # 同一个季/剧分享可能返回多集，按 share_code 去重，避免重复转存同一分享包；
-    # 同时保留同包全部 source，便于用目标 SHA1 查 p115_filesystem_cache 做本地兜底。
-    grouped_sources = {}
-    for src in sources:
-        code = src.get('share_code') or src.get('source_id')
-        grouped_sources.setdefault(code, []).append(src)
-
-    unique = []
-    seen_share = set()
-    for src in sources:
-        code = src.get('share_code') or src.get('source_id')
-        if code in seen_share:
-            continue
-        seen_share.add(code)
-        src = dict(src)
-        src['_group_sources'] = grouped_sources.get(code) or [src]
-        unique.append(src)
-
+    import_plan = _build_permanent_import_plan(sources, context)
     ok = 0
     skipped_existing = 0
+    failed_resources = 0
     errors = []
-    for src in unique:
-        share_code = src.get('share_code') or ''
-        receive_code = src.get('receive_code') or ''
-        if not share_code:
-            errors.append(f"{src.get('file_name')}: 缺少分享码")
+
+    for plan_item in import_plan:
+        resource_key = plan_item.get('resource_key') or ''
+        alternatives = plan_item.get('alternatives') or []
+        if not alternatives:
             continue
 
-        # 关键兜底：真正调用 115 share_import 前，先按中心源 SHA1 查本地 115 文件树缓存。
-        # 命中说明这个文件已经在本账号存在，直接跳过转存，避免 115 返回 4100024 后再误伤中心源。
-        local_hit = _local_existing_hit_for_import_group(src, context)
-        if local_hit:
-            hit_src = local_hit.get('source') or src
-            local = local_hit.get('local') or {}
-            skipped_existing += 1
+        group_done = False
+        group_had_local_account_issue = False
+        if len(alternatives) > 1:
             logger.info(
-                "  ➜ [共享资源] 本地 p115_filesystem_cache 已存在相同 SHA1，跳过重复转存："
-                f"share={share_code}, sha1={_norm_sha1(hit_src.get('sha1'))}, "
-                f"local={local.get('name') or local.get('id')}, pick_code={local.get('pick_code') or '-'}"
+                "  ➜ [共享资源] 永久转存启用备份重试：resource=%s, alternatives=%s",
+                resource_key[:96] or '-', len(alternatives)
             )
-            continue
 
-        import_target_cid = str(target_cid)
-        import_container = {}
+        for alt_index, src in enumerate(alternatives, start=1):
+            share_code = src.get('share_code') or ''
+            receive_code = src.get('receive_code') or ''
+            if not share_code:
+                errors.append(f"{src.get('file_name')}: 缺少分享码")
+                continue
 
-        resp = p115.share_import(share_code, receive_code, import_target_cid)
-        logger.info(
-            f"  ➜ [共享资源] 115分享转存返回：share={share_code}, cid={import_target_cid}, "
-            f"resp={str(resp)[:300]}"
-        )
-        text = _share_import_resp_text(resp)
-        is_already_saved = _is_share_import_already_saved(resp)
-        success = _share_import_success(resp)
-
-        if success:
-            ok += 1
-            if is_already_saved:
-                # 4100024 是本账号已经接收过该分享，不是本次真实转存成功；不要向中心重复报 success，
-                # 但也绝不能报 failed。触发一次整理扫描，让已存在文件尽快被识别入库。
-                logger.info(
-                    f"  ➜ [共享资源] 115 提示本账号已转存过，视为本地幂等命中，跳过中心 failed 上报：share={share_code}"
+            if alt_index > 1:
+                logger.warning(
+                    "  ➜ [共享资源] 主分享转存失败，切换备用分享继续尝试：resource=%s, backup=%s/%s, share=%s",
+                    resource_key[:96] or '-', alt_index, len(alternatives), share_code
                 )
-            else:
-                report_resp = None
-                try:
-                    report_resp = client.report_transfer(
-                        src.get('source_id'),
-                        'success',
-                        expected_sha1=_norm_sha1(src.get('sha1')),
-                        expected_size=_safe_int(src.get('size'), 0) or None,
-                        message='permanent import submitted',
-                    )
-                except Exception as e:
-                    logger.debug(f"  ➜ [共享资源] 上报转存成功失败，跳过备份分享触发: share={share_code}, err={e}")
 
-                if report_resp:
-                    backup_result = _create_backup_share_after_import(
-                        client,
-                        p115,
-                        src,
-                        resp,
-                        import_target_cid,
-                        report_resp,
-                        context,
-                        import_container=import_container,
+            # 关键兜底：真正调用 115 share_import 前，先按中心源 SHA1 查本地 115 文件树缓存。
+            # 命中说明这个文件已经在本账号存在，直接跳过转存，避免 115 返回 4100024 后再误伤中心源。
+            local_hit = _local_existing_hit_for_import_group(src, context)
+            if local_hit:
+                hit_src = local_hit.get('source') or src
+                local = local_hit.get('local') or {}
+                skipped_existing += 1
+                logger.info(
+                    "  ➜ [共享资源] 本地 p115_filesystem_cache 已存在相同 SHA1，跳过重复转存："
+                    f"share={share_code}, sha1={_norm_sha1(hit_src.get('sha1'))}, "
+                    f"local={local.get('name') or local.get('id')}, pick_code={local.get('pick_code') or '-'}"
+                )
+                group_done = True
+                break
+
+            import_target_cid = str(target_cid)
+            import_container = {}
+
+            resp = p115.share_import(share_code, receive_code, import_target_cid)
+            logger.info(
+                f"  ➜ [共享资源] 115分享转存返回：share={share_code}, cid={import_target_cid}, "
+                f"backup={alt_index}/{len(alternatives)}, resp={str(resp)[:300]}"
+            )
+            text = _share_import_resp_text(resp)
+            is_already_saved = _is_share_import_already_saved(resp)
+            success = _share_import_success(resp)
+
+            if success:
+                ok += 1
+                group_done = True
+                if is_already_saved:
+                    # 4100024 是本账号已经接收过该分享，不是本次真实转存成功；不要向中心重复报 success，
+                    # 但也绝不能报 failed。触发一次整理扫描，让已存在文件尽快被识别入库。
+                    logger.info(
+                        f"  ➜ [共享资源] 115 提示本账号已转存过，视为本地幂等命中，跳过中心 failed 上报：share={share_code}"
                     )
-                    if backup_result.get('created'):
-                        logger.info(f"  ➜ [共享资源] 自动备份分享处理完成: {backup_result}")
-                    elif not backup_result.get('skipped'):
-                        logger.warning(f"  ➜ [共享资源] 自动备份分享未完成: {backup_result}")
-        else:
+                else:
+                    report_resp = None
+                    try:
+                        report_resp = client.report_transfer(
+                            src.get('source_id'),
+                            'success',
+                            expected_sha1=_norm_sha1(src.get('sha1')),
+                            expected_size=_safe_int(src.get('size'), 0) or None,
+                            message='permanent import submitted',
+                        )
+                    except Exception as e:
+                        logger.debug(f"  ➜ [共享资源] 上报转存成功失败，跳过备份分享触发: share={share_code}, err={e}")
+
+                    if report_resp:
+                        backup_result = _create_backup_share_after_import(
+                            client,
+                            p115,
+                            src,
+                            resp,
+                            import_target_cid,
+                            report_resp,
+                            context,
+                            import_container=import_container,
+                        )
+                        if backup_result.get('created'):
+                            logger.info(f"  ➜ [共享资源] 自动备份分享处理完成: {backup_result}")
+                        elif not backup_result.get('skipped'):
+                            logger.warning(f"  ➜ [共享资源] 自动备份分享未完成: {backup_result}")
+                break
+
             errors.append(f"{src.get('file_name')}: {text[:120]}")
 
             if _is_share_import_local_account_issue(resp):
+                group_had_local_account_issue = True
                 logger.warning(
-                    "  ➜ [共享资源] 转存失败属于本账号限制/幂等问题，跳过向中心上报 failed，"
+                    "  ➜ [共享资源] 转存失败属于本账号限制/幂等问题，跳过向中心上报 failed，也不继续切换备份，"
                     f"避免误伤资源提供者：share={share_code}, resp={text[:180]}"
                 )
+                break
             elif _is_share_import_source_dead(resp):
                 try:
                     client.report_transfer(
@@ -1843,8 +2041,16 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                     pass
             else:
                 logger.warning(
-                    "  ➜ [共享资源] 转存失败原因不确定，先只记本地错误，不上报中心 failed："
+                    "  ➜ [共享资源] 转存失败原因不确定，先只记本地错误，不上报中心 failed，继续尝试同资源备份："
                     f"share={share_code}, resp={text[:180]}"
+                )
+
+        if not group_done:
+            failed_resources += 1
+            if len(alternatives) > 1 and not group_had_local_account_issue:
+                logger.warning(
+                    "  ➜ [共享资源] 同资源所有备份分享均转存失败：resource=%s, alternatives=%s",
+                    resource_key[:96] or '-', len(alternatives)
                 )
 
     if ok > 0:
@@ -1861,6 +2067,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         'mode': 'permanent',
         'count': ok,
         'skipped_existing': skipped_existing,
+        'failed_resources': failed_resources,
         'action_type': '共享永久转存',
         'errors': errors,
     }
@@ -1962,6 +2169,8 @@ def try_consume_shared_resource(
 
     override_mode = str(force_mode or '').strip().lower()
     mode = override_mode if override_mode in ('permanent', 'virtual') else shared_resource_mode()
+    if mode == 'virtual':
+        sources = _filter_backup_sources_for_virtual(sources)
     matched_share_codes = sorted({_source_identity_code(src) for src in sources if _source_identity_code(src)})
     covered_episode_keys = _collect_episode_guard_keys(sources, context)
     if mode == 'virtual':
@@ -1972,6 +2181,90 @@ def try_consume_shared_resource(
     result['covered_episode_keys'] = covered_episode_keys
     return result
 
+
+
+def _build_backup_search_query_from_source(src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """前端手动选中一个中心源时，反查同资源备份分享。"""
+    src = src or {}
+    context = context or {}
+    item_type = str(src.get('item_type') or context.get('item_type') or '').strip()
+    item_type_l = item_type.lower()
+    tmdb_id = str(src.get('tmdb_id') or context.get('tmdb_id') or context.get('parent_series_tmdb_id') or context.get('parent_tmdb_id') or '').strip()
+    season = src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number')
+    episode = src.get('episode_number') if src.get('episode_number') not in (None, '') else context.get('episode_number')
+    title = src.get('title') or context.get('title') or src.get('file_name') or ''
+    year = src.get('release_year') or context.get('year')
+
+    if item_type_l == 'movie':
+        return _build_gap_item(tmdb_id=tmdb_id, item_type='Movie', title=title, year=year)
+    if item_type_l == 'season':
+        return _build_gap_item(tmdb_id=tmdb_id, item_type='Season', title=title, season_number=season, year=year)
+    if item_type_l == 'episode':
+        return _build_gap_item(tmdb_id=tmdb_id, item_type='Episode', title=title, season_number=season, episode_number=episode, year=year)
+    if season not in (None, '') and episode in (None, ''):
+        return _build_gap_item(tmdb_id=tmdb_id, item_type='Season', title=title, season_number=season, year=year)
+    return _build_gap_item(tmdb_id=tmdb_id, item_type=item_type or 'Movie', title=title, season_number=season, episode_number=episode, year=year)
+
+
+def _expand_sources_with_permanent_backups(client: SharedCenterClient, sources: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """手动永久转存也补齐同 SHA1 / 同季包指纹的所有备份候选。"""
+    sources = [dict(s) for s in (sources or []) if isinstance(s, dict)]
+    if not sources or not hasattr(client, 'search_sources'):
+        return sources
+
+    queries = []
+    for src in sources:
+        q = _build_backup_search_query_from_source(src, context or {})
+        if q and q.get('tmdb_id'):
+            queries.append(q)
+    if not queries:
+        return sources
+
+    try:
+        data = client.search_sources(queries, limit_per_item=200)
+        candidates = _filter_sources_by_episode_transfer_policy(_flatten_search_results(data))
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 拉取手动转存备份候选失败，沿用已选源: {e}")
+        return sources
+    if not candidates:
+        return sources
+
+    selected_ids = {str(s.get('source_id') or '').strip() for s in sources if str(s.get('source_id') or '').strip()}
+    selected_share_codes = {str(s.get('share_code') or '').strip() for s in sources if str(s.get('share_code') or '').strip()}
+    wanted_keys = set()
+    for src in candidates:
+        sid = str(src.get('source_id') or '').strip()
+        share_code = str(src.get('share_code') or '').strip()
+        if (sid and sid in selected_ids) or (share_code and share_code in selected_share_codes):
+            key = str(src.get('_resource_key') or '').strip() or _permanent_resource_key_for_rows([src], context)
+            if key:
+                wanted_keys.add(key)
+
+    if not wanted_keys:
+        for src in sources:
+            key = _permanent_resource_key_for_rows([src], context)
+            if key:
+                wanted_keys.add(key)
+
+    expanded = []
+    seen = set()
+    for src in candidates:
+        key = str(src.get('_resource_key') or '').strip() or _permanent_resource_key_for_rows([src], context)
+        if wanted_keys and key not in wanted_keys:
+            continue
+        dedupe_key = (str(src.get('source_id') or ''), _norm_sha1(src.get('sha1')))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        expanded.append(src)
+
+    if expanded:
+        logger.info(
+            "  ➜ [共享资源] 手动永久转存已补齐备份候选：selected=%s, expanded=%s, resources=%s",
+            len(sources), len(expanded), len(wanted_keys) or '-'
+        )
+        return expanded
+    return sources
 
 def consume_center_sources(source_ids: List[str], mode: str = 'permanent', context: Dict[str, Any] = None) -> Dict[str, Any]:
     """按中心 source_id 手动消费共享资源。
@@ -2014,5 +2307,6 @@ def consume_center_sources(source_ids: List[str], mode: str = 'permanent', conte
         selected_mode = shared_resource_mode()
 
     if selected_mode == 'virtual':
-        return _consume_virtual(client, sources, ctx)
+        return _consume_virtual(client, _filter_backup_sources_for_virtual(sources), ctx)
+    sources = _expand_sources_with_permanent_backups(client, sources, ctx)
     return _consume_permanent(client, sources, ctx)
