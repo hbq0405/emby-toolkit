@@ -1089,8 +1089,10 @@ def _tg_resource_quality_text(resource: dict, limit: int = 96) -> str:
         if value:
             preferred.append(value)
 
-    if preferred:
-        return _tg_truncate(" / ".join(dict.fromkeys(preferred)), limit=limit)
+        if preferred:
+            filtered = [v for v in dict.fromkeys(preferred) if v != "未知"]
+            if filtered:
+                return _tg_truncate(" / ".join(filtered), limit=limit)
 
     # 字段不全时，用名称字段兜底，但避免把 slug 当质量说明。
     for key in ("title", "name", "resource_name", "share_name", "filename", "file_name"):
