@@ -1802,12 +1802,12 @@ def _load_real_completed_season_info_for_share_request(series_id: str) -> Dict[s
     """
     series_id = str(series_id or '').strip()
     if not series_id:
-        return {'real_completed': [], 'force_ended': [], 'completed_not_in_library': [], 'rows': []}
+        return {'real_completed': [], 'force_ended': [], 'completed_not_in_library': [], 'empty_shell': [], 'rows': []}
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT tmdb_id, title, season_number, in_library, watching_status, CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
+                    SELECT tmdb_id, title, season_number, total_episodes, in_library, watching_status, CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
                     FROM media_metadata
                     WHERE item_type='Season'
                       AND parent_series_tmdb_id=%s
@@ -1817,14 +1817,21 @@ def _load_real_completed_season_info_for_share_request(series_id: str) -> Dict[s
                 rows = [dict(r) for r in cur.fetchall()]
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 读取全剧真实完结季状态失败: series={series_id}, err={e}")
-        return {'real_completed': [], 'force_ended': [], 'completed_not_in_library': [], 'rows': [], 'error': str(e)}
+        return {'real_completed': [], 'force_ended': [], 'completed_not_in_library': [], 'empty_shell': [], 'rows': [], 'error': str(e)}
 
     real_completed = []
     force_ended = []
     completed_not_in_library = []
+    empty_shell = []
     for row in rows:
         sn = _safe_int(row.get('season_number'), None)
         if sn is None or sn <= 0:
+            continue
+        total_episodes = _safe_int(row.get('total_episodes'), None)
+        if total_episodes is not None and total_episodes <= 0:
+            # 本地/TMDb 可能提前建出“正季 0 集”的空壳季。
+            # 这种季没有可分享文件，不能让全剧求分享永远卡死。
+            empty_shell.append(sn)
             continue
         completed = str(row.get('watching_status') or '').strip().lower() == 'completed'
         forced = _db_truthy(row.get('force_ended'))
@@ -1840,6 +1847,7 @@ def _load_real_completed_season_info_for_share_request(series_id: str) -> Dict[s
         'real_completed': sorted(set(real_completed)),
         'force_ended': sorted(set(force_ended)),
         'completed_not_in_library': sorted(set(completed_not_in_library)),
+        'empty_shell': sorted(set(empty_shell)),
         'rows': rows,
     }
 
@@ -1867,23 +1875,33 @@ def _resolve_series_pack_root_for_share_request(series_row: Dict[str, Any], requ
     season_info = _load_real_completed_season_info_for_share_request(series_id)
     real_completed_seasons = season_info.get('real_completed') or []
     force_ended_seasons = season_info.get('force_ended') or []
+    empty_shell_seasons = season_info.get('empty_shell') or []
+    ignored_empty_shell_note = ''
     if expected_season_count > 0 and len(real_completed_seasons) < expected_season_count:
-        reason_parts = [f"TMDb 正季 {expected_season_count} 季，本地真实完结季 {len(real_completed_seasons)} 季"]
-        if force_ended_seasons:
-            reason_parts.append('强制完结季不计入真实完结：' + ','.join(f'S{int(x):02d}' for x in force_ended_seasons[:20]))
-        return {
-            'resolvable': False,
-            'root_fid': '',
-            'root_name': '',
-            'root_is_dir': True,
-            'file_count': 0,
-            'matched_pickcodes': 0,
-            'matched_sha1s': 0,
-            'share_type': 'series_pack',
-            'share_item_type': 'Series',
-            'message': '全剧求分享季数校验失败：' + '；'.join(reason_parts),
-            'season_check': season_info,
-        }
+        # 兼容历史求分享：旧版全剧计价可能把 TMDb/本地 0 集空壳季也算进 season_count。
+        # 只要缺口完全由 0 集空壳季造成，就自动忽略这些季，避免别人永远无法响应。
+        if empty_shell_seasons and len(real_completed_seasons) + len(empty_shell_seasons) >= expected_season_count:
+            ignored_empty_shell_note = '已忽略 0 集空壳季：' + ','.join(f'S{int(x):02d}' for x in empty_shell_seasons[:20])
+            expected_season_count = len(real_completed_seasons)
+        else:
+            reason_parts = [f"TMDb 正季 {expected_season_count} 季，本地真实完结季 {len(real_completed_seasons)} 季"]
+            if empty_shell_seasons:
+                reason_parts.append('0 集空壳季不计入可分享全剧：' + ','.join(f'S{int(x):02d}' for x in empty_shell_seasons[:20]))
+            if force_ended_seasons:
+                reason_parts.append('强制完结季不计入真实完结：' + ','.join(f'S{int(x):02d}' for x in force_ended_seasons[:20]))
+            return {
+                'resolvable': False,
+                'root_fid': '',
+                'root_name': '',
+                'root_is_dir': True,
+                'file_count': 0,
+                'matched_pickcodes': 0,
+                'matched_sha1s': 0,
+                'share_type': 'series_pack',
+                'share_item_type': 'Series',
+                'message': '全剧求分享季数校验失败：' + '；'.join(reason_parts),
+                'season_check': season_info,
+            }
     if expected_season_count > 0:
         selected_seasons = real_completed_seasons[:expected_season_count]
     else:
@@ -1930,6 +1948,8 @@ def _resolve_series_pack_root_for_share_request(series_row: Dict[str, Any], requ
             messages.append(f"已定位全剧 {len(season_numbers)} 季{expected_note}、{len(file_rows)} 个视频文件")
         else:
             messages.append(f"已定位全剧 {len(file_rows)} 个视频文件")
+        if ignored_empty_shell_note:
+            messages.append(ignored_empty_shell_note)
         if len(set(parent_ids)) > 1:
             messages.append(f"文件分布在 {len(set(parent_ids))} 个目录，已自动选择共同上级目录：{root_name}")
     else:
@@ -5110,12 +5130,24 @@ def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str
         from handler import tmdb as tmdb_handler
         details = tmdb_handler.get_tv_details(int(tmdb_id), api_key, append_to_response='seasons') or {}
         for season in (details.get('seasons') or []):
+            if not isinstance(season, dict):
+                continue
             try:
                 sn = int(season.get('season_number'))
             except Exception:
                 continue
-            # TMDb season_number=0 是 Specials，不计入全剧基础季数。
-            if sn > 0 and sn not in tmdb_season_numbers:
+            if sn <= 0:
+                # TMDb season_number=0 是 Specials，不计入全剧基础季数。
+                continue
+            episode_count = season.get('episode_count')
+            try:
+                episode_count_int = int(episode_count) if episode_count not in (None, '') else None
+            except Exception:
+                episode_count_int = None
+            if episode_count_int is not None and episode_count_int <= 0:
+                # TMDb 有时会提前建“空壳季”（正季但 0 集），这种季别人永远无法分享，不能计入全剧悬赏和季数校验。
+                continue
+            if sn not in tmdb_season_numbers:
                 tmdb_season_numbers.append(sn)
 
         if tmdb_season_numbers:
@@ -5124,6 +5156,8 @@ def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str
             data['season_numbers'] = tmdb_season_numbers
             return data
 
+        # 只有 seasons 列表不可用/没有 episode_count 信息时才兜底 number_of_seasons；
+        # 正常情况下不能用它覆盖上面的真实正季列表，因为它可能把 0 集空壳季也算进去。
         number_of_seasons = _safe_int(details.get('number_of_seasons'), 0)
         if number_of_seasons > 0:
             data['season_count'] = number_of_seasons
