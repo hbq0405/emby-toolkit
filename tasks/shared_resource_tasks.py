@@ -1156,6 +1156,8 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                         raw_meta = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
                         if raw_meta.get('auto_backup_share') or raw_meta.get('backup_share') or raw_meta.get('backup_mirror') or raw_meta.get('backup_instruction'):
                             source_provider = 'backup_mirror'
+                        elif raw_meta.get('auto_replenish') or raw_meta.get('replenish_share') or raw_meta.get('replenish_payload'):
+                            source_provider = 'replenish_share'
                         elif raw_meta.get('auto_gap'):
                             source_provider = 'auto_gap_share'
                         else:
@@ -1626,6 +1628,352 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
         time.sleep(0.1)
     return created
 
+
+
+def _replenish_group_is_pack(rows: List[Dict[str, Any]]) -> bool:
+    if not rows:
+        return False
+    if len({str(r.get('sha1') or '').strip().upper() for r in rows if str(r.get('sha1') or '').strip()}) > 1:
+        item_type = str(rows[0].get('item_type') or '').strip().lower()
+        if item_type in ('season', 'season_pack', 'series', 'series_pack', 'tv', 'show'):
+            return True
+    item_type = str(rows[0].get('item_type') or '').strip().lower()
+    return item_type in ('season', 'season_pack', 'series', 'series_pack', 'tv', 'show') and len(rows) > 1
+
+
+def _load_center_replenish_groups(client: SharedCenterClient, limit: int = 200, max_pages: int = 5) -> List[Dict[str, Any]]:
+    """拉取中心“待补充”队列，并按资源粒度分组。
+
+    普通缺口是 TMDb 级；待补充是 SHA1 / 季包完整 SHA1 集合级。
+    Movie/Episode 按单个 SHA1 补，Season/Pack 按原分享包的完整 SHA1 集合补。
+    """
+    rows: List[Dict[str, Any]] = []
+    for page in range(max(1, int(max_pages or 1))):
+        try:
+            resp = client.list_sources(
+                status='replenish',
+                mine_only=False,
+                include_raw=False,
+                order_by='latest',
+                limit=limit,
+                offset=page * limit,
+            )
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 拉取中心待补充队列失败: {e}")
+            break
+        items = resp.get('items') or []
+        for item in items:
+            if str(item.get('status') or '').strip().lower() == 'replenish':
+                rows.append(dict(item))
+        total = _safe_int(resp.get('total'), len(items))
+        if not items or page * limit + len(items) >= total:
+            break
+
+    groups: Dict[tuple, Dict[str, Any]] = {}
+    for item in rows:
+        sha1 = str(item.get('sha1') or '').strip().upper()
+        if not sha1:
+            continue
+        item_type = str(item.get('item_type') or '').strip().lower()
+        share_code = str(item.get('share_code') or '').strip()
+        contributor_id = str(item.get('contributor_id') or '').strip()
+        if item_type in ('season', 'season_pack', 'series', 'series_pack', 'tv', 'show') and share_code:
+            key = ('pack', contributor_id, share_code, str(item.get('tmdb_id') or ''), str(item.get('season_number') or ''))
+        else:
+            key = ('single', str(item.get('tmdb_id') or ''), item_type, str(item.get('season_number') or ''), str(item.get('episode_number') or ''), sha1)
+        group = groups.setdefault(key, {'kind': key[0], 'items': [], 'sha1s': set(), 'sample': item})
+        group['items'].append(item)
+        group['sha1s'].add(sha1)
+
+    out = []
+    for group in groups.values():
+        group['sha1s'] = sorted(group.get('sha1s') or [])
+        out.append(group)
+    return out
+
+
+def _find_local_cache_rows_by_sha1s(sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
+    sha1s = [str(s or '').strip().upper() for s in (sha1s or []) if str(s or '').strip()]
+    sha1s = list(dict.fromkeys(sha1s))
+    if not sha1s:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, parent_id, name, local_path, sha1, pick_code, size
+                    FROM p115_filesystem_cache
+                    WHERE UPPER(sha1) = ANY(%s)
+                    ORDER BY COALESCE(size, 0) DESC, updated_at DESC NULLS LAST, name ASC
+                    """,
+                    (sha1s,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 按 SHA1 查询本地 115 缓存失败: {e}")
+        return {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        sha1 = str(row.get('sha1') or '').strip().upper()
+        name = str(row.get('name') or '')
+        if not sha1 or sha1 in out:
+            continue
+        if not os.path.splitext(name.lower())[1] in getattr(__import__('routes.shared_resource', fromlist=['VIDEO_EXTENSIONS']), 'VIDEO_EXTENSIONS', {'.mp4', '.mkv', '.avi', '.ts', '.mov', '.m2ts', '.iso', '.wmv', '.flv'}):
+            # p115_filesystem_cache 可能缓存字幕/图片等同名附属文件，补源只认视频。
+            continue
+        out[sha1] = row
+    return out
+
+
+def _share_root_from_cache_rows(cache_rows: List[Dict[str, Any]], sr) -> Dict[str, Any]:
+    cache_rows = [r for r in (cache_rows or []) if r]
+    if not cache_rows:
+        return {}
+    if len(cache_rows) == 1:
+        row = cache_rows[0]
+        return {
+            'root_fid': str(row.get('id') or ''),
+            'root_name': str(row.get('name') or row.get('id') or ''),
+            'root_is_dir': False,
+        }
+
+    parent_ids = [str(r.get('parent_id') or '').strip() for r in cache_rows if str(r.get('parent_id') or '').strip()]
+    root_id = ''
+    if parent_ids:
+        chains = []
+        for pid in parent_ids:
+            try:
+                chains.append(sr._ancestor_chain(pid))
+            except Exception:
+                chains.append([pid])
+        if chains:
+            for node_id in chains[0]:
+                if all(node_id in ch for ch in chains[1:]):
+                    root_id = node_id
+                    break
+        root_id = root_id or parent_ids[0]
+
+    if not root_id:
+        return {}
+    root_node = {}
+    try:
+        root_node = sr._get_p115_node(root_id) or {}
+    except Exception:
+        root_node = {}
+    return {
+        'root_fid': str(root_id),
+        'root_name': str(root_node.get('name') or root_id),
+        'root_is_dir': True,
+    }
+
+
+def _replenish_group_to_share_payload(group: Dict[str, Any], local_rows_by_sha1: Dict[str, Dict[str, Any]], sr) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    sample = dict(group.get('sample') or {})
+    center_items = [dict(x) for x in (group.get('items') or [])]
+    sha1s = [str(x or '').strip().upper() for x in (group.get('sha1s') or []) if str(x or '').strip()]
+    cache_rows = [local_rows_by_sha1.get(sha1) for sha1 in sha1s]
+    if not sha1s or any(not r for r in cache_rows):
+        return {}, []
+
+    root = _share_root_from_cache_rows(cache_rows, sr)
+    if not root.get('root_fid'):
+        return {}, []
+
+    by_sha1_center = {str(item.get('sha1') or '').strip().upper(): item for item in center_items}
+    is_pack = _replenish_group_is_pack(center_items)
+    files = []
+    for row in cache_rows:
+        sha1 = str(row.get('sha1') or '').strip().upper()
+        src = by_sha1_center.get(sha1) or sample
+        files.append({
+            'fid': str(row.get('id') or ''),
+            'sha1': sha1,
+            'size': sr._safe_size_bytes(row.get('size')) if hasattr(sr, '_safe_size_bytes') else _safe_int(row.get('size'), 0),
+            'file_name': str(row.get('name') or src.get('file_name') or sha1),
+            'relative_path': row.get('local_path') or row.get('name') or src.get('file_name') or sha1,
+            'tmdb_id': str(src.get('tmdb_id') or sample.get('tmdb_id') or ''),
+            'item_type': 'Episode' if (not is_pack and src.get('episode_number') not in (None, '')) else ('Season' if is_pack else (src.get('item_type') or sample.get('item_type') or 'Movie')),
+            'season_number': src.get('season_number', sample.get('season_number')),
+            'episode_number': None if is_pack else src.get('episode_number', sample.get('episode_number')),
+            'raw_json': {'source': 'center_replenish', 'center_source': src, 'cache_row': row},
+        })
+
+    item_type = 'Season' if is_pack else (sample.get('item_type') or files[0].get('item_type') or 'Movie')
+    share_type = 'season_pack' if is_pack else ('episode_file' if str(item_type).lower() == 'episode' or sample.get('episode_number') not in (None, '') else 'movie_file')
+    identity = {}
+    try:
+        identity = sr._standard_media_identity_for_share({
+            'tmdb_id': sample.get('tmdb_id'),
+            'item_type': item_type,
+            'parent_series_tmdb_id': sample.get('parent_series_tmdb_id'),
+            'season_number': sample.get('season_number'),
+            'episode_number': None if is_pack else sample.get('episode_number'),
+            'title': sample.get('title') or sample.get('file_name'),
+            'release_year': sample.get('release_year'),
+            'share_type': share_type,
+        })
+    except Exception:
+        identity = {}
+
+    payload = {
+        **root,
+        'share_type': share_type,
+        'item_type': item_type,
+        'tmdb_id': str(identity.get('tmdb_id') or sample.get('tmdb_id') or ''),
+        'parent_series_tmdb_id': identity.get('parent_series_tmdb_id') or sample.get('parent_series_tmdb_id'),
+        'season_number': sample.get('season_number'),
+        'episode_number': None if is_pack else sample.get('episode_number'),
+        'title': identity.get('title') or sample.get('title') or root.get('root_name') or '',
+        'release_year': identity.get('release_year') or sample.get('release_year'),
+        'standard_identity': identity,
+        'center_items': center_items,
+        'center_sha1s': sha1s,
+    }
+    return payload, files
+
+
+def _has_existing_share_for_replenish(payload: Dict[str, Any], files: List[Dict[str, Any]]) -> bool:
+    gap_like = {
+        'tmdb_id': payload.get('tmdb_id'),
+        'item_type': payload.get('item_type'),
+        'season_number': payload.get('season_number'),
+        'episode_number': payload.get('episode_number'),
+    }
+    candidate = {
+        'share_type': payload.get('share_type'),
+        'root_fid': payload.get('root_fid'),
+        'share_tmdb_id': payload.get('tmdb_id'),
+        'share_item_type': payload.get('item_type'),
+        'season_number': payload.get('season_number'),
+        'episode_number': payload.get('episode_number'),
+    }
+    return shared_share_db.has_existing_share_for_gap(
+        gap_like,
+        candidate,
+        files or [],
+        statuses=_active_share_statuses() + ['cancelled', 'cancel_failed', 'deleted'],
+    )
+
+
+def _auto_share_center_replenish_sources(client: SharedCenterClient, limit: int = 120) -> Dict[str, int]:
+    """中心“待补充”资源命中本机精确 SHA1 时，自动创建补源分享。
+
+    这和普通缺口不同：普通缺口按 TMDb 补，待补充必须精确匹配原 SHA1；
+    季包必须命中原包内全部 SHA1，不能用代表文件冒充。
+    """
+    result = {'checked': 0, 'matched': 0, 'created': 0, 'skipped': 0, 'failed': 0}
+    groups = _load_center_replenish_groups(client, limit=limit)
+    if not groups:
+        return result
+
+    result['checked'] = len(groups)
+    p115 = P115Service.get_client()
+    if not p115:
+        result['skipped'] = len(groups)
+        return result
+
+    try:
+        from routes import shared_resource as sr
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 无法加载分享辅助函数，跳过待补充自动补源: {e}")
+        result['failed'] = len(groups)
+        return result
+
+    all_sha1s = sorted({sha1 for group in groups for sha1 in (group.get('sha1s') or [])})
+    local_rows_by_sha1 = _find_local_cache_rows_by_sha1s(all_sha1s)
+    if not local_rows_by_sha1:
+        return result
+
+    for group in groups:
+        try:
+            sha1s = list(group.get('sha1s') or [])
+            if not sha1s or any(sha1 not in local_rows_by_sha1 for sha1 in sha1s):
+                continue
+            result['matched'] += 1
+
+            payload, files = _replenish_group_to_share_payload(group, local_rows_by_sha1, sr)
+            if not payload or not files:
+                result['skipped'] += 1
+                continue
+
+            if hasattr(sr, '_files_missing_raw_ffprobe'):
+                missing_raw = sr._files_missing_raw_ffprobe(files)
+                if missing_raw:
+                    logger.info(
+                        f"  ➜ [共享资源维护] 待补充命中但缺 raw_ffprobe_json，跳过: "
+                        f"{payload.get('title') or payload.get('root_name')} -> "
+                        f"{sr._raw_missing_message(missing_raw) if hasattr(sr, '_raw_missing_message') else missing_raw}"
+                    )
+                    result['skipped'] += 1
+                    continue
+
+            if str(payload.get('share_type') or '').strip().lower() == 'season_pack' and hasattr(sr, '_validate_season_pack_consistency'):
+                consistency = sr._validate_season_pack_consistency(files)
+                if not consistency.get('ok'):
+                    logger.info(f"  ➜ [共享资源维护] 待补充季包媒体参数不一致，跳过: {payload.get('title')} -> {consistency.get('message')}")
+                    result['skipped'] += 1
+                    continue
+
+            if _has_existing_share_for_replenish(payload, files):
+                result['skipped'] += 1
+                continue
+
+            share_resp = p115.share_create([payload['root_fid']], share_duration=-1, receive_code=None)
+            if not share_resp or not share_resp.get('state'):
+                logger.warning(f"  ➜ [共享资源维护] 待补充自动创建分享失败: {payload.get('title') or payload.get('root_name')} -> {share_resp}")
+                result['failed'] += 1
+                continue
+
+            data = share_resp.get('data') or {}
+            share_code = data.get('share_code') or share_resp.get('share_code')
+            receive_code = data.get('receive_code') or ''
+            share_url = data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
+            identity = payload.get('standard_identity') or {}
+            record = shared_share_db.create_share_record({
+                'share_code': share_code,
+                'receive_code': receive_code,
+                'share_url': share_url,
+                'share_type': payload.get('share_type') or 'movie_file',
+                'root_fid': payload.get('root_fid') or '',
+                'root_name': payload.get('root_name') or '',
+                'root_is_dir': payload.get('root_is_dir') is not False,
+                'tmdb_id': str(payload.get('tmdb_id') or ''),
+                'item_type': payload.get('item_type') or 'Movie',
+                'parent_series_tmdb_id': payload.get('parent_series_tmdb_id'),
+                'season_number': payload.get('season_number'),
+                'episode_number': payload.get('episode_number'),
+                'title': identity.get('title') or payload.get('title') or payload.get('root_name') or '',
+                'release_year': identity.get('release_year') or payload.get('release_year'),
+                'status': 'pending_review',
+                'review_status': 'pending_review',
+                'center_status': 'not_reported',
+                'raw_json': {
+                    'auto_replenish': True,
+                    'replenish_share': True,
+                    'replenish_payload': payload,
+                    'share_response': share_resp,
+                    'standard_identity': identity,
+                },
+            })
+            shared_share_db.replace_share_items(record['id'], files)
+            shared_virtual_db.add_credit_ledger(
+                'share_auto_created_for_replenish',
+                0,
+                f"命中中心待补充资源并自动创建115分享：{record.get('title') or payload.get('root_name')}",
+                ref_id=str(record['id']),
+                title=record.get('title') or payload.get('root_name') or '',
+                raw_json={'replenish': payload, 'share_code': share_code},
+            )
+            logger.info(f"  ➜ [共享资源维护] 命中待补充并自动创建补源分享: {record.get('title') or payload.get('root_name')} sha1={','.join(payload.get('center_sha1s') or [])[:80]}")
+            result['created'] += 1
+            time.sleep(0.3)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 处理中心待补充资源失败: {group} -> {e}", exc_info=True)
+            result['failed'] += 1
+        time.sleep(0.1)
+    return result
 
 
 
@@ -2498,6 +2846,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(45, '正在为中心缺口自动创建本机分享...')
         total['auto_created_shares'] = _auto_share_center_open_gaps(client)
 
+        _status(49, '正在匹配中心待补充资源...')
+        repl_result = _auto_share_center_replenish_sources(client)
+        total.update({f'replenish_{k}': v for k, v in repl_result.items()})
+
         _status(52, '正在汇总已完结季的单集分享...')
         total.update(_rollup_completed_season_episode_shares(client))
 
@@ -2536,6 +2888,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"  ➜ 登记缺口: {total.get('reported_gaps', 0)}\n"
             f"  ➜ 清理临时转存: {total.get('expired_virtual_cache_cleaned', 0)}\n"
             f"  ➜ 自动创建分享: {total.get('auto_created_shares', 0)}\n"
+            f"  ➜ 待补充补源: 检查 {total.get('replenish_checked', 0)}，命中 {total.get('replenish_matched', 0)}，创建 {total.get('replenish_created', 0)}，跳过 {total.get('replenish_skipped', 0)}，失败 {total.get('replenish_failed', 0)}\n"
             f"  ➜ 完结季包汇总: 创建季包 {total.get('season_rollup_created', 0)}，清理单集 {total.get('season_rollup_cancelled', 0)}/{total.get('season_rollup_failed', 0)}\n"
             f"  ➜ 违规分享清理: {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}\n"
             f"  ➜ 缺 raw 清理: {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}\n"
@@ -2551,7 +2904,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         # 2. 给前端任务面板用的单行简报（防止撑破 UI）
         status_msg = (
             f"维护完成：登记缺口 {total.get('reported_gaps', 0)}，创建分享 {total.get('auto_created_shares', 0)}，"
-            f"追更命中 {total.get('follow_consumed', 0)}，自动登记 {total.get('reported', 0)}。详细摘要请查看日志。"
+            f"待补充创建 {total.get('replenish_created', 0)}，追更命中 {total.get('follow_consumed', 0)}，自动登记 {total.get('reported', 0)}。详细摘要请查看日志。"
         )
         _status(100, status_msg)
     finally:
