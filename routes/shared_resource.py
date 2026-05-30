@@ -568,6 +568,67 @@ def _center_headers():
 
 
 
+def _center_json_request(method: str, path: str, *, params: Dict[str, Any] = None, json_body: Dict[str, Any] = None, timeout: int = 25) -> Dict[str, Any]:
+    cfg, headers = _center_headers()
+    method = str(method or 'GET').upper()
+    url = f"{cfg['center_url']}{path}"
+    if method == 'GET':
+        resp = requests.get(url, headers=headers, params=params or {}, **_center_request_kwargs(timeout))
+    else:
+        resp = requests.request(method, url, headers=headers, params=params or {}, json=json_body or {}, **_center_request_kwargs(timeout))
+    if not resp.ok:
+        try:
+            data = resp.json() if resp.text else {}
+            msg = data.get('message') or data.get('detail') or resp.text[:300]
+        except Exception:
+            msg = resp.text[:300]
+        raise RuntimeError(msg or f'中心接口 HTTP {resp.status_code}')
+    return resp.json() if resp.text else {}
+
+
+def _tmdb_api_key_for_share_request() -> str:
+    candidates = []
+    for attr in (
+        'CONFIG_OPTION_TMDB_API_KEY', 'CONFIG_OPTION_TMDB_APIKEY', 'CONFIG_OPTION_TMDB_KEY',
+        'CONFIG_OPTION_TMDB_V3_API_KEY', 'CONFIG_OPTION_TMDB_API_TOKEN',
+    ):
+        key = getattr(constants, attr, None)
+        if key:
+            candidates.append(key)
+    candidates.extend(['tmdb_api_key', 'tmdb_key', 'TMDB_API_KEY', 'themoviedb_api_key'])
+    for key in candidates:
+        val = config_manager.APP_CONFIG.get(key)
+        if val:
+            return str(val).strip()
+    return ''
+
+
+def _normalize_tmdb_search_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    item = item or {}
+    media_type = str(item.get('media_type') or '').strip().lower()
+    if not media_type:
+        media_type = 'movie' if item.get('title') or item.get('release_date') else 'tv'
+    title = item.get('title') or item.get('name') or item.get('original_title') or item.get('original_name') or ''
+    release_date = item.get('release_date') or item.get('first_air_date') or ''
+    year = None
+    m = re.search(r'((?:19|20)\d{2})', str(release_date))
+    if m:
+        try:
+            year = int(m.group(1))
+        except Exception:
+            year = None
+    return {
+        'tmdb_id': str(item.get('id') or ''),
+        'media_type': 'movie' if media_type == 'movie' else 'tv',
+        'title': title,
+        'release_year': year,
+        'release_date': release_date,
+        'poster_path': item.get('poster_path') or '',
+        'overview': item.get('overview') or '',
+        'raw': item,
+    }
+
+
 
 
 def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> Dict[str, Any]:
@@ -695,7 +756,7 @@ def _decorate_my_share_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     ]).strip().lower()
 
     auto_providers = {
-        'auto_gap_share', 'auto_share', 'auto_task', 'auto',
+        'auto_gap_share', 'request_share', 'auto_share', 'auto_task', 'auto',
         'maintenance', 'maintenance_task', 'maintenance_share', 'maintenance_auto_share',
         'scheduler', 'scheduled_share', 'gap_share', 'watching_gap_share',
     }
@@ -4102,6 +4163,100 @@ def api_credit_ledger():
     rows = shared_virtual_db.list_credit_ledger(limit=limit, actual_only=actual_only)
     return jsonify({"success": True, "items": rows, "sync": sync_result})
 
+
+# ======================================================================
+# 求分享 API：客户端代理中心端 + TMDb 搜索
+# ======================================================================
+@shared_resource_bp.route('/share-requests/tmdb/search', methods=['GET'])
+@admin_required
+def api_share_request_tmdb_search():
+    keyword = str(request.args.get('keyword') or request.args.get('query') or '').strip()
+    if len(keyword) < 1:
+        return jsonify({'success': True, 'items': []})
+    page = max(1, int(request.args.get('page', 1) or 1))
+    api_key = _tmdb_api_key_for_share_request()
+    if not api_key:
+        return jsonify({'success': False, 'message': '未配置 TMDb API Key，无法搜索求分享目标'}), 400
+    try:
+        from handler import tmdb as tmdb_handler
+        data = tmdb_handler.search_multi_media(keyword, api_key, page=page) or {}
+        items = [_normalize_tmdb_search_item(it) for it in (data.get('results') or [])]
+        items = [it for it in items if it.get('tmdb_id') and it.get('title')]
+        return jsonify({
+            'success': True,
+            'items': items,
+            'total': int(data.get('total_results') or len(items)),
+            'page': int(data.get('page') or page),
+            'total_pages': int(data.get('total_pages') or 1),
+        })
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] TMDb 求分享搜索失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'TMDb 搜索失败: {e}'}), 500
+
+
+@shared_resource_bp.route('/share-requests', methods=['GET'])
+@admin_required
+def api_list_share_requests():
+    try:
+        data = _center_json_request('GET', '/api/v1/share-requests', params={
+            'status': request.args.get('status', 'open'),
+            'keyword': request.args.get('keyword', ''),
+            'media_type': request.args.get('media_type', ''),
+            'target_type': request.args.get('target_type', ''),
+            'limit': int(request.args.get('limit', 50) or 50),
+            'offset': int(request.args.get('offset', 0) or 0),
+        }, timeout=25)
+        return jsonify({'success': True, 'items': data.get('items') or [], 'total': int(data.get('total') or 0)})
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 拉取求分享列表失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'拉取求分享列表失败: {e}'}), 500
+
+
+@shared_resource_bp.route('/share-requests/quote', methods=['POST'])
+@admin_required
+def api_quote_share_request():
+    try:
+        data = _center_json_request('POST', '/api/v1/share-requests/quote', json_body=_request_json(), timeout=20)
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'求分享报价失败: {e}'}), 400
+
+
+@shared_resource_bp.route('/share-requests', methods=['POST'])
+@admin_required
+def api_create_share_request():
+    try:
+        data = _center_json_request('POST', '/api/v1/share-requests', json_body=_request_json(), timeout=30)
+        _fetch_center_credit()
+        return jsonify({'success': True, 'message': '求分享已发布，贡献值已冻结', 'data': data})
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 创建求分享失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'创建求分享失败: {e}'}), 400
+
+
+@shared_resource_bp.route('/share-requests/<group_id>/co-request', methods=['POST'])
+@admin_required
+def api_co_request_share(group_id):
+    try:
+        data = _center_json_request('POST', f'/api/v1/share-requests/{group_id}/co-request', json_body=_request_json(), timeout=25)
+        _fetch_center_credit()
+        return jsonify({'success': True, 'message': data.get('message') or '同求成功，贡献值已冻结', 'data': data})
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 同求失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'同求失败: {e}'}), 400
+
+
+@shared_resource_bp.route('/share-requests/<group_id>/cancel', methods=['POST'])
+@admin_required
+def api_cancel_share_request(group_id):
+    try:
+        data = _center_json_request('POST', f'/api/v1/share-requests/{group_id}/cancel', json_body=_request_json(), timeout=25)
+        _fetch_center_credit()
+        return jsonify({'success': True, 'message': data.get('message') or '已取消求分享', 'data': data})
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 取消求分享失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'取消求分享失败: {e}'}), 400
+
 # ======================================================================
 # 共享中心资源库 / 维护任务 API（v8.1）
 # ======================================================================
@@ -5016,6 +5171,7 @@ _CENTER_SOURCE_PROVIDER_LABELS = {
     'user_share': '用户主动分享',
     'manual_share': '用户主动分享',
     'auto_gap_share': '本机缺口自动分享',
+    'request_share': '求分享响应',
     'hdhive': '影巢外来分享',
     'tg_channel': 'TG频道外来分享',
     'tg_channel_hdhive': 'TG频道影巢外来分享',

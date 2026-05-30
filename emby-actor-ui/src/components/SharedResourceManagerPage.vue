@@ -130,6 +130,63 @@
             />
           </n-tab-pane>
 
+          <n-tab-pane name="requests" tab="求分享">
+            <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+              求分享是共享池悬赏需求：发起时冻结贡献值，参数越精确悬赏越高；其他用户可“同求”助力，也可以点“我有资源”从本地媒体库创建分享。
+            </n-alert>
+            <n-space class="toolbar" :vertical="isMobile" :size="12">
+              <n-input v-model:value="requestFilters.keyword" placeholder="搜索片名 / TMDb ID" clearable @keyup.enter="loadShareRequests">
+                <template #prefix><n-icon :component="SearchIcon" /></template>
+              </n-input>
+              <n-select v-model:value="requestFilters.status" :options="requestStatusOptions" style="width: 130px" />
+              <n-select v-model:value="requestFilters.media_type" :options="requestMediaTypeOptions" style="width: 130px" />
+              <n-select v-model:value="requestFilters.target_type" :options="requestTargetTypeFilterOptions" style="width: 140px" />
+              <n-button type="primary" :loading="requestLoading" @click="loadShareRequests">查询</n-button>
+              <n-button type="primary" @click="openShareRequestModal">
+                <template #icon><n-icon :component="ShareIcon" /></template>
+                求资源
+              </n-button>
+            </n-space>
+
+            <n-spin :show="requestLoading">
+              <n-grid v-if="shareRequests.length" :cols="isMobile ? 1 : 3" :x-gap="14" :y-gap="14">
+                <n-gi v-for="req in shareRequests" :key="req.group_id">
+                  <n-card size="small" :bordered="false" class="share-request-card">
+                    <div class="share-request-card-body">
+                      <img class="share-request-poster" :src="requestPosterUrl(req)" @error="onRequestPosterError" />
+                      <div class="share-request-info">
+                        <div class="share-request-title">{{ appendYear(req.title, req.release_year) }}</div>
+                        <div class="share-request-meta">
+                          {{ requestTargetText(req) }} · TMDb {{ req.tmdb_id || '-' }}
+                        </div>
+                        <div class="share-request-condition">{{ requestConditionText(req) }}</div>
+                        <n-space size="small" class="share-request-tags">
+                          <n-tag size="small" round type="warning">悬赏池 {{ req.bounty_total || req.current_bounty || 0 }}</n-tag>
+                          <n-tag size="small" round type="info">同求 ×{{ req.co_request_count || 0 }}</n-tag>
+                          <n-tag size="small" round :type="req.status === 'open' ? 'success' : 'default'">{{ requestStatusLabel(req.status) }}</n-tag>
+                        </n-space>
+                        <div class="share-request-time">{{ fmtDate(req.created_at) }} 发起，{{ req.expires_at ? fmtDate(req.expires_at) + ' 到期' : '长期有效' }}</div>
+                      </div>
+                    </div>
+                    <template #footer>
+                      <n-space justify="space-between" align="center">
+                        <n-text depth="3">{{ req.joined_by_me ? (req.my_role === 'owner' ? '我发起的求分享' : '我已同求') : '尚未参与' }}</n-text>
+                        <n-space size="small">
+                          <n-button size="small" secondary :disabled="req.status !== 'open'" @click="openLocalShareForRequest(req)">我有资源</n-button>
+                          <n-button size="small" type="primary" secondary :disabled="req.status !== 'open' || req.joined_by_me || req.my_role === 'owner'" @click="confirmCoRequest(req)">同求</n-button>
+                          <n-button v-if="req.joined_by_me && req.status === 'open'" size="small" type="error" ghost @click="confirmCancelShareRequest(req)">取消</n-button>
+                        </n-space>
+                      </n-space>
+                    </template>
+                  </n-card>
+                </n-gi>
+              </n-grid>
+              <n-card v-else :bordered="false" class="empty-request-card">
+                <n-text depth="3">暂无求分享。可以点击“求资源”发布一个悬赏需求。</n-text>
+              </n-card>
+            </n-spin>
+          </n-tab-pane>
+
           <n-tab-pane name="ledger" tab="贡献值明细">
             <n-data-table
               :loading="ledgerLoading"
@@ -303,11 +360,114 @@
         </n-space>
       </template>
     </n-modal>
+
+    <n-modal v-model:show="showShareRequestModal" preset="card" title="共享池求分享" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal">
+      <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+        先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季 / 单集范围和媒体参数。中心端会按参数自动计算需要冻结的贡献值。
+      </n-alert>
+
+      <n-space class="toolbar" :vertical="isMobile" :size="12">
+        <n-input v-model:value="shareRequestSearchKeyword" placeholder="搜索电影 / 剧集" clearable @keyup.enter="searchShareRequestTmdb">
+          <template #prefix><n-icon :component="SearchIcon" /></template>
+        </n-input>
+        <n-button type="primary" :loading="shareRequestSearchLoading" @click="searchShareRequestTmdb">搜索 TMDb</n-button>
+      </n-space>
+
+      <n-data-table
+        v-if="shareRequestSearchItems.length"
+        size="small"
+        :loading="shareRequestSearchLoading"
+        :columns="shareRequestSearchColumns"
+        :data="shareRequestSearchItems"
+        :pagination="{ pageSize: 5 }"
+        :row-key="row => `${row.media_type}-${row.tmdb_id}`"
+        style="margin-bottom: 14px;"
+      />
+
+      <div v-if="selectedShareRequestMedia" class="selected-share-box">
+        <div class="selected-title">已选择：{{ appendYear(selectedShareRequestMedia.title, selectedShareRequestMedia.release_year) }}</div>
+        <div class="selected-desc">
+          {{ selectedShareRequestMedia.media_type === 'movie' ? '电影' : '剧集' }} · TMDb {{ selectedShareRequestMedia.tmdb_id }}
+        </div>
+      </div>
+
+      <n-form :model="shareRequestForm" label-placement="left" label-width="105" style="margin-top: 12px;">
+        <n-divider title-placement="left">求分享目标</n-divider>
+        <n-form-item label="目标类型">
+          <n-radio-group v-model:value="shareRequestForm.target_type">
+            <n-space>
+              <n-radio v-for="opt in shareRequestTargetOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</n-radio>
+            </n-space>
+          </n-radio-group>
+        </n-form-item>
+        <n-grid v-if="shareRequestForm.media_type === 'tv'" :cols="isMobile ? 1 : 3" :x-gap="12">
+          <n-gi v-if="['season','episode','episode_batch'].includes(shareRequestForm.target_type)">
+            <n-form-item label="季号">
+              <n-input-number v-model:value="shareRequestForm.season_number" :min="1" :max="999" style="width: 100%;" />
+            </n-form-item>
+          </n-gi>
+          <n-gi v-if="shareRequestForm.target_type === 'episode'">
+            <n-form-item label="集号">
+              <n-input-number v-model:value="shareRequestForm.episode_number" :min="1" :max="9999" style="width: 100%;" />
+            </n-form-item>
+          </n-gi>
+          <n-gi v-if="shareRequestForm.target_type === 'episode_batch'" :span="isMobile ? 1 : 2">
+            <n-form-item label="集数范围">
+              <n-input v-model:value="shareRequestEpisodeText" placeholder="例如 23,24,25 或 23-28" />
+            </n-form-item>
+          </n-gi>
+        </n-grid>
+
+        <n-divider title-placement="left">匹配参数</n-divider>
+        <n-grid :cols="isMobile ? 1 : 3" :x-gap="12">
+          <n-gi><n-form-item label="分辨率"><n-select v-model:value="shareRequestForm.params.resolution" :options="requestResolutionOptions" clearable placeholder="不限" /></n-form-item></n-gi>
+          <n-gi><n-form-item label="编码"><n-select v-model:value="shareRequestForm.params.codec" :options="requestCodecOptions" clearable placeholder="不限" /></n-form-item></n-gi>
+          <n-gi><n-form-item label="HDR/杜比"><n-select v-model:value="shareRequestForm.params.effect" :options="requestEffectOptions" clearable placeholder="不限" /></n-form-item></n-gi>
+          <n-gi><n-form-item label="来源"><n-select v-model:value="shareRequestForm.params.source" :options="requestSourceOptions" clearable placeholder="不限" /></n-form-item></n-gi>
+          <n-gi><n-form-item label="音轨"><n-select v-model:value="shareRequestForm.params.audio" :options="requestAudioOptions" clearable placeholder="不限" /></n-form-item></n-gi>
+          <n-gi><n-form-item label="字幕"><n-select v-model:value="shareRequestForm.params.subtitle" :options="requestSubtitleOptions" clearable placeholder="不限" /></n-form-item></n-gi>
+        </n-grid>
+        <n-form-item label="体积范围">
+          <n-input v-model:value="shareRequestForm.params.size_range" placeholder="例如 ≤10GB、20-40GB，留空不限" />
+        </n-form-item>
+        <n-form-item label="备注要求">
+          <n-input v-model:value="shareRequestForm.params.note" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="例如指定版本组、不要国语配音、优先 Remux 等" />
+        </n-form-item>
+
+        <n-divider title-placement="left">悬赏与有效期</n-divider>
+        <n-grid :cols="isMobile ? 1 : 3" :x-gap="12">
+          <n-gi><n-form-item label="有效期"><n-input-number v-model:value="shareRequestForm.expires_days" :min="1" :max="365" style="width: 100%;"><template #suffix>天</template></n-input-number></n-form-item></n-gi>
+          <n-gi><n-form-item label="超时加价"><n-switch v-model:value="shareRequestForm.auto_escalation"><template #checked>开启</template><template #unchecked>关闭</template></n-switch></n-form-item></n-gi>
+          <n-gi><n-form-item label="最高冻结"><n-input-number v-model:value="shareRequestForm.max_bounty" :min="shareRequestQuote?.current_bounty || 2" :max="1000" style="width: 100%;"><template #suffix>贡献值</template></n-input-number></n-form-item></n-gi>
+        </n-grid>
+        <n-grid v-if="shareRequestForm.auto_escalation" :cols="isMobile ? 1 : 2" :x-gap="12">
+          <n-gi><n-form-item label="加价周期"><n-input-number v-model:value="shareRequestForm.escalation_interval_hours" :min="1" :max="168" style="width: 100%;"><template #suffix>小时</template></n-input-number></n-form-item></n-gi>
+          <n-gi><n-form-item label="加价方式"><n-select v-model:value="shareRequestForm.escalation_mode" :options="requestEscalationOptions" /></n-form-item></n-gi>
+        </n-grid>
+      </n-form>
+
+      <div class="share-request-quote-box">
+        <div class="quote-title">预计悬赏：{{ shareRequestQuote?.current_bounty || '-' }}，最高冻结：{{ shareRequestQuote?.max_bounty || shareRequestForm.max_bounty || '-' }}</div>
+        <div class="quote-breakdown">
+          <span v-for="it in (shareRequestQuote?.breakdown || [])" :key="it.key" class="quote-chip">{{ it.label }} +{{ it.delta }}</span>
+        </div>
+      </div>
+
+      <template #footer>
+        <n-space justify="space-between" align="center">
+          <n-text depth="3">提交后会按最高冻结值扣除贡献值；未成交取消/过期后退回未使用部分。</n-text>
+          <n-space>
+            <n-button @click="showShareRequestModal = false">取消</n-button>
+            <n-button type="primary" :disabled="!selectedShareRequestMedia" :loading="shareRequestSubmitting" @click="submitShareRequest">发布求分享</n-button>
+          </n-space>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup>
-import { computed, h, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import axios from 'axios';
 import {
   NAlert, NButton, NCard, NCheckbox, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
@@ -341,6 +501,9 @@ const loading = ref(false);
 const sharesLoading = ref(false);
 const ledgerLoading = ref(false);
 const centerLoading = ref(false);
+const requestLoading = ref(false);
+const shareRequestSearchLoading = ref(false);
+const shareRequestSubmitting = ref(false);
 const maintenanceSubmitting = ref(false);
 const refreshingCredit = ref(false);
 const registeringDevice = ref(false);
@@ -369,6 +532,7 @@ const sharedConfigForm = reactive({
   p115_shared_auto_promote_movie_progress: 80,
 });
 const showManualShareModal = ref(false);
+const showShareRequestModal = ref(false);
 const mediaSearchKeyword = ref('');
 const mediaSearchLoading = ref(false);
 const mediaCandidates = ref([]);
@@ -380,10 +544,17 @@ const virtualItems = ref([]);
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
+const shareRequests = ref([]);
+const shareRequestSearchKeyword = ref('');
+const shareRequestSearchItems = ref([]);
+const selectedShareRequestMedia = ref(null);
+const shareRequestQuote = ref(null);
+const shareRequestEpisodeText = ref('');
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '', status: 'alive,pending,replenish', item_type: 'all', order_by: 'latest' });
+const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -398,6 +569,34 @@ const centerOrderOptions = [
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
   share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: ''
+});
+
+const defaultShareRequestParams = () => ({
+  resolution: null,
+  codec: null,
+  effect: null,
+  source: null,
+  audio: null,
+  subtitle: null,
+  size_range: '',
+  note: '',
+});
+const shareRequestForm = reactive({
+  tmdb_id: '',
+  media_type: 'movie',
+  target_type: 'movie',
+  title: '',
+  release_year: null,
+  poster_path: '',
+  overview: '',
+  season_number: 1,
+  episode_number: 1,
+  params: defaultShareRequestParams(),
+  expires_days: 7,
+  auto_escalation: false,
+  escalation_mode: 'double',
+  escalation_interval_hours: 24,
+  max_bounty: null,
 });
 
 const virtualStatusOptions = [
@@ -536,6 +735,7 @@ const statusMap = {
   reported: { text: '已登记', type: 'success' }, partial: { text: '部分登记', type: 'warning' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
   not_reported: { text: '未登记', type: 'default' },
+  open: { text: '求分享中', type: 'success' }, fulfilled: { text: '已完成', type: 'success' },
 };
 
 const fmtBytes = (value) => {
@@ -694,6 +894,59 @@ const mediaSearchColumns = [
   }, { default: () => row.resolvable ? '选择' : '不可用' }) },
 ];
 
+
+const shareRequestTargetOptions = computed(() => {
+  if (shareRequestForm.media_type === 'movie') return [{ label: '电影', value: 'movie' }];
+  return [
+    { label: '全剧', value: 'series' },
+    { label: '单季', value: 'season' },
+    { label: '单集', value: 'episode' },
+    { label: '集数范围', value: 'episode_batch' },
+  ];
+});
+
+const requestStatusLabel = (status) => statusMap[status]?.text || status || '未知';
+const requestTargetTypeLabel = (value) => ({
+  movie: '电影', series: '全剧', season: '单季', episode: '单集', episode_batch: '集数范围',
+}[String(value || '').toLowerCase()] || value || '-');
+const requestTargetText = (row) => {
+  const target = String(row?.target_type || '').toLowerCase();
+  const season = row?.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
+  const episode = row?.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
+  if (target === 'season') return `${requestTargetTypeLabel(target)} ${season || ''}`.trim();
+  if (target === 'episode') return `${requestTargetTypeLabel(target)} ${season}${episode}`.trim();
+  if (target === 'episode_batch') {
+    const eps = Array.isArray(row?.episode_numbers) ? row.episode_numbers : [];
+    const range = eps.length ? `E${String(eps[0]).padStart(2, '0')}${eps.length > 1 ? `-E${String(eps[eps.length - 1]).padStart(2, '0')}` : ''}` : '';
+    return `${requestTargetTypeLabel(target)} ${season}${range}`.trim();
+  }
+  return requestTargetTypeLabel(target || row?.media_type);
+};
+const requestConditionText = (row) => {
+  const params = (row?.params_json && typeof row.params_json === 'object') ? row.params_json : {};
+  const parts = [params.resolution, params.codec, params.effect, params.source, params.audio, params.subtitle, params.size_range].filter(Boolean);
+  return parts.length ? parts.join(' · ') : '不限参数';
+};
+const requestPosterUrl = (row) => {
+  const p = String(row?.poster_path || '').trim();
+  if (!p) return '/default-poster.png';
+  if (/^https?:\/\//i.test(p)) return p;
+  return `https://image.tmdb.org/t/p/w185${p}`;
+};
+const onRequestPosterError = (event) => { if (event?.target) event.target.src = '/default-poster.png'; };
+
+const shareRequestSearchColumns = [
+  { title: '媒体', key: 'title', minWidth: 260, render: row => h('div', [
+    h('div', { class: 'main-title' }, appendYear(row.title, row.release_year)),
+    h('div', { class: 'sub-title' }, `${row.media_type === 'movie' ? '电影' : '剧集'} · TMDb ${row.tmdb_id || '-'}`)
+  ]) },
+  { title: '首播/上映', key: 'release_date', width: 120, render: row => row.release_date || row.release_year || '-' },
+  { title: '简介', key: 'overview', minWidth: 320, ellipsis: { tooltip: true } },
+  { title: '操作', key: 'actions', width: 100, fixed: 'right', render: row => h(NButton, {
+    size: 'small', type: 'primary', ghost: true, onClick: () => chooseShareRequestMedia(row)
+  }, { default: () => '选择' }) },
+];
+
 const ledgerEventLabel = (eventType) => {
   const map = {
     center_initial_credit: '基础贡献值',
@@ -710,6 +963,11 @@ const ledgerEventLabel = (eventType) => {
     share_cancelled: '取消分享',
     virtual_deleted: '删除虚拟资源',
     virtual_promoted: '虚拟资源转正',
+    share_request_escrow: '求分享冻结',
+    share_request_refund: '求分享退款',
+    share_request_bounty_paid: '求分享悬赏支付',
+    share_request_bounty_received: '求分享悬赏收入',
+    share_request_service_fee: '求分享服务费',
   };
   return map[eventType] || eventType || '-';
 };
@@ -1435,6 +1693,217 @@ const loadCenterSources = async () => {
     centerLoading.value = false;
   }
 };
+
+const parseEpisodeText = (text) => {
+  const out = [];
+  String(text || '').split(/[，,\s]+/).filter(Boolean).forEach(part => {
+    const m = part.match(/^(\d{1,4})\s*[-~]\s*(\d{1,4})$/);
+    if (m) {
+      let a = Number(m[1]); let b = Number(m[2]);
+      if (a > b) [a, b] = [b, a];
+      for (let n = a; n <= b && out.length < 200; n += 1) if (!out.includes(n)) out.push(n);
+    } else {
+      const n = Number(part);
+      if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(Math.floor(n));
+    }
+  });
+  return out.sort((a, b) => a - b);
+};
+
+const compactRequestParams = () => {
+  const params = {};
+  Object.entries(shareRequestForm.params || {}).forEach(([key, value]) => {
+    if (value == null) return;
+    const text = String(value).trim();
+    if (text) params[key] = text;
+  });
+  return params;
+};
+
+const buildShareRequestPayload = () => {
+  const episodeNumbers = shareRequestForm.target_type === 'episode_batch'
+    ? parseEpisodeText(shareRequestEpisodeText.value)
+    : (shareRequestForm.target_type === 'episode' && shareRequestForm.episode_number ? [Number(shareRequestForm.episode_number)] : []);
+  return {
+    tmdb_id: shareRequestForm.tmdb_id,
+    media_type: shareRequestForm.media_type,
+    target_type: shareRequestForm.target_type,
+    title: shareRequestForm.title,
+    release_year: shareRequestForm.release_year,
+    poster_path: shareRequestForm.poster_path,
+    overview: shareRequestForm.overview,
+    season_number: ['season','episode','episode_batch'].includes(shareRequestForm.target_type) ? shareRequestForm.season_number : null,
+    episode_number: shareRequestForm.target_type === 'episode' ? shareRequestForm.episode_number : null,
+    episode_numbers: episodeNumbers,
+    params_json: compactRequestParams(),
+    expires_days: shareRequestForm.expires_days || 7,
+    auto_escalation: Boolean(shareRequestForm.auto_escalation),
+    escalation_mode: shareRequestForm.escalation_mode || 'double',
+    escalation_interval_hours: shareRequestForm.escalation_interval_hours || 24,
+    max_bounty: shareRequestForm.max_bounty || null,
+  };
+};
+
+let quoteTimer = null;
+const refreshShareRequestQuote = async () => {
+  if (!selectedShareRequestMedia.value) return;
+  try {
+    const payload = buildShareRequestPayload();
+    const res = await axios.post('/api/shared/resources/share-requests/quote', payload);
+    const q = res.data?.data || null;
+    shareRequestQuote.value = q;
+    if (q?.max_bounty && (!shareRequestForm.max_bounty || shareRequestForm.max_bounty < q.current_bounty)) {
+      shareRequestForm.max_bounty = q.max_bounty;
+    }
+  } catch (e) {
+    // 报价失败不弹爆，只在提交时提示。
+    console.warn('share request quote failed', e);
+  }
+};
+const scheduleShareRequestQuote = () => {
+  clearTimeout(quoteTimer);
+  quoteTimer = setTimeout(refreshShareRequestQuote, 260);
+};
+
+const resetShareRequestForm = () => {
+  selectedShareRequestMedia.value = null;
+  shareRequestSearchItems.value = [];
+  shareRequestSearchKeyword.value = '';
+  shareRequestEpisodeText.value = '';
+  shareRequestQuote.value = null;
+  Object.assign(shareRequestForm, {
+    tmdb_id: '', media_type: 'movie', target_type: 'movie', title: '', release_year: null,
+    poster_path: '', overview: '', season_number: 1, episode_number: 1,
+    params: defaultShareRequestParams(), expires_days: 7, auto_escalation: false,
+    escalation_mode: 'double', escalation_interval_hours: 24, max_bounty: null,
+  });
+};
+
+const openShareRequestModal = () => {
+  resetShareRequestForm();
+  showShareRequestModal.value = true;
+};
+
+const searchShareRequestTmdb = async () => {
+  const keyword = String(shareRequestSearchKeyword.value || '').trim();
+  if (!keyword) return message.warning('请输入要搜索的片名');
+  shareRequestSearchLoading.value = true;
+  try {
+    const res = await axios.get('/api/shared/resources/share-requests/tmdb/search', { params: { keyword } });
+    shareRequestSearchItems.value = res.data?.items || [];
+    if (!shareRequestSearchItems.value.length) message.info('TMDb 没有搜索到结果');
+  } catch (e) {
+    message.error(e.response?.data?.message || 'TMDb 搜索失败');
+  } finally {
+    shareRequestSearchLoading.value = false;
+  }
+};
+
+const chooseShareRequestMedia = async (row) => {
+  selectedShareRequestMedia.value = row;
+  const mediaType = row.media_type === 'movie' ? 'movie' : 'tv';
+  Object.assign(shareRequestForm, {
+    tmdb_id: row.tmdb_id || '',
+    media_type: mediaType,
+    target_type: mediaType === 'movie' ? 'movie' : 'season',
+    title: row.title || '',
+    release_year: row.release_year || null,
+    poster_path: row.poster_path || '',
+    overview: row.overview || '',
+    season_number: 1,
+    episode_number: 1,
+    max_bounty: null,
+  });
+  shareRequestEpisodeText.value = '';
+  await refreshShareRequestQuote();
+  message.success('已选择求分享目标');
+};
+
+const loadShareRequests = async () => {
+  requestLoading.value = true;
+  try {
+    const res = await axios.get('/api/shared/resources/share-requests', { params: {
+      keyword: requestFilters.keyword,
+      status: requestFilters.status,
+      media_type: requestFilters.media_type === 'all' ? '' : requestFilters.media_type,
+      target_type: requestFilters.target_type === 'all' ? '' : requestFilters.target_type,
+      limit: 80,
+      offset: 0,
+    } });
+    shareRequests.value = res.data?.items || [];
+  } catch (e) {
+    message.error(e.response?.data?.message || '加载求分享失败');
+  } finally {
+    requestLoading.value = false;
+  }
+};
+
+const submitShareRequest = async () => {
+  if (!selectedShareRequestMedia.value) return message.warning('请先搜索并选择 TMDb 目标');
+  if (shareRequestForm.media_type === 'tv' && ['season','episode','episode_batch'].includes(shareRequestForm.target_type) && !shareRequestForm.season_number) {
+    return message.warning('请填写季号');
+  }
+  if (shareRequestForm.target_type === 'episode' && !shareRequestForm.episode_number) return message.warning('请填写集号');
+  if (shareRequestForm.target_type === 'episode_batch' && !parseEpisodeText(shareRequestEpisodeText.value).length) return message.warning('请填写集数范围');
+  shareRequestSubmitting.value = true;
+  try {
+    const payload = buildShareRequestPayload();
+    const res = await axios.post('/api/shared/resources/share-requests', payload);
+    message.success(res.data?.message || '求分享已发布');
+    showShareRequestModal.value = false;
+    activeTab.value = 'requests';
+    await Promise.allSettled([loadShareRequests(), loadSummary(), loadLedger()]);
+  } catch (e) {
+    message.error(e.response?.data?.message || '发布求分享失败');
+  } finally {
+    shareRequestSubmitting.value = false;
+  }
+};
+
+const confirmCoRequest = (row) => {
+  const cost = Number(row.max_bounty || row.current_bounty || row.bounty_total || 0);
+  dialog.warning({
+    title: '同求助力',
+    content: `助力求分享将冻结 ${cost} 贡献值。资源成功分享并转存后，对应贡献值会支付给分享者；未成交取消/过期会退回。确定同求吗？`,
+    positiveText: '确认同求',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const res = await axios.post(`/api/shared/resources/share-requests/${row.group_id}/co-request`, {});
+        message.success(res.data?.message || '同求成功');
+        await Promise.allSettled([loadShareRequests(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '同求失败');
+      }
+    }
+  });
+};
+
+const confirmCancelShareRequest = (row) => {
+  dialog.warning({
+    title: '取消求分享',
+    content: row.my_role === 'owner' ? '发起人取消会关闭该求分享并退回所有参与者未使用贡献值，确定继续吗？' : '确定取消你的同求并退回未使用贡献值吗？',
+    positiveText: '取消求分享',
+    negativeText: '保留',
+    onPositiveClick: async () => {
+      try {
+        const res = await axios.post(`/api/shared/resources/share-requests/${row.group_id}/cancel`, {});
+        message.success(res.data?.message || '已取消求分享');
+        await Promise.allSettled([loadShareRequests(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '取消求分享失败');
+      }
+    }
+  });
+};
+
+const openLocalShareForRequest = async (row) => {
+  openManualShareModal();
+  mediaSearchKeyword.value = row.title || row.tmdb_id || '';
+  message.info('已带入片名搜索本地可分享资源；后续版本会按求分享参数自动过滤候选。');
+  if (mediaSearchKeyword.value) await searchShareableMedia();
+};
+
 const triggerSharedMaintenance = async () => {
   maintenanceSubmitting.value = true;
   try {
@@ -1449,7 +1918,7 @@ const triggerSharedMaintenance = async () => {
 
 const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献值流水失败'); } finally { ledgerLoading.value = false; } };
 const loadAll = async () => { await Promise.allSettled([loadSummary(), loadVirtualItems(), loadShares(), loadLedger()]); };
-const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'ledger') loadLedger(); };
+const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'requests') loadShareRequests(); if (name === 'ledger') loadLedger(); };
 
 const registerCenterDevice = async () => {
   const doRegister = async () => {
@@ -1551,6 +2020,29 @@ const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: 
 const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true }); message.success('已删除'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '删除失败'); } } }); };
 const confirmPromote = (row) => { dialog.info({ title: '转为正式资源', content: `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`, positiveText: '转正', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`); message.success('已转正'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '转正失败'); } } }); };
 
+
+watch(
+  () => [
+    selectedShareRequestMedia.value?.tmdb_id,
+    shareRequestForm.target_type,
+    shareRequestForm.season_number,
+    shareRequestForm.episode_number,
+    shareRequestEpisodeText.value,
+    shareRequestForm.params.resolution,
+    shareRequestForm.params.codec,
+    shareRequestForm.params.effect,
+    shareRequestForm.params.source,
+    shareRequestForm.params.audio,
+    shareRequestForm.params.subtitle,
+    shareRequestForm.params.size_range,
+    shareRequestForm.params.note,
+    shareRequestForm.auto_escalation,
+    shareRequestForm.escalation_interval_hours,
+    shareRequestForm.max_bounty,
+  ],
+  () => scheduleShareRequestQuote(),
+);
+
 onMounted(() => { checkMobile(); window.addEventListener('resize', checkMobile); loadAll(); });
 onUnmounted(() => window.removeEventListener('resize', checkMobile));
 </script>
@@ -1617,6 +2109,21 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .selected-title { font-weight: 700; margin-bottom: 6px; }
 .selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
+
+.share-request-card { min-height: 238px; background: rgba(128,128,128,.055); border-radius: 14px; }
+.share-request-card-body { display: flex; gap: 12px; min-height: 136px; }
+.share-request-poster { width: 74px; height: 108px; object-fit: cover; border-radius: 10px; background: rgba(128,128,128,.16); flex: 0 0 auto; }
+.share-request-info { min-width: 0; flex: 1; }
+.share-request-title { font-size: 15px; font-weight: 700; line-height: 1.35; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.share-request-meta, .share-request-condition, .share-request-time { font-size: 12px; color: var(--n-text-color-3, rgba(128,128,128,.78)); line-height: 1.55; }
+.share-request-condition { margin-top: 6px; min-height: 18px; word-break: break-all; }
+.share-request-tags { margin-top: 8px; }
+.empty-request-card { text-align: center; padding: 24px; background: rgba(128,128,128,.055); border-radius: 14px; }
+.share-request-quote-box { border: 1px solid rgba(128,128,128,.20); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.065); margin-top: 12px; }
+.quote-title { font-weight: 700; margin-bottom: 8px; }
+.quote-breakdown { display: flex; flex-wrap: wrap; gap: 8px; }
+.quote-chip { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 999px; font-size: 12px; background: rgba(128,128,128,.13); }
+
 .warning-text { color: #d03050; font-size: 12px; }
 .share-remark-text { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .share-remark-error { color: #d03050; }
