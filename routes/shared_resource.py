@@ -619,6 +619,36 @@ def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> 
         return {'ok': False, 'message': str(e), 'payload': payload}
 
 
+
+
+def _center_status_after_cancel_result(center_result: Dict[str, Any]) -> str:
+    """中心撤销接口可能把源保留为待补充；本地中心状态要如实显示。"""
+    if not isinstance(center_result, dict):
+        return 'cancelled'
+    if int(center_result.get('replenish_count') or 0) > 0 or str(center_result.get('status') or '').lower() == CENTER_SOURCE_STATUS_REPLENISH:
+        return CENTER_SOURCE_STATUS_REPLENISH
+    return 'cancelled'
+
+
+def _center_cancel_result_text(center_result: Dict[str, Any]) -> str:
+    if not isinstance(center_result, dict):
+        return str(center_result or '')
+    replenish_count = int(center_result.get('replenish_count') or 0)
+    removed_count = int(center_result.get('removed_count') or 0)
+    raw_removed = int(center_result.get('removed_raw_ffprobe_count') or 0)
+    raw_file_removed = int(center_result.get('removed_raw_file_count') or 0)
+    credit = center_result.get('credit')
+    parts = []
+    if replenish_count:
+        parts.append(f"中心已将 {replenish_count} 个共享源转为待补充")
+    if removed_count:
+        parts.append(f"中心已撤销 {removed_count} 个共享源")
+    if raw_removed or raw_file_removed:
+        parts.append(f"删除媒体信息 {raw_removed} 条/文件 {raw_file_removed} 个")
+    if credit is not None:
+        parts.append(f"当前贡献值 {credit}")
+    return '，'.join(parts) if parts else (center_result.get('message') or '中心无匹配源需要处理')
+
 def _safe_json_obj(value):
     if value is None:
         return None
@@ -3916,11 +3946,12 @@ def api_cancel_share(record_id):
         # 分享已经不存在/已取消时，本地可以安全标记取消，并继续撤销中心源。
         if any(k in text for k in ['分享不存在', '不存在该分享', '已取消', '取消分享', 'share not found', 'not found', '没有该分享']):
             center_result = _cancel_center_sources_for_share(record_id, record)
+            center_status = _center_status_after_cancel_result(center_result)
             row = shared_share_db.update_share_record(
                 record_id,
-                status='cancelled', review_status='cancelled', center_status='cancelled',
+                status='cancelled', review_status='cancelled', center_status=center_status,
                 cancelled_at='NOW()',
-                last_error=f"远端分享已不存在，已同步本地状态；中心撤销: {center_result.get('message') or center_result}"
+                last_error=f"远端分享已不存在，已同步本地状态；{_center_cancel_result_text(center_result)}"
             )
             shared_virtual_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'attempts': attempts, 'center': center_result})
             return jsonify({"success": True, "message": "远端分享已不存在，已同步本地/中心取消状态", "data": row, "debug": attempts, "center": center_result})
@@ -3941,10 +3972,7 @@ def api_cancel_share(record_id):
     if center_result.get('skipped'):
         msg_parts.append(center_result.get('message') or '中心撤销已跳过')
     elif center_ok:
-        raw_removed = int(center_result.get('removed_raw_ffprobe_count') or 0)
-        raw_file_removed = int(center_result.get('removed_raw_file_count') or 0)
-        msg = f"中心已撤销 {center_result.get('removed_count', 0)} 个共享源，删除媒体信息 {raw_removed} 条/文件 {raw_file_removed} 个，当前贡献值 {center_result.get('credit')}"
-        msg_parts.append(msg)
+        msg_parts.append(_center_cancel_result_text(center_result))
     else:
         msg_parts.append(f"中心撤销失败: {center_result.get('message')}")
     final_msg = '；'.join([p for p in msg_parts if p])
@@ -3956,7 +3984,7 @@ def api_cancel_share(record_id):
         last_error=final_msg,
     )
     if center_ok or center_result.get('skipped'):
-        update_fields['center_status'] = 'cancelled'
+        update_fields['center_status'] = _center_status_after_cancel_result(center_result)
     row = shared_share_db.update_share_record(record_id, **update_fields)
     shared_virtual_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'response': resp, 'attempts': attempts, 'center': center_result})
     logger.info(f"  ➜ [共享资源] 已取消/删除115分享: record_id={record_id}, share_code={share_code}, center={center_result}")
