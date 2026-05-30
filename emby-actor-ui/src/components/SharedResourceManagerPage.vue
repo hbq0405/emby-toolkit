@@ -561,12 +561,12 @@ const shareTypeOptions = [
   { label: '电影', value: 'movie_folder' },
   { label: '电影', value: 'movie_file' },
   { label: '剧集包', value: 'season_pack' },
-  { label: '剧集包', value: 'series_pack' },
+  { label: '全剧包', value: 'series_pack' },
   { label: '单集', value: 'episode_file' },
 ];
 const resourceTypeLabel = (value) => ({
   movie_file: '电影', movie_folder: '电影', Movie: '电影', movie: '电影', movies: '电影',
-  season_pack: '剧集包', series_pack: '剧集包', Season: '剧集包', Series: '剧集包', season: '剧集包', series: '剧集包', Pack: '剧集包', pack: '剧集包',
+  season_pack: '剧集包', series_pack: '全剧包', Season: '剧集包', Series: '全剧包', season: '剧集包', series: '全剧包', Pack: '剧集包', pack: '剧集包',
   episode_file: '单集', Episode: '单集', episode: '单集', episodes: '单集',
 }[value] || value || '-');
 const shareTypeLabel = (value) => resourceTypeLabel(value) || shareTypeOptions.find(opt => opt.value === value)?.label || value || '-';
