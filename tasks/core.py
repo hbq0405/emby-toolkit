@@ -195,7 +195,6 @@ def get_task_registry(context: str = 'all'):
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         'refresh_completed_series': (task_refresh_completed_series, "全量刷新剧集", 'watchlist', True),
         'scan-monitor-folders': (task_scan_monitor_folders, "扫描监控目录", 'media', True),
-        'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', True),
         'scan-organize-115': (task_scan_and_organize_115, "网盘文件整理", 'media', True),
         'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
         'monitor-115-life-events': (task_monitor_115_life_events, "增量生成STRM", 'media', True),
@@ -226,6 +225,7 @@ def get_task_registry(context: str = 'all'):
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
         'fill-studio-images': (task_fill_studio_images, "补全工作室图标", 'media', False),
         'shared-share-status-sync': (task_shared_share_status_sync_high_freq, "共享分享状态同步", 'media', False),
+        'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', False),
     }
 
     if context == 'chain':
