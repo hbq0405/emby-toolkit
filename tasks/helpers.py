@@ -1029,6 +1029,63 @@ def _season_consistency_release_group(asset: Dict[str, Any]) -> str:
     return 'Unknown'
 
 
+def _season_consistency_effect_key(asset: Dict[str, Any]) -> str:
+    """提取季一致性使用的 HDR/杜比版本 key。
+
+    必须区分 DoVi P5 / P7 / P8，不允许同季混用；普通 HDR/SDR 也纳入同一
+    维度，避免 DoVi、HDR、SDR 混在同一个季包里。
+    """
+    asset = asset or {}
+    raw_values = []
+    for key in (
+        'effect_display', 'effect', 'video_effect', 'hdr_type', 'dynamic_range',
+        'ExtendedVideoSubType', 'ExtendedVideoSubTypeDescription', 'ExtendedVideoType',
+        'VideoRange', 'Profile', 'DisplayTitle', 'Title', 'video_title',
+    ):
+        value = asset.get(key)
+        if value not in (None, '', [], {}):
+            raw_values.append(str(value))
+
+    text = ' | '.join(raw_values).strip()
+    if not text:
+        return 'Unknown'
+
+    compact = re.sub(r'[\s._-]+', '', text.lower())
+    text_lower = text.lower()
+
+    # Dolby Vision Profile 必须细分；P8 / P8.1 统一按 P8 处理。
+    if (
+        'dovip8' in compact or 'doviprofile8' in compact or
+        'dolbyvisionprofile8' in compact or 'dvprofile8' in compact or
+        re.search(r'\b(?:p|profile)\s*8(?:\.1)?\b', text_lower)
+    ):
+        return 'DoVi_P8'
+    if (
+        'dovip7' in compact or 'doviprofile7' in compact or
+        'dolbyvisionprofile7' in compact or 'dvprofile7' in compact or
+        re.search(r'\b(?:p|profile)\s*7\b', text_lower)
+    ):
+        return 'DoVi_P7'
+    if (
+        'dovip5' in compact or 'doviprofile5' in compact or
+        'dolbyvisionprofile5' in compact or 'dvprofile5' in compact or
+        re.search(r'\b(?:p|profile)\s*5\b', text_lower)
+    ):
+        return 'DoVi_P5'
+
+    if any(token in compact for token in ('dovi', 'dolbyvision', 'dvhe', 'dvh1')):
+        return 'DoVi'
+    if 'hdr10+' in text_lower or 'hdr10plus' in compact:
+        return 'HDR10+'
+    if 'hlg' in compact:
+        return 'HLG'
+    if 'hdr' in compact or 'smpte2084' in compact:
+        return 'HDR'
+    if 'sdr' in compact:
+        return 'SDR'
+    return 'Unknown'
+
+
 def check_season_consistency(
     tmdb_id: str,
     season_number: int,
@@ -1042,7 +1099,7 @@ def check_season_consistency(
 
     规则继承自 watchlist_processor 原实现：
     1. 本地在库集数必须不少于 expected_episode_count（传 0 则不检查集数）。
-    2. 每集主资产的分辨率、制作组、编码必须完全统一。
+    2. 每集主资产的分辨率、制作组、编码、HDR/杜比版本必须完全统一。
 
     返回结构化结果，调用方可直接使用 result['ok'] 作为布尔结果，也可把 message
     透传给前端/维护任务日志。
@@ -1105,6 +1162,7 @@ def check_season_consistency(
         resolutions = set()
         groups = set()
         codecs = set()
+        effects = set()
         signatures = []
         invalid = []
 
@@ -1126,10 +1184,22 @@ def check_season_consistency(
             resolution = str(main_asset.get('resolution_display') or main_asset.get('resolution') or 'Unknown').strip() or 'Unknown'
             codec = str(main_asset.get('codec_display') or main_asset.get('video_codec') or 'Unknown').strip() or 'Unknown'
             group_name = _season_consistency_release_group(main_asset)
+            effect_key = _season_consistency_effect_key(main_asset)
+
+            if effect_key == 'Unknown':
+                invalid.append({
+                    'tmdb_id': row.get('tmdb_id'),
+                    'season_number': row.get('season_number'),
+                    'episode_number': ep_no,
+                    'title': title,
+                    'reason': '无法解析 HDR/杜比版本信息',
+                })
+                continue
 
             resolutions.add(resolution)
             codecs.add(codec)
             groups.add(group_name)
+            effects.add(effect_key)
             signatures.append({
                 'tmdb_id': row.get('tmdb_id'),
                 'season_number': row.get('season_number'),
@@ -1138,6 +1208,7 @@ def check_season_consistency(
                 'resolution': resolution,
                 'release_group': group_name,
                 'codec': codec,
+                'effect': effect_key,
                 'file_name': main_asset.get('path') or main_asset.get('file_name') or main_asset.get('name') or title,
             })
 
@@ -1163,7 +1234,7 @@ def check_season_consistency(
                 'signatures': signatures,
             }
 
-        is_consistent = bool(signatures) and len(resolutions) == 1 and len(groups) == 1 and len(codecs) == 1
+        is_consistent = bool(signatures) and len(resolutions) == 1 and len(groups) == 1 and len(codecs) == 1 and len(effects) == 1
         result = {
             'ok': is_consistent,
             'reason': 'ok' if is_consistent else 'season_asset_inconsistent',
@@ -1174,6 +1245,7 @@ def check_season_consistency(
             'resolutions': sorted(resolutions),
             'release_groups': sorted(groups),
             'codecs': sorted(codecs),
+            'effects': sorted(effects),
             'signatures': signatures,
         }
 
@@ -1181,19 +1253,20 @@ def check_season_consistency(
             res = next(iter(resolutions))
             grp = next(iter(groups))
             codec = next(iter(codecs))
-            result['message'] = f"季包一致性校验通过：第 {season_number_int} 季 [{res} / {grp} / {codec}]。"
+            effect = next(iter(effects))
+            result['message'] = f"季包一致性校验通过：第 {season_number_int} 季 [{res} / {grp} / {codec} / {effect}]。"
             if log_result:
-                logger.info(f"  ➜ [一致性检查] 第 {season_number_int} 季 完美达标: [{res} / {grp} / {codec}]，跳过洗版/允许季包分享。")
+                logger.info(f"  ➜ [一致性检查] 第 {season_number_int} 季 完美达标: [{res} / {grp} / {codec} / {effect}]，跳过洗版/允许季包分享。")
             return result
 
         result['message'] = (
             f"季包一致性校验失败：第 {season_number_int} 季版本混杂；"
-            f"分辨率{sorted(resolutions)}，制作组{sorted(groups)}，编码{sorted(codecs)}"
+            f"分辨率{sorted(resolutions)}，制作组{sorted(groups)}，编码{sorted(codecs)}，HDR/杜比{sorted(effects)}"
         )
         if log_result:
             logger.info(
                 f"  ➜ [一致性检查] 第 {season_number_int} 季 版本混杂，需要洗版/禁止季包分享。"
-                f"分布: 分辨率{resolutions}, 制作组{groups}, 编码{codecs}"
+                f"分布: 分辨率{resolutions}, 制作组{groups}, 编码{codecs}, HDR/杜比{effects}"
             )
         return result
 
