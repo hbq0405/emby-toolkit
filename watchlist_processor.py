@@ -1158,7 +1158,7 @@ class WatchlistProcessor:
             daemon=True,
         ).start()
         logger.info(
-            "  ➜ [共享资源] 已异步触发完结季包分享：%s S%02d",
+            "  ➜ [共享资源] 检查完结季包是否需要分享：%s S%02d",
             series_name or parent_series_tmdb_id, season_no,
         )
 
