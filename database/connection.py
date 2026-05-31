@@ -471,60 +471,6 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  ➜ 正在创建 'shared_virtual_items' 表 (共享资源虚拟入库管理)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS shared_virtual_items (
-                        virtual_id TEXT PRIMARY KEY,
-                        source_id TEXT,
-                        source_key TEXT,
-                        source_provider TEXT DEFAULT 'shared_center',
-                        tmdb_id TEXT NOT NULL,
-                        item_type TEXT NOT NULL,
-                        parent_series_tmdb_id TEXT,
-                        season_number INTEGER,
-                        episode_number INTEGER,
-                        title TEXT,
-                        release_year INTEGER,
-                        poster_path TEXT,
-                        sha1 TEXT NOT NULL,
-                        size BIGINT,
-                        file_name TEXT NOT NULL,
-                        quality TEXT,
-                        strm_path TEXT,
-                        mediainfo_path TEXT,
-                        nfo_path TEXT,
-                        share_code TEXT,
-                        receive_code TEXT,
-                        contributor_id TEXT,
-                        emby_item_id TEXT,
-                        media_source_id TEXT,
-                        auto_promote_completed BOOLEAN DEFAULT FALSE,
-                        auto_promoted_at TIMESTAMP WITH TIME ZONE,
-                        cache_parent_id TEXT,
-                        cache_parent_name TEXT,
-                        real_fid TEXT,
-                        real_pick_code TEXT,
-                        real_parent_id TEXT,
-                        real_local_path TEXT,
-                        target_parent_id TEXT,
-                        target_parent_name TEXT,
-                        promoted_fid TEXT,
-                        promoted_pick_code TEXT,
-                        status TEXT NOT NULL DEFAULT 'virtual_ready',
-                        play_count INTEGER NOT NULL DEFAULT 0,
-                        last_played_at TIMESTAMP WITH TIME ZONE,
-                        first_transferred_at TIMESTAMP WITH TIME ZONE,
-                        last_transferred_at TIMESTAMP WITH TIME ZONE,
-                        expires_at TIMESTAMP WITH TIME ZONE,
-                        promoted_at TIMESTAMP WITH TIME ZONE,
-                        deleted_at TIMESTAMP WITH TIME ZONE,
-                        last_error TEXT,
-                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    )
-                """)
-
                 logger.trace("  ➜ 正在创建 'shared_share_records' 表 (我的共享资源记录)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS shared_share_records (
@@ -811,17 +757,7 @@ def init_db():
                     # 加速共享资源按 SHA1 判断本账号是否已存在同文件，避免重复 share_import。
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_sha1_upper ON p115_filesystem_cache (UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
 
-                    # 12.5 【共享资源】加速虚拟入库、我的共享和贡献值页面
-                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS emby_item_id TEXT;")
-                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS media_source_id TEXT;")
-                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS auto_promote_completed BOOLEAN DEFAULT FALSE;")
-                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS auto_promoted_at TIMESTAMP WITH TIME ZONE;")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_status_updated ON shared_virtual_items (status, updated_at DESC);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_media ON shared_virtual_items (tmdb_id, item_type, season_number, episode_number);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_sha1 ON shared_virtual_items (sha1);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_emby_item ON shared_virtual_items (emby_item_id) WHERE emby_item_id IS NOT NULL AND emby_item_id <> '';")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_parent_promoted ON shared_virtual_items (parent_series_tmdb_id, status) WHERE parent_series_tmdb_id IS NOT NULL;")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_expires_at ON shared_virtual_items (expires_at) WHERE status IN ('cached', 'watched');")
+                    # 12.5 【共享资源】加速我的共享和贡献值页面
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_status_updated ON shared_share_records (status, updated_at DESC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_media ON shared_share_records (tmdb_id, item_type, season_number);")
                     # 完结汇总：快速找到某父剧某季下仍活动的单集分享。
@@ -857,7 +793,8 @@ def init_db():
                     # --- 3.1 清理废弃的表 ---
                     deprecated_tables = [
                         'watchlist',
-                        'tracked_actor_media'
+                        'tracked_actor_media',
+                        'shared_virtual_items'
                     ]
                     for table in deprecated_tables:
                         logger.trace(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")

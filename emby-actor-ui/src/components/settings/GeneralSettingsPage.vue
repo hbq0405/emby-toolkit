@@ -2159,7 +2159,6 @@ const tableInfo = {
   'p115_filesystem_cache': { cn: '115目录缓存', isSharable: false },
   'p115_mediainfo_cache': {cn: '媒体信息备份', isSharable: true },
   'p115_organize_records': {cn: '115整理记录', isSharable: false },
-  'shared_virtual_items': { cn: '虚拟入库记录', isSharable: false },
   'shared_share_records': { cn: '我的分享记录', isSharable: false },
   'shared_share_items': { cn: '分享文件明细', isSharable: false },
   'shared_credit_snapshot': { cn: '贡献值快照', isSharable: false },

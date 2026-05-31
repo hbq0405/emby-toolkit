@@ -7,7 +7,7 @@
           <div class="page-header">
             <div>
               <div class="page-title">共享资源管理</div>
-              <n-text depth="3">集中管理共享资源：虚拟入库、本机分享、中心资源转存/入库和贡献值流水。</n-text>
+              <n-text depth="3">集中管理共享资源：本机分享、中心资源转存和贡献值流水。</n-text>
             </div>
             <n-space>
               <n-button secondary @click="openSharedConfigModal">
@@ -31,7 +31,7 @@
         </template>
 
         <n-alert v-if="!hasCenterDevice" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
-          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献值、登记分享、转存或入库中心资源。
+          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献值、登记分享、转存中心资源。
         </n-alert>
 
         <n-grid :cols="isMobile ? 2 : 6" :x-gap="12" :y-gap="12">
@@ -47,31 +47,6 @@
 
       <n-card :bordered="false" class="dashboard-card shared-list-card">
         <n-tabs v-model:value="activeTab" animated type="line" @update:value="handleTabChange">
-          <n-tab-pane name="virtual" tab="虚拟入库">
-            <n-alert type="warning" :bordered="false" style="margin-bottom: 12px;">
-              虚拟入库仅生成 STRM，播放时转存到临时缓存目录。值得收藏的资源请及时“转正”，以免临时缓存过期被删除后，无法再次转存。
-            </n-alert>
-            <n-space class="toolbar" :vertical="isMobile" :size="12">
-              <n-input v-model:value="virtualFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadVirtualItems">
-                <template #prefix><n-icon :component="SearchIcon" /></template>
-              </n-input>
-              <n-select v-model:value="virtualFilters.status" :options="virtualStatusOptions" style="width: 160px" />
-              <n-select v-model:value="virtualFilters.item_type" :options="typeOptions" style="width: 140px" />
-              <n-button type="primary" :loading="loading" @click="loadVirtualItems">查询</n-button>
-            </n-space>
-            <n-data-table
-              remote
-              :loading="loading"
-              :columns="virtualColumns"
-              :data="virtualItems"
-              :pagination="virtualPagination"
-              :row-key="row => row.virtual_id"
-              :scroll-x="1180"
-              @update:page="p => { virtualPagination.page = p; loadVirtualItems(); }"
-              @update:page-size="s => { virtualPagination.pageSize = s; virtualPagination.page = 1; loadVirtualItems(); }"
-            />
-          </n-tab-pane>
-
           <n-tab-pane name="shares" tab="我的分享">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
               管理本机分享出去的资源。
@@ -105,7 +80,7 @@
           <n-tab-pane name="center" tab="中心资源库">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
               这里展示共享中心已收录的资源版本。
-“转存”会把资源转存到你的 115 网盘；“入库”则仅生成虚拟 STRM，不占用网盘空间，播放时再临时转存。
+“转存”会把资源转存到你的 115 网盘。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadCenterSources">
@@ -195,9 +170,9 @@
       </n-card>
     </n-space>
 
-    <n-modal v-model:show="showSharedConfigModal" preset="card" title="共享资源 / 虚拟入库配置" style="width: 880px; max-width: 96vw;" class="custom-modal glass-modal">
+    <n-modal v-model:show="showSharedConfigModal" preset="card" title="共享资源配置" style="width: 880px; max-width: 96vw;" class="custom-modal glass-modal">
       <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-        这里集中管理共享资源中心、虚拟入库临时缓存和自动转正规则；全局配置页中的共享资源配置已迁移到这里。
+        这里集中管理共享资源中心配置；全局配置页中的共享资源配置已迁移到这里。
       </n-alert>
       <n-spin :show="sharedConfigLoading">
         <n-form :model="sharedConfigForm" label-placement="left" label-width="150">
@@ -213,14 +188,6 @@
           </n-form-item>
           <n-form-item label="设备 Token">
             <n-input v-model:value="sharedConfigForm.p115_shared_device_token" type="password" show-password-on="click" placeholder="注册设备后自动写入，也可手动粘贴" />
-          </n-form-item>
-          <n-form-item label="默认入库方式">
-            <n-radio-group v-model:value="sharedConfigForm.p115_shared_resource_mode" name="shared_resource_mode_group">
-              <n-space vertical>
-                <n-radio value="permanent">永久转存 <n-text depth="3">命中共享池后直接转存到正式媒体目录。</n-text></n-radio>
-                <n-radio value="virtual">虚拟入库 <n-text depth="3">先生成 STRM，播放时才临时转存。</n-text></n-radio>
-              </n-space>
-            </n-radio-group>
           </n-form-item>
           <n-form-item label="共享池单集转存">
             <n-switch v-model:value="sharedConfigForm.p115_shared_disable_episode_transfer">
@@ -243,74 +210,17 @@
             <template #feedback>维护任务会拉取中心“求分享”列表，跳过自己发起/同求的需求，按参数匹配本地媒体库，命中后自动创建 115 分享并等待审核登记。</template>
           </n-form-item>
 
-          <n-divider title-placement="left">虚拟入库缓存</n-divider>
-          <n-form-item label="临时转存目录">
-            <n-input-group>
-              <n-input :value="sharedConfigForm.p115_shared_cache_name || sharedConfigForm.p115_shared_cache_cid" placeholder="请选择虚拟入库播放时的临时转存目录" readonly @click="openSharedFolderModal">
-                <template #prefix><n-icon :component="FolderIcon" /></template>
-              </n-input>
-              <n-button type="primary" ghost @click="openSharedFolderModal">选择</n-button>
-            </n-input-group>
-          </n-form-item>
-          <n-form-item label="临时保留天数">
-            <n-input-number v-model:value="sharedConfigForm.p115_shared_cache_retention_days" :min="1" :max="365" :step="1" style="width: 180px;">
-              <template #suffix>天</template>
-            </n-input-number>
-            <template #feedback>电视剧会按最后一次播放时间重置保留期；过期且未转正时，维护任务会删除临时缓存和 Emby 媒体项。</template>
-          </n-form-item>
-
-          <n-divider title-placement="left">自动转正</n-divider>
-          <n-form-item label="自动转正">
-            <n-switch v-model:value="sharedConfigForm.p115_shared_auto_promote_enabled">
-              <template #checked>开启</template>
-              <template #unchecked>关闭</template>
-            </n-switch>
-          </n-form-item>
-          <template v-if="sharedConfigForm.p115_shared_auto_promote_enabled">
-            <n-form-item label="电视剧触发条件">
-              <n-input-number v-model:value="sharedConfigForm.p115_shared_auto_promote_tv_episodes" :min="1" :max="99" :step="1" style="width: 180px;">
-                <template #suffix>集看完</template>
-              </n-input-number>
-              <template #feedback>同一季虚拟入库剧集看完达到该集数后，自动转正已看分集；后续追更会强制永久转存。</template>
-            </n-form-item>
-            <n-form-item label="电影触发条件">
-              <n-input-number v-model:value="sharedConfigForm.p115_shared_auto_promote_movie_progress" :min="1" :max="100" :step="5" style="width: 180px;">
-                <template #suffix>%</template>
-              </n-input-number>
-              <template #feedback>Webhook 播放进度达到该百分比后自动转正。</template>
-            </n-form-item>
-          </template>
         </n-form>
       </n-spin>
       <template #footer>
         <n-space justify="space-between" align="center">
-          <n-text depth="3">追更剧集只要已有物理入库分集，后续自动改走永久转存。</n-text>
+          <n-text depth="3">共享池命中后统一执行永久转存。</n-text>
           <n-space>
             <n-button @click="showSharedConfigModal = false">取消</n-button>
             <n-button type="primary" :loading="sharedConfigSaving" @click="saveSharedConfig">保存配置</n-button>
           </n-space>
         </n-space>
       </template>
-    </n-modal>
-
-    <n-modal v-model:show="showSharedFolderModal" preset="card" title="选择临时转存目录" style="width: 680px; max-width: 96vw;" class="custom-modal glass-modal">
-      <n-space vertical :size="12">
-        <n-space>
-          <n-button secondary :disabled="sharedFolderCid === '0'" @click="loadSharedFolders(sharedFolderParentCid || '0')">
-            <template #icon><n-icon :component="ArrowBackIcon" /></template>
-            上一级
-          </n-button>
-          <n-button secondary @click="selectSharedFolder({ id: sharedFolderCid, name: sharedFolderName || '当前目录' })">选择当前目录</n-button>
-        </n-space>
-        <n-data-table
-          size="small"
-          :loading="sharedFolderLoading"
-          :columns="sharedFolderColumns"
-          :data="sharedFolderList"
-          :pagination="{ pageSize: 10 }"
-          :row-key="row => row.id"
-        />
-      </n-space>
     </n-modal>
 
     <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
@@ -412,7 +322,7 @@ const themeVars = useThemeVars();
 const isMobile = ref(false);
 const checkMobile = () => { isMobile.value = window.innerWidth <= 768; };
 
-const activeTab = ref('virtual');
+const activeTab = ref('shares');
 const loading = ref(false);
 const sharesLoading = ref(false);
 const ledgerLoading = ref(false);
@@ -427,12 +337,6 @@ const manualCreating = ref(false);
 const showSharedConfigModal = ref(false);
 const sharedConfigLoading = ref(false);
 const sharedConfigSaving = ref(false);
-const showSharedFolderModal = ref(false);
-const sharedFolderLoading = ref(false);
-const sharedFolderCid = ref('0');
-const sharedFolderParentCid = ref('0');
-const sharedFolderName = ref('根目录');
-const sharedFolderList = ref([]);
 const sharedConfigForm = reactive({
   p115_shared_resource_enabled: false,
   p115_shared_center_url: 'https://shared.55565576.xyz',
@@ -441,12 +345,6 @@ const sharedConfigForm = reactive({
   p115_shared_disable_episode_transfer: false,
   p115_shared_max_active_shares: 0,
   p115_shared_auto_share_requests_enabled: false,
-  p115_shared_cache_cid: '',
-  p115_shared_cache_name: '',
-  p115_shared_cache_retention_days: 7,
-  p115_shared_auto_promote_enabled: false,
-  p115_shared_auto_promote_tv_episodes: 2,
-  p115_shared_auto_promote_movie_progress: 80,
 });
 const showManualShareModal = ref(false);
 const showShareRequestModal = ref(false);
@@ -458,7 +356,6 @@ const selectedMedia = ref(null);
 const importingMap = reactive({});
 
 const summary = ref({ local: {}, shares: {}, credit: {} });
-const virtualItems = ref([]);
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
@@ -469,7 +366,6 @@ const selectedShareRequestMedia = ref(null);
 const shareRequestQuote = ref(null);
 const shareRequestEpisodeText = ref('');
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
-const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '', status: 'alive,pending,replenish', item_type: 'all', order_by: 'latest' });
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
@@ -492,7 +388,6 @@ const requestTargetTypeFilterOptions = [
   { label: '单季', value: 'season' },
   { label: '单集', value: 'episode' },
 ];
-const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 
@@ -561,11 +456,6 @@ const shareRequestForm = reactive({
   escalation_interval_hours: 24,
 });
 
-const virtualStatusOptions = [
-  { label: '全部状态', value: 'all' }, { label: '虚拟待播', value: 'virtual_ready' },
-  { label: '已临时转存', value: 'cached' }, { label: '已看过', value: 'watched' },
-  { label: '已转正', value: 'promoted' }, { label: '已删除', value: 'deleted' }, { label: '异常', value: 'error' },
-];
 const shareStatusOptions = [
   { label: '有效分享', value: 'active' }, 
   { label: '全部状态', value: 'all' }, 
@@ -689,9 +579,7 @@ const shareRemarkNode = (row) => {
 };
 
 const statusMap = {
-  virtual_ready: { text: '虚拟待播', type: 'info' }, transferring: { text: '转存中', type: 'warning' },
-  cached: { text: '已临时转存', type: 'success' }, watched: { text: '已看过', type: 'warning' },
-  promoted: { text: '已转正', type: 'success' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
+  transferring: { text: '转存中', type: 'warning' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
   pending_review: { text: '审核中', type: 'warning' }, alive: { text: '可用', type: 'success' },
   pending: { text: '待验证', type: 'warning' }, replenish: { text: '待补充', type: 'error' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
   reported: { text: '已登记', type: 'success' }, partial: { text: '部分登记', type: 'warning' },
@@ -776,35 +664,11 @@ const statCards = computed(() => {
   const credit = summary.value.credit || {};
   return [
     { key: 'credit', label: '贡献值', value: credit.credit ?? 0, desc: credit.device_id ? `设备 ${credit.device_id}` : '未同步' },
-    { key: 'total', label: '虚拟资源', value: local.total ?? 0, desc: '本地虚拟入库总数' },
-    { key: 'cached', label: '临时转存', value: local.cached ?? 0, desc: fmtBytes(local.cached_size) },
     { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效分享` },
     { key: 'remote_sources', label: '中心资源', value: credit.shared_sources ?? 0, desc: `${credit.raw_ffprobe ?? 0} 条媒体信息` },
     { key: 'remote_gaps', label: '待补资源', value: credit.wanted_gaps ?? 0, desc: `${credit.remote_devices ?? 0} 个设备` },
   ];
 });
-
-const virtualColumns = [
-  { title: '标题', key: 'title', minWidth: 230, render: row => {
-    const seasonText = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
-    const epText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
-    const packText = row.is_collapsed_pack ? ` · ${row.pack_item_count || 0}集包${row.pack_episode_numbers?.length ? ` · E${String(row.pack_episode_numbers[0]).padStart(2, '0')}-${String(row.pack_episode_numbers[row.pack_episode_numbers.length - 1]).padStart(2, '0')}` : ''}` : '';
-    return h('div', [
-      h('div', { class: 'main-title' }, standardTitleText(row, row.file_name)),
-      metaLine(row, [` · ${resourceTypeLabel(row.item_type)}`, seasonText ? ` · ${seasonText}` : '', epText, packText])
-    ]);
-  } },
-  { title: '状态', key: 'status', width: 120, render: row => tag(row.status) },
-  { title: '文件', key: 'file_name', minWidth: 260, ellipsis: { tooltip: true }, render: row => row.is_collapsed_pack ? `${row.pack_item_count || 0}集包` : (row.file_name || '-') },
-  { title: '大小', key: 'size', width: 110, render: row => fmtBytes(row.size) },
-  { title: '播放', key: 'play_count', width: 90, render: row => `${row.play_count || 0} 次` },
-  { title: '临时到期', key: 'expires_at', width: 170, render: row => fmtDate(row.expires_at) },
-  { title: '更新时间', key: 'updated_at', width: 170, render: row => fmtDate(row.updated_at) },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
-    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !row.real_fid || row.status === 'promoted' || row.status === 'deleted', onClick: () => confirmPromote(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => '转正' }),
-    h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'deleted' || row.status === 'promoted', onClick: () => confirmDelete(row) }, { icon: () => h(NIcon, null, { default: () => h(TrashIcon) }), default: () => '删除' }),
-  ]}) },
-];
 
 const shareColumns = [
   { title: '标题', key: 'title', minWidth: 240, render: row => {
@@ -957,8 +821,6 @@ const ledgerEventLabel = (eventType) => {
     share_reported_center: '登记',
     share_raw_uploaded: '媒体信息',
     share_cancelled: '取消分享',
-    virtual_deleted: '删除虚拟资源',
-    virtual_promoted: '虚拟资源转正',
     share_request_escrow: '求分享冻结',
     share_request_refund: '求分享退款',
     share_request_bounty_paid: '求分享悬赏支付',
@@ -1275,12 +1137,12 @@ const centerUsableResourceCount = (row) => {
 };
 const centerReplenishActionNode = () => h(NTooltip, { trigger: 'hover', placement: 'top' }, {
   trigger: () => h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '等待补充' }),
-  default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源，不能转存或虚拟入库。'
+  default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源，不能转存。'
 });
 const executeImport = async (row, mode) => {
-  const modeText = mode === 'virtual' ? '入库' : '转存';
+  const modeText = '转存';
   if (isCenterReplenishRow(row)) {
-    message.warning('该资源处于待补充状态，不能转存或入库');
+    message.warning('该资源处于待补充状态，不能转存');
     return;
   }
   // 标记该行正在 loading
@@ -1304,7 +1166,7 @@ const executeImport = async (row, mode) => {
       }
     });
     message.success(res.data?.message || '已提交');
-    await Promise.allSettled([loadVirtualItems(), loadSummary(), loadLedger()]);
+    await Promise.allSettled([loadCenterSources(), loadSummary(), loadLedger()]);
   } catch (e) {
     message.error(e.response?.data?.message || `${modeText}失败`);
   } finally {
@@ -1314,9 +1176,9 @@ const executeImport = async (row, mode) => {
 };
 
 const importCenterSource = (row, mode) => {
-  const modeText = mode === 'virtual' ? '入库' : '转存';
+  const modeText = '转存';
   if (isCenterReplenishRow(row)) {
-    message.warning('该资源处于待补充状态，不能转存或入库');
+    message.warning('该资源处于待补充状态，不能转存');
     return;
   }
   dialog.info({
@@ -1544,9 +1406,9 @@ const localLibraryTooltipLines = (it) => {
     if (rows.length > limit) lines.push(`  ……另有 ${rows.length - limit} 个`);
   };
   pushRows('已入库', inRows);
-  pushRows('未入库', outRows);
+  pushRows('未转存', outRows);
   pushRows('无法判断 SHA1', unknownRows, 8);
-  if (!lines.length) lines.push('未返回本地入库状态');
+  if (!lines.length) lines.push('未返回本地转存状态');
   return lines;
 };
 
@@ -1570,43 +1432,21 @@ const centerColumns = [
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '资源数', key: 'version_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${centerUsableResourceCount(it)} 个`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
-  { title: '入库', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => {
-    // 判断当前行是否正在转存或入库
+  { title: '转存', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
+  { title: '操作', key: 'actions', width: 120, fixed: 'right', render: row => lineStack(row.versions, it => {
     const isImportingPermanent = importingMap[it.source_id] === 'permanent';
-    const isImportingVirtual = importingMap[it.source_id] === 'virtual';
-    const isAnyImporting = isImportingPermanent || isImportingVirtual;
-
     if (isCenterReplenishRow(it)) {
       return centerReplenishActionNode();
     }
-
-    return h(NSpace, { size: 6 }, { default: () => [
-      h(NButton, { 
-        size: 'small', 
-        type: 'primary', 
-        secondary: true, 
-        loading: isImportingPermanent, // 绑定转圈圈状态
-        disabled: isAnyImporting && !isImportingPermanent, // 如果正在入库，禁用转存按钮防误触
-        onClick: () => importCenterSource(it, 'permanent') 
-      }, { default: () => '转存' }),
-      h(NButton, { 
-        size: 'small', 
-        secondary: true, 
-        loading: isImportingVirtual, // 绑定转圈圈状态
-        disabled: isAnyImporting && !isImportingVirtual, // 如果正在转存，禁用入库按钮防误触
-        onClick: () => importCenterSource(it, 'virtual') 
-      }, { default: () => '入库' })
-    ] });
+    return h(NButton, {
+      size: 'small',
+      type: 'primary',
+      secondary: true,
+      loading: isImportingPermanent,
+      disabled: Boolean(importingMap[it.source_id]) && !isImportingPermanent,
+      onClick: () => importCenterSource(it, 'permanent')
+    }, { default: () => '转存' });
   }) },
-];
-
-const sharedFolderColumns = [
-  { title: '目录名', key: 'name', render: row => h('span', { class: 'main-title' }, row.name || row.id) },
-  { title: '操作', key: 'actions', width: 160, render: row => h(NSpace, { size: 6 }, { default: () => [
-    h(NButton, { size: 'small', secondary: true, onClick: () => loadSharedFolders(row.id, row.name) }, { default: () => '进入' }),
-    h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => selectSharedFolder(row) }, { default: () => '选择' }),
-  ] }) },
 ];
 
 const ledgerColumns = [
@@ -1627,16 +1467,10 @@ const applySharedConfig = (data = {}) => {
     p115_shared_resource_enabled: Boolean(data.p115_shared_resource_enabled),
     p115_shared_center_url: data.p115_shared_center_url || 'https://shared.55565576.xyz',
     p115_shared_device_token: data.p115_shared_device_token || '',
-    p115_shared_resource_mode: ['permanent', 'virtual'].includes(data.p115_shared_resource_mode) ? data.p115_shared_resource_mode : 'permanent',
+    p115_shared_resource_mode: 'permanent',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_max_active_shares: Number(data.p115_shared_max_active_shares ?? 0),
     p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
-    p115_shared_cache_cid: data.p115_shared_cache_cid || '',
-    p115_shared_cache_name: data.p115_shared_cache_name || '',
-    p115_shared_cache_retention_days: Number(data.p115_shared_cache_retention_days || 7),
-    p115_shared_auto_promote_enabled: Boolean(data.p115_shared_auto_promote_enabled),
-    p115_shared_auto_promote_tv_episodes: Number(data.p115_shared_auto_promote_tv_episodes || 2),
-    p115_shared_auto_promote_movie_progress: Number(data.p115_shared_auto_promote_movie_progress || 80),
   });
 };
 
@@ -1660,11 +1494,8 @@ const openSharedConfigModal = async () => {
 const saveSharedConfig = async () => {
   sharedConfigSaving.value = true;
   try {
-    if (!['permanent', 'virtual'].includes(sharedConfigForm.p115_shared_resource_mode)) sharedConfigForm.p115_shared_resource_mode = 'permanent';
+    sharedConfigForm.p115_shared_resource_mode = 'permanent';
     sharedConfigForm.p115_shared_max_active_shares = Math.max(0, Math.floor(Number(sharedConfigForm.p115_shared_max_active_shares || 0)));
-    sharedConfigForm.p115_shared_cache_retention_days = Math.max(1, Math.floor(Number(sharedConfigForm.p115_shared_cache_retention_days || 7)));
-    sharedConfigForm.p115_shared_auto_promote_tv_episodes = Math.max(1, Math.floor(Number(sharedConfigForm.p115_shared_auto_promote_tv_episodes || 2)));
-    sharedConfigForm.p115_shared_auto_promote_movie_progress = Math.min(100, Math.max(1, Math.floor(Number(sharedConfigForm.p115_shared_auto_promote_movie_progress || 80))));
     const res = await axios.post('/api/shared/resources/config', { ...sharedConfigForm });
     applySharedConfig(res.data?.data || sharedConfigForm);
     message.success(res.data?.message || '共享资源配置已保存');
@@ -1677,38 +1508,7 @@ const saveSharedConfig = async () => {
   }
 };
 
-const loadSharedFolders = async (cid = '0', name = '') => {
-  sharedFolderLoading.value = true;
-  try {
-    const res = await axios.get('/api/shared/resources/115/folders', { params: { cid: cid || '0' } });
-    sharedFolderList.value = res.data?.data || [];
-    sharedFolderCid.value = String(res.data?.cid || cid || '0');
-    const path = res.data?.path || [];
-    const idx = path.findIndex(p => String(p.id) === String(sharedFolderCid.value));
-    const parentNode = idx > 0 ? path[idx - 1] : null;
-    sharedFolderParentCid.value = String(parentNode?.id || '0');
-    sharedFolderName.value = name || path[path.length - 1]?.name || (sharedFolderCid.value === '0' ? '根目录' : sharedFolderCid.value);
-  } catch (e) {
-    message.error(e.response?.data?.message || '读取 115 目录失败');
-  } finally {
-    sharedFolderLoading.value = false;
-  }
-};
-
-const openSharedFolderModal = async () => {
-  showSharedFolderModal.value = true;
-  await loadSharedFolders(sharedConfigForm.p115_shared_cache_cid || '0', sharedConfigForm.p115_shared_cache_name || '');
-};
-
-const selectSharedFolder = (row) => {
-  sharedConfigForm.p115_shared_cache_cid = String(row?.id || sharedFolderCid.value || '0');
-  sharedConfigForm.p115_shared_cache_name = row?.name || sharedFolderName.value || sharedConfigForm.p115_shared_cache_cid;
-  showSharedFolderModal.value = false;
-  message.success(`已选择临时目录：${sharedConfigForm.p115_shared_cache_name}`);
-};
-
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { local: {}, shares: {}, credit: {} }; };
-const loadVirtualItems = async () => { loading.value = true; try { const res = await axios.get('/api/shared/resources/virtual', { params: { ...virtualFilters, page: virtualPagination.page, page_size: virtualPagination.pageSize } }); virtualItems.value = res.data?.items || []; virtualPagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载虚拟资源失败'); } finally { loading.value = false; } };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的分享失败'); } finally { sharesLoading.value = false; } };
 
 const loadCenterSources = async () => {
@@ -1956,8 +1756,8 @@ const triggerSharedMaintenance = async () => {
 };
 
 const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献值流水失败'); } finally { ledgerLoading.value = false; } };
-const loadAll = async () => { await Promise.allSettled([loadSummary(), loadVirtualItems(), loadShares(), loadLedger()]); };
-const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'requests') loadShareRequests(); if (name === 'ledger') loadLedger(); };
+const loadAll = async () => { await Promise.allSettled([loadSummary(), loadShares(), loadCenterSources(), loadLedger()]); };
+const handleTabChange = (name) => { if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'requests') loadShareRequests(); if (name === 'ledger') loadLedger(); };
 
 const registerCenterDevice = async () => {
   const doRegister = async () => {
@@ -2127,8 +1927,6 @@ const manualCreateShare = async () => {
 const checkShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/check`); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { message.error(e.response?.data?.message || '检查失败'); } };
 const reportShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/report-center`); message.success(res.data?.message || '已登记'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '登记失败'); } };
 const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/shares/${row.id}/cancel`); message.success('已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '取消失败'); } } }); };
-const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true }); message.success('已删除'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '删除失败'); } } }); };
-const confirmPromote = (row) => { dialog.info({ title: '转为正式资源', content: `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`, positiveText: '转正', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`); message.success('已转正'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '转正失败'); } } }); };
 
 
 watch(

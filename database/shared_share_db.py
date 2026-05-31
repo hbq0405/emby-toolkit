@@ -1088,18 +1088,6 @@ def get_watching_missing_episodes(limit: int) -> List[Dict[str, Any]]:
             """, (int(limit),))
             return [_row_to_dict(r) for r in cur.fetchall()]
 
-def check_local_virtual_projection_exists(parent: str, season: int, episode: int) -> bool:
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT 1 FROM shared_virtual_items
-                WHERE status <> 'deleted' AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
-                  AND COALESCE(season_number, -1)=COALESCE(%s, -1) AND COALESCE(episode_number, -1)=COALESCE(%s, -1)
-                LIMIT 1
-            """, (parent, parent, season, episode))
-            return cur.fetchone() is not None
-
-
 def find_media_by_emby_item_id(emby_item_id: str, item_type: str = '') -> Dict[str, Any]:
     """按 Emby 条目 ID 反查 media_metadata 行，供 webhook 入库事件精确定位 Movie/Episode。"""
     emby_item_id = str(emby_item_id or '').strip()
@@ -1280,90 +1268,6 @@ def check_active_season_pack_share(parent_series_tmdb_id: str, season_number: in
             """, (statuses, season_number, parent_series_tmdb_id, parent_series_tmdb_id))
             return cur.fetchone() is not None
 
-def get_expired_virtual_cache_rows(limit: int) -> List[Dict[str, Any]]:
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT virtual_id, title, file_name, share_code, raw_json, real_fid, real_pick_code, real_parent_id, expires_at, strm_path, mediainfo_path, nfo_path, emby_item_id
-                FROM shared_virtual_items
-                WHERE status IN ('cached','watched') AND COALESCE(real_fid, '') <> '' AND expires_at IS NOT NULL AND expires_at < NOW()
-                ORDER BY expires_at ASC LIMIT %s
-            """, (int(limit),))
-            return [_row_to_dict(r) for r in cur.fetchall()]
-
-def get_virtual_items_for_share_health(limit: int = 300) -> List[Dict[str, Any]]:
-    """查询仍保留虚拟投影、需要校验中心分享有效性的虚拟入库记录。"""
-    limit = max(1, min(int(limit or 300), 1000))
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT *
-                FROM shared_virtual_items
-                WHERE COALESCE(status, '') NOT IN ('deleted','promoted','promote_pending')
-                  AND (
-                        COALESCE(source_id, '') <> ''
-                     OR COALESCE(share_code, '') <> ''
-                  )
-                ORDER BY
-                    CASE
-                        WHEN COALESCE(real_pick_code, '') = '' THEN 0
-                        ELSE 1
-                    END,
-                    updated_at ASC NULLS FIRST,
-                    created_at ASC NULLS FIRST
-                LIMIT %s
-            """, (limit,))
-            return [_row_to_dict(r) for r in cur.fetchall()]
-
-
-def update_virtual_item_center_source(virtual_id: str, source: Dict[str, Any], message: str = '') -> Dict[str, Any]:
-    """把虚拟入库记录切换到新的中心共享源。媒体身份保持原虚拟项不变，只替换分享来源。"""
-    if not virtual_id or not source:
-        return None
-    raw_patch = {
-        'virtual_source_replaced_at': datetime.utcnow().isoformat(),
-        'virtual_source_replace_message': message or '',
-        'replacement_center_source': source,
-    }
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE shared_virtual_items
-                SET source_id = COALESCE(NULLIF(%s, ''), source_id),
-                    source_key = COALESCE(NULLIF(%s, ''), source_key),
-                    source_provider = COALESCE(NULLIF(%s, ''), source_provider),
-                    share_code = COALESCE(NULLIF(%s, ''), share_code),
-                    receive_code = COALESCE(%s, receive_code),
-                    contributor_id = COALESCE(NULLIF(%s, ''), contributor_id),
-                    sha1 = COALESCE(NULLIF(%s, ''), sha1),
-                    size = CASE WHEN COALESCE(%s, 0) > 0 THEN %s ELSE size END,
-                    file_name = COALESCE(NULLIF(%s, ''), file_name),
-                    quality = COALESCE(NULLIF(%s, ''), quality),
-                    status = CASE WHEN status='error' THEN 'virtual_ready' ELSE status END,
-                    last_error = %s,
-                    raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
-                    updated_at = NOW()
-                WHERE virtual_id=%s
-                RETURNING *
-            """, (
-                str(source.get('source_id') or ''),
-                str(source.get('source_key') or ''),
-                str(source.get('source_provider') or 'shared_center'),
-                str(source.get('share_code') or ''),
-                str(source.get('receive_code') or ''),
-                str(source.get('contributor_id') or source.get('provider_id') or ''),
-                _center_norm_sha1(source.get('sha1')),
-                _safe_int(source.get('size'), 0), _safe_int(source.get('size'), 0),
-                str(source.get('file_name') or ''),
-                str(source.get('quality') or ''),
-                message or '',
-                _as_jsonb(raw_patch),
-                str(virtual_id),
-            ))
-            row = _row_to_dict(cur.fetchone())
-            conn.commit()
-            return row
-
 def find_local_cache_rows_by_sha1s(sha1s: List[str]) -> List[Dict[str, Any]]:
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -1385,12 +1289,6 @@ def get_seed_media_row_for_share_request(target: str, media: str, tmdb_id: str, 
             else:
                 return {}
             return _row_to_dict(cur.fetchone())
-
-def update_virtual_target_parent(virtual_id: str, target_cid: str, target_name: str):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE shared_virtual_items SET target_parent_id=%s, target_parent_name=%s, updated_at=NOW() WHERE virtual_id=%s", (str(target_cid), target_name or '', virtual_id))
-            conn.commit()
 
 def update_p115_cache_parent(fid: str, target_cid: str, new_name: str = None):
     with get_db_connection() as conn:

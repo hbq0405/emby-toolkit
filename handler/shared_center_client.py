@@ -61,8 +61,8 @@ def shared_center_enabled() -> bool:
 
 
 def shared_resource_mode() -> str:
-    mode = str(_shared_cfg().get('p115_shared_resource_mode') or 'permanent').strip().lower()
-    return 'virtual' if mode == 'virtual' else 'permanent'
+    # 虚拟入库已移除，共享池消费统一走永久转存。
+    return 'permanent'
 
 
 def _safe_int_or_none(value):

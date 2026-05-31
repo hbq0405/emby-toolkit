@@ -20,10 +20,6 @@ from handler.custom_collection import RecommendationEngine
 import config_manager
 import constants
 from handler.p115_service import P115Service
-try:
-    from handler import shared_virtual_library
-except Exception:
-    shared_virtual_library = None
 from utils import extract_pickcode_from_strm_url
 
 import extensions
@@ -55,83 +51,6 @@ def _get_real_emby_url_and_key():
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
-
-def _proxy_emby_stream(path):
-    """浏览器/非115场景：按原逻辑把视频流请求交回 Emby。"""
-    base_url, api_key = _get_real_emby_url_and_key()
-    target_url = f"{base_url}/{path.lstrip('/')}"
-    forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-    forward_headers['Host'] = urlparse(base_url).netloc
-    forward_params = request.args.copy()
-    forward_params['api_key'] = api_key
-    resp = requests.request(
-        method=request.method,
-        url=target_url,
-        headers=forward_headers,
-        params=forward_params,
-        data=request.get_data(),
-        timeout=(10.0, 1800.0),
-        stream=True,
-        allow_redirects=False,
-    )
-    excluded_resp_headers = ['content-encoding', 'transfer-encoding', 'connection']
-    response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
-    return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
-
-
-def _proxy_remote_115_stream(real_115_url, display_name=''):
-    """虚拟入库 + 浏览器播放兜底：服务端代理 115 直链，避免浏览器 CORS/跨域问题。"""
-    upstream_headers = {}
-    for header in ('Range', 'If-Range', 'If-Modified-Since', 'If-None-Match'):
-        value = request.headers.get(header)
-        if value:
-            upstream_headers[header] = value
-    upstream_headers['User-Agent'] = request.headers.get('User-Agent') or 'Mozilla/5.0'
-
-    resp = requests.get(
-        real_115_url,
-        headers=upstream_headers,
-        stream=True,
-        timeout=(10.0, 1800.0),
-        allow_redirects=True,
-    )
-    passthrough = {
-        'content-type', 'content-length', 'content-range', 'accept-ranges',
-        'last-modified', 'etag', 'cache-control'
-    }
-    response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() in passthrough]
-    if display_name:
-        safe_name = str(display_name).replace('"', '')
-        response_headers.append(('Content-Disposition', f'inline; filename="{safe_name}"'))
-    response = Response(resp.iter_content(chunk_size=1024 * 1024), resp.status_code, response_headers)
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Range, Content-Type, Authorization'
-    response.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges'
-    return response
-
-
-def _try_resolve_shared_virtual_pickcode(item_id='', user_id='', strm_path='', media_source=None, display_name=''):
-    """播放虚拟入库条目时，触发临时转存并返回真实 pickcode。"""
-    if shared_virtual_library is None:
-        return None
-    try:
-        result = shared_virtual_library.ensure_playable_by_emby_item(
-            emby_item_id=str(item_id or ''),
-            user_id=str(user_id or ''),
-            strm_path=str(strm_path or ''),
-            media_source=media_source or {},
-            display_name=display_name or '',
-        )
-        if not result:
-            return None
-        if result.get('success') and (result.get('pick_code') or result.get('real_pick_code')):
-            return result
-        if result.get('matched'):
-            logger.warning(f"  ⚠️ [共享虚拟播放] 已命中虚拟资源但解析失败: {result.get('message') or result.get('error')}")
-    except Exception as e:
-        logger.error(f"  ❌ [共享虚拟播放] 解析/临时转存失败: {e}", exc_info=True)
-    return None
-
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     """
@@ -982,9 +901,18 @@ def proxy_all(path):
             if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent or 'applecoremedia' in user_agent:
                 is_browser = False
             
-            # 浏览器普通 115 STRM 仍走 Emby 代理，避免 302 到 115 后跨域；
-            # 但共享资源“虚拟入库”必须在反代层先触发临时转存，否则 Emby 无法从虚拟 STRM 拿到真实 pickcode。
-            # 因此这里不再提前 return，先读取 PlaybackInfo，确认不是虚拟资源后再回落到 Emby 代理。
+            # 浏览器直接转发给 Emby 服务端，不做 302 重定向（115 直链存在跨域问题）
+            if is_browser:
+                base_url, api_key = _get_real_emby_url_and_key()
+                target_url = f"{base_url}/{path.lstrip('/')}"
+                forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+                forward_headers['Host'] = urlparse(base_url).netloc
+                forward_params = request.args.copy()
+                forward_params['api_key'] = api_key
+                resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=(10.0, 1800.0), stream=True)
+                excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+                response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+                return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
             
             # 客户端处理逻辑
             match = re.search(r'/(?:videos|items)/(\d+)/', full_path_lower)
@@ -994,9 +922,6 @@ def proxy_all(path):
             pick_code = None
             real_115_url = None
             display_name = "未知文件" # ★ 新增：用于记录人看的文件名
-            playback_strm_path = ""
-            playback_media_source = {}
-            virtual_playback_info = None
             base_url, api_key = _get_real_emby_url_and_key()
 
             try:
@@ -1017,9 +942,6 @@ def proxy_all(path):
                     data = resp.json()
                     for source in data.get('MediaSources', []):
                         strm_url = source.get('Path', '')
-                        if isinstance(strm_url, str) and strm_url and not playback_strm_path:
-                            playback_strm_path = strm_url
-                            playback_media_source = source or {}
                         
                         # ★ 优先从 Emby 的数据源里提取友好的文件名
                         name_from_emby = source.get('Name', '')
@@ -1036,29 +958,6 @@ def proxy_all(path):
                                 break # 找到 pick_code，跳出循环
             except Exception as e:
                 logger.error(f"  ❌ [STREAM] 获取 PlaybackInfo 失败: {e}")
-
-            # ====================================================================
-            # ★ 共享资源虚拟入库：没有真实 pickcode 时，播放瞬间触发 share_import
-            # ====================================================================
-            if not pick_code:
-                virtual_playback_info = _try_resolve_shared_virtual_pickcode(
-                    item_id=item_id,
-                    user_id=request.args.get('UserId', ''),
-                    strm_path=playback_strm_path,
-                    media_source=playback_media_source,
-                    display_name=display_name,
-                )
-                if virtual_playback_info:
-                    pick_code = virtual_playback_info.get('pick_code') or virtual_playback_info.get('real_pick_code')
-                    display_name = virtual_playback_info.get('file_name') or virtual_playback_info.get('title') or display_name
-                    if virtual_playback_info.get('cached'):
-                        logger.debug(f"  ➜ [共享虚拟播放] 使用已缓存 pickcode: {display_name}")
-                    else:
-                        logger.info(f"  ➜ [共享虚拟播放] 已临时转存并取得 pickcode: {display_name}")
-
-            # 浏览器普通媒体保持原行为：交给 Emby 代理；只有虚拟入库才由 ETK 代理 115 直链。
-            if is_browser and not virtual_playback_info:
-                return _proxy_emby_stream(path)
             
             # ====================================================================
             # ★ 核心逻辑 1：如果是 115 文件，进入“115”模式，彻底干掉中转！
@@ -1100,8 +999,6 @@ def proxy_all(path):
                     time.sleep(1.0) # 稍微休眠一下防止请求过频
 
                 if real_115_url:
-                    if is_browser and virtual_playback_info:
-                        return _proxy_remote_115_stream(real_115_url, display_name=display_name)
                     response = redirect(real_115_url, code=302)
                     response.headers['Access-Control-Allow-Origin'] = '*'
                     return response
