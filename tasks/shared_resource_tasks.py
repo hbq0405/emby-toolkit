@@ -4227,7 +4227,7 @@ def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: 
         total.update(_auto_check_and_report_local_shares(client, max_records=80))
         _status(80, '正在确保共享中心事件监听...')
         total['device_event_listener'] = ensure_shared_device_event_listener()
-        logger.trace(
+        logger.debug(
             "\n=== 共享分享状态同步完成 ===\n"
             f"  ➜ 分享状态同步: 检查 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，中心补登 {total.get('resynced', 0)}，清理失效 {total.get('cancelled', 0)}\n"
             f"  ➜ 共享事件监听: {'已启动/运行中' if total.get('device_event_listener') else '未启动'}\n"
