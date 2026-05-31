@@ -10,7 +10,7 @@ from typing import Dict, Any, List
 import config_manager
 import constants
 import task_manager
-from database import shared_share_db, shared_virtual_db, settings_db
+from database import shared_share_db, shared_credit_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled, shared_resource_mode
@@ -382,7 +382,7 @@ def _cleanup_invalid_local_shares(client: SharedCenterClient, max_rows: int = 10
             status='cancelled',
             review_status='violation' if record.get('review_status') == 'violation' or record.get('status') in ('blocked', 'violation') else 'cancelled',
         )
-        shared_virtual_db.add_credit_ledger(
+        shared_credit_db.add_credit_ledger(
             'share_invalid_deleted', 0,
             f'删除违规/风控分享：{title}',
             ref_id=str(record_id),
@@ -464,7 +464,7 @@ def _cleanup_missing_raw_local_shares(client: SharedCenterClient, max_rows: int 
                 status='cancelled',
                 review_status='raw_missing',
             )
-            shared_virtual_db.add_credit_ledger(
+            shared_credit_db.add_credit_ledger(
                 'share_raw_missing_deleted', 0,
                 f'删除缺少 raw_ffprobe_json 的分享：{title}',
                 ref_id=str(record_id),
@@ -563,7 +563,7 @@ def _cleanup_excess_local_shares(client: SharedCenterClient, max_active_shares: 
                 ) if center_ok else f'115 分享已删除，但中心撤销失败：{center_resp}',
                 raw_json=raw_json,
             )
-            shared_virtual_db.add_credit_ledger(
+            shared_credit_db.add_credit_ledger(
                 'share_waterline_pruned', 0,
                 f'超过分享水位自动清理分享：{title}',
                 ref_id=str(record_id),
@@ -994,7 +994,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                     center_status='failed',
                                     last_error=consistency.get('message') or '季包媒体参数不一致，禁止自动登记中心',
                                 )
-                                shared_virtual_db.add_credit_ledger(
+                                shared_credit_db.add_credit_ledger(
                                     'share_season_pack_inconsistent_blocked', 0,
                                     '季包分辨率或 HDR/杜比不一致，已阻止自动登记中心',
                                     ref_id=str(record['id']), title=record.get('title') or '',
@@ -1255,7 +1255,7 @@ def _blacklist_auto_gap_candidate(
         if files:
             shared_share_db.replace_share_items(record['id'], files)
 
-        shared_virtual_db.add_credit_ledger(
+        shared_credit_db.add_credit_ledger(
             'share_auto_gap_blacklisted',
             0,
             f"自动分享失败加入黑名单：{standard_identity.get('title') or root_name}",
@@ -1602,7 +1602,7 @@ def _create_auto_share_for_single_gap(client: SharedCenterClient, gap: Dict[str,
                 },
             })
             shared_share_db.replace_share_items(record['id'], files)
-            shared_virtual_db.add_credit_ledger(
+            shared_credit_db.add_credit_ledger(
                 'share_auto_created_for_gap', 0,
                 '命中中心需求并自动创建115分享，等待审核',
                 ref_id=str(record['id']), title=record.get('title') or '',
@@ -1916,7 +1916,7 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                     'raw_json': {'auto_gap': gap, 'share_response': share_resp, 'candidate': candidate, 'standard_identity': standard_identity},
                 })
                 shared_share_db.replace_share_items(record['id'], files)
-                shared_virtual_db.add_credit_ledger('share_auto_created_for_gap', 0, '命中中心缺口并自动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'gap': gap, 'share_code': share_code})
+                shared_credit_db.add_credit_ledger('share_auto_created_for_gap', 0, '命中中心缺口并自动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'gap': gap, 'share_code': share_code})
                 created += 1
                 time.sleep(0.3)
         except Exception as e:
@@ -2210,7 +2210,7 @@ def _auto_share_center_share_requests(client: SharedCenterClient, limit: int = 8
                     },
                 })
                 shared_share_db.replace_share_items(record['id'], files)
-                shared_virtual_db.add_credit_ledger(
+                shared_credit_db.add_credit_ledger(
                     'share_auto_created_for_request',
                     0,
                     f"命中别人求分享并自动创建115分享：{record.get('title') or root_name}",
@@ -2563,7 +2563,7 @@ def _auto_share_center_replenish_sources(client: SharedCenterClient, limit: int 
                 },
             })
             shared_share_db.replace_share_items(record['id'], files)
-            shared_virtual_db.add_credit_ledger(
+            shared_credit_db.add_credit_ledger(
                 'share_auto_created_for_replenish',
                 0,
                 f"命中中心待补充资源并自动创建115分享：{record.get('title') or payload.get('root_name')}",
@@ -2971,7 +2971,7 @@ def _create_completed_season_pack_share(
     count = shared_share_db.replace_share_items(record['id'], files)
     record = shared_share_db.update_share_record(record['id'], item_count=count) or record
 
-    shared_virtual_db.add_credit_ledger(
+    shared_credit_db.add_credit_ledger(
         'share_completed_season_pack_created',
         0,
         f"完结季汇总创建季包分享：{record.get('title') or root_name} S{_safe_int(season_number, 0):02d}",
@@ -3184,7 +3184,7 @@ def _cancel_episode_records_after_season_rollup(
             status='cancelled',
             review_status='cancelled',
         )
-        shared_virtual_db.add_credit_ledger(
+        shared_credit_db.add_credit_ledger(
             'share_episode_cancelled_after_season_rollup',
             0,
             f'完结季汇总后取消单集分享：{title}',
@@ -3422,7 +3422,7 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
         ledger_reason = 'shared_device_event_import_success' if ok else 'shared_device_event_import_failed'
         ledger_title = f'{label}后自动转存：{title}' if ok else f'{label}但自动转存失败：{title}'
         try:
-            shared_virtual_db.add_credit_ledger(
+            shared_credit_db.add_credit_ledger(
                 ledger_reason, 0, ledger_title,
                 ref_id=str(event.get('gap_key') or payload.get('gap_key') or event.get('group_id') or payload.get('group_id') or event_id),
                 title=title,

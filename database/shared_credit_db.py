@@ -1,5 +1,5 @@
-# database/shared_virtual_db.py
-# 共享资源虚拟入库管理：本地虚拟项、贡献值快照与流水
+# database/shared_credit_db.py
+# 共享资源虚拟入库管理：贡献值快照与流水
 import json
 import logging
 import re
@@ -30,39 +30,6 @@ def _row_to_dict(row):
         return dict(row)
     except Exception:
         return row
-
-
-def get_local_summary() -> Dict[str, Any]:
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    COUNT(*) AS total,
-                    COUNT(*) FILTER (WHERE status='virtual_ready') AS virtual_ready,
-                    COUNT(*) FILTER (WHERE status IN ('cached','watched')) AS cached,
-                    COUNT(*) FILTER (WHERE status='promote_pending') AS promote_pending,
-                    COUNT(*) FILTER (WHERE status='promoted') AS promoted,
-                    COUNT(*) FILTER (WHERE status='deleted') AS deleted,
-                    COALESCE(SUM(size) FILTER (WHERE status IN ('cached','watched')), 0) AS cached_size
-                FROM shared_virtual_items
-            """)
-            local = _row_to_dict(cur.fetchone()) or {}
-
-            cur.execute("""
-                SELECT
-                    COUNT(*) AS total,
-                    COUNT(*) FILTER (WHERE status IN ('pending_review','creating')) AS pending,
-                    COUNT(*) FILTER (WHERE status IN ('alive','reported')) AS alive,
-                    COUNT(*) FILTER (WHERE center_status='reported') AS reported,
-                    COUNT(*) FILTER (WHERE status IN ('rejected','dead','error')) AS failed
-                FROM shared_share_records
-            """)
-            shares = _row_to_dict(cur.fetchone()) or {}
-
-            cur.execute("SELECT * FROM shared_credit_snapshot WHERE id=1")
-            credit = _row_to_dict(cur.fetchone()) or {}
-
-    return {"local": local, "shares": shares, "credit": credit}
 
 
 def _norm_pack_season(value) -> str:

@@ -17,7 +17,7 @@ from flask import Blueprint, jsonify, request
 import config_manager
 import constants
 from extensions import admin_required
-from database import shared_virtual_db, shared_share_db, settings_db
+from database import shared_credit_db, shared_share_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service, P115CacheManager
 import tasks.helpers as helpers
@@ -178,8 +178,8 @@ def _fetch_center_credit() -> Dict[str, Any]:
         "remote_devices": int(stats.get("devices") or 0),
         "raw_json": {"me": me, "stats": stats},
     }
-    saved = shared_virtual_db.upsert_credit_snapshot(snapshot)
-    synced_ledger = shared_virtual_db.sync_center_credit_ledger(center_ledger_items, device_snapshot=me)
+    saved = shared_credit_db.upsert_credit_snapshot(snapshot)
+    synced_ledger = shared_credit_db.sync_center_credit_ledger(center_ledger_items, device_snapshot=me)
     return {"ok": True, "snapshot": saved, "synced_ledger": synced_ledger}
 
 
@@ -2514,7 +2514,7 @@ def api_shared_115_folders():
 @shared_resource_bp.route('/summary', methods=['GET'])
 @admin_required
 def api_shared_summary():
-    summary = shared_virtual_db.get_local_summary()
+    summary = shared_credit_db.get_local_summary()
     return jsonify({"success": True, "data": summary})
 
 
@@ -2905,7 +2905,7 @@ def api_manual_create_share():
     })
     count = shared_share_db.replace_share_items(record['id'], files)
     record = shared_share_db.update_share_record(record['id'], item_count=count)
-    shared_virtual_db.add_credit_ledger('share_created', 0, '手动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'share_code': share_code, 'item_count': count})
+    shared_credit_db.add_credit_ledger('share_created', 0, '手动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'share_code': share_code, 'item_count': count})
 
     return jsonify({"success": True, "message": "分享已创建，等待 115 审核通过后再登记中心", "data": record, "items": files})
 
@@ -3320,7 +3320,7 @@ def api_report_share_to_center(record_id):
             center_status='failed',
             last_error='；'.join(errors[:8]),
         )
-        shared_virtual_db.add_credit_ledger(
+        shared_credit_db.add_credit_ledger(
             'share_raw_missing_blocked', 0,
             f"分享缺少 raw_ffprobe_json，已阻止登记中心：{len(missing_raw)} 个缺失，{len(not_uploaded)} 个未上传",
             ref_id=str(record_id), title=record.get('title') or '',
@@ -3343,7 +3343,7 @@ def api_report_share_to_center(record_id):
                 center_status='failed',
                 last_error=consistency.get('message') or '季包媒体参数不一致，禁止登记中心',
             )
-            shared_virtual_db.add_credit_ledger(
+            shared_credit_db.add_credit_ledger(
                 'share_season_pack_inconsistent_blocked', 0,
                 '季包分辨率或 HDR/杜比不一致，已阻止登记中心',
                 ref_id=str(record_id), title=record.get('title') or '',
@@ -3372,7 +3372,7 @@ def api_report_share_to_center(record_id):
         reported_at='NOW()' if reported > 0 else None,
         last_error='；'.join(errors[:5]),
     )
-    shared_virtual_db.add_credit_ledger(
+    shared_credit_db.add_credit_ledger(
         'share_reported_center', 0,
         f"登记中心 {reported}/{len(items)} 条；raw上传 {raw_summary.get('uploaded', 0)} 条，缺失 {raw_summary.get('missing', 0)} 条",
         ref_id=str(record_id), title=record.get('title') or '',
@@ -3399,7 +3399,7 @@ def api_upload_share_raw_ffprobe(record_id):
     cfg, headers = _center_headers()
     force = bool(_request_json().get('force'))
     summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=force)
-    shared_virtual_db.add_credit_ledger(
+    shared_credit_db.add_credit_ledger(
         'share_raw_uploaded', 0,
         f"上传媒体信息 {summary.get('uploaded', 0)}/{summary.get('total', 0)} 条",
         ref_id=str(record_id), title=record.get('title') or '', raw_json=summary
@@ -3469,7 +3469,7 @@ def api_cancel_share(record_id):
                 cancelled_at='NOW()',
                 last_error=f"远端分享已不存在，已同步本地状态；{_center_cancel_result_text(center_result)}"
             )
-            shared_virtual_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'attempts': attempts, 'center': center_result})
+            shared_credit_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'attempts': attempts, 'center': center_result})
             return jsonify({"success": True, "message": "远端分享已不存在，已同步本地/中心取消状态", "data": row, "debug": attempts, "center": center_result})
         # 调试/抢救用：允许只标记本地，避免界面卡死；默认不开。
         if data.get('force_local'):
@@ -3502,7 +3502,7 @@ def api_cancel_share(record_id):
     if center_ok or center_result.get('skipped'):
         update_fields['center_status'] = _center_status_after_cancel_result(center_result)
     row = shared_share_db.update_share_record(record_id, **update_fields)
-    shared_virtual_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'response': resp, 'attempts': attempts, 'center': center_result})
+    shared_credit_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'response': resp, 'attempts': attempts, 'center': center_result})
     logger.info(f"  ➜ [共享资源] 已取消/删除115分享: record_id={record_id}, share_code={share_code}, center={center_result}")
 
     # 撤销中心源成功后，顺手刷新一次贡献值快照；失败不影响取消分享主流程。
@@ -3615,7 +3615,7 @@ def api_credit_ledger():
             sync_result = _fetch_center_credit()
         except Exception as e:
             logger.warning(f"  ➜ [共享资源] 同步中心贡献值流水失败，返回本地缓存: {e}")
-    rows = shared_virtual_db.list_credit_ledger(limit=limit, actual_only=actual_only)
+    rows = shared_credit_db.list_credit_ledger(limit=limit, actual_only=actual_only)
     return jsonify({"success": True, "items": rows, "sync": sync_result})
 
 
