@@ -219,20 +219,39 @@ def _enqueue_mp_file(file_info):
         task['timer'] = spawn_later(delay, _flush_mp_batch, key)
 
 
+def _run_shared_auto_share_detached(task_name: str, **kwargs):
+    """共享供给侧探测/创建分享必须脱离 task_manager 单线程队列。
+
+    Webhook 本身已经运行在 task_manager 的单 worker + task_lock 中。
+    如果这里再 submit_task，会在同一线程内二次获取 task_lock，导致 Webhook 任务假死。
+    """
+    def _runner():
+        try:
+            from tasks.shared_resource_tasks import trigger_shared_auto_share_for_library_item
+            logger.info(f"  ➜ [共享资源] 异步启动: {task_name}")
+            result = trigger_shared_auto_share_for_library_item(None, **kwargs)
+            logger.info(
+                "  ➜ [共享资源] 异步完成: %s，created=%s，message=%s",
+                task_name,
+                result.get('created', 0) if isinstance(result, dict) else '-',
+                result.get('message', '') if isinstance(result, dict) else '',
+            )
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 异步自动分享探测失败: {task_name} -> {e}", exc_info=True)
+
+    threading.Thread(
+        target=_runner,
+        name=f"shared-auto-share-{str(task_name)[:40]}",
+        daemon=True,
+    ).start()
+
+
 def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: str, item_type: str, tmdb_id: str, new_episode_ids: Optional[List[str]] = None):
     """Movie/Episode 入库完成后，异步询问共享中心是否需要本机创建分享。"""
     try:
-        from tasks.shared_resource_tasks import trigger_shared_auto_share_for_library_item
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 自动分享入口不可用，跳过 webhook 触发: {e}")
-        return
-
-    try:
         if item_type == 'Movie' and tmdb_id:
-            task_manager.submit_task(
-                trigger_shared_auto_share_for_library_item,
-                task_name=f"共享入库探测: {item_details.get('Name') or tmdb_id}",
-                processor_type='media',
+            _run_shared_auto_share_detached(
+                f"共享入库探测: {item_details.get('Name') or tmdb_id}",
                 item_type='Movie',
                 tmdb_id=str(tmdb_id),
                 emby_item_id=str(item_id),
@@ -243,10 +262,8 @@ def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: s
 
         if item_type == 'Series' and new_episode_ids:
             for ep_id in list(dict.fromkeys([str(x) for x in new_episode_ids if str(x or '').strip()])):
-                task_manager.submit_task(
-                    trigger_shared_auto_share_for_library_item,
-                    task_name=f"共享追更新集探测: {item_details.get('Name') or tmdb_id} / {ep_id}",
-                    processor_type='media',
+                _run_shared_auto_share_detached(
+                    f"共享追更新集探测: {item_details.get('Name') or tmdb_id} / {ep_id}",
                     item_type='Episode',
                     emby_item_id=ep_id,
                     parent_series_tmdb_id=str(tmdb_id or ''),

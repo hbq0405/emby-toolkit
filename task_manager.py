@@ -145,10 +145,19 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
     """
     【V2 - 公共接口】将一个任务提交到通用队列中。
     新增 processor_type 参数，用于精确指定任务所需的处理器。
+
+    注意：task_lock 同时被工人线程持有。这里必须非阻塞获取锁，
+    否则任务内部再次 submit_task 时会在同一线程内死等自己释放锁。
     """
     from logger_setup import frontend_log_queue # 延迟导入以避免循环
 
-    with task_lock:
+    acquired = task_lock.acquire(blocking=False)
+    if not acquired:
+        if not silent:
+            logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
+        return False
+
+    try:
         if background_task_status["is_running"]:
             if not silent:
                 logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
@@ -163,6 +172,8 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
         task_queue.put(task_info)
         start_task_worker_if_not_running()
         return True
+    finally:
+        task_lock.release()
 
 def stop_task_worker():
     """【公共接口】停止工人线程，用于应用退出。"""
