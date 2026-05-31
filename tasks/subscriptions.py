@@ -1653,11 +1653,12 @@ def task_auto_subscribe(processor):
                         )
                     elif shared_result.get('enabled') and shared_result.get('reported_gap'):
                         if item_type == 'Episode':
-                            # 单集没有 MP/影巢兜底订阅入口；中心缺口登记成功就视为“已提交共享缺口”，
-                            # 后续由中心 device_events 按设备推送 resource_available 事件。
+                            # 单集没有 MP/影巢兜底订阅入口；但共享中心缺口已经在
+                            # handler.shared_subscription_service 里统一提升为 Season 缺口。
+                            # 这里不能再写“单集缺口”，否则日志会误导成逐集登记。
                             success = True
-                            action_type = '共享缺口登记'
-                            logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记单集缺口，等待中心推送。")
+                            action_type = '共享季缺口登记'
+                            logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记所属季缺口，等待中心推送。")
                         else:
                             logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记缺口，继续原有订阅链路。")
                 except Exception as e:
