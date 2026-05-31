@@ -1,5 +1,5 @@
-# database/shared_credit_db.py
-# 共享资源虚拟入库管理：贡献值快照与流水
+# database/shared_virtual_db.py
+# 共享资源虚拟入库管理：本地虚拟项、贡献值快照与流水
 import json
 import logging
 import re
@@ -32,14 +32,6 @@ def _row_to_dict(row):
         return row
 
 
-def _norm_pack_season(value) -> str:
-    if value in [None, '']:
-        return ''
-    try:
-        return str(int(value))
-    except Exception:
-        return str(value).strip()
-
 def get_local_summary() -> Dict[str, Any]:
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -71,6 +63,15 @@ def get_local_summary() -> Dict[str, Any]:
             credit = _row_to_dict(cur.fetchone()) or {}
 
     return {"local": local, "shares": shares, "credit": credit}
+
+
+def _norm_pack_season(value) -> str:
+    if value in [None, '']:
+        return ''
+    try:
+        return str(int(value))
+    except Exception:
+        return str(value).strip()
 
 
 def _collapse_virtual_pack_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
