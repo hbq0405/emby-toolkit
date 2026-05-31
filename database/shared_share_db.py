@@ -1088,6 +1088,47 @@ def get_watching_missing_episodes(limit: int) -> List[Dict[str, Any]]:
             """, (int(limit),))
             return [_row_to_dict(r) for r in cur.fetchall()]
 
+def get_today_in_library_watching_episodes(limit: int = 80) -> List[Dict[str, Any]]:
+    """查询今天新入库/更新入库的追更分集，供共享维护任务主动创建单集分享。
+
+    限定条件：
+    - Episode 已物理入库；
+    - 所属 Season 仍处于 Watching / Paused；
+    - 仅取今天更新/创建的分集，避免首次启用时批量分享历史资源；
+    - 必须已有 SHA1 或 PickCode，可用于后续定位分享文件。
+    """
+    has_sha1 = _jsonb_non_empty_sql_expr('e.file_sha1_json')
+    has_pc = _jsonb_non_empty_sql_expr('e.file_pickcode_json')
+    limit = max(1, min(int(limit or 80), 300))
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT e.*,
+                       s.tmdb_id AS season_tmdb_id,
+                       s.title AS season_title,
+                       s.watching_status AS season_watching_status,
+                       s.total_episodes AS season_total_episodes,
+                       COALESCE(e.last_updated_at, e.created_at) AS _share_recent_updated_at
+                FROM media_metadata e
+                JOIN media_metadata s
+                  ON s.item_type='Season'
+                 AND s.parent_series_tmdb_id = e.parent_series_tmdb_id
+                 AND s.season_number = e.season_number
+                WHERE e.item_type='Episode'
+                  AND COALESCE(e.in_library, FALSE) = TRUE
+                  AND COALESCE(s.watching_status, '') IN ('Watching','Paused')
+                  AND e.parent_series_tmdb_id IS NOT NULL
+                  AND e.season_number IS NOT NULL
+                  AND e.episode_number IS NOT NULL
+                  AND COALESCE(e.last_updated_at, e.created_at) >= CURRENT_DATE
+                  AND ({has_sha1} OR {has_pc})
+                ORDER BY COALESCE(e.last_updated_at, e.created_at) DESC NULLS LAST,
+                         e.parent_series_tmdb_id, e.season_number, e.episode_number
+                LIMIT %s
+            """, (limit,))
+            return [_row_to_dict(r) for r in cur.fetchall()]
+
+
 def check_local_virtual_projection_exists(parent: str, season: int, episode: int) -> bool:
     with get_db_connection() as conn:
         with conn.cursor() as cur:

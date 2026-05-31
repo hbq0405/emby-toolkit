@@ -11,7 +11,6 @@ import config_manager
 import constants
 import task_manager
 from database import shared_share_db, shared_virtual_db, settings_db
-from database.connection import get_db_connection
 from handler.p115_service import P115Service
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled, shared_resource_mode
 
@@ -46,20 +45,6 @@ def _safe_bool(v, default=False) -> bool:
     if isinstance(v, str):
         return v.strip().lower() in ('1', 'true', 'yes', 'on', '启用', '开启')
     return bool(v)
-
-
-def _jsonb_non_empty_sql_expr(column: str) -> str:
-    """生成 JSONB 标识字段非空判断，兼容数组/对象/字符串。"""
-    return f"""
-    (
-        CASE jsonb_typeof({column})
-            WHEN 'array' THEN jsonb_array_length({column}) > 0
-            WHEN 'object' THEN {column} <> '{{}}'::jsonb
-            WHEN 'string' THEN btrim({column}::text, '"') <> ''
-            ELSE FALSE
-        END
-    )
-    """
 
 
 def _series_has_physical_episode_identity(parent_tmdb_id: str) -> bool:
@@ -1589,6 +1574,296 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
     return created
 
 
+
+
+def _center_open_season_gap_map(client: SharedCenterClient, limit: int = 1000) -> Dict[tuple, Dict[str, Any]]:
+    """读取中心 Season 级 open 缺口，供“追更新入库主动分享”作为总开关。
+
+    这里故意只认 Season 缺口：资源池主动分享只补有明确季级需求的追更季，
+    避免本机今天入库的所有历史单集一窝蜂创建分享。
+    """
+    try:
+        gaps = (client.list_open_gaps(limit=max(1, int(limit or 1000))).get('items') or [])
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 拉取中心季缺口失败，跳过追更新集主动分享: {e}")
+        return {}
+
+    out: Dict[tuple, Dict[str, Any]] = {}
+    for gap in gaps:
+        item_type = str((gap or {}).get('item_type') or '').strip().lower()
+        if item_type not in ('season', 'season_pack'):
+            continue
+        tmdb_id = str((gap or {}).get('tmdb_id') or '').strip()
+        season = _safe_int((gap or {}).get('season_number'), None)
+        if not tmdb_id or season is None:
+            continue
+        out[(tmdb_id, season)] = dict(gap or {})
+    return out
+
+
+
+def _center_has_consumable_source_for_episode_or_pack(
+    client: SharedCenterClient,
+    parent_tmdb_id: str,
+    season_number,
+    episode_number,
+    search_cache: Dict[str, List[Dict[str, Any]]],
+) -> bool:
+    """中心已有同集源或同季季包时，不再主动创建追更新集分享。"""
+    parent_tmdb_id = str(parent_tmdb_id or '').strip()
+    season = _safe_int(season_number, None)
+    episode = _safe_int(episode_number, None)
+    if not parent_tmdb_id or season is None:
+        return True
+
+    # 已有同季季包时，单集缺口已由季包覆盖。
+    pack_query = {'tmdb_id': parent_tmdb_id, 'item_type': 'Season', 'season_number': season, 'episode_number': None}
+    for source in _search_center_sources_cached(client, pack_query, search_cache, limit=300):
+        if _center_source_consumable(source):
+            return True
+
+    # 已有同集源时，避免重复创建相同 Episode 分享。
+    if episode is None:
+        return False
+    ep_query = {'tmdb_id': parent_tmdb_id, 'item_type': 'Episode', 'season_number': season, 'episode_number': episode}
+    for source in _search_center_sources_cached(client, ep_query, search_cache, limit=120):
+        if _center_source_consumable(source):
+            return True
+    return False
+
+
+def _auto_share_today_in_library_episodes_for_open_season_gaps(client: SharedCenterClient, limit: int = 50) -> int:
+    """追更新集主动分享。
+
+    条件非常保守：
+    1. 中心必须存在同剧同季 Season open 缺口；
+    2. 只扫描今天入库/更新入库的 Episode；
+    3. 所属季必须仍为 Watching/Paused；
+    4. 中心已有同集源或同季季包、本地已有活动分享时全部跳过。
+    """
+    season_gaps = _center_open_season_gap_map(client, limit=1000)
+    if not season_gaps:
+        return 0
+
+    rows = shared_share_db.get_today_in_library_watching_episodes(limit=limit)
+    if not rows:
+        return 0
+
+    p115 = P115Service.get_client()
+    if not p115:
+        return 0
+
+    try:
+        from routes import shared_resource as sr
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 无法加载分享辅助函数，跳过追更新集主动分享: {e}")
+        return 0
+
+    created = 0
+    search_cache: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        try:
+            parent = str(row.get('parent_series_tmdb_id') or '').strip()
+            season = _safe_int(row.get('season_number'), None)
+            episode = _safe_int(row.get('episode_number'), None)
+            if not parent or season is None or episode is None:
+                continue
+
+            season_gap = season_gaps.get((parent, season))
+            if not season_gap:
+                continue
+
+            if _center_has_consumable_source_for_episode_or_pack(client, parent, season, episode, search_cache):
+                continue
+
+            gap_like = {
+                **season_gap,
+                'tmdb_id': parent,
+                'item_type': 'Episode',
+                'season_number': season,
+                'episode_number': episode,
+                'title': row.get('title') or season_gap.get('title'),
+                'release_year': row.get('release_year') or season_gap.get('release_year'),
+            }
+            if _has_existing_share_for_gap(gap_like):
+                continue
+
+            if hasattr(sr, '_expand_share_candidates'):
+                candidates = sr._expand_share_candidates(row) or []
+            elif hasattr(sr, '_build_media_candidate'):
+                candidates = [sr._build_media_candidate(row)]
+            else:
+                candidates = []
+            candidates = [
+                c for c in candidates
+                if c and c.get('resolvable') and c.get('root_fid')
+                and (
+                    str(c.get('share_type') or '').strip().lower() == 'episode_file'
+                    or str(c.get('share_item_type') or c.get('item_type') or '').strip().lower() == 'episode'
+                    or c.get('episode_number') not in (None, '')
+                )
+            ]
+            if not candidates:
+                continue
+
+            candidate = candidates[0]
+            candidate_gap = {
+                **gap_like,
+                'tmdb_id': parent,
+                'item_type': 'Episode',
+                'season_number': season,
+                'episode_number': episode,
+            }
+            if _has_existing_share_for_gap(candidate_gap, candidate=candidate):
+                continue
+
+            root_fid = str(candidate.get('root_fid') or '').strip()
+            root_name = candidate.get('root_name') or candidate.get('display_title') or candidate.get('title') or root_fid
+            root_is_dir = candidate.get('root_is_dir') is not False
+            if not root_fid:
+                continue
+
+            standard_identity = sr._standard_media_identity_for_share({
+                'tmdb_id': candidate.get('share_tmdb_id') or parent,
+                'item_type': 'Episode',
+                'parent_series_tmdb_id': parent,
+                'season_number': season,
+                'episode_number': episode,
+                'title': candidate.get('standard_title') or candidate.get('title') or row.get('title'),
+                'release_year': candidate.get('release_year') or row.get('release_year'),
+                'share_type': 'episode_file',
+            }) if hasattr(sr, '_standard_media_identity_for_share') else {}
+
+            try:
+                files = sr._collect_files_from_115(p115, root_fid, root_name=root_name, max_depth=4, assume_dir=root_is_dir)
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源维护] 追更新集主动分享收集 115 文件失败，尝试媒体数据兜底: {e}")
+                files = []
+            if not files:
+                payload = {
+                    'tmdb_id': row.get('tmdb_id') or parent,
+                    'item_type': 'Episode',
+                    'parent_series_tmdb_id': parent,
+                    'season_number': season,
+                    'episode_number': episode,
+                    'title': row.get('title') or root_name,
+                    'root_name': root_name,
+                }
+                files = sr._collect_files_from_media_payload(payload) if hasattr(sr, '_collect_files_from_media_payload') else []
+            if not files:
+                continue
+
+            for item in files:
+                item['item_type'] = 'Episode'
+                item['tmdb_id'] = str(parent)
+                item['season_number'] = season
+                item['episode_number'] = episode
+
+            if hasattr(sr, '_files_missing_raw_ffprobe'):
+                missing_raw = sr._files_missing_raw_ffprobe(files)
+                if missing_raw:
+                    logger.info(
+                        "  ➜ [共享资源维护] 追更新集主动分享跳过缺 raw_ffprobe_json 的资源：%s S%02dE%02d -> %s",
+                        row.get('season_title') or parent,
+                        season,
+                        episode,
+                        sr._raw_missing_message(missing_raw) if hasattr(sr, '_raw_missing_message') else missing_raw,
+                    )
+                    continue
+
+            if _has_existing_share_for_gap(candidate_gap, candidate=candidate, files=files):
+                continue
+
+            share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
+            if not share_resp or not share_resp.get('state'):
+                if _looks_share_source_missing(share_resp):
+                    _blacklist_auto_gap_candidate(
+                        gap_like,
+                        {**candidate, 'share_type': 'episode_file', 'share_item_type': 'Episode'},
+                        files,
+                        root_fid=root_fid,
+                        root_name=root_name,
+                        share_resp=share_resp,
+                        reason='source_missing',
+                    )
+                elif _looks_share_blocked(share_resp):
+                    _blacklist_auto_gap_candidate(
+                        gap_like,
+                        {**candidate, 'share_type': 'episode_file', 'share_item_type': 'Episode'},
+                        files,
+                        root_fid=root_fid,
+                        root_name=root_name,
+                        share_resp=share_resp,
+                        reason='share_blocked',
+                    )
+                else:
+                    logger.warning(
+                        "  ➜ [共享资源维护] 追更新集主动创建分享失败: %s S%02dE%02d root=%s -> %s",
+                        row.get('season_title') or parent, season, episode, root_fid, share_resp,
+                    )
+                continue
+
+            data = share_resp.get('data') or {}
+            share_code = data.get('share_code') or share_resp.get('share_code')
+            receive_code = data.get('receive_code') or ''
+            share_url = data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
+            record = shared_share_db.create_share_record({
+                'share_code': share_code,
+                'receive_code': receive_code,
+                'share_url': share_url,
+                'share_type': 'episode_file',
+                'root_fid': root_fid,
+                'root_name': root_name,
+                'root_is_dir': root_is_dir,
+                'tmdb_id': str(standard_identity.get('tmdb_id') or parent),
+                'item_type': 'Episode',
+                'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or parent,
+                'season_number': season,
+                'episode_number': episode,
+                'title': standard_identity.get('title') or candidate.get('standard_title') or candidate.get('title') or row.get('title') or root_name,
+                'release_year': standard_identity.get('release_year') or candidate.get('release_year') or row.get('release_year'),
+                'status': 'pending_review',
+                'review_status': 'pending_review',
+                'center_status': 'not_reported',
+                'raw_json': {
+                    'auto_gap': {
+                        **season_gap,
+                        'type': 'today_in_library_episode_for_open_season_gap',
+                        'season_gap_key': season_gap.get('gap_key'),
+                    },
+                    'auto_today_episode_share': True,
+                    'share_response': share_resp,
+                    'candidate': candidate,
+                    'standard_identity': standard_identity,
+                    'source_episode': {
+                        'tmdb_id': row.get('tmdb_id'),
+                        'parent_series_tmdb_id': parent,
+                        'season_number': season,
+                        'episode_number': episode,
+                        'updated_at': str(row.get('_share_recent_updated_at') or ''),
+                    },
+                },
+            })
+            shared_share_db.replace_share_items(record['id'], files)
+            shared_virtual_db.add_credit_ledger(
+                'share_auto_created_today_episode_for_season_gap',
+                0,
+                f"追更新集入库且中心存在季缺口，自动创建单集分享：{record.get('title') or root_name} S{season:02d}E{episode:02d}",
+                ref_id=str(record['id']),
+                title=record.get('title') or root_name,
+                raw_json={'season_gap': season_gap, 'share_code': share_code, 'parent_series_tmdb_id': parent, 'season_number': season, 'episode_number': episode},
+            )
+            created += 1
+            logger.info(
+                "  ➜ [共享资源维护] 追更新集入库且中心存在季缺口，已自动创建单集分享: %s S%02dE%02d share=%s",
+                row.get('season_title') or parent, season, episode, share_code,
+            )
+            time.sleep(0.3)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 追更新集主动分享失败: {row} -> {e}", exc_info=True)
+        time.sleep(0.1)
+
+    return created
 
 def _json_dict(value) -> Dict[str, Any]:
     if isinstance(value, dict):
@@ -3628,6 +3903,9 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(45, '正在为中心缺口自动创建本机分享...')
         total['auto_created_shares'] = _auto_share_center_open_gaps(client)
 
+        _status(46, '正在为今日入库追更新集主动创建分享...')
+        total['auto_created_today_episode_shares'] = _auto_share_today_in_library_episodes_for_open_season_gaps(client)
+
         _status(47, '正在自动响应别人发布的求分享...')
         request_auto_result = _auto_share_center_share_requests(client)
         total.update({f'request_auto_{k}': v for k, v in request_auto_result.items()})
@@ -3681,6 +3959,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"  ➜ 登记缺口: {total.get('reported_gaps', 0)}\n"
             f"  ➜ 清理临时转存: {total.get('expired_virtual_cache_cleaned', 0)}\n"
             f"  ➜ 自动创建分享: {total.get('auto_created_shares', 0)}\n"
+            f"  ➜ 追更新集主动分享: {total.get('auto_created_today_episode_shares', 0)}\n"
             f"  ➜ 自动响应求分享: 检查 {total.get('request_auto_checked', 0)}，命中 {total.get('request_auto_matched', 0)}，创建 {total.get('request_auto_created', 0)}，跳过 {total.get('request_auto_skipped', 0)}，失败 {total.get('request_auto_failed', 0)}\n"
             f"  ➜ 待补充补源: 检查 {total.get('replenish_checked', 0)}，命中 {total.get('replenish_matched', 0)}，创建 {total.get('replenish_created', 0)}，跳过 {total.get('replenish_skipped', 0)}，失败 {total.get('replenish_failed', 0)}\n"
             f"  ➜ 完结季包汇总: 创建季包 {total.get('season_rollup_created', 0)}，清理单集 {total.get('season_rollup_cancelled', 0)}/{total.get('season_rollup_failed', 0)}\n"
@@ -3699,6 +3978,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         # 2. 给前端任务面板用的单行简报（防止撑破 UI）
         status_msg = (
             f"维护完成：登记缺口 {total.get('reported_gaps', 0)}，创建分享 {total.get('auto_created_shares', 0)}，"
+            f"追更新集主动分享 {total.get('auto_created_today_episode_shares', 0)}，"
             f"响应求分享 {total.get('request_auto_created', 0)}，待补充创建 {total.get('replenish_created', 0)}，"
             f"虚拟源切换 {total.get('virtual_source_switched_pack', 0) + total.get('virtual_source_switched_episode', 0)}，"
             f"追更命中 {total.get('follow_consumed', 0)}，自动登记 {total.get('reported', 0)}。详细摘要请查看日志。"
