@@ -1543,29 +1543,42 @@ def task_auto_subscribe(processor):
                     item_year = _match.group(1)
             parent_tmdb_id = None
 
-            # 如果是季/集，修正标题为剧集标题
-            if item_type in ['Series', 'Season']:
+            # 如果是剧/季/集，统一修正父剧 ID 与标题。
+            # Episode 也必须走这里：共享中心的单集消费以“父剧 TMDb + SxxEyy”为主键。
+            if item_type in ['Series', 'Season', 'Episode']:
                 if item_type == 'Season':
-                    parent_tmdb_id = item.get('parent_series_tmdb_id')
+                    parent_tmdb_id = item.get('parent_series_tmdb_id') or item.get('series_tmdb_id')
                     # 尝试解析 ID
                     if not parent_tmdb_id and '_' in str(tmdb_id):
                         parent_tmdb_id = str(tmdb_id).split('_')[0]
                     if not parent_tmdb_id:
                         parent_tmdb_id = tmdb_id
+                elif item_type == 'Episode':
+                    parent_tmdb_id = item.get('parent_series_tmdb_id') or item.get('series_tmdb_id')
+                    # 极少数历史占位 ID 可能是 124364_S4E6 / 124364_E6 这类，兜底拆出父剧 ID。
+                    if not parent_tmdb_id and '_' in str(tmdb_id):
+                        parent_tmdb_id = str(tmdb_id).split('_')[0]
+                    # Episode 的 tmdb_id 可能是“集自身 ID”，不能盲目当父剧 ID。
                 else:
                     parent_tmdb_id = tmdb_id
 
                 # 获取剧集名称
-                series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id)
+                series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id) if parent_tmdb_id else None
                 if not series_name:
                      # 尝试从 item title 解析 (例如 "Breaking Bad - S1")
                      raw_title = item.get('title', '')
                      parsed_name, _ = parse_series_title_and_season(raw_title, tmdb_api_key)
                      series_name = parsed_name if parsed_name else raw_title
                 
-                # 更新 title 变量为剧集标题
+                # 更新 title 变量为剧集标题；Episode 日志补上 SxxEyy，避免只显示剧名看不出目标集。
                 if series_name:
-                    title = series_name
+                    if item_type == 'Episode' and item.get('episode_number') is not None:
+                        try:
+                            title = f"{series_name} S{int(season_number or item.get('season_number') or 0):02d}E{int(item.get('episode_number')):02d}"
+                        except Exception:
+                            title = series_name
+                    else:
+                        title = series_name
 
             # --- MoviePilot 订阅 ---
             #  检查配额
@@ -1584,7 +1597,7 @@ def task_auto_subscribe(processor):
             # 共享资源优先：启用共享资源后，先查中心共享池；命中后按配置执行永久转存/虚拟入库。
             # 未命中才登记缺口，并继续走影巢 / TG / MP 原有兜底链路。
             # ==========================================
-            if try_consume_shared_resource and item_type in ['Movie', 'Series', 'Season']:
+            if try_consume_shared_resource and item_type in ['Movie', 'Series', 'Season', 'Episode']:
                 try:
                     shared_result = try_consume_shared_resource(
                         item=item,
@@ -1603,7 +1616,14 @@ def task_auto_subscribe(processor):
                             f"处理方式: {shared_result.get('mode')}, 数量: {shared_result.get('count', 0)}"
                         )
                     elif shared_result.get('enabled') and shared_result.get('reported_gap'):
-                        logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记缺口，继续原有订阅链路。")
+                        if item_type == 'Episode':
+                            # 单集没有 MP/影巢兜底订阅入口；中心缺口登记成功就视为“已提交共享缺口”，
+                            # 后续由中心 device_events 按设备推送 resource_available 事件。
+                            success = True
+                            action_type = '共享缺口登记'
+                            logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记单集缺口，等待中心推送。")
+                        else:
+                            logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记缺口，继续原有订阅链路。")
                 except Exception as e:
                     logger.error(f"  ➜ [共享资源] 处理《{title}》时异常，自动降级原有订阅链路: {e}", exc_info=True)
 
@@ -1683,6 +1703,9 @@ def task_auto_subscribe(processor):
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
                 elif item_type == 'Series':
                     success = _subscribe_full_series_with_logic(int(tmdb_id), title, config, tmdb_api_key)
+                elif item_type == 'Episode':
+                    # Episode 只能走共享中心精确消费/缺口登记；这里不再错误地降级到 MP 整季订阅。
+                    logger.info(f"  ➜ [共享资源] 单集《{title}》未命中可消费资源，已跳过 MP 兜底。")
                 elif item_type == 'Season' and parent_tmdb_id and season_number is not None:
                     mp_payload = {"name": title, "tmdbid": int(parent_tmdb_id), "type": "电视剧", "season": int(season_number)}
                     
@@ -1742,6 +1765,11 @@ def task_auto_subscribe(processor):
                         item_display_name = f"剧集《{series_name} 第 {season_num} 季》"
                     else:
                         item_display_name = f"剧集《{series_name}》"
+                elif item_type == 'Episode':
+                    try:
+                        item_display_name = f"剧集《{series_name or title} S{int(item.get('season_number') or 0):02d}E{int(item.get('episode_number') or 0):02d}》"
+                    except Exception:
+                        item_display_name = f"单集《{item['title']}》"
                 else:
                     item_display_name = f"{item_type}《{item['title']}》"
                 
