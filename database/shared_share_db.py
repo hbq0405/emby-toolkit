@@ -545,6 +545,135 @@ def has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] = 
             )
             return cur.fetchone() is not None
 
+
+def has_hard_blocked_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] = None,
+                                   files: List[Dict[str, Any]] = None, statuses=None,
+                                   review_statuses=None) -> bool:
+    """判断中心缺口是否命中确定性失败黑名单。
+
+    与 has_existing_share_for_gap 不同，这里只用于非活动态记录，避免普通
+    cancelled/deleted 把后续自动分享永久堵死。只有 review_status/raw_json
+    明确标记为源文件不存在、115 违规/风控、AUTOFAIL 黑名单时才返回 True。
+    """
+    gap = gap or {}
+    candidate = candidate or {}
+    files = files or []
+    item_type = str(gap.get('item_type') or candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
+    season = _safe_int(gap.get('season_number', candidate.get('season_number')), -1)
+    episode = _safe_int(gap.get('episode_number', candidate.get('episode_number')), -1)
+    root_fid = str(candidate.get('root_fid') or '').strip()
+    tmdb_ids = _dedupe_values(
+        gap.get('tmdb_id'),
+        candidate.get('share_tmdb_id'),
+        candidate.get('tmdb_id'),
+        candidate.get('parent_series_tmdb_id'),
+    )
+    sha1s = _dedupe_values([str(x.get('sha1') or '').strip().upper() for x in files or [] if x.get('sha1')])
+    statuses = _status_list(statuses or ['cancelled', 'deleted'])
+    hard_reasons = [str(x or '').strip().lower() for x in (review_statuses or [
+        'violation', 'blocked', 'share_blocked', 'source_missing',
+        'source_deleted', 'share_invalid_or_blocked',
+    ]) if str(x or '').strip()]
+    if not hard_reasons:
+        return False
+
+    hard_block_sql = """
+      AND (
+            LOWER(COALESCE(r.review_status, '')) = ANY(%s)
+         OR LOWER(COALESCE(COALESCE(r.raw_json, '{}'::jsonb)->>'blacklist_reason', '')) = ANY(%s)
+         OR LOWER(COALESCE(COALESCE(r.raw_json, '{}'::jsonb)->'share_maintenance_delete'->>'reason', '')) = ANY(%s)
+         OR LOWER(COALESCE(COALESCE(r.raw_json, '{}'::jsonb)->>'auto_gap_blacklist', '')) IN ('true','1','yes','on')
+         OR LOWER(COALESCE(COALESCE(r.raw_json, '{}'::jsonb)->>'auto_share_blocked', '')) IN ('true','1','yes','on')
+      )
+    """
+
+    def hard_args():
+        return [hard_reasons, hard_reasons, hard_reasons]
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if root_fid:
+                cur.execute(
+                    f"""
+                    SELECT 1 FROM shared_share_records r
+                    WHERE r.root_fid=%s
+                      AND r.status = ANY(%s)
+                      {hard_block_sql}
+                    LIMIT 1
+                    """,
+                    [root_fid, statuses] + hard_args(),
+                )
+                if cur.fetchone() is not None:
+                    return True
+
+            if sha1s:
+                cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM shared_share_records r
+                    JOIN shared_share_items i ON i.share_record_id = r.id
+                    WHERE UPPER(COALESCE(i.sha1, '')) = ANY(%s)
+                      AND r.status = ANY(%s)
+                      {hard_block_sql}
+                    LIMIT 1
+                    """,
+                    [sha1s, statuses] + hard_args(),
+                )
+                if cur.fetchone() is not None:
+                    return True
+
+            if not tmdb_ids:
+                return False
+
+            if item_type == 'Movie':
+                cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM shared_share_records r
+                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
+                    WHERE (r.tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
+                      AND (r.item_type IN ('Movie','movie','movie_file','movie_folder') OR i.item_type IN ('Movie','movie','movie_file'))
+                      AND r.status = ANY(%s)
+                      {hard_block_sql}
+                    LIMIT 1
+                    """,
+                    [tmdb_ids, tmdb_ids, statuses] + hard_args(),
+                )
+                return cur.fetchone() is not None
+
+            if item_type == 'Episode':
+                cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM shared_share_records r
+                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
+                    WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
+                      AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
+                      AND COALESCE(i.episode_number, -1)=COALESCE(%s, -1)
+                      AND r.status = ANY(%s)
+                      {hard_block_sql}
+                    LIMIT 1
+                    """,
+                    [tmdb_ids, tmdb_ids, tmdb_ids, season, episode, statuses] + hard_args(),
+                )
+                return cur.fetchone() is not None
+
+            cur.execute(
+                f"""
+                SELECT 1
+                FROM shared_share_records r
+                LEFT JOIN shared_share_items i ON i.share_record_id = r.id
+                WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
+                  AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
+                  AND r.status = ANY(%s)
+                  {hard_block_sql}
+                LIMIT 1
+                """,
+                [tmdb_ids, tmdb_ids, tmdb_ids, season, statuses] + hard_args(),
+            )
+            return cur.fetchone() is not None
+
+
 def _center_norm_sha1(value: str) -> str:
     text = str(value or '').strip().upper()
     return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''

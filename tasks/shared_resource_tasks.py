@@ -1264,14 +1264,41 @@ def _dedupe_values(*vals) -> List[str]:
     return result
 
 
+def _hard_block_review_statuses() -> List[str]:
+    """确定性失败才作为自动分享硬黑名单。
+
+    cancelled 本身不等于黑名单：水位清理、用户取消、完结汇总取消都可能是 cancelled，
+    这些资源后续仍应允许再次响应中心缺口。只有 115 违规/风控、源文件已不存在、
+    自动失败黑名单这类确定性失败，才阻止重复创建。
+    """
+    return [
+        'violation',
+        'blocked',
+        'share_blocked',
+        'source_missing',
+        'source_deleted',
+        'share_invalid_or_blocked',
+    ]
+
+
 def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] | None = None, files: List[Dict[str, Any]] | None = None) -> bool:
-    """判断中心缺口是否已经有本机分享在处理（包含已取消的记录，作为黑名单防止死循环）。"""
-    return shared_share_db.has_existing_share_for_gap(
+    """判断中心缺口是否已有活动分享，或命中确定性失败黑名单。"""
+    # 1) 活动态直接拦截，避免重复创建。cancel_failed 已包含在 _active_share_statuses()。
+    if shared_share_db.has_existing_share_for_gap(
         gap or {},
         candidate or {},
         files or [],
-        # 👇 【修改】加上 cancelled，只要曾经分享过并被淘汰了，就不再自动分享
-        statuses=_active_share_statuses() + ['cancelled', 'cancel_failed', 'deleted'],
+        statuses=_active_share_statuses(),
+    ):
+        return True
+
+    # 2) 非活动态只拦截确定性失败。普通 cancelled/deleted 不再永久拦截。
+    return shared_share_db.has_hard_blocked_share_for_gap(
+        gap or {},
+        candidate or {},
+        files or [],
+        statuses=['cancelled', 'deleted'],
+        review_statuses=_hard_block_review_statuses(),
     )
 
 def _blacklist_auto_gap_candidate(
@@ -1406,6 +1433,13 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                     'episode_number': candidate.get('episode_number', gap.get('episode_number')),
                 }
                 if _has_existing_share_for_gap(candidate_gap, candidate=candidate):
+                    logger.info(
+                        "  ➜ [共享资源维护] 自动分享跳过已有活动分享/硬失败黑名单: %s S%sE%s root=%s",
+                        candidate.get('display_title') or candidate.get('title') or candidate_gap.get('tmdb_id'),
+                        candidate_gap.get('season_number'),
+                        candidate_gap.get('episode_number'),
+                        candidate.get('root_fid'),
+                    )
                     continue
 
                 # 二次遵守季包策略，避免未完结季整包分享。
@@ -1474,6 +1508,13 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                         continue
 
                 if _has_existing_share_for_gap(candidate_gap, candidate=candidate, files=files):
+                    logger.info(
+                        "  ➜ [共享资源维护] 自动分享跳过已有活动分享/硬失败黑名单: %s S%sE%s root=%s",
+                        candidate.get('display_title') or candidate.get('title') or candidate_gap.get('tmdb_id'),
+                        candidate_gap.get('season_number'),
+                        candidate_gap.get('episode_number'),
+                        candidate.get('root_fid'),
+                    )
                     continue
 
                 share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
@@ -1649,11 +1690,20 @@ def _has_existing_share_for_request(req: Dict[str, Any], candidate: Dict[str, An
         'season_number': req_filter.get('season_number'),
         'episode_number': req_filter.get('episode_number'),
     }
-    return shared_share_db.has_existing_share_for_gap(
+    if shared_share_db.has_existing_share_for_gap(
         gap_like,
         candidate or {},
         files or [],
-        statuses=_active_share_statuses() + ['cancelled', 'cancel_failed', 'deleted'],
+        statuses=_active_share_statuses(),
+    ):
+        return True
+
+    return shared_share_db.has_hard_blocked_share_for_gap(
+        gap_like,
+        candidate or {},
+        files or [],
+        statuses=['cancelled', 'deleted'],
+        review_statuses=_hard_block_review_statuses(),
     )
 
 
@@ -3379,22 +3429,7 @@ def _my_active_share_request_count(client: SharedCenterClient) -> int:
     try:
         resp = client.list_share_requests(status='open', limit=100, offset=0)
         items = resp.get('items') or []
-
-        def is_my_open_request(item: Dict[str, Any]) -> bool:
-            status = str(item.get('status') or 'open').strip().lower()
-            if status != 'open':
-                return False
-
-            role = str(item.get('my_role') or '').strip().lower()
-            return (
-                bool(item.get('joined_by_me'))
-                or bool(item.get('is_mine'))
-                or bool(item.get('created_by_me'))
-                or bool(item.get('is_owner'))
-                or role in ('owner', 'co_requester', 'requester')
-            )
-
-        return sum(1 for item in items if is_my_open_request(item))
+        return sum(1 for item in items if bool(item.get('joined_by_me')) and str(item.get('status') or 'open') == 'open')
     except Exception as e:
         logger.debug(f"  ➜ [求分享监听] 检查我的开放求分享失败: {e}")
         return 0
