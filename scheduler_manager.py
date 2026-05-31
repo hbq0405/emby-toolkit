@@ -29,7 +29,7 @@ logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
 HIGH_FREQ_CHAIN_JOB_ID = 'high_freq_task_chain_job'
 LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 DAILY_THEME_JOB_ID = 'daily_theme_job'
-SHARED_RESOURCE_MAINTENANCE_JOB_ID = 'shared_resource_maintenance_job'
+SHARED_RESOURCE_MAINTENANCE_JOB_ID = 'shared_share_status_sync_job'
 
 
 def _fix_apscheduler_cron_dow(cron_expression: str) -> str:
@@ -247,7 +247,7 @@ class SchedulerManager:
         self.update_low_freq_task_chain_job()
         self.update_daily_theme_job()
         self.update_pro_status_check_job()
-        self.update_shared_resource_maintenance_job()
+        self.update_shared_share_status_sync_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
         """
@@ -386,8 +386,8 @@ class SchedulerManager:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
 
 
-    def update_shared_resource_maintenance_job(self):
-        """硬编码共享资源自动维护任务。每 30 分钟执行一次：登记缺口、同步分享状态、自动登记中心、清理失效分享。"""
+    def update_shared_share_status_sync_job(self):
+        """硬编码共享分享状态同步任务。只处理 115 审核/RAW/中心登记，业务触发不再放这里。"""
         if not self.scheduler.running:
             return
 
@@ -398,49 +398,51 @@ class SchedulerManager:
 
         cfg = settings_db.get_shared_resource_config()
         enabled = cfg.get('p115_shared_resource_enabled', False)
-        
         if not enabled:
-            logger.info("  ➜ 共享资源未启用，本次不设置共享资源自动维护定时任务。")
+            logger.info("  ➜ 共享资源未启用，本次不设置共享分享状态同步定时任务。")
             return
 
         install_id = cfg.get('p115_shared_install_id', '')
-
         if install_id:
-            # 用 install_id 的哈希值取模 30，确保同一个设备每次重启后都在固定的分钟执行，避免频繁重启导致任务密集执行
-            base_minute = int(hashlib.md5(install_id.encode()).hexdigest(), 16) % 30
+            # 每 10 分钟一次，并按设备稳定错峰，避免全部客户端同一分钟打中心。
+            base_minute = int(hashlib.md5(install_id.encode()).hexdigest(), 16) % 10
         else:
-            base_minute = random.randint(0, 29)
+            base_minute = random.randint(0, 9)
 
-        def scheduled_shared_resource_maintenance_wrapper():
+        def scheduled_shared_share_status_sync_wrapper():
             try:
-                from tasks.shared_resource_tasks import task_shared_resource_maintenance
+                from tasks.shared_resource_tasks import task_shared_share_status_sync_high_freq
                 import threading
-                logger.info("  ➜ 定时任务触发：共享资源自动维护。")
+                logger.info("  ➜ 定时任务触发：共享分享状态同步。")
                 t = threading.Thread(
-                    target=task_shared_resource_maintenance,
+                    target=task_shared_share_status_sync_high_freq,
                     kwargs={'maintenance_silent': False},
-                    name="SharedResourceMaintenance",
+                    name="SharedShareStatusSync",
                     daemon=True
                 )
                 t.start()
             except Exception as e:
-                logger.error(f"  ➜ 启动共享资源自动维护后台线程失败: {e}", exc_info=True)
+                logger.error(f"  ➜ 启动共享分享状态同步后台线程失败: {e}", exc_info=True)
 
         try:
             self.scheduler.add_job(
-                func=scheduled_shared_resource_maintenance_wrapper,
+                func=scheduled_shared_share_status_sync_wrapper,
                 trigger=CronTrigger(
-                    minute=f"{base_minute},{base_minute + 30}", 
-                    timezone=str(pytz.timezone(constants.TIMEZONE)), 
-                    jitter=120  # 在设定的分钟基础上，再随机延迟 0~120 秒执行
+                    minute=f"{base_minute}/10",
+                    timezone=str(pytz.timezone(constants.TIMEZONE)),
+                    jitter=90
                 ),
                 id=SHARED_RESOURCE_MAINTENANCE_JOB_ID,
-                name="共享资源自动维护",
+                name="共享分享状态同步",
                 replace_existing=True
             )
-            logger.trace(f"  ➜ 已成功设置'共享资源自动维护'任务，执行计划: 每小时的 {base_minute}分 和 {base_minute+30}分 (附带120秒随机抖动)。")
+            logger.trace(f"  ➜ 已成功设置'共享分享状态同步'任务，执行计划: 每小时从 {base_minute} 分开始每 10 分钟一次 (附带90秒随机抖动)。")
         except Exception as e:
-            logger.error(f"设置'共享资源自动维护'任务失败: {e}", exc_info=True)
+            logger.error(f"设置'共享分享状态同步'任务失败: {e}", exc_info=True)
+
+    # 兼容旧调用名
+    def update_shared_resource_maintenance_job(self):
+        return self.update_shared_share_status_sync_job()
 
     def update_pro_status_check_job(self):
         """每天凌晨 3 点查岗，验证 Pro 状态是否过期"""

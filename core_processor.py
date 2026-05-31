@@ -2480,6 +2480,12 @@ class MediaProcessor:
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
                     )
+                elif col == 'subscription_status':
+                    # 核心处理器只负责媒体事实，不再越权重置剧集订阅生命周期。
+                    # Movie 入库即完成，仍可清成 NONE；Series/Season/Episode 由统一订阅/智能追剧接管。
+                    update_clauses.append(
+                        "subscription_status = CASE WHEN media_metadata.item_type IN ('Series','Season','Episode') THEN media_metadata.subscription_status ELSE EXCLUDED.subscription_status END"
+                    )
                 else:
                     # 其他字段正常更新
                     update_clauses.append(f"{col} = EXCLUDED.{col}")

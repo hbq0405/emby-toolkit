@@ -1111,6 +1111,94 @@ class WatchlistProcessor:
         )
         return bool(result.get('ok'))
 
+    def _clear_subscription_after_perfect_completed(self, tmdb_id: str, season_number: int) -> Dict[str, int]:
+        """完美完结后才清理剧集订阅状态，避免核心入库器“一集入库即订阅完成”。"""
+        tmdb_id = str(tmdb_id or '').strip()
+        try:
+            season_number = int(season_number)
+        except Exception:
+            return {'season': 0, 'episode': 0, 'series': 0}
+        active_statuses = ['WANTED', 'SUBSCRIBED', 'REQUESTED', 'PENDING_RELEASE', 'PAUSED']
+        result = {'season': 0, 'episode': 0, 'series': 0}
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE media_metadata
+                        SET subscription_status='NONE',
+                            subscription_sources_json='[]'::jsonb,
+                            updated_at=NOW()
+                        WHERE item_type='Season'
+                          AND parent_series_tmdb_id=%s
+                          AND season_number=%s
+                          AND COALESCE(subscription_status, 'NONE') = ANY(%s)
+                        """,
+                        (tmdb_id, season_number, active_statuses),
+                    )
+                    result['season'] = cursor.rowcount or 0
+
+                    cursor.execute(
+                        """
+                        UPDATE media_metadata
+                        SET subscription_status='NONE',
+                            subscription_sources_json='[]'::jsonb,
+                            updated_at=NOW()
+                        WHERE item_type='Episode'
+                          AND parent_series_tmdb_id=%s
+                          AND season_number=%s
+                          AND COALESCE(subscription_status, 'NONE') = ANY(%s)
+                        """,
+                        (tmdb_id, season_number, active_statuses),
+                    )
+                    result['episode'] = cursor.rowcount or 0
+
+                    cursor.execute(
+                        """
+                        UPDATE media_metadata s
+                        SET subscription_status='NONE',
+                            subscription_sources_json='[]'::jsonb,
+                            updated_at=NOW()
+                        WHERE s.item_type='Series'
+                          AND s.tmdb_id=%s
+                          AND COALESCE(s.subscription_status, 'NONE') = ANY(%s)
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM media_metadata m
+                              WHERE m.parent_series_tmdb_id=%s
+                                AND m.item_type IN ('Season','Episode')
+                                AND COALESCE(m.subscription_status, 'NONE') = ANY(%s)
+                          )
+                        """,
+                        (tmdb_id, active_statuses, tmdb_id, active_statuses),
+                    )
+                    result['series'] = cursor.rowcount or 0
+                    conn.commit()
+            if any(result.values()):
+                logger.info(
+                    "  ➜ [订阅状态] 完美完结后已清理订阅状态：TMDb %s S%02d，Season %s，Episode %s，Series %s。",
+                    tmdb_id, season_number, result['season'], result['episode'], result['series']
+                )
+        except Exception as e:
+            logger.warning(f"  ➜ [订阅状态] 完美完结后清理订阅状态失败: TMDb {tmdb_id} S{season_number} -> {e}", exc_info=True)
+        return result
+
+    def _trigger_completed_season_share_after_consistency(self, tmdb_id: str, item_name: str, season_number: int):
+        """完结季一致性通过后异步触发季包分享。"""
+        try:
+            import task_manager
+            from tasks.shared_resource_tasks import trigger_completed_season_pack_share_task
+            task_manager.submit_task(
+                trigger_completed_season_pack_share_task,
+                task_name=f"共享完结季包分享: 《{item_name}》S{int(season_number):02d}",
+                processor_type='media',
+                parent_series_tmdb_id=str(tmdb_id),
+                season_number=int(season_number),
+            )
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 提交完结季包分享任务失败: 《{item_name}》S{season_number} -> {e}", exc_info=True)
+
+
     def _handle_auto_resub_ended(self, tmdb_id: str, series_name: str, season_number: int, episode_count: int):
         """
         针对指定季进行完结洗版。
@@ -1776,6 +1864,23 @@ class WatchlistProcessor:
                             # 未开启 TG 追更，走原来的 MP 洗版逻辑
                             logger.info(f"  ➜ [完结洗版] 《{item_name}》由 {translate_internal_status(old_status)} 转为完结，立即提交 MP 洗版。")
                             self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
+
+        # 完美完结才真正清理剧集订阅状态，并触发共享季包供给。
+        # 这条链路接管原先核心处理器“一集入库就清订阅”的越权逻辑。
+        if final_status == STATUS_COMPLETED and not is_force_ended:
+            try:
+                seasons = latest_series_data.get('seasons', []) or []
+                valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
+                if valid_seasons:
+                    target_season = valid_seasons[-1]
+                    completed_s_num = int(target_season.get('season_number'))
+                    completed_ep_count = int(target_season.get('episode_count') or 0)
+                    local_completed_count = len(emby_seasons.get(completed_s_num, set()))
+                    if local_completed_count > 0 and self._check_season_consistency(tmdb_id, completed_s_num, completed_ep_count):
+                        self._clear_subscription_after_perfect_completed(tmdb_id, completed_s_num)
+                        self._trigger_completed_season_share_after_consistency(tmdb_id, item_name, completed_s_num)
+            except Exception as e:
+                logger.warning(f"  ➜ [完美完结] 清理订阅/触发共享季包失败: 《{item_name}》 -> {e}", exc_info=True)
 
         # 如果剧集恢复连载（出新季了），必须清除等待标志，防止误判
         if final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:

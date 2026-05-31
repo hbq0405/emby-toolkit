@@ -150,6 +150,19 @@ class SharedCenterClient:
             return {'results': []}
         return self._post('/api/v1/sources/search', {'items': items, 'limit_per_item': limit_per_item}, timeout=25)
 
+    def probe_share_needed(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """询问中心端本机刚入库的资源是否需要创建共享。
+
+        新中心会实现 /api/v1/share/probe-needed；旧中心返回 404 时，
+        调用方可回退到 open gaps + sources/search 的本地判断。
+        """
+        try:
+            return self._post('/api/v1/share/probe-needed', {'item': item or {}}, timeout=20)
+        except RuntimeError as e:
+            text = str(e)
+            if '404' in text or 'Not Found' in text:
+                return {'supported': False, 'need_share': False, 'message': 'center_probe_endpoint_not_supported'}
+            raise
 
 
 

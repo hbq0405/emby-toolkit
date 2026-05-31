@@ -27,6 +27,7 @@ from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
 from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events
 from .hdhive import task_hdhive_auto_checkin
+from .shared_resource_tasks import task_shared_resource_maintenance, task_shared_share_status_sync_high_freq
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,7 @@ def get_task_registry(context: str = 'all'):
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'hdhive-auto-checkin': (task_hdhive_auto_checkin, "影巢自动签到", 'media', True),
         'restore-nfo-and-images': (task_restore_nfo_and_images, "还原NFO和封面", 'media', True),
+        'shared-resource-maintenance': (task_shared_resource_maintenance, "共享资源基础维护", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "扫描全库剧集", 'watchlist', False),
@@ -223,6 +225,7 @@ def get_task_registry(context: str = 'all'):
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', False),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
         'fill-studio-images': (task_fill_studio_images, "补全工作室图标", 'media', False),
+        'shared-share-status-sync': (task_shared_share_status_sync_high_freq, "共享分享状态同步", 'media', False),
     }
 
     if context == 'chain':

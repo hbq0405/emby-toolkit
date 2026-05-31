@@ -1079,7 +1079,10 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                         source=source
                     )
                     if success:
-                        request_db.set_media_status_none(str(tmdb_id), 'Series')
+                        # 整剧订阅成功只代表订阅任务已提交，不代表整剧已完成。
+                        # Series/Season/Episode 的订阅状态由统一订阅与智能追剧接管；
+                        # 只有本地完美完结后才清 NONE。
+                        logger.info(f"  ➜ [订阅状态] 整剧订阅已提交，保留《{item_title_for_log}》的订阅状态，等待智能追剧完美完结后清理。")
                 
                 else:
                     logger.error(f"  ➜ 订阅失败：季《{item_title_for_log}》缺少季号信息。")

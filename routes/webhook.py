@@ -218,6 +218,45 @@ def _enqueue_mp_file(file_info):
         logger.info(f"  ➜ [MP缓冲] 文件 '{file_name}' 加入队列。当前批次 {len(task['files'])} 个文件。最多等待 {delay} 秒后合并执行...")
         task['timer'] = spawn_later(delay, _flush_mp_batch, key)
 
+
+def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: str, item_type: str, tmdb_id: str, new_episode_ids: Optional[List[str]] = None):
+    """Movie/Episode 入库完成后，异步询问共享中心是否需要本机创建分享。"""
+    try:
+        from tasks.shared_resource_tasks import trigger_shared_auto_share_for_library_item
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 自动分享入口不可用，跳过 webhook 触发: {e}")
+        return
+
+    try:
+        if item_type == 'Movie' and tmdb_id:
+            task_manager.submit_task(
+                trigger_shared_auto_share_for_library_item,
+                task_name=f"共享入库探测: {item_details.get('Name') or tmdb_id}",
+                processor_type='media',
+                item_type='Movie',
+                tmdb_id=str(tmdb_id),
+                emby_item_id=str(item_id),
+                title=item_details.get('Name') or '',
+                year=item_details.get('ProductionYear') or '',
+            )
+            return
+
+        if item_type == 'Series' and new_episode_ids:
+            for ep_id in list(dict.fromkeys([str(x) for x in new_episode_ids if str(x or '').strip()])):
+                task_manager.submit_task(
+                    trigger_shared_auto_share_for_library_item,
+                    task_name=f"共享追更新集探测: {item_details.get('Name') or tmdb_id} / {ep_id}",
+                    processor_type='media',
+                    item_type='Episode',
+                    emby_item_id=ep_id,
+                    parent_series_tmdb_id=str(tmdb_id or ''),
+                    title=item_details.get('Name') or '',
+                    year=item_details.get('ProductionYear') or '',
+                )
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 提交 webhook 自动分享探测失败: {e}", exc_info=True)
+
+
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
     """
     【Webhook 统一入口】
@@ -247,7 +286,10 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
-    # 2. 智能追剧判断 - 初始入库
+    # 2. 共享资源供给侧实时触发：Movie/本次新增 Episode 入库后，只针对本次资源询问中心是否需要分享。
+    _submit_shared_auto_share_after_library_ready(item_details, item_id, item_type, tmdb_id, new_episode_ids)
+
+    # 3. 智能追剧判断 - 初始入库
     if is_new_item and item_type == "Series":
         processor.check_and_add_to_watchlist(item_details)
 
