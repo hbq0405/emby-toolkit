@@ -95,22 +95,139 @@ def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, An
         logger.error(f"根据TMDb ID列表批量获取媒体详情时出错: {e}", exc_info=True)
         return {}
 
-# 获取所有状态为 'WANTED' 的媒体项
+# 获取统一订阅处理队列：WANTED + SUBSCRIBED 补库项
 def get_all_wanted_media() -> List[Dict[str, Any]]:
     """
-    获取所有状态为 'WANTED' 的媒体项。
-    为 Season 类型的项目额外提供 parent_series_tmdb_id。
+    获取统一订阅处理队列。
+
+    口径说明：
+    - WANTED：仍按旧逻辑进入完整订阅链路，共享池/云资源/MP 都可以处理；
+    - SUBSCRIBED：代表 MP 已经接收过订阅，ETK 只继续负责网盘侧补库，不能再次下滑给 MP；
+    - SUBSCRIBED 的 Season 会额外带 missing_episode_numbers / missing_episode_count，
+      供共享池按缺失集精确匹配；影巢和频道仍只使用父剧 TMDb + season_number。
     """
     sql = """
-        SELECT 
-            tmdb_id, item_type, title, release_date, poster_path, overview,
-            -- ★★★ 核心修改：把这两个关键字段也查出来 ★★★
-            parent_series_tmdb_id, 
-            season_number, 
-            subscription_sources_json
-        FROM media_metadata
-        WHERE subscription_status = 'WANTED'
-        ORDER BY first_requested_at ASC;
+        WITH wanted_items AS (
+            SELECT
+                m.tmdb_id,
+                m.item_type,
+                m.title,
+                m.release_date,
+                m.release_year,
+                m.poster_path,
+                m.overview,
+                m.parent_series_tmdb_id,
+                m.season_number,
+                m.episode_number,
+                m.subscription_status,
+                m.subscription_sources_json,
+                '[]'::jsonb AS missing_episode_numbers,
+                0::integer AS missing_episode_count,
+                m.first_requested_at,
+                m.last_subscribed_at
+            FROM media_metadata m
+            WHERE m.subscription_status = 'WANTED'
+        ),
+        subscribed_base AS (
+            SELECT
+                m.tmdb_id,
+                m.item_type,
+                m.title,
+                m.release_date,
+                m.release_year,
+                m.poster_path,
+                m.overview,
+                m.parent_series_tmdb_id,
+                m.season_number,
+                m.episode_number,
+                m.subscription_status,
+                m.subscription_sources_json,
+                m.in_library,
+                m.first_requested_at,
+                m.last_subscribed_at
+            FROM media_metadata m
+            WHERE m.subscription_status = 'SUBSCRIBED'
+              AND m.item_type IN ('Movie', 'Series', 'Season', 'Episode')
+        ),
+        subscribed_with_missing AS (
+            SELECT
+                sb.tmdb_id,
+                sb.item_type,
+                sb.title,
+                sb.release_date,
+                sb.release_year,
+                sb.poster_path,
+                sb.overview,
+                sb.parent_series_tmdb_id,
+                sb.season_number,
+                sb.episode_number,
+                sb.subscription_status,
+                sb.subscription_sources_json,
+                COALESCE(
+                    jsonb_agg(e.episode_number ORDER BY e.episode_number)
+                        FILTER (WHERE e.episode_number IS NOT NULL),
+                    '[]'::jsonb
+                ) AS missing_episode_numbers,
+                COUNT(e.episode_number)::integer AS missing_episode_count,
+                sb.first_requested_at,
+                sb.last_subscribed_at,
+                sb.in_library
+            FROM subscribed_base sb
+            LEFT JOIN media_metadata e
+              ON sb.item_type = 'Season'
+             AND e.item_type = 'Episode'
+             AND e.parent_series_tmdb_id = COALESCE(sb.parent_series_tmdb_id, sb.tmdb_id)
+             AND COALESCE(e.season_number, -1) = COALESCE(sb.season_number, -1)
+             AND COALESCE(e.in_library, FALSE) = FALSE
+             AND e.episode_number IS NOT NULL
+             AND (
+                    e.release_date IS NULL
+                 OR e.release_date <= CURRENT_DATE
+             )
+            GROUP BY
+                sb.tmdb_id, sb.item_type, sb.title, sb.release_date, sb.release_year,
+                sb.poster_path, sb.overview, sb.parent_series_tmdb_id, sb.season_number,
+                sb.episode_number, sb.subscription_status, sb.subscription_sources_json,
+                sb.first_requested_at, sb.last_subscribed_at, sb.in_library
+        ),
+        subscribed_items AS (
+            SELECT
+                tmdb_id,
+                item_type,
+                title,
+                release_date,
+                release_year,
+                poster_path,
+                overview,
+                parent_series_tmdb_id,
+                season_number,
+                episode_number,
+                subscription_status,
+                subscription_sources_json,
+                missing_episode_numbers,
+                missing_episode_count,
+                first_requested_at,
+                last_subscribed_at
+            FROM subscribed_with_missing
+            WHERE
+                -- 电影：MP 已订阅但仍未入库时，允许共享池/云资源继续补库。
+                (item_type = 'Movie' AND COALESCE(in_library, FALSE) = FALSE)
+                OR
+                -- 季：只要还有缺集，或者季本身还没任何入库痕迹，就继续给网盘侧补库。
+                (item_type = 'Season' AND (missing_episode_count > 0 OR COALESCE(in_library, FALSE) = FALSE))
+                OR
+                -- 单集：历史/补缺数据如果已经处于 SUBSCRIBED，也只允许共享池精确补库。
+                (item_type = 'Episode' AND COALESCE(in_library, FALSE) = FALSE)
+                OR
+                -- 整剧：保守保留给共享池/云资源兜底；不会再下滑给 MP。
+                item_type = 'Series'
+        )
+        SELECT * FROM wanted_items
+        UNION ALL
+        SELECT * FROM subscribed_items
+        ORDER BY
+            CASE subscription_status WHEN 'WANTED' THEN 0 ELSE 1 END,
+            COALESCE(first_requested_at, last_subscribed_at, NOW()) ASC;
     """
     try:
         with get_db_connection() as conn:
@@ -118,7 +235,7 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
             cursor.execute(sql)
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"DB: 获取所有待订阅(WANTED)媒体失败: {e}", exc_info=True)
+        logger.error(f"DB: 获取统一订阅处理队列失败: {e}", exc_info=True)
         return []
 
 # 将 PENDING_RELEASE 状态的媒体晋升为 WANTED    

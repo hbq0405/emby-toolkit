@@ -82,6 +82,29 @@ def _safe_int(value, default=0):
         return default
 
 
+def _normalize_episode_number_list(value) -> List[int]:
+    """共享池按季查询后，本地用缺集号列表做精确过滤。"""
+    if value in (None, ''):
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            value = re.split(r'[，,\s]+', value.strip()) if value.strip() else []
+    if not isinstance(value, (list, tuple, set)):
+        value = [value]
+
+    out = []
+    for v in value:
+        try:
+            n = int(float(v))
+            if n > 0 and n not in out:
+                out.append(n)
+        except Exception:
+            pass
+    return sorted(out)
+
+
 def _extract_episode_number_fallback(source: Dict[str, Any] | None = None, context: Dict[str, Any] | None = None):
     source = source or {}
     context = context or {}
@@ -294,7 +317,15 @@ def _source_relevant_to_context(src: Dict[str, Any], context: Dict[str, Any]) ->
     if item_type == 'Season':
         ctx_s = _safe_int(context.get('season_number'), -999)
         src_s_raw = src.get('season_number')
-        return src_s_raw in (None, '') or ctx_s == -999 or _safe_int(src_s_raw, -998) == ctx_s
+        if not (src_s_raw in (None, '') or ctx_s == -999 or _safe_int(src_s_raw, -998) == ctx_s):
+            return False
+        missing_eps = _normalize_episode_number_list(context.get('missing_episode_numbers'))
+        src_e_raw = src.get('episode_number')
+        # SUBSCRIBED 补库会带缺集列表：中心按季返回，客户端只消费缺失单集；
+        # 季包/旧数据没有 episode_number 时继续保留，因为它可能覆盖整季。
+        if missing_eps and src_e_raw not in (None, ''):
+            return _safe_int(src_e_raw, -998) in missing_eps
+        return True
     if item_type == 'Movie':
         src_type = str(src.get('item_type') or '').strip()
         return src_type in ('', 'Movie')
@@ -302,10 +333,36 @@ def _source_relevant_to_context(src: Dict[str, Any], context: Dict[str, Any]) ->
 
 
 def _local_existing_hit_for_import_group(src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    """同一 share_code 可能聚合多条中心源；优先用本次目标相关源的 SHA1 查本地。"""
+    """同一 share_code 可能聚合多条中心源；优先用本次目标相关源的 SHA1 查本地。
+
+    SUBSCRIBED 补库场景可能是“本季已有一部分、缺一部分”。如果中心返回的是季包，
+    不能因为包内任意一集已在本地就跳过整个季包；只有相关文件全部已存在时才跳过。
+    """
     rows = src.get('_group_sources') if isinstance(src, dict) else None
     rows = [r for r in (rows or [src]) if isinstance(r, dict)]
     relevant_rows = [r for r in rows if _source_relevant_to_context(r, context)] or rows
+
+    item_type = str((context or {}).get('item_type') or '').strip()
+    missing_eps = _normalize_episode_number_list((context or {}).get('missing_episode_numbers'))
+    partial_season_recheck = item_type == 'Season' and bool(missing_eps)
+
+    if partial_season_recheck:
+        checked = 0
+        first_hit = None
+        for row in relevant_rows:
+            sha1 = _norm_sha1(row.get('sha1'))
+            if not sha1:
+                continue
+            checked += 1
+            local = _find_local_p115_file_by_sha1(sha1)
+            if local and first_hit is None:
+                first_hit = {'source': row, 'local': local}
+            elif not local:
+                # 至少还有一个相关文件本地不存在，不能跳过本次导入。
+                return {}
+        if checked > 0 and first_hit:
+            return first_hit
+        return {}
 
     # 先查与本次目标相关的 SHA1；若命中，说明同一个文件已经在本账号存在。
     for row in relevant_rows:
@@ -381,7 +438,7 @@ def _build_gap_item(*, tmdb_id, item_type, title='', season_number=None, episode
 def _build_center_queries(item: Dict[str, Any], title: str, tmdb_id, item_type: str, parent_tmdb_id=None, season_number=None, year='') -> List[Dict[str, Any]]:
     """把本地待订阅项转换成中心查询。
 
-    关键约定：剧集缺口只按 Season 登记/查询，不再按 Episode 建缺口。
+    关键约定：剧集缺口只按季登记/查询，不再按 Episode 建缺口。
     客户端拿到同季共享源后，再用本地缺集列表精确匹配具体 SxxEyy。
     """
     item_type = str(item_type or '').strip()
@@ -397,7 +454,7 @@ def _build_center_queries(item: Dict[str, Any], title: str, tmdb_id, item_type: 
         sid = parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or tmdb_id
         s_num = season_number if season_number not in (None, '') else item.get('season_number')
         # Episode 只用于本地精确消费，中心缺口/搜索统一提升到 Season 粒度。
-        # 这样一季几百上千集也只会产生一个 open gap。
+        # 这样一季 1000 集也只会产生一个 open gap。
         if sid and s_num not in (None, ''):
             queries.append(_build_gap_item(tmdb_id=sid, item_type='Season', title=title, season_number=s_num, year=year))
     return [q for q in queries if q.get('tmdb_id')]
@@ -1887,9 +1944,9 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
     ).strip()
     if not target_cid or target_cid == '0':
         raise RuntimeError('未配置 115 待整理目录 CID（p115_save_path_cid），无法转存共享资源')
-    
+
     raw_map = _load_center_raw_map(client, sources)
-    
+
     # ★ 核心修复：解决重复写入缓存的问题
     # 永久转存前预检：
     # - replace：提前调用洗版模块裁决，洗版模块内部会负责写入缓存；
@@ -2109,10 +2166,12 @@ def try_consume_shared_resource(
     # =================================================================
     # 中心查询按季返回后，本地仍然必须精确过滤到当前缺失集。
     # - 单集源：必须同季同集；
+    # - SUBSCRIBED Season 会带 missing_episode_numbers，只消费缺失单集；
     # - 季包/旧数据没有 episode_number：保留，后续按 SHA1/包内文件消费。
     # =================================================================
     req_s_num = season_number if season_number not in (None, '') else item.get('season_number')
     req_e_num = item.get('episode_number')
+    req_missing_eps = _normalize_episode_number_list(item.get('missing_episode_numbers'))
     if req_e_num is not None and str(req_e_num).strip() != '':
         filtered_sources = []
         for src in sources:
@@ -2125,6 +2184,25 @@ def try_consume_shared_resource(
                 if int(src_e_num) != int(req_e_num):
                     continue
             filtered_sources.append(src)
+        sources = filtered_sources
+    elif req_missing_eps and str(item_type or '').strip() == 'Season':
+        filtered_sources = []
+        for src in sources:
+            src_s_num = src.get('season_number')
+            src_e_num = src.get('episode_number')
+            if src_s_num is not None and str(src_s_num).strip() != '' and req_s_num not in (None, ''):
+                if int(src_s_num) != int(req_s_num):
+                    continue
+            # 单集源必须在缺失列表内；季包/旧数据没有集号，保留。
+            if src_e_num is not None and str(src_e_num).strip() != '':
+                if int(src_e_num) not in req_missing_eps:
+                    continue
+            filtered_sources.append(src)
+        if len(filtered_sources) != len(sources):
+            logger.info(
+                f"  ➜ [共享资源] SUBSCRIBED 补库按缺集过滤中心源：{len(sources)} -> {len(filtered_sources)}，"
+                f"缺失集={req_missing_eps}"
+            )
         sources = filtered_sources
 
     excluded_codes = {
@@ -2172,6 +2250,7 @@ def try_consume_shared_resource(
         'parent_series_tmdb_id': str(parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or ''),
         'season_number': season_number,
         'episode_number': item.get('episode_number'), # ★ 确保 context 里有 episode_number
+        'missing_episode_numbers': req_missing_eps,
         'year': year,
     }
 
