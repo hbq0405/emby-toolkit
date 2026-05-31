@@ -1052,7 +1052,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                 if need_report and sr is not None:
                     if sync_reason:
                         reason_text = _center_share_sync_reason_text(sync_reason)
-                        logger.info(f"  ➜ [共享资源维护] 本地分享仍可用但中心登记异常，准备重新登记: share={share_code}, reason={reason_text}")
+                        logger.debug(f"  ➜ [共享资源维护] 本地分享仍可用但中心登记异常，准备重新登记: share={share_code}, reason={reason_text}")
                         shared_share_db.update_share_record(
                             record['id'],
                             center_status='not_reported',
@@ -3175,7 +3175,7 @@ def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tm
         }
 
     if not _center_has_open_season_gap(client, parent_series_tmdb_id, season_number):
-        logger.info(
+        logger.debug(
             "  ➜ [共享资源] 完结季包分享跳过：中心没有同季 Season open 缺口 %s S%02d",
             parent_series_tmdb_id, int(season_number)
         )

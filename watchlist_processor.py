@@ -1138,7 +1138,7 @@ class WatchlistProcessor:
                     parent_series_tmdb_id=parent_series_tmdb_id,
                     season_number=season_no,
                 ) or {}
-                logger.info(
+                logger.debug(
                     "  ➜ [共享资源] 完结季包分享异步任务完成：%s S%02d created=%s, episode_cancelled=%s, message=%s",
                     series_name or parent_series_tmdb_id,
                     season_no,
