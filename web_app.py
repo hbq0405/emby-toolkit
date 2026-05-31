@@ -95,6 +95,32 @@ except ImportError:
         def close(self): pass
 # --- 核心模块导入结束 ---
 logger = logging.getLogger(__name__)
+
+
+def _refresh_shared_device_event_listener(reason: str = "startup"):
+    """根据共享资源开关启动/停止中心通用事件监听。
+
+    共享事件监听是常驻基础服务，不应该依赖“共享分享状态同步”任务跑一次才启动。
+    """
+    try:
+        from tasks.shared_resource_tasks import (
+            ensure_shared_device_event_listener,
+            stop_shared_device_event_listener,
+        )
+        cfg = settings_db.get_shared_resource_config() or {}
+        enabled = bool(cfg.get('p115_shared_resource_enabled', False))
+        if enabled:
+            started = ensure_shared_device_event_listener()
+            if started:
+                logger.info(f"  ➜ [共享事件监听] 服务已启动/运行中 ({reason})。")
+            else:
+                logger.debug(f"  ➜ [共享事件监听] 未启动：共享中心配置未就绪或监听已关闭 ({reason})。")
+        else:
+            stop_shared_device_event_listener()
+            logger.debug(f"  ➜ [共享事件监听] 共享资源未启用，已确保监听停止 ({reason})。")
+    except Exception as e:
+        logger.warning(f"  ➜ [共享事件监听] 刷新监听服务失败 ({reason}): {e}")
+
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__, static_folder='static')
@@ -146,6 +172,9 @@ def save_config_and_reload(new_config: Dict[str, Any]):
 
         # 动态刷新 115 生活事件守护进程
         LifeEventMonitorDaemon.start_or_update()
+
+        # 动态刷新共享中心通用事件监听
+        _refresh_shared_device_event_listener(reason="config_reload")
 
         # 动态刷新 TG UserBot 监听服务
         if config_manager.APP_CONFIG.get('is_pro_active', False):
@@ -428,6 +457,13 @@ def application_exit_handler():
     if monitor_service_instance:
         monitor_service_instance.stop()
 
+    # 停止共享中心通用事件监听
+    try:
+        from tasks.shared_resource_tasks import stop_shared_device_event_listener
+        stop_shared_device_event_listener()
+    except Exception:
+        pass
+
     # 4. 关闭其他资源
     if extensions.media_processor_instance: # 从 extensions 获取
         extensions.media_processor_instance.close()
@@ -503,6 +539,9 @@ def main_app_start():
     initialize_processors()
     task_manager.start_task_worker_if_not_running()
     scheduler_manager.start()
+
+    # 启动共享中心通用事件监听：不再等待“共享分享状态同步”任务首次执行
+    _refresh_shared_device_event_listener(reason="startup")
 
     # 启动时唤醒 115 生活事件守护进程
     try:
