@@ -34,7 +34,7 @@
           共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献值、登记分享、转存中心资源。
         </n-alert>
 
-        <n-grid :cols="isMobile ? 2 : 6" :x-gap="12" :y-gap="12">
+        <n-grid class="stat-grid" :cols="isMobile ? 2 : 4" :x-gap="12" :y-gap="12">
           <n-gi v-for="card in statCards" :key="card.key">
             <div class="stat-card">
               <div class="stat-label">{{ card.label }}</div>
@@ -355,7 +355,7 @@ const mediaCandidates = ref([]);
 const selectedMedia = ref(null);
 const importingMap = reactive({});
 
-const summary = ref({ local: {}, shares: {}, credit: {} });
+const summary = ref({ shares: {}, credit: {} });
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
@@ -659,7 +659,6 @@ const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink
 const hasCenterDevice = computed(() => Boolean((summary.value.credit || {}).device_id));
 
 const statCards = computed(() => {
-  const local = summary.value.local || {};
   const shares = summary.value.shares || {};
   const credit = summary.value.credit || {};
   return [
@@ -1508,7 +1507,7 @@ const saveSharedConfig = async () => {
   }
 };
 
-const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { local: {}, shares: {}, credit: {} }; };
+const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的分享失败'); } finally { sharesLoading.value = false; } };
 
 const loadCenterSources = async () => {
@@ -1966,7 +1965,8 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .page-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
 .card-title { font-size: 16px; font-weight: 700; }
-.stat-card { background: rgba(128,128,128,0.08); border-radius: 12px; padding: 14px 16px; min-height: 82px; }
+.stat-grid { width: 100%; }
+.stat-card { height: 100%; box-sizing: border-box; background: rgba(128,128,128,0.08); border-radius: 12px; padding: 14px 16px; min-height: 88px; }
 .stat-label { font-size: 12px; opacity: .65; margin-bottom: 8px; }
 .stat-value { font-size: 24px; font-weight: 700; line-height: 1; }
 .stat-desc { margin-top: 8px; font-size: 12px; opacity: .65; }

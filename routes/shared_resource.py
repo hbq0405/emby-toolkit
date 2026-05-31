@@ -2514,7 +2514,7 @@ def api_shared_115_folders():
 @shared_resource_bp.route('/summary', methods=['GET'])
 @admin_required
 def api_shared_summary():
-    summary = shared_credit_db.get_local_summary()
+    summary = shared_credit_db.get_shared_resource_summary()
     return jsonify({"success": True, "data": summary})
 
 
