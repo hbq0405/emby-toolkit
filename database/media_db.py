@@ -222,9 +222,12 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
                 -- 整剧：保守保留给共享池/云资源兜底；不会再下滑给 MP。
                 item_type = 'Series'
         )
-        SELECT * FROM wanted_items
-        UNION ALL
-        SELECT * FROM subscribed_items
+        SELECT *
+        FROM (
+            SELECT * FROM wanted_items
+            UNION ALL
+            SELECT * FROM subscribed_items
+        ) AS unified_subscription_queue
         ORDER BY
             CASE subscription_status WHEN 'WANTED' THEN 0 ELSE 1 END,
             COALESCE(first_requested_at, last_subscribed_at, NOW()) ASC;
