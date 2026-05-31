@@ -3512,22 +3512,52 @@ class MediaProcessor:
                 elif item_type == 'Series':
                     try:
                         cursor.execute("""
-                            SELECT season_number, episode_number, asset_details_json 
+                            SELECT season_number, episode_number, asset_details_json, emby_item_ids_json
                             FROM media_metadata 
                             WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE
                             ORDER BY season_number ASC, episode_number ASC
                         """, (tmdb_id,))
+
+                        # Webhook 追更是父 Series 回流，但 specific_episode_ids 已经明确了本次新入库分集。
+                        # 这里只质检本次分集，不能因为历史旧集缺媒体信息就把本次追更打失败，
+                        # 否则后续共享探测、追剧刷新都会被旧脏数据挡住。
+                        target_episode_ids = {
+                            str(x).strip()
+                            for x in (specific_episode_ids or [])
+                            if str(x or '').strip()
+                        }
+                        checked_episode_count = 0
+
                         for db_ep in cursor.fetchall():
+                            if target_episode_ids:
+                                raw_ids = db_ep.get('emby_item_ids_json')
+                                try:
+                                    ep_ids = json.loads(raw_ids) if isinstance(raw_ids, str) else (raw_ids or [])
+                                except Exception:
+                                    ep_ids = []
+                                if not isinstance(ep_ids, list):
+                                    ep_ids = [ep_ids]
+                                ep_id_set = {str(x).strip() for x in ep_ids if str(x or '').strip()}
+                                if not ep_id_set.intersection(target_episode_ids):
+                                    continue
+
                             s_idx, e_idx = db_ep['season_number'], db_ep['episode_number']
                             raw_assets = db_ep['asset_details_json']
                             assets = json.loads(raw_assets) if isinstance(raw_assets, str) else (raw_assets if isinstance(raw_assets, list) else [])
                             ep_path = assets[0].get('path') if assets and len(assets) > 0 else None
+                            checked_episode_count += 1
                             passed, reason = _check_stream_validity(ep_path, f"[S{s_idx}E{e_idx}]", db_assets=assets)
                             if not passed:
                                 stream_check_passed = False
                                 stream_fail_reason = reason
                                 logger.warning(f"  ➜ [质检] 剧集《{item_name_for_log}》检测到坏分集: {reason}")
-                                break 
+                                break
+
+                        if target_episode_ids:
+                            logger.debug(
+                                f"  ➜ [质检] Webhook追更仅检查本次分集媒体信息: "
+                                f"checked={checked_episode_count}, target_ids={len(target_episode_ids)}"
+                            )
                     except Exception as e_db_check:
                         logger.warning(f"  ➜ [质检] 数据库验证分集流信息时出错: {e_db_check}")
 
