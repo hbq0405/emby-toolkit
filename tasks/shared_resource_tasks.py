@@ -755,7 +755,7 @@ def _is_external_center_source(item: Dict[str, Any]) -> bool:
 
 
 def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 200, max_pages: int = 20) -> Dict[str, int]:
-    """对账中心登记源与本地活动分享，自动撤销已经不在本地的中心孤儿源。
+    """对账中心登记源与本地活动分享，自动撤销已经不在本地的中心残留源。
 
     只清理本机真实创建的分享源。影巢、TG 频道这类外部分享源本来就没有
     shared_share_records 本地记录，必须排除，否则会被误撤销。
@@ -781,7 +781,7 @@ def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 
             if _is_network_error(e):
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
-                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束中心孤儿源对账。")
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束中心残留源对账。")
             return {
                 'center_orphan_checked': checked,
                 'center_orphan_skipped_external': skipped_external,
@@ -833,12 +833,14 @@ def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 
             cancelled += 1
         except Exception as e:
             failed += 1
-            logger.warning(f"  ➜ [共享资源维护] 撤销中心孤儿共享源失败: share={share_code}, err={e}")
+            logger.warning(f"  ➜ [共享资源维护] 撤销中心残留共享源失败: share={share_code}, err={e}")
         time.sleep(0.2)
 
-    if cancelled or failed or skipped_external:
-        logger.info(
-            "  ➜ [共享资源维护] 中心孤儿共享源对账完成：检查 %s，跳过外部来源 %s，撤销 %s，失败 %s。",
+    # 汇总日志由 task_shared_resource_maintenance 统一输出。这里不要再单独 logger.info，
+    # 否则前端实时日志会出现一条“中心残留源对账完成”夹在总汇总外面。
+    if cancelled or failed:
+        logger.debug(
+            "  ➜ [共享资源维护] 中心残留源对账阶段统计：检查 %s，跳过外部来源 %s，撤销 %s，失败 %s。",
             checked, skipped_external, cancelled, failed,
         )
     return {
@@ -4166,14 +4168,14 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"  ➜ 违规分享清理: {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}\n"
             f"  ➜ 缺 raw 清理: {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}\n"
             f"  ➜ 分享水位清理: {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}\n"
-            f"  ➜ 中心残留清理: {total.get('center_orphan_cancelled', 0)}/{total.get('center_orphan_failed', 0)}\n"
+            f"  ➜ 中心残留对账: 检查 {total.get('center_orphan_checked', 0)}，跳过外部 {total.get('center_orphan_skipped_external', 0)}，撤销 {total.get('center_orphan_cancelled', 0)}，失败 {total.get('center_orphan_failed', 0)}\n"
             f"  ➜ 贡献值同步: {'成功' if total.get('credit') else '失败/跳过'}\n"
             "========================"
         )
         logger.info(log_msg)
         _status(
             100,
-            f"基础维护完成：虚拟源异常 {total.get('virtual_source_invalid', 0)}，水位清理 {total.get('share_pruned', 0)}，中心残留 {total.get('center_orphan_cancelled', 0)}。"
+            f"基础维护完成：虚拟源异常 {total.get('virtual_source_invalid', 0)}，水位清理 {total.get('share_pruned', 0)}，中心残留撤销 {total.get('center_orphan_cancelled', 0)}。"
         )
     except Exception as e:
         logger.error(f"  ➜ [共享资源维护] 基础维护失败: {e}", exc_info=True)

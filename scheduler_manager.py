@@ -413,7 +413,7 @@ class SchedulerManager:
             try:
                 from tasks.shared_resource_tasks import task_shared_share_status_sync_high_freq
                 import threading
-                logger.info("  ➜ 定时任务触发：共享分享状态同步。")
+                logger.trace("  ➜ 定时任务触发：共享分享状态同步。")
                 t = threading.Thread(
                     target=task_shared_share_status_sync_high_freq,
                     kwargs={'maintenance_silent': False},
