@@ -969,6 +969,245 @@ def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     logger.warning(f"  ➜ 电影 {log_identifier} 未找到数字版或任何有效的影院上映日期，默认其不适合订阅。")
     return False
 
+
+# --- 剧集季包一致性检查（共享逻辑） ---
+def _season_consistency_safe_int(value, default=0):
+    try:
+        if value in (None, ''):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _season_consistency_json_value(value, fallback=None):
+    if value is None:
+        return fallback
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback
+        try:
+            return json.loads(text)
+        except Exception:
+            return fallback
+    return fallback
+
+
+def _season_consistency_asset_items(value) -> List[Dict[str, Any]]:
+    """把 media_metadata.asset_details_json 统一清洗为资产列表。"""
+    parsed = _season_consistency_json_value(value, fallback=[])
+
+    def meaningful_asset(item: Dict[str, Any]) -> bool:
+        if not isinstance(item, dict) or not item:
+            return False
+        return any(item.get(k) not in (None, '', [], {}) for k in (
+            'resolution_display', 'codec_display', 'effect_display', 'frame_rate',
+            'audio_display', 'subtitle_display', 'size_bytes', 'video_codec',
+            'width', 'height', 'release_group_raw'
+        ))
+
+    if isinstance(parsed, dict):
+        for key in ('items', 'files', 'assets', 'asset_details'):
+            if isinstance(parsed.get(key), list):
+                return [x for x in parsed.get(key) if meaningful_asset(x)]
+        return [parsed] if meaningful_asset(parsed) else []
+    if isinstance(parsed, list):
+        return [x for x in parsed if meaningful_asset(x)]
+    return []
+
+
+def _season_consistency_release_group(asset: Dict[str, Any]) -> str:
+    raw_groups = (asset or {}).get('release_group_raw') or []
+    if isinstance(raw_groups, str):
+        raw_groups = [x.strip() for x in raw_groups.split(',') if x.strip()]
+    if isinstance(raw_groups, (list, tuple, set)) and raw_groups:
+        first = next((str(x).strip() for x in raw_groups if str(x).strip()), '')
+        return first or 'Unknown'
+    return 'Unknown'
+
+
+def check_season_consistency(
+    tmdb_id: str,
+    season_number: int,
+    expected_episode_count: int = 0,
+    *,
+    series_name: str = '',
+    rows: Optional[List[Dict[str, Any]]] = None,
+    log_result: bool = True,
+) -> Dict[str, Any]:
+    """统一检查指定季本地文件是否满足“无需洗版/可分享季包”的一致性条件。
+
+    规则继承自 watchlist_processor 原实现：
+    1. 本地在库集数必须不少于 expected_episode_count（传 0 则不检查集数）。
+    2. 每集主资产的分辨率、制作组、编码必须完全统一。
+
+    返回结构化结果，调用方可直接使用 result['ok'] 作为布尔结果，也可把 message
+    透传给前端/维护任务日志。
+    """
+    tmdb_id = str(tmdb_id or '').strip()
+    season_number_int = _season_consistency_safe_int(season_number, None)
+    expected_episode_count = _season_consistency_safe_int(expected_episode_count, 0)
+    label = f"《{series_name}》" if series_name else ''
+
+    if not tmdb_id or season_number_int is None:
+        return {
+            'ok': False,
+            'reason': 'missing_identity',
+            'message': '季包一致性校验失败：缺少父剧 TMDb ID 或季号',
+            'tmdb_id': tmdb_id,
+            'season_number': season_number,
+        }
+
+    try:
+        if rows is None:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT tmdb_id, title, season_number, episode_number, asset_details_json
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND season_number = %s
+                          AND item_type = 'Episode'
+                          AND in_library = TRUE
+                        ORDER BY episode_number NULLS LAST, tmdb_id
+                        """,
+                        (tmdb_id, season_number_int),
+                    )
+                    rows = [dict(r) for r in cursor.fetchall()]
+        else:
+            rows = [dict(r) for r in rows]
+
+        local_episode_count = len(rows or [])
+        if expected_episode_count and local_episode_count < expected_episode_count:
+            message = (
+                f"季包一致性校验失败：{label}第 {season_number_int} 季本地集数不足 "
+                f"{local_episode_count}/{expected_episode_count}，不能视为完结达标。"
+            )
+            if log_result:
+                logger.info(
+                    f"  ➜ [一致性检查] 第 {season_number_int} 季 本地集数不足: "
+                    f"{local_episode_count}/{expected_episode_count}，不能视为完结达标。"
+                )
+            return {
+                'ok': False,
+                'reason': 'episode_count_insufficient',
+                'message': message,
+                'tmdb_id': tmdb_id,
+                'season_number': season_number_int,
+                'expected_episode_count': expected_episode_count,
+                'local_episode_count': local_episode_count,
+            }
+
+        resolutions = set()
+        groups = set()
+        codecs = set()
+        signatures = []
+        invalid = []
+
+        for row in rows or []:
+            assets = _season_consistency_asset_items(row.get('asset_details_json'))
+            ep_no = row.get('episode_number')
+            title = row.get('title') or (f"E{ep_no}" if ep_no not in (None, '') else row.get('tmdb_id'))
+            if not assets:
+                invalid.append({
+                    'tmdb_id': row.get('tmdb_id'),
+                    'season_number': row.get('season_number'),
+                    'episode_number': ep_no,
+                    'title': title,
+                    'reason': '缺少 asset_details_json 或主资产为空',
+                })
+                continue
+
+            main_asset = assets[0]
+            resolution = str(main_asset.get('resolution_display') or main_asset.get('resolution') or 'Unknown').strip() or 'Unknown'
+            codec = str(main_asset.get('codec_display') or main_asset.get('video_codec') or 'Unknown').strip() or 'Unknown'
+            group_name = _season_consistency_release_group(main_asset)
+
+            resolutions.add(resolution)
+            codecs.add(codec)
+            groups.add(group_name)
+            signatures.append({
+                'tmdb_id': row.get('tmdb_id'),
+                'season_number': row.get('season_number'),
+                'episode_number': ep_no,
+                'title': title,
+                'resolution': resolution,
+                'release_group': group_name,
+                'codec': codec,
+                'file_name': main_asset.get('path') or main_asset.get('file_name') or main_asset.get('name') or title,
+            })
+
+        if invalid:
+            message = '季包一致性校验失败：存在缺少媒体资产信息的分集；' + '；'.join(
+                f"S{_season_consistency_safe_int(x.get('season_number'), season_number_int):02d}"
+                f"E{_season_consistency_safe_int(x.get('episode_number'), 0):02d} {x.get('title') or ''}（{x.get('reason')}）"
+                for x in invalid[:6]
+            )
+            if len(invalid) > 6:
+                message += f" 等 {len(invalid)} 集"
+            if log_result:
+                logger.info(f"  ➜ [一致性检查] 第 {season_number_int} 季 媒体资产信息不完整，需要洗版/禁止季包分享。")
+            return {
+                'ok': False,
+                'reason': 'asset_details_missing',
+                'message': message,
+                'tmdb_id': tmdb_id,
+                'season_number': season_number_int,
+                'expected_episode_count': expected_episode_count,
+                'local_episode_count': local_episode_count,
+                'invalid': invalid,
+                'signatures': signatures,
+            }
+
+        is_consistent = bool(signatures) and len(resolutions) == 1 and len(groups) == 1 and len(codecs) == 1
+        result = {
+            'ok': is_consistent,
+            'reason': 'ok' if is_consistent else 'season_asset_inconsistent',
+            'tmdb_id': tmdb_id,
+            'season_number': season_number_int,
+            'expected_episode_count': expected_episode_count,
+            'local_episode_count': local_episode_count,
+            'resolutions': sorted(resolutions),
+            'release_groups': sorted(groups),
+            'codecs': sorted(codecs),
+            'signatures': signatures,
+        }
+
+        if is_consistent:
+            res = next(iter(resolutions))
+            grp = next(iter(groups))
+            codec = next(iter(codecs))
+            result['message'] = f"季包一致性校验通过：第 {season_number_int} 季 [{res} / {grp} / {codec}]。"
+            if log_result:
+                logger.info(f"  ➜ [一致性检查] 第 {season_number_int} 季 完美达标: [{res} / {grp} / {codec}]，跳过洗版/允许季包分享。")
+            return result
+
+        result['message'] = (
+            f"季包一致性校验失败：第 {season_number_int} 季版本混杂；"
+            f"分辨率{sorted(resolutions)}，制作组{sorted(groups)}，编码{sorted(codecs)}"
+        )
+        if log_result:
+            logger.info(
+                f"  ➜ [一致性检查] 第 {season_number_int} 季 版本混杂，需要洗版/禁止季包分享。"
+                f"分布: 分辨率{resolutions}, 制作组{groups}, 编码{codecs}"
+            )
+        return result
+
+    except Exception as e:
+        logger.error(f"  ➜ 检查 第 {season_number_int} 季 一致性时出错: {e}", exc_info=True)
+        return {
+            'ok': False,
+            'reason': 'error',
+            'message': f"季包一致性校验异常：{e}",
+            'tmdb_id': tmdb_id,
+            'season_number': season_number_int,
+            'expected_episode_count': expected_episode_count,
+        }
+
 # --- 剧集/季状态检查（统一逻辑） ---
 def check_series_completion(
     tmdb_id: int,

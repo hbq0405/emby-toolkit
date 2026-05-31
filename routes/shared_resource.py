@@ -20,6 +20,7 @@ from extensions import admin_required
 from database import shared_virtual_db, shared_share_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service, P115CacheManager
+import tasks.helpers as helpers
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
 logger = logging.getLogger(__name__)
@@ -1082,189 +1083,98 @@ def _guess_season_episode_numbers(text: str):
     return None, None
 
 
-def _iter_text_values(obj, max_depth: int = 5):
-    """递归抽取短文本，给杜比/HDR 识别做兜底。"""
-    if max_depth < 0:
-        return
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(k, str):
-                yield k
-            yield from _iter_text_values(v, max_depth - 1)
-    elif isinstance(obj, (list, tuple)):
-        for item in obj:
-            yield from _iter_text_values(item, max_depth - 1)
-    elif obj is not None:
-        text = str(obj)
-        if text and len(text) <= 400:
-            yield text
 
+def _season_pack_consistency_identity(files: List[Dict[str, Any]], context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """从手动分享 payload / 本地分享记录 / 自动维护候选中解析父剧 TMDb 与季号。"""
+    context = dict(context or {})
+    files = files or []
 
-def _normalize_dovi_profile(raw_profile: str) -> str:
-    raw_profile = str(raw_profile or '').strip().upper().replace('PROFILE', '').replace('P', '').strip()
-    if not raw_profile:
-        return ''
-    raw_profile = raw_profile.replace('_', '.')
-    if raw_profile in ('81', '8.1'):
-        return 'P8.1'
-    if raw_profile in ('82', '8.2'):
-        return 'P8.2'
-    if raw_profile in ('84', '8.4'):
-        return 'P8.4'
-    m = re.search(r'(\d+(?:\.\d+)?)', raw_profile)
-    return f"P{m.group(1)}" if m else ''
+    if not context and files:
+        context = dict(files[0] or {})
 
+    # 有些调用方把候选身份放在 share_tmdb_id/share_item_type，有些放在 tmdb_id/item_type。
+    identity_payload = {
+        'tmdb_id': context.get('share_tmdb_id') or context.get('tmdb_id'),
+        'item_type': context.get('share_item_type') or context.get('item_type') or ('Season' if str(context.get('share_type') or '').lower() in ('season_pack', 'series_pack', 'tv_pack') else ''),
+        'parent_series_tmdb_id': context.get('parent_series_tmdb_id') or context.get('series_tmdb_id'),
+        'season_number': context.get('season_number'),
+        'episode_number': context.get('episode_number'),
+        'title': context.get('standard_title') or context.get('title') or context.get('display_title') or context.get('root_name'),
+        'release_year': context.get('release_year'),
+        'share_type': context.get('share_type') or 'season_pack',
+    }
 
-def _extract_dovi_profile_from_text(text: str) -> str:
-    text = str(text or '')
-    patterns = [
-        r'DoviProfile\s*([0-9.]+)',
-        r'Dolby\s*Vision[^,\n\r;]*?Profile\s*([0-9.]+)',
-        r'\bDV(?:P|[\s._-]*Profile)?\s*([0-9.]+)',
-        r'\bDOVI[^,\n\r;]*?\bP(?:rofile)?\s*([0-9.]+)',
-        r'\bP(5|7|8(?:\.\d+)?)\b',
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            return _normalize_dovi_profile(m.group(1))
-    m = re.search(r'dv_profile["\']?\s*[:=]\s*["\']?(\d+(?:\.\d+)?)', text, re.IGNORECASE)
-    if m:
-        return _normalize_dovi_profile(m.group(1))
-    return ''
+    # 文件明细可能有更准确的季号/父剧 ID。
+    for item in files:
+        if not identity_payload.get('parent_series_tmdb_id'):
+            identity_payload['parent_series_tmdb_id'] = item.get('parent_series_tmdb_id') or item.get('series_tmdb_id')
+        if identity_payload.get('season_number') in (None, ''):
+            identity_payload['season_number'] = item.get('season_number')
+        if not identity_payload.get('tmdb_id'):
+            identity_payload['tmdb_id'] = item.get('tmdb_id')
+        if identity_payload.get('parent_series_tmdb_id') and identity_payload.get('season_number') not in (None, ''):
+            break
 
+    try:
+        identity = _standard_media_identity_for_share(identity_payload)
+    except Exception:
+        identity = {}
 
-def _raw_video_stream(raw: Dict[str, Any]) -> Dict[str, Any]:
-    raw = raw or {}
-    if raw.get('MediaSourceInfo'):
-        streams = (raw.get('MediaSourceInfo') or {}).get('MediaStreams') or []
-        return next((s for s in streams if str(s.get('Type') or '').lower() == 'video'), {}) or {}
-    if raw.get('MediaStreams'):
-        streams = raw.get('MediaStreams') or []
-        return next((s for s in streams if str(s.get('Type') or '').lower() == 'video'), {}) or {}
-    streams = raw.get('streams') or []
-    return next((s for s in streams if str(s.get('codec_type') or s.get('type') or '').lower() == 'video'), {}) or {}
+    parent = str(
+        identity.get('parent_series_tmdb_id') or
+        identity_payload.get('parent_series_tmdb_id') or
+        identity.get('tmdb_id') or
+        identity_payload.get('tmdb_id') or ''
+    ).strip()
+    season = identity.get('season_number') if identity.get('season_number') not in (None, '') else identity_payload.get('season_number')
 
-
-def _video_effect_key(raw: Dict[str, Any], summary: Dict[str, Any] = None) -> str:
-    """生成 HDR/杜比一致性 key：SDR/HDR10/HDR10+/HLG/DV-P5/DV-P8.1 等。"""
-    summary = summary or {}
-    effect = str(summary.get('effect') or '')
-    video = _raw_video_stream(raw)
-    text = ' | '.join([effect] + list(_iter_text_values(video, max_depth=4)))
-    upper = text.upper()
-
-    dovi_profile = _extract_dovi_profile_from_text(text)
-    if 'DOLBY' in upper or 'DOVI' in upper or dovi_profile:
-        return f"DV-{dovi_profile or 'UNKNOWN'}"
-
-    if 'HDR10+' in upper or 'SMPTE2094' in upper:
-        return 'HDR10+'
-    if 'HLG' in upper or 'ARIB-STD-B67' in upper:
-        return 'HLG'
-    if 'HDR10' in upper or 'SMPTE2084' in upper or 'BT2020' in upper:
-        return 'HDR10'
-    if 'HDR' in upper:
-        return 'HDR'
-    return 'SDR'
-
-
-def _season_pack_file_signature(item: Dict[str, Any]) -> Dict[str, Any]:
-    """从 raw_ffprobe_json 提取季包一致性校验所需的视频签名。
-
-    注意：这里的“分辨率一致”按展示档位判断（4K/1080p/720p），
-    不按精确像素高宽判断。否则同为 2160p/4K 的个别剧集只要裁切高度
-    略有差异，就会被拆成两个组，但报错文案仍显示 4K / SDR，造成误判。
-    """
-    item = item or {}
-    sha1 = str(item.get('sha1') or '').strip().upper()
-    raw = _load_local_raw_ffprobe(sha1)
-    if not raw:
-        return {
-            'ok': False,
-            'sha1': sha1,
-            'file_name': item.get('file_name') or item.get('name') or sha1,
-            'reason': '缺少 raw_ffprobe_json',
-        }
-    summary = _summarize_raw_ffprobe(raw, item)
-    width = int(summary.get('width') or 0)
-    height = int(summary.get('height') or 0)
-    pixel_resolution = f"{width}x{height}" if width and height else ''
-    resolution_label = str(summary.get('resolution') or '').strip()
-    if not resolution_label and width and height:
-        resolution_label = _center_resolution(width, height) or pixel_resolution
-    resolution_key = resolution_label or pixel_resolution
-    if not resolution_key:
-        return {
-            'ok': False,
-            'sha1': sha1,
-            'file_name': item.get('file_name') or item.get('name') or sha1,
-            'reason': '无法从 raw_ffprobe_json 解析视频分辨率',
-        }
-    effect_key = _video_effect_key(raw, summary)
+    expected_count = _safe_int(
+        context.get('expected_episode_count') or context.get('total_episodes') or context.get('episode_count') or context.get('file_count') or 0,
+        0,
+    )
+    title = identity.get('title') or identity_payload.get('title') or ''
     return {
-        'ok': True,
-        'sha1': sha1,
-        'file_name': item.get('file_name') or item.get('name') or sha1,
-        # 分组 key：按 4K/1080p 这类档位，而不是 3840x1608/3840x2160 的精确像素。
-        'resolution': resolution_key,
-        'resolution_label': resolution_label or resolution_key,
-        # 保留精确像素用于日志排查，但不参与一致性判断。
-        'pixel_resolution': pixel_resolution,
-        'effect_key': effect_key,
-        # 展示时优先使用真正参与分组的 effect_key，避免 UI 看起来两个组都是 SDR。
-        'effect': effect_key or summary.get('effect') or 'SDR',
+        'parent_series_tmdb_id': parent,
+        'season_number': season,
+        'expected_episode_count': expected_count,
+        'title': title,
+        'identity': identity,
+        'identity_payload': identity_payload,
     }
 
 
-def _validate_season_pack_consistency(files: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """季包一致性校验：分辨率、HDR/杜比必须全季一致。
+def _validate_season_pack_consistency(files: List[Dict[str, Any]], context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """季包一致性校验统一入口。
 
-    特别是 Dolby Vision P5/P8/P8.1 不能混用，否则同一个季包在客户端侧体验不可控。
+    只调用 tasks.helpers.check_season_consistency，复用追剧完结洗版的统一口径：
+    分辨率、制作组、编码必须完全一致。
+
+    父剧 TMDb ID 或季号定位失败时直接判失败，禁止创建/登记季包；
+    季包都不知道属于哪部剧哪一季，就没有可靠依据确认“集齐且一致”。
     """
-    signatures = []
-    invalid = []
-    for item in files or []:
-        sig = _season_pack_file_signature(item)
-        if not sig.get('ok'):
-            invalid.append(sig)
-        else:
-            signatures.append(sig)
+    ident = _season_pack_consistency_identity(files, context)
+    parent = str(ident.get('parent_series_tmdb_id') or '').strip()
+    season = ident.get('season_number')
 
-    if invalid:
+    if not parent or season in (None, ''):
         return {
             'ok': False,
-            'message': '季包一致性校验失败：存在无法解析媒体信息的文件',
-            'invalid': invalid,
-            'signatures': signatures,
+            'reason': 'missing_identity',
+            'message': '季包一致性校验失败：无法定位父剧 TMDb ID 或季号，禁止创建/登记季包。',
+            'source': 'helpers.asset_details_json',
+            'season_pack_identity': ident,
         }
 
-    if len(signatures) <= 1:
-        return {'ok': True, 'signatures': signatures, 'groups': {}}
-
-    groups = {}
-    for sig in signatures:
-        key = f"{sig.get('resolution')}|{sig.get('effect_key')}"
-        groups.setdefault(key, []).append(sig)
-
-    if len(groups) == 1:
-        return {'ok': True, 'signatures': signatures, 'groups': groups}
-
-    samples = []
-    for key, rows in groups.items():
-        first = rows[0]
-        pixel_note = f"，像素 {first.get('pixel_resolution')}" if first.get('pixel_resolution') else ''
-        samples.append(
-            f"{first.get('resolution_label') or first.get('resolution')} / {first.get('effect_key') or first.get('effect')}{pixel_note}: "
-            f"{len(rows)} 个，示例 {first.get('file_name')}"
-        )
-    return {
-        'ok': False,
-        'message': '季包一致性校验失败：同一季包内分辨率或 HDR/杜比类型不一致；' + '；'.join(samples),
-        'signatures': signatures,
-        'groups': groups,
-    }
-
+    result = helpers.check_season_consistency(
+        tmdb_id=parent,
+        season_number=season,
+        expected_episode_count=ident.get('expected_episode_count') or 0,
+        series_name=ident.get('title') or '',
+    )
+    result = dict(result or {})
+    result['source'] = 'helpers.asset_details_json'
+    result['season_pack_identity'] = ident
+    return result
 
 def _json_array_values(value):
     """media_metadata 的 file_sha1_json / file_pickcode_json 可能是数组、字符串或对象，这里尽量提取稳定标识。"""
@@ -3724,7 +3634,7 @@ def api_manual_create_share():
         }), 400
 
     if str(data.get('share_type') or '').strip().lower() == 'season_pack':
-        consistency = _validate_season_pack_consistency(files)
+        consistency = _validate_season_pack_consistency(files, data)
         if not consistency.get('ok'):
             return jsonify({
                 "success": False,
@@ -4210,7 +4120,7 @@ def api_report_share_to_center(record_id):
 
     record_share_type_for_check = str(record.get('share_type') or '').strip().lower()
     if record_share_type_for_check in ('season_pack', 'series_pack', 'season', 'tv_pack'):
-        consistency = _validate_season_pack_consistency(items)
+        consistency = _validate_season_pack_consistency(items, record)
         if not consistency.get('ok'):
             row = shared_share_db.update_share_record(
                 record_id,
