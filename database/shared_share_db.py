@@ -653,7 +653,7 @@ def has_hard_blocked_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any
                       -- 修复：同时检查明细表和主表的 episode_number
                       AND COALESCE(i.episode_number, r.episode_number, -1)=COALESCE(%s, -1)
                       AND r.status = ANY(%s)
-                      {{hard_block_sql}}
+                      {hard_block_sql}
                     LIMIT 1
                     """,
                     [tmdb_ids, tmdb_ids, tmdb_ids, season, episode, statuses] + hard_args(),
