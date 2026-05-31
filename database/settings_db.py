@@ -202,15 +202,11 @@ DEFAULT_SHARED_RESOURCE_CONFIG = {
     'p115_shared_resource_enabled': False,
     'p115_shared_center_url': 'https://shared.55565576.xyz',
     'p115_shared_device_token': '',
+    # 虚拟入库已移除：共享资源消费模式固定为 permanent。
     'p115_shared_resource_mode': 'permanent',
     'p115_shared_disable_episode_transfer': False,
     'p115_shared_max_active_shares': 0,
-    'p115_shared_cache_cid': '',
-    'p115_shared_cache_name': '',
-    'p115_shared_cache_retention_days': 7,
-    'p115_shared_auto_promote_enabled': False,
-    'p115_shared_auto_promote_tv_episodes': 2,
-    'p115_shared_auto_promote_movie_progress': 80,
+    'p115_shared_auto_share_requests_enabled': False,
     'p115_shared_install_id': '',
 }
 
@@ -252,9 +248,8 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
     center_url = str(merged.get('p115_shared_center_url') or DEFAULT_SHARED_RESOURCE_CONFIG['p115_shared_center_url']).strip().rstrip('/')
     if not center_url:
         center_url = DEFAULT_SHARED_RESOURCE_CONFIG['p115_shared_center_url']
-    mode = str(merged.get('p115_shared_resource_mode') or 'permanent').strip().lower()
-    if mode not in ('permanent', 'virtual'):
-        mode = 'permanent'
+    # 虚拟入库已移除，旧配置里即便残留 virtual/cache/auto_promote，也不再回写。
+    mode = 'permanent'
 
     return {
         'p115_shared_resource_enabled': _shared_bool(merged.get('p115_shared_resource_enabled'), False),
@@ -263,12 +258,7 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
         'p115_shared_resource_mode': mode,
         'p115_shared_disable_episode_transfer': _shared_bool(merged.get('p115_shared_disable_episode_transfer'), False),
         'p115_shared_max_active_shares': _shared_int(merged.get('p115_shared_max_active_shares'), 0, 0, 10000),
-        'p115_shared_cache_cid': str(merged.get('p115_shared_cache_cid') or '').strip(),
-        'p115_shared_cache_name': str(merged.get('p115_shared_cache_name') or '').strip(),
-        'p115_shared_cache_retention_days': _shared_int(merged.get('p115_shared_cache_retention_days'), 7, 1, 365),
-        'p115_shared_auto_promote_enabled': _shared_bool(merged.get('p115_shared_auto_promote_enabled'), False),
-        'p115_shared_auto_promote_tv_episodes': _shared_int(merged.get('p115_shared_auto_promote_tv_episodes'), 2, 1, 99),
-        'p115_shared_auto_promote_movie_progress': _shared_int(merged.get('p115_shared_auto_promote_movie_progress'), 80, 1, 100),
+        'p115_shared_auto_share_requests_enabled': _shared_bool(merged.get('p115_shared_auto_share_requests_enabled'), False),
         'p115_shared_install_id': str(merged.get('p115_shared_install_id') or '').strip(),
     }
 
