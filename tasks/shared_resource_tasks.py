@@ -1788,7 +1788,7 @@ def trigger_shared_auto_share_for_library_item(
 
     probe = _probe_share_needed_for_library_item(client, item)
     if not probe.get('need_share'):
-        logger.info(
+        logger.debug(
             "  ➜ [共享资源] 入库实时分享跳过：%s S%sE%s reason=%s",
             item.get('title') or item.get('tmdb_id'), item.get('season_number'), item.get('episode_number'), probe.get('reason')
         )
@@ -1872,7 +1872,7 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                     'episode_number': candidate.get('episode_number', gap.get('episode_number')),
                 }
                 if _has_existing_share_for_gap(candidate_gap, candidate=candidate):
-                    logger.info(
+                    logger.debug(
                         "  ➜ [共享资源维护] 自动分享跳过已有活动分享/硬失败黑名单: %s S%sE%s root=%s",
                         candidate.get('display_title') or candidate.get('title') or candidate_gap.get('tmdb_id'),
                         candidate_gap.get('season_number'),
@@ -1937,17 +1937,17 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                 if hasattr(sr, '_files_missing_raw_ffprobe'):
                     missing_raw = sr._files_missing_raw_ffprobe(files)
                     if missing_raw:
-                        logger.info(f"  ➜ [共享资源维护] 自动分享跳过缺 raw_ffprobe_json 的资源：{candidate.get('display_title')} -> {sr._raw_missing_message(missing_raw) if hasattr(sr, '_raw_missing_message') else missing_raw}")
+                        logger.debug(f"  ➜ [共享资源维护] 自动分享跳过缺 raw_ffprobe_json 的资源：{candidate.get('display_title')} -> {sr._raw_missing_message(missing_raw) if hasattr(sr, '_raw_missing_message') else missing_raw}")
                         continue
 
                 if str(candidate.get('share_type') or '').strip().lower() == 'season_pack' and hasattr(sr, '_validate_season_pack_consistency'):
                     consistency = sr._validate_season_pack_consistency(files, {**candidate, **candidate_gap})
                     if not consistency.get('ok'):
-                        logger.info(f"  ➜ [共享资源维护] 自动分享跳过媒体参数不一致的季包：{candidate.get('display_title')} -> {consistency.get('message')}")
+                        logger.debug(f"  ➜ [共享资源维护] 自动分享跳过媒体参数不一致的季包：{candidate.get('display_title')} -> {consistency.get('message')}")
                         continue
 
                 if _has_existing_share_for_gap(candidate_gap, candidate=candidate, files=files):
-                    logger.info(
+                    logger.debug(
                         "  ➜ [共享资源维护] 自动分享跳过已有活动分享/硬失败黑名单: %s S%sE%s root=%s",
                         candidate.get('display_title') or candidate.get('title') or candidate_gap.get('tmdb_id'),
                         candidate_gap.get('season_number'),

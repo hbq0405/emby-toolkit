@@ -228,16 +228,16 @@ def _run_shared_auto_share_detached(task_name: str, **kwargs):
     def _runner():
         try:
             from tasks.shared_resource_tasks import trigger_shared_auto_share_for_library_item
-            logger.info(f"  ➜ [共享资源] 异步启动: {task_name}")
+            logger.debug(f"  ➜ [共享资源] 检查是否需要分享: {task_name}")
             result = trigger_shared_auto_share_for_library_item(None, **kwargs)
-            logger.info(
-                "  ➜ [共享资源] 异步完成: %s，created=%s，message=%s",
+            logger.debug(
+                "  ➜ [共享资源] 检查完成: %s，created=%s，message=%s",
                 task_name,
                 result.get('created', 0) if isinstance(result, dict) else '-',
                 result.get('message', '') if isinstance(result, dict) else '',
             )
         except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 异步自动分享探测失败: {task_name} -> {e}", exc_info=True)
+            logger.warning(f"  ➜ [共享资源] 自动分享探测失败: {task_name} -> {e}", exc_info=True)
 
     threading.Thread(
         target=_runner,
