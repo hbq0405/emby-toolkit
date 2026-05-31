@@ -741,10 +741,20 @@ def _build_virtual_id(source: Dict[str, Any]) -> str:
     return f"virt_{uuid.uuid4().hex}"
 
 
-def _write_text_file(path: str, text: str):
+def _write_text_file(path: str, text: str, *, enqueue: bool = True):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(text, encoding='utf-8')
+
+    # 这里只应该主动推送真正的媒体入口文件。
+    # - .strm 需要进入监控队列，触发 Emby 扫描/元数据生成；
+    # - *-mediainfo.json 是 STRM 的 sidecar，给本地 MediaInfo 读取，不是媒体项。
+    #   旧逻辑把 json 也 enqueue 到 monitor_service，后续扫描/元数据链路可能把它当作
+    #   非媒体投影清掉，表现就是日志显示“已写入/已加入队列”，目录里却只剩 strm。
+    if not enqueue:
+        return
     try:
+        if Path(path).suffix.lower() != '.strm':
+            return
         from monitor_service import enqueue_file_actively
         enqueue_file_actively(path)
     except Exception:
@@ -909,7 +919,7 @@ def _save_raw_and_write_mediainfo(source: Dict[str, Any], raw_map: Dict[str, Dic
         if not emby_obj:
             return False
         P115CacheManager.save_mediainfo_cache(sha1, emby_obj, raw)
-        _write_text_file(mediainfo_path, json.dumps(emby_obj, ensure_ascii=False, indent=2))
+        _write_text_file(mediainfo_path, json.dumps(emby_obj, ensure_ascii=False, indent=2), enqueue=False)
         return True
     except Exception as e:
         logger.warning(f"  ➜ [共享虚拟] 生成 mediainfo 失败: sha1={sha1[:12]}, err={e}")
