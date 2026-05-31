@@ -1944,10 +1944,12 @@ const openLocalShareForRequest = async (row) => {
 const triggerSharedMaintenance = async () => {
   maintenanceSubmitting.value = true;
   try {
-    const res = await axios.post('/api/shared/resources/tasks/maintenance');
-    message.success(res.data?.message || '维护任务已提交');
+    const res = await axios.post('/api/tasks/run', {
+      task_name: 'shared-resource-maintenance'
+    });
+    message.success(res.data?.message || '共享资源维护任务已提交');
   } catch (e) {
-    message.error(e.response?.data?.message || '提交维护任务失败');
+    message.error(e.response?.data?.error || e.response?.data?.message || '提交维护任务失败');
   } finally {
     maintenanceSubmitting.value = false;
   }

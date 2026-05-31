@@ -203,7 +203,7 @@ def get_task_registry(context: str = 'all'):
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'hdhive-auto-checkin': (task_hdhive_auto_checkin, "影巢自动签到", 'media', True),
         'restore-nfo-and-images': (task_restore_nfo_and_images, "还原NFO和封面", 'media', True),
-        'shared-resource-maintenance': (task_shared_resource_maintenance, "共享资源基础维护", 'media', True),
+        'shared-resource-maintenance': (task_shared_resource_maintenance, "共享资源维护", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "扫描全库剧集", 'watchlist', False),

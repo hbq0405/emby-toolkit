@@ -5858,17 +5858,3 @@ def api_center_import_sources():
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 手动入库中心资源失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'手动入库失败: {e}'}), 500
-
-
-@shared_resource_bp.route('/tasks/maintenance', methods=['POST'])
-@admin_required
-def api_trigger_shared_resource_maintenance():
-    try:
-        import task_manager
-        ok = task_manager.trigger_shared_resource_maintenance_task()
-        if ok:
-            return jsonify({'success': True, 'message': '共享资源维护任务已提交到后台任务队列'})
-        return jsonify({'success': False, 'message': '任务提交失败，可能已有其他任务正在运行'}), 409
-    except Exception as e:
-        logger.error(f"  ➜ [共享资源] 提交维护任务失败: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': f'提交维护任务失败: {e}'}), 500
