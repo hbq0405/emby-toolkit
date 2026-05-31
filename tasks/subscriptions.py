@@ -1558,6 +1558,17 @@ def task_auto_subscribe(processor):
             item_type = item['item_type']
             title = item['title'] # 默认为 item 标题
             season_number = item.get('season_number')
+
+            # 统一订阅任务不再处理 Episode 队列项。
+            # 单集只作为 Season.missing_episode_numbers 参与本地精确过滤；
+            # 真正登记中心缺口、查询中心资源、影巢/频道/MP 兜底，全部以 Season 为粒度。
+            if item_type == 'Episode':
+                logger.warning(
+                    f"  ➜ [队列保护] 《{title}》仍以 Episode 进入统一订阅队列，已跳过；"
+                    f"请检查 database.media_db.get_all_wanted_media 是否已应用季粒度补丁。"
+                )
+                continue
+
             if is_subscribed_recheck and item_type == 'Season':
                 logger.info(
                     f"  ➜ [补库模式] 《{title}》S{int(season_number or 0):02d} 已是 SUBSCRIBED，"
@@ -1652,13 +1663,8 @@ def task_auto_subscribe(processor):
                             f"处理方式: {shared_result.get('mode')}, 数量: {shared_result.get('count', 0)}"
                         )
                     elif shared_result.get('enabled') and shared_result.get('reported_gap'):
-                        if item_type == 'Episode':
-                            # 单集没有 MP/影巢兜底订阅入口；但共享中心缺口已经在
-                            # handler.shared_subscription_service 里统一提升为 Season 缺口。
-                            # 这里不能再写“单集缺口”，否则日志会误导成逐集登记。
-                            success = True
-                            action_type = '共享季缺口登记'
-                            logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记所属季缺口，等待中心推送。")
+                        if item_type == 'Season':
+                            logger.info(f"  ➜ [共享资源] 《{title}》S{int(season_number or 0):02d} 中心未命中，已登记季缺口，继续原有订阅链路。")
                         else:
                             logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记缺口，继续原有订阅链路。")
                 except Exception as e:
