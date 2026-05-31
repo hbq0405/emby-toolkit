@@ -44,6 +44,14 @@
                   </n-statistic>
                 </n-gi>
                 </n-grid>
+
+                <div class="weekly-library-chart">
+                  <div class="weekly-library-chart-header">
+                    <span>近 7 日入库</span>
+                    <span class="weekly-library-chart-total">{{ weeklyAddedTotal }} 项</span>
+                  </div>
+                  <v-chart class="weekly-added-chart" :option="weeklyAddedChartOptions" autoresize />
+                </div>
               </div>
   
               <n-divider />
@@ -53,7 +61,7 @@
                 <div class="section-title">媒体库概览</div>
                 <n-grid :cols="2" :x-gap="24" class="media-overview-grid" style="margin-top: 12px; align-items: center;">
                   <n-gi>
-                    <v-chart class="chart" :option="resolutionChartOptions" autoresize style="height: 180px;" />
+                    <v-chart class="chart" :option="resolutionChartOptions" autoresize style="height: 150px;" />
                   </n-gi>
                   <n-gi>
                     <n-space vertical justify="center" style="height: 100%;">
@@ -338,6 +346,10 @@
             </n-statistic>
           </n-gi>
         </n-grid>
+        <div class="mobile-weekly-chart">
+          <div class="mobile-weekly-title">近 7 日入库 · {{ weeklyAddedTotal }} 项</div>
+          <v-chart class="chart" :option="weeklyAddedChartOptions" autoresize style="height: 120px;" />
+        </div>
       </n-card>
 
       <!-- 3. 追剧状态 -->
@@ -408,11 +420,11 @@ import {
 import { FilmOutline, TvOutline, LayersOutline, CheckmarkCircleOutline as CheckIcon } from '@vicons/ionicons5';
 import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { PieChart } from 'echarts/charts';
-import { TitleComponent, TooltipComponent, LegendComponent } from 'echarts/components';
+import { PieChart, BarChart } from 'echarts/charts';
+import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components';
 import VChart from 'vue-echarts';
 
-use([ CanvasRenderer, PieChart, TitleComponent, TooltipComponent, LegendComponent ]);
+use([ CanvasRenderer, PieChart, BarChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent ]);
 
 // --- 移动端检测 ---
 const isMobile = ref(false);
@@ -426,7 +438,7 @@ const loading = reactive({
 });
 
 const stats = reactive({
-  media_library: { cached_total: 0, mediainfo_backed_up_total: 0, mediainfo_hits_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, resolution_stats: [] },
+  media_library: { cached_total: 0, mediainfo_backed_up_total: 0, mediainfo_hits_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, resolution_stats: [], weekly_added_stats: [] },
   system: { translation_cache_count: 0, processed_log_count: 0, failed_log_count: 0 },
   subscriptions_card: {
     watchlist: { watching: 0, paused: 0, completed: 0 },
@@ -518,6 +530,65 @@ const resolutionChartOptions = computed(() => {
         data: chartData.map(item => ({ value: item.count, name: item.resolution || '未知' }))
       }
     ]
+  };
+});
+
+const weeklyAddedTotal = computed(() => {
+  return (stats.media_library.weekly_added_stats || []).reduce((sum, item) => sum + Number(item.count || 0), 0);
+});
+
+const weeklyAddedChartOptions = computed(() => {
+  const chartData = stats.media_library.weekly_added_stats || [];
+  const primaryColor = themeVars.value?.primaryColor || '#5470C6';
+  const textColor2 = themeVars.value?.textColor2 || '#cfd8ff';
+  const textColor3 = themeVars.value?.textColor3 || '#9aa8d8';
+  const labels = chartData.map(item => item.date_label || item.date || '');
+  const values = chartData.map(item => Number(item.count || 0));
+
+  return {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params) => {
+        const item = params?.[0]?.dataItem || chartData[params?.[0]?.dataIndex] || {};
+        return `${item.date || ''}<br/>入库：${item.count || 0} 项<br/>电影：${item.movies || 0} · 剧集：${item.episodes || 0}`;
+      }
+    },
+    grid: { left: 8, right: 10, top: 18, bottom: 4, containLabel: true },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: 'rgba(148, 177, 255, 0.18)' } },
+      axisLabel: { color: textColor3, fontSize: 11 }
+    },
+    yAxis: {
+      type: 'value',
+      minInterval: 1,
+      axisLabel: { color: textColor3, fontSize: 11 },
+      splitLine: { lineStyle: { color: 'rgba(148, 177, 255, 0.10)' } }
+    },
+    series: [
+      {
+        name: '入库',
+        type: 'bar',
+        data: values.map((value, index) => ({
+          value,
+          dataItem: chartData[index]
+        })),
+        barMaxWidth: isMobile.value ? 18 : 26,
+        itemStyle: {
+          color: primaryColor,
+          borderRadius: [7, 7, 0, 0],
+          shadowBlur: 10,
+          shadowColor: 'rgba(84, 112, 198, 0.28)'
+        },
+        emphasis: {
+          itemStyle: { opacity: 0.9 }
+        }
+      }
+    ],
+    textStyle: { color: textColor2 }
   };
 });
 
@@ -636,13 +707,42 @@ onUnmounted(() => {
 
 .media-overview-card {
   flex: 1 1 auto;
-  min-height: 320px;
+  min-height: 360px;
   display: flex;
   flex-direction: column;
 }
 
 .media-overview-card .media-overview-grid {
-  flex: 1;
+  flex: 0 0 auto;
+}
+
+.weekly-library-chart {
+  flex: 1 1 auto;
+  min-height: 130px;
+  margin-top: 14px;
+  padding: 12px 14px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(148, 177, 255, 0.08);
+}
+
+.weekly-library-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: var(--n-text-color-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.weekly-library-chart-total {
+  color: var(--accent-color, var(--n-primary-color));
+}
+
+.weekly-added-chart {
+  width: 100%;
+  height: 110px;
 }
 
 .system-cache-card {
@@ -748,6 +848,21 @@ onUnmounted(() => {
   border: 1px solid rgba(148, 177, 255, 0.10) !important;
   backdrop-filter: var(--card-backdrop-filter, blur(10px));
   -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
+}
+
+.mobile-weekly-chart {
+  margin-top: 12px;
+  padding: 10px 10px 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(148, 177, 255, 0.08);
+}
+
+.mobile-weekly-title {
+  margin-bottom: 4px;
+  color: var(--n-text-color-2);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 </style>

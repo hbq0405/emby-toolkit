@@ -48,7 +48,8 @@ def api_get_stats_library():
             "movies_in_library": data.get('media_movies_in_library', 0),
             "series_in_library": data.get('media_series_in_library', 0),
             "episodes_in_library": data.get('media_episodes_in_library', 0),
-            "resolution_stats": data.get('resolution_stats', [])
+            "resolution_stats": data.get('resolution_stats', []),
+            "weekly_added_stats": data.get('weekly_added_stats', [])
         }
         return jsonify({"status": "success", "data": formatted_data})
     except Exception as e:

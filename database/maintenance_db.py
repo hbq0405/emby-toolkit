@@ -120,7 +120,82 @@ def get_stats_library() -> dict:
     """
     data = _execute_single_row_query(sql)
     data['resolution_stats'] = get_resolution_distribution() # 复用现有的分辨率函数
+    data['weekly_added_stats'] = get_weekly_library_additions(7)
     return data
+
+def get_weekly_library_additions(days: int = 7) -> List[Dict[str, Any]]:
+    """
+    统计最近 N 天每天入库的媒体文件数量，用于数据看板柱状图。
+    口径与发布组排行保持一致：按 asset_details_json 内的 date_added_to_library 统计文件级入库，
+    只统计 Movie / Episode，避免 Series / Season 层级重复计数。
+    """
+    try:
+        days = max(1, min(int(days or 7), 31))
+    except Exception:
+        days = 7
+
+    query = """
+        WITH date_range AS (
+            SELECT generate_series(
+                (NOW() AT TIME ZONE %(tz)s)::date - (%(days)s::int - 1),
+                (NOW() AT TIME ZONE %(tz)s)::date,
+                interval '1 day'
+            )::date AS stat_date
+        ),
+        raw_assets AS (
+            SELECT
+                mm.item_type,
+                asset ->> 'date_added_to_library' AS added_text
+            FROM media_metadata mm
+            CROSS JOIN LATERAL jsonb_array_elements(mm.asset_details_json) AS asset
+            WHERE
+                mm.in_library = TRUE
+                AND mm.item_type IN ('Movie', 'Episode')
+                AND mm.asset_details_json IS NOT NULL
+                AND jsonb_typeof(mm.asset_details_json) = 'array'
+                AND jsonb_array_length(mm.asset_details_json) > 0
+                AND mm.asset_details_json::text LIKE %(like_pattern)s
+                AND asset ? 'date_added_to_library'
+                AND NULLIF(asset ->> 'date_added_to_library', '') IS NOT NULL
+        ),
+        asset_rows AS (
+            SELECT
+                (
+                    CASE
+                        WHEN added_text ~ '(Z|[+-][0-9]{2}:?[0-9]{2})$'
+                            THEN added_text::timestamptz
+                        ELSE added_text::timestamp AT TIME ZONE 'UTC'
+                    END
+                    AT TIME ZONE %(tz)s
+                )::date AS stat_date,
+                item_type
+            FROM raw_assets
+            WHERE added_text ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+        )
+        SELECT
+            d.stat_date::text AS date,
+            to_char(d.stat_date, 'MM-DD') AS date_label,
+            COALESCE(COUNT(a.stat_date), 0)::int AS count,
+            COALESCE(COUNT(a.stat_date) FILTER (WHERE a.item_type = 'Movie'), 0)::int AS movies,
+            COALESCE(COUNT(a.stat_date) FILTER (WHERE a.item_type = 'Episode'), 0)::int AS episodes
+        FROM date_range d
+        LEFT JOIN asset_rows a ON a.stat_date = d.stat_date
+        GROUP BY d.stat_date
+        ORDER BY d.stat_date ASC;
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, {
+                    'tz': constants.TIMEZONE,
+                    'days': days,
+                    'like_pattern': '%date_added_to_library%'
+                })
+                return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取近 {days} 日入库统计失败: {e}", exc_info=True)
+        return []
 
 def get_stats_system() -> dict:
     """3. 系统日志与缓存 (快)"""
