@@ -44,14 +44,6 @@
                   </n-statistic>
                 </n-gi>
                 </n-grid>
-
-                <div class="weekly-library-chart">
-                  <div class="weekly-library-chart-header">
-                    <span>近 7 日入库</span>
-                    <span class="weekly-library-chart-total">{{ weeklyAddedTotal }} 项</span>
-                  </div>
-                  <v-chart class="weekly-added-chart" :option="weeklyAddedChartOptions" autoresize />
-                </div>
               </div>
   
               <n-divider />
@@ -103,6 +95,14 @@
                     </n-space>
                   </n-gi>
                 </n-grid>
+
+                <div class="weekly-library-chart">
+                  <div class="weekly-library-chart-header">
+                    <span>近 7 日入库</span>
+                    <span class="weekly-library-chart-total">{{ weeklyAddedTotal }} 项</span>
+                  </div>
+                  <v-chart class="weekly-added-chart" :option="weeklyAddedChartOptions" autoresize />
+                </div>
               </div>
   
               <n-divider />
@@ -550,7 +550,7 @@ const weeklyAddedChartOptions = computed(() => {
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
       formatter: (params) => {
-        const item = params?.[0]?.dataItem || chartData[params?.[0]?.dataIndex] || {};
+        const item = params?.[0]?.data?.dataItem || chartData[params?.[0]?.dataIndex] || {};
         return `${item.date || ''}<br/>入库：${item.count || 0} 项<br/>电影：${item.movies || 0} · 剧集：${item.episodes || 0}`;
       }
     },

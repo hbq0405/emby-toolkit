@@ -3379,7 +3379,22 @@ def _my_active_share_request_count(client: SharedCenterClient) -> int:
     try:
         resp = client.list_share_requests(status='open', limit=100, offset=0)
         items = resp.get('items') or []
-        return sum(1 for item in items if bool(item.get('joined_by_me')) and str(item.get('status') or 'open') == 'open')
+
+        def is_my_open_request(item: Dict[str, Any]) -> bool:
+            status = str(item.get('status') or 'open').strip().lower()
+            if status != 'open':
+                return False
+
+            role = str(item.get('my_role') or '').strip().lower()
+            return (
+                bool(item.get('joined_by_me'))
+                or bool(item.get('is_mine'))
+                or bool(item.get('created_by_me'))
+                or bool(item.get('is_owner'))
+                or role in ('owner', 'co_requester', 'requester')
+            )
+
+        return sum(1 for item in items if is_my_open_request(item))
     except Exception as e:
         logger.debug(f"  ➜ [求分享监听] 检查我的开放求分享失败: {e}")
         return 0
