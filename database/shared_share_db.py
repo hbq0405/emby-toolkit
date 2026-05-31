@@ -522,7 +522,8 @@ def has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] = 
                     LEFT JOIN shared_share_items i ON i.share_record_id = r.id
                     WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
                       AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
-                      AND COALESCE(i.episode_number, -1)=COALESCE(%s, -1)
+                      -- 修复：同时检查明细表和主表的 episode_number
+                      AND COALESCE(i.episode_number, r.episode_number, -1)=COALESCE(%s, -1)
                       AND r.status = ANY(%s)
                     LIMIT 1
                     """,
@@ -649,9 +650,10 @@ def has_hard_blocked_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any
                     LEFT JOIN shared_share_items i ON i.share_record_id = r.id
                     WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
                       AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
-                      AND COALESCE(i.episode_number, -1)=COALESCE(%s, -1)
+                      -- 修复：同时检查明细表和主表的 episode_number
+                      AND COALESCE(i.episode_number, r.episode_number, -1)=COALESCE(%s, -1)
                       AND r.status = ANY(%s)
-                      {hard_block_sql}
+                      {{hard_block_sql}}
                     LIMIT 1
                     """,
                     [tmdb_ids, tmdb_ids, tmdb_ids, season, episode, statuses] + hard_args(),
