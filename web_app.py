@@ -112,14 +112,14 @@ def _refresh_shared_device_event_listener(reason: str = "startup"):
         if enabled:
             started = ensure_shared_device_event_listener()
             if started:
-                logger.info(f"  ➜ [共享事件监听] 服务已启动/运行中 ({reason})。")
+                logger.info(f"  ➜ [共享资源] 服务已启动，开始监听最新分享事件。")
             else:
-                logger.debug(f"  ➜ [共享事件监听] 未启动：共享中心配置未就绪或监听已关闭 ({reason})。")
+                logger.debug(f"  ➜ [共享资源] 未启动：共享中心配置未就绪或监听已关闭 ({reason})。")
         else:
             stop_shared_device_event_listener()
-            logger.debug(f"  ➜ [共享事件监听] 共享资源未启用，已确保监听停止 ({reason})。")
+            logger.debug(f"  ➜ [共享资源] 共享资源未启用，已确保监听停止 ({reason})。")
     except Exception as e:
-        logger.warning(f"  ➜ [共享事件监听] 刷新监听服务失败 ({reason}): {e}")
+        logger.warning(f"  ➜ [共享资源] 刷新监听服务失败 ({reason}): {e}")
 
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)

@@ -4033,7 +4033,7 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
 
 
 def _shared_device_event_listener_worker():
-    logger.info("  ➜ [共享事件监听] 长轮询监听已启动。")
+    # logger.info("  ➜ [共享事件监听] 长轮询监听已启动。")
     client = SharedCenterClient()
     idle_errors = 0
     use_legacy_share_request_poll = False
