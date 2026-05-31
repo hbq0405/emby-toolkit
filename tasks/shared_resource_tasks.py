@@ -131,20 +131,49 @@ def _delete_emby_item_for_virtual(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _gap_item(row: Dict[str, Any]) -> Dict[str, Any]:
+    """把本地订阅/缺失行归一化为中心缺口。
+
+    中心缺口只保留“电影 / 季 / 剧”粒度。Episode 行只代表本地缺失明细，
+    不能原样上报为中心缺口，否则长篇动漫会产生海量 open gaps。
+    """
+    item_type = str(row.get('item_type') or '').strip()
+    season = row.get('season_number')
+    episode = row.get('episode_number')
+    if item_type == 'Episode' and season not in (None, ''):
+        item_type = 'Season'
+        episode = None
     return {
         'tmdb_id': str(row.get('parent_series_tmdb_id') or row.get('tmdb_id') or ''),
-        'item_type': row.get('item_type') or '',
-        'season_number': row.get('season_number'),
-        'episode_number': row.get('episode_number'),
-        'title': row.get('title') or None,
+        'item_type': item_type,
+        'season_number': season,
+        'episode_number': episode,
+        'title': row.get('season_title') or row.get('title') or None,
         'release_year': row.get('release_year'),
     }
 
 
+def _dedupe_gap_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for item in items or []:
+        if not item.get('tmdb_id') or not item.get('item_type'):
+            continue
+        key = (
+            str(item.get('tmdb_id') or ''),
+            str(item.get('item_type') or ''),
+            _safe_int(item.get('season_number'), None),
+            _safe_int(item.get('episode_number'), None),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 def _report_local_wanted_gaps(client: SharedCenterClient, limit: int = 200) -> int:
     rows = shared_share_db.get_local_wanted_gaps(limit)
-    items = [_gap_item(r) for r in rows]
-    items = [x for x in items if x.get('tmdb_id') and x.get('item_type')]
+    items = _dedupe_gap_items([_gap_item(r) for r in rows])
     if not items: return 0
     try:
         resp = client.report_gaps(items)
@@ -1468,9 +1497,11 @@ def _build_center_probe_query(item: Dict[str, Any]) -> Dict[str, Any]:
     if item_type == 'Episode':
         return {
             'tmdb_id': str(item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or item.get('tmdb_id') or ''),
-            'item_type': 'Episode',
+            # 入库实时探测也按季查询中心源；中心是否需要“某一集”由 probe-needed
+            # 或本地回退逻辑结合 Season gap + 同季已有源判断。
+            'item_type': 'Season',
             'season_number': _safe_int(item.get('season_number'), None),
-            'episode_number': _safe_int(item.get('episode_number'), None),
+            'episode_number': None,
             'title': item.get('title') or None,
             'release_year': _safe_int(item.get('release_year'), None),
         }

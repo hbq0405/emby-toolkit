@@ -379,7 +379,11 @@ def _build_gap_item(*, tmdb_id, item_type, title='', season_number=None, episode
 
 
 def _build_center_queries(item: Dict[str, Any], title: str, tmdb_id, item_type: str, parent_tmdb_id=None, season_number=None, year='') -> List[Dict[str, Any]]:
-    """把本地待订阅项转换成中心查询。Season/Series 查询依赖中心端支持按季/剧返回 Episode 源。"""
+    """把本地待订阅项转换成中心查询。
+
+    关键约定：剧集缺口只按 Season 登记/查询，不再按 Episode 建缺口。
+    客户端拿到同季共享源后，再用本地缺集列表精确匹配具体 SxxEyy。
+    """
     item_type = str(item_type or '').strip()
     queries = []
     if item_type == 'Movie':
@@ -390,14 +394,12 @@ def _build_center_queries(item: Dict[str, Any], title: str, tmdb_id, item_type: 
     elif item_type == 'Series':
         queries.append(_build_gap_item(tmdb_id=tmdb_id, item_type='Series', title=title, year=year))
     elif item_type == 'Episode':
-        sid = parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id')
+        sid = parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or tmdb_id
         s_num = season_number if season_number not in (None, '') else item.get('season_number')
-        e_num = item.get('episode_number')
-        # 中心 Episode 查询以“父剧 TMDb + SxxEyy”为主；部分旧数据可能按单集 TMDb 登记，保留兜底。
-        if sid:
-            queries.append(_build_gap_item(tmdb_id=sid, item_type='Episode', title=title, season_number=s_num, episode_number=e_num, year=year))
-        if tmdb_id and str(tmdb_id) != str(sid or ''):
-            queries.append(_build_gap_item(tmdb_id=tmdb_id, item_type='Episode', title=title, season_number=s_num, episode_number=e_num, year=year))
+        # Episode 只用于本地精确消费，中心缺口/搜索统一提升到 Season 粒度。
+        # 这样一季几百上千集也只会产生一个 open gap。
+        if sid and s_num not in (None, ''):
+            queries.append(_build_gap_item(tmdb_id=sid, item_type='Season', title=title, season_number=s_num, year=year))
     return [q for q in queries if q.get('tmdb_id')]
 
 
@@ -2105,17 +2107,23 @@ def try_consume_shared_resource(
         logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
 
     # =================================================================
-    # ★ 核心修复：精准过滤中心返回的无关单集，防止“幽灵追更”日志
+    # 中心查询按季返回后，本地仍然必须精确过滤到当前缺失集。
+    # - 单集源：必须同季同集；
+    # - 季包/旧数据没有 episode_number：保留，后续按 SHA1/包内文件消费。
     # =================================================================
+    req_s_num = season_number if season_number not in (None, '') else item.get('season_number')
     req_e_num = item.get('episode_number')
     if req_e_num is not None and str(req_e_num).strip() != '':
         filtered_sources = []
         for src in sources:
+            src_s_num = src.get('season_number')
             src_e_num = src.get('episode_number')
-            # 如果中心返回的源明确标明了集号，且与我们请求的集号不符，直接丢弃！
-            # (如果 src_e_num 为空，说明可能是季包，保留放行)
-            if src_e_num is not None and str(src_e_num).strip() != '' and int(src_e_num) != int(req_e_num):
-                continue
+            if src_s_num is not None and str(src_s_num).strip() != '' and req_s_num not in (None, ''):
+                if int(src_s_num) != int(req_s_num):
+                    continue
+            if src_e_num is not None and str(src_e_num).strip() != '':
+                if int(src_e_num) != int(req_e_num):
+                    continue
             filtered_sources.append(src)
         sources = filtered_sources
 

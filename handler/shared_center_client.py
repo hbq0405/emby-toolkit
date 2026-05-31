@@ -65,6 +65,64 @@ def shared_resource_mode() -> str:
     return 'virtual' if mode == 'virtual' else 'permanent'
 
 
+def _safe_int_or_none(value):
+    try:
+        if value in (None, ''):
+            return None
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _normalize_gap_item_for_center(item: Dict[str, Any]) -> Dict[str, Any]:
+    """归一化中心缺口粒度。
+
+    普通共享池只登记 Movie / Season / Series 缺口；Episode 只作为客户端本地
+    缺失明细存在。这样长篇动漫不会因为几百上千集把中心 wanted_gaps 撑爆。
+    """
+    item = dict(item or {})
+    item_type = str(item.get('item_type') or '').strip()
+    season = _safe_int_or_none(item.get('season_number'))
+    episode = _safe_int_or_none(item.get('episode_number'))
+    if item_type.lower() in ('episode', 'episode_file', 'single') and season is not None:
+        item['item_type'] = 'Season'
+        item['season_number'] = season
+        item['episode_number'] = None
+    elif item_type.lower() in ('season', 'season_pack', 'tv_pack'):
+        item['item_type'] = 'Season'
+        item['season_number'] = season
+        item['episode_number'] = None
+    elif item_type.lower() in ('movie', 'movie_file', 'movie_folder'):
+        item['item_type'] = 'Movie'
+        item['episode_number'] = None
+    elif item_type.lower() in ('series', 'show', 'tv'):
+        item['item_type'] = 'Series'
+        item['episode_number'] = None
+    return item
+
+
+def _dedupe_gap_items_for_center(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        item = _normalize_gap_item_for_center(raw)
+        if not item.get('tmdb_id') or not item.get('item_type'):
+            continue
+        key = (
+            str(item.get('tmdb_id') or ''),
+            str(item.get('item_type') or ''),
+            _safe_int_or_none(item.get('season_number')),
+            _safe_int_or_none(item.get('episode_number')),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 class SharedCenterClient:
     def __init__(self):
         cfg = _shared_cfg()
@@ -141,6 +199,7 @@ class SharedCenterClient:
         return resp.json() if resp.text else {}
 
     def report_gaps(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        items = _dedupe_gap_items_for_center(items)
         if not items:
             return {'count': 0, 'items': []}
         return self._post('/api/v1/gaps/batch', {'items': items}, timeout=20)
