@@ -3924,155 +3924,186 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
 
 
 # ======================================================================
-# 求分享命中定向转存：客户端仅在自己有 open 求分享/同求时启动长轮询。
+# 中心通用设备事件监听：中心按 device_id 推送资源可用/求分享命中等事件。
 # ======================================================================
-_share_request_event_listener_lock = threading.Lock()
-_share_request_event_listener_thread = None
-_share_request_event_listener_stop = threading.Event()
+_shared_device_event_listener_lock = threading.Lock()
+_shared_device_event_listener_thread = None
+_shared_device_event_listener_stop = threading.Event()
 
 
-def _my_active_share_request_count(client: SharedCenterClient) -> int:
+def _notify_shared_device_event(event: Dict[str, Any], result: Dict[str, Any], success: bool):
+    """事件消费后的通知。当前复用求分享通知入口；其它事件只写日志，不强依赖 TG。"""
+    event_type = str((event or {}).get('event_type') or '').strip()
     try:
-        resp = client.list_share_requests(status='open', limit=100, offset=0)
-        items = resp.get('items') or []
-        return sum(1 for item in items if bool(item.get('joined_by_me')) and str(item.get('status') or 'open') == 'open')
+        if event_type == 'request_matched':
+            from handler.telegram import send_share_request_push_notification
+            send_share_request_push_notification(event, result=result, success=success)
     except Exception as e:
-        logger.debug(f"  ➜ [求分享监听] 检查我的开放求分享失败: {e}")
-        return 0
+        logger.debug(f"  ➜ [共享事件监听] 发送事件通知失败: {e}")
 
 
-def _notify_share_request_push(event: Dict[str, Any], result: Dict[str, Any], success: bool):
+def _ack_shared_device_event(client: SharedCenterClient, event: Dict[str, Any], result: str, message: str):
+    event_id = str((event or {}).get('event_id') or '').strip()
+    if not event_id:
+        return
     try:
-        from handler.telegram import send_share_request_push_notification
-        send_share_request_push_notification(event, result=result, success=success)
+        # 新中心通用事件回执。
+        if hasattr(client, 'ack_device_event'):
+            client.ack_device_event(event_id, result=result, message=message)
+            return
     except Exception as e:
-        logger.debug(f"  ➜ [求分享监听] 发送自动转存通知失败: {e}")
+        logger.debug(f"  ➜ [共享事件监听] 通用事件回执失败: event={event_id}, err={e}")
+
+    # 旧中心兼容：求分享事件仍走老接口。
+    try:
+        client.ack_share_request_event(event_id, result=result, message=message)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享事件监听] 旧求分享事件回执失败: event={event_id}, err={e}")
 
 
-def _handle_share_request_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
+def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
     event = dict(event or {})
+    payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
     event_id = str(event.get('event_id') or '').strip()
-    source_id = str(event.get('source_id') or '').strip()
-    title = event.get('title') or (event.get('payload') or {}).get('title') or source_id
-    if not event_id or not source_id:
-        return {'success': False, 'message': '事件缺少 event_id/source_id'}
+    event_type = str(event.get('event_type') or payload.get('event_type') or 'resource_available').strip()
+    source_id = str(event.get('source_id') or payload.get('source_id') or '').strip()
+    title = event.get('title') or payload.get('title') or source_id or event_id
+
+    if not event_id:
+        return {'success': False, 'message': '事件缺少 event_id'}
+
+    if event_type not in ('resource_available', 'request_matched'):
+        msg = f'暂不支持的事件类型：{event_type}'
+        _ack_shared_device_event(client, event, 'skipped', msg)
+        logger.debug(f"  ➜ [共享事件监听] {msg} event={event_id}")
+        return {'success': False, 'skipped': True, 'message': msg}
+
+    if not source_id:
+        msg = '事件缺少 source_id'
+        _ack_shared_device_event(client, event, 'failed', msg)
+        return {'success': False, 'message': msg}
 
     try:
         from handler.shared_subscription_service import consume_center_sources
     except Exception as e:
         msg = f'共享资源消费入口不可用：{e}'
-        try:
-            client.ack_share_request_event(event_id, result='failed', message=msg)
-        except Exception:
-            pass
-        _notify_share_request_push(event, {'message': msg}, False)
+        _ack_shared_device_event(client, event, 'failed', msg)
+        _notify_shared_device_event(event, {'message': msg}, False)
         return {'success': False, 'message': msg}
 
     try:
         mode = shared_resource_mode()
         context = {
-            'source': 'share_request_push',
-            'share_request_event_id': event_id,
-            'share_request_group_id': event.get('group_id'),
+            'source': 'device_event_push',
+            'device_event_id': event_id,
+            'event_type': event_type,
+            'gap_key': event.get('gap_key') or payload.get('gap_key'),
+            'share_request_group_id': event.get('group_id') or payload.get('group_id'),
             'title': title,
-            'target_type': event.get('target_type'),
-            'season_number': event.get('season_number'),
-            'episode_number': event.get('episode_number'),
+            'target_type': event.get('target_type') or payload.get('target_type'),
+            'season_number': event.get('season_number') if event.get('season_number') is not None else payload.get('season_number'),
+            'episode_number': event.get('episode_number') if event.get('episode_number') is not None else payload.get('episode_number'),
         }
-        logger.info("  ➜ [求分享监听] 收到命中事件，开始自动转存: %s source=%s", title, source_id)
+        label = '求分享命中' if event_type == 'request_matched' else '缺口资源可用'
+        logger.info("  ➜ [共享事件监听] 收到%s事件，开始自动转存: %s source=%s", label, title, source_id)
         result = consume_center_sources([source_id], mode=mode, context=context) or {}
         ok = bool(result.get('success'))
         message = result.get('message') or result.get('action_type') or ('自动转存成功' if ok else '自动转存失败')
+        _ack_shared_device_event(client, event, 'success' if ok else 'failed', message)
+
+        ledger_reason = 'shared_device_event_import_success' if ok else 'shared_device_event_import_failed'
+        ledger_title = f'{label}后自动转存：{title}' if ok else f'{label}但自动转存失败：{title}'
         try:
-            client.ack_share_request_event(event_id, result='success' if ok else 'failed', message=message)
-        except Exception as e:
-            logger.debug(f"  ➜ [求分享监听] 回执中心事件失败: event={event_id}, err={e}")
-        if ok:
             shared_virtual_db.add_credit_ledger(
-                'share_request_push_import_success', 0,
-                f'求分享命中后自动转存：{title}',
-                ref_id=str(event.get('group_id') or event_id),
+                ledger_reason, 0, ledger_title,
+                ref_id=str(event.get('gap_key') or payload.get('gap_key') or event.get('group_id') or payload.get('group_id') or event_id),
                 title=title,
                 raw_json={'event': event, 'result': result},
             )
-        else:
-            shared_virtual_db.add_credit_ledger(
-                'share_request_push_import_failed', 0,
-                f'求分享命中但自动转存失败：{title}',
-                ref_id=str(event.get('group_id') or event_id),
-                title=title,
-                raw_json={'event': event, 'result': result},
-            )
-        _notify_share_request_push(event, result, ok)
+        except Exception:
+            pass
+        _notify_shared_device_event(event, result, ok)
         return result
     except Exception as e:
         msg = f'自动转存异常：{e}'
-        logger.warning(f"  ➜ [求分享监听] 处理命中事件失败: {event} -> {e}", exc_info=True)
-        try:
-            client.ack_share_request_event(event_id, result='failed', message=msg)
-        except Exception:
-            pass
-        _notify_share_request_push(event, {'message': msg}, False)
+        logger.warning(f"  ➜ [共享事件监听] 处理中心事件失败: {event} -> {e}", exc_info=True)
+        _ack_shared_device_event(client, event, 'failed', msg)
+        _notify_shared_device_event(event, {'message': msg}, False)
         return {'success': False, 'message': msg}
 
 
-def _share_request_event_listener_worker():
-    logger.info("  ➜ [求分享监听] 长轮询监听已启动。")
+def _shared_device_event_listener_worker():
+    logger.info("  ➜ [共享事件监听] 长轮询监听已启动。")
     client = SharedCenterClient()
     idle_errors = 0
+    use_legacy_share_request_poll = False
     try:
-        while not _share_request_event_listener_stop.is_set():
+        while not _shared_device_event_listener_stop.is_set():
             if not _enabled() or not client.ready:
                 break
-            if _my_active_share_request_count(client) <= 0:
-                logger.info("  ➜ [求分享监听] 当前没有开放的本人求分享/同求，停止长轮询。")
-                break
             try:
-                resp = client.poll_share_request_events(timeout=25, limit=5)
+                if use_legacy_share_request_poll or not hasattr(client, 'poll_device_events'):
+                    resp = client.poll_share_request_events(timeout=25, limit=5)
+                else:
+                    resp = client.poll_device_events(timeout=25, limit=5)
+                    if resp.get('supported') is False:
+                        use_legacy_share_request_poll = True
+                        logger.info("  ➜ [共享事件监听] 中心暂不支持通用 device_events，回退旧求分享事件轮询。")
+                        continue
                 idle_errors = 0
             except Exception as e:
                 idle_errors += 1
-                logger.debug(f"  ➜ [求分享监听] 长轮询失败，将重试: {e}")
+                logger.debug(f"  ➜ [共享事件监听] 长轮询失败，将重试: {e}")
                 if idle_errors >= 12:
-                    logger.warning("  ➜ [求分享监听] 连续长轮询失败过多，停止监听，等待下次求分享/维护任务重新启动。")
+                    logger.warning("  ➜ [共享事件监听] 连续长轮询失败过多，停止监听，等待下次状态同步任务重新启动。")
                     break
                 time.sleep(min(30, 3 * idle_errors))
                 continue
 
             for event in resp.get('items') or []:
-                if _share_request_event_listener_stop.is_set():
+                if _shared_device_event_listener_stop.is_set():
                     break
-                _handle_share_request_event(client, event)
+                # 旧中心求分享事件没有 event_type，统一补成 request_matched。
+                if use_legacy_share_request_poll and not event.get('event_type'):
+                    event = dict(event)
+                    event['event_type'] = 'request_matched'
+                _handle_shared_device_event(client, event)
     finally:
-        logger.info("  ➜ [求分享监听] 长轮询监听已停止。")
+        logger.info("  ➜ [共享事件监听] 长轮询监听已停止。")
 
 
-def ensure_share_request_event_listener() -> bool:
-    """启动求分享长轮询监听。没有本人 open 求分享时不会启动。"""
+def ensure_shared_device_event_listener() -> bool:
+    """启动中心通用事件长轮询。共享资源启用后常驻，用于消费中心按 device_id 下发的事件。"""
     if not _enabled():
         return False
     client = SharedCenterClient()
     if not client.ready:
         return False
-    if _my_active_share_request_count(client) <= 0:
-        return False
-    global _share_request_event_listener_thread
-    with _share_request_event_listener_lock:
-        if _share_request_event_listener_thread and _share_request_event_listener_thread.is_alive():
+    global _shared_device_event_listener_thread
+    with _shared_device_event_listener_lock:
+        if _shared_device_event_listener_thread and _shared_device_event_listener_thread.is_alive():
             return True
-        _share_request_event_listener_stop.clear()
-        _share_request_event_listener_thread = threading.Thread(
-            target=_share_request_event_listener_worker,
-            name='ShareRequestEventListener',
+        _shared_device_event_listener_stop.clear()
+        _shared_device_event_listener_thread = threading.Thread(
+            target=_shared_device_event_listener_worker,
+            name='SharedDeviceEventListener',
             daemon=True,
         )
-        _share_request_event_listener_thread.start()
+        _shared_device_event_listener_thread.start()
         return True
 
 
-def stop_share_request_event_listener():
-    _share_request_event_listener_stop.set()
+# 兼容旧调用名：外部若仍调用 ensure_share_request_event_listener，实际启动的是全局事件监听。
+def ensure_share_request_event_listener() -> bool:
+    return ensure_shared_device_event_listener()
 
+
+def stop_shared_device_event_listener():
+    _shared_device_event_listener_stop.set()
+
+
+def stop_share_request_event_listener():
+    stop_shared_device_event_listener()
 
 
 def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: bool = False):
@@ -4094,12 +4125,12 @@ def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: 
     try:
         _status(20, '正在检查 115 分享审核状态并登记中心...')
         total.update(_auto_check_and_report_local_shares(client, max_records=80))
-        _status(80, '正在确保求分享事件监听...')
-        total['share_request_listener'] = ensure_share_request_event_listener()
+        _status(80, '正在确保共享中心事件监听...')
+        total['device_event_listener'] = ensure_shared_device_event_listener()
         logger.info(
             "\n=== 共享分享状态同步完成 ===\n"
             f"  ➜ 分享状态同步: 检查 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，中心补登 {total.get('resynced', 0)}，清理失效 {total.get('cancelled', 0)}\n"
-            f"  ➜ 求分享监听: {'已启动/运行中' if total.get('share_request_listener') else '无需启动'}\n"
+            f"  ➜ 共享事件监听: {'已启动/运行中' if total.get('device_event_listener') else '未启动'}\n"
             "========================"
         )
         _status(

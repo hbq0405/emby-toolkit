@@ -179,8 +179,34 @@ class SharedCenterClient:
         }
         return self._get(f"/api/v1/share-requests?{urllib.parse.urlencode(params)}", timeout=25)
 
+    def poll_device_events(self, *, timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
+        """长轮询领取中心按 device_id 下发的通用事件。"""
+        import urllib.parse
+        timeout = max(1, min(int(timeout or 25), 55))
+        limit = max(1, min(int(limit or 5), 20))
+        query = urllib.parse.urlencode({'timeout': timeout, 'limit': limit})
+        try:
+            resp = self._get(f'/api/v1/device-events/poll?{query}', timeout=timeout + 10)
+            resp['supported'] = True
+            return resp
+        except RuntimeError as e:
+            text = str(e)
+            if '404' in text or 'Not Found' in text:
+                return {'supported': False, 'items': [], 'message': 'center_device_events_not_supported'}
+            raise
+
+    def ack_device_event(self, event_id: str, result: str = 'success', message: str = '') -> Dict[str, Any]:
+        event_id = str(event_id or '').strip()
+        if not event_id:
+            return {'ok': False, 'message': 'missing event_id'}
+        return self._post(
+            f'/api/v1/device-events/{event_id}/ack',
+            {'result': result or 'success', 'message': message or ''},
+            timeout=15,
+        )
+
     def poll_share_request_events(self, *, timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
-        """长轮询领取“我发起/同求的资源已有人分享”事件。"""
+        """兼容旧中心：长轮询领取求分享命中事件。新中心请使用 poll_device_events。"""
         import urllib.parse
         timeout = max(1, min(int(timeout or 25), 55))
         limit = max(1, min(int(limit or 5), 20))
