@@ -2206,11 +2206,141 @@ def _active_episode_share_statuses_for_rollup() -> List[str]:
     return _active_share_statuses()
 
 
-def _load_completed_season_episode_share_groups(limit: int = 30) -> List[Dict[str, Any]]:
+def _watchlist_auto_resub_ended_enabled() -> bool:
+    """读取追剧策略里的完结洗版开关。
+
+    这里复用 watchlist_config.auto_resub_ended：
+    - 开启：完结季汇总一致性失败后，下次维护仍然继续尝试；
+    - 关闭：一致性失败的季标记为跳过，避免每轮维护重复发起低质量季包汇总。
+    """
+    try:
+        cfg = settings_db.get_setting('watchlist_config') or {}
+        if isinstance(cfg, str) and cfg.strip():
+            cfg = json.loads(cfg)
+        if not isinstance(cfg, dict):
+            return False
+        return _safe_bool(cfg.get('auto_resub_ended'), False)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 读取 watchlist_config.auto_resub_ended 失败，按关闭处理: {e}")
+        return False
+
+
+def _is_season_pack_consistency_failure(create_result: Dict[str, Any]) -> bool:
+    if not isinstance(create_result, dict):
+        return False
+    reason = str(create_result.get('reason') or '').strip().lower()
+    if reason == 'season_pack_consistency_failed':
+        return True
+    msg = str(create_result.get('message') or '').lower()
+    return '季包一致性校验失败' in msg or '季包媒体参数不一致' in msg
+
+
+_SEASON_ROLLUP_QUALITY_BLOCKLIST_KEY = 'shared_season_rollup_quality_blocklist'
+
+
+def _season_rollup_quality_key(parent_series_tmdb_id: str, season_number) -> str:
+    try:
+        season_text = f"{int(season_number):02d}"
+    except Exception:
+        season_text = str(season_number or '').strip()
+    return f"{str(parent_series_tmdb_id or '').strip()}|S{season_text}"
+
+
+def _load_season_rollup_quality_blocklist() -> Dict[str, Any]:
+    try:
+        data = settings_db.get_setting(_SEASON_ROLLUP_QUALITY_BLOCKLIST_KEY) or {}
+        if isinstance(data, str) and data.strip():
+            data = json.loads(data)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _season_rollup_quality_blocked(parent_series_tmdb_id: str, season_number) -> bool:
+    key = _season_rollup_quality_key(parent_series_tmdb_id, season_number)
+    if not key or key.startswith('|'):
+        return False
+    entry = _load_season_rollup_quality_blocklist().get(key)
+    return bool(isinstance(entry, dict) and entry.get('blocked'))
+
+
+def _remember_season_rollup_quality_block(parent_series_tmdb_id: str, season_number, message: str, create_result: Dict[str, Any] | None = None) -> None:
+    key = _season_rollup_quality_key(parent_series_tmdb_id, season_number)
+    if not key or key.startswith('|'):
+        return
+    data = _load_season_rollup_quality_blocklist()
+    data[key] = {
+        'blocked': True,
+        'reason': 'season_pack_consistency_failed',
+        'message': str(message or '')[:1000],
+        'parent_series_tmdb_id': str(parent_series_tmdb_id or '').strip(),
+        'season_number': _safe_int(season_number, 0),
+        'blocked_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'retry_when': 'watchlist_config.auto_resub_ended=true',
+        'error_meta': (create_result or {}).get('error_meta') or {},
+    }
+    try:
+        settings_db.save_setting(_SEASON_ROLLUP_QUALITY_BLOCKLIST_KEY, data)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 写入完结季汇总跳过记录失败: {key} -> {e}")
+
+
+def _mark_season_rollup_quality_blocked(
+    episode_records: List[Dict[str, Any]],
+    *,
+    parent_series_tmdb_id: str,
+    season_number,
+    message: str,
+    create_result: Dict[str, Any] | None = None,
+) -> int:
+    """一致性不达标时标记本季不再自动汇总。
+
+    不取消现有单集分享，只在 raw_json 上写一个跳过标记。
+    以后用户打开 auto_resub_ended 后，维护任务会忽略这个标记重新尝试。
+    """
+    record_ids = []
+    for record in episode_records or []:
+        rid = record.get('id')
+        if rid is None or rid in record_ids:
+            continue
+        record_ids.append(rid)
+    if not record_ids:
+        return 0
+
+    payload = {
+        'season_completed_rollup_skip': {
+            'blocked': True,
+            'reason': 'season_pack_consistency_failed',
+            'message': str(message or '')[:1000],
+            'parent_series_tmdb_id': str(parent_series_tmdb_id or ''),
+            'season_number': _safe_int(season_number, 0),
+            'blocked_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'retry_when': 'watchlist_config.auto_resub_ended=true',
+            'error_meta': (create_result or {}).get('error_meta') or {},
+        }
+    }
+    _remember_season_rollup_quality_block(parent_series_tmdb_id, season_number, message, create_result)
+    try:
+        updated = shared_share_db.mark_season_rollup_skipped_for_records(
+            record_ids,
+            reason='season_pack_consistency_failed',
+            message=str(message or '季包一致性校验失败，已停止自动汇总该季'),
+            raw_json_patch=payload,
+        )
+        return int(updated or 0)
+    except Exception as e:
+        logger.warning(
+            "  ➜ [共享资源维护] 标记完结季汇总跳过失败: parent=%s S%s -> %s",
+            parent_series_tmdb_id, season_number, e, exc_info=True,
+        )
+        return 0
+
+
+def _load_completed_season_episode_share_groups(limit: int = 30, include_rollup_blocked: bool = False) -> List[Dict[str, Any]]:
     statuses = _active_episode_share_statuses_for_rollup()
     if not statuses: return []
     max_rows = max(50, int(limit or 30) * 20)
-    rows = shared_share_db.get_completed_season_episode_share_groups(statuses, max_rows)
+    rows = shared_share_db.get_completed_season_episode_share_groups(statuses, max_rows, include_rollup_blocked=include_rollup_blocked)
 
     groups: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -2249,7 +2379,13 @@ def _load_completed_season_episode_share_groups(limit: int = 30) -> List[Dict[st
         if not any(str(x.get('id')) == str(record.get('id')) for x in group['episode_records']):
             group['episode_records'].append(record)
 
-    return list(groups.values())[:max(1, int(limit or 30))]
+    result_groups = list(groups.values())
+    if not include_rollup_blocked:
+        result_groups = [
+            g for g in result_groups
+            if not _season_rollup_quality_blocked(g.get('parent_series_tmdb_id'), g.get('season_number'))
+        ]
+    return result_groups[:max(1, int(limit or 30))]
 
 
 def _has_active_season_pack_share(parent_series_tmdb_id: str, season_number) -> bool:
@@ -2274,7 +2410,7 @@ def _select_season_pack_candidate(sr, season_row: Dict[str, Any]) -> Dict[str, A
     return {}
 
 
-def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_identity: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str]:
+def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_identity: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
     """收集季包文件，并做 raw / 一致性校验。"""
     root_fid = str(candidate.get('root_fid') or '').strip()
     root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
@@ -2302,21 +2438,21 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
             item['episode_number'] = candidate.get('episode_number')
 
     if not files:
-        return [], '未能定位到可分享的视频文件，跳过完结季汇总'
+        return [], '未能定位到可分享的视频文件，跳过完结季汇总', {'reason': 'season_pack_files_missing'}
 
     if hasattr(sr, '_files_missing_raw_ffprobe'):
         missing_raw = sr._files_missing_raw_ffprobe(files)
         if missing_raw:
             if hasattr(sr, '_raw_missing_message'):
-                return [], sr._raw_missing_message(missing_raw)
-            return [], f'缺少 raw_ffprobe_json：{missing_raw}'
+                return [], sr._raw_missing_message(missing_raw), {'reason': 'missing_raw_ffprobe', 'missing_raw': missing_raw}
+            return [], f'缺少 raw_ffprobe_json：{missing_raw}', {'reason': 'missing_raw_ffprobe', 'missing_raw': missing_raw}
 
     if hasattr(sr, '_validate_season_pack_consistency'):
         consistency = sr._validate_season_pack_consistency(files)
         if not consistency.get('ok'):
-            return [], consistency.get('message') or '季包媒体参数不一致，跳过完结季汇总'
+            return [], consistency.get('message') or '季包媒体参数不一致，跳过完结季汇总', {'reason': 'season_pack_consistency_failed', 'consistency': consistency}
 
-    return files, ''
+    return files, '', {}
 
 
 def _create_completed_season_pack_share(
@@ -2350,9 +2486,14 @@ def _create_completed_season_pack_share(
         'share_type': 'season_pack',
     })
 
-    files, file_error = _prepare_season_pack_files(sr, p115, candidate, standard_identity)
+    files, file_error, file_error_meta = _prepare_season_pack_files(sr, p115, candidate, standard_identity)
     if file_error:
-        return {'ok': False, 'message': file_error}
+        return {
+            'ok': False,
+            'message': file_error,
+            'reason': file_error_meta.get('reason') or 'season_pack_file_error',
+            'error_meta': file_error_meta,
+        }
 
     root_fid = str(candidate.get('root_fid') or '').strip()
     root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
@@ -2519,14 +2660,20 @@ def _rollup_completed_season_episode_shares(client: SharedCenterClient, max_grou
         'season_rollup_cancelled': 0,
         'season_rollup_failed': 0,
         'season_rollup_skipped': 0,
+        'season_rollup_quality_blocked': 0,
     }
+
+    auto_resub_ended = _watchlist_auto_resub_ended_enabled()
 
     p115 = P115Service.get_client()
     if not p115:
         result['season_rollup_skipped'] += 1
         return result
 
-    groups = _load_completed_season_episode_share_groups(limit=max_groups)
+    groups = _load_completed_season_episode_share_groups(
+        limit=max_groups,
+        include_rollup_blocked=auto_resub_ended,
+    )
     if not groups:
         return result
 
@@ -2561,9 +2708,31 @@ def _rollup_completed_season_episode_shares(client: SharedCenterClient, max_grou
             create_result = _create_completed_season_pack_share(client, p115, season_row, episode_records)
             if not create_result.get('ok'):
                 result['season_rollup_skipped'] += 1
+                msg = create_result.get('message') or 'unknown'
+                if _is_season_pack_consistency_failure(create_result):
+                    if auto_resub_ended:
+                        logger.info(
+                            "  ➜ [共享资源维护] 完结季汇总一致性不通过，下次维护继续尝试: parent=%s S%02d -> %s",
+                            parent, _safe_int(season_number, 0), msg,
+                        )
+                    else:
+                        blocked = _mark_season_rollup_quality_blocked(
+                            episode_records,
+                            parent_series_tmdb_id=parent,
+                            season_number=season_number,
+                            message=msg,
+                            create_result=create_result,
+                        )
+                        result['season_rollup_quality_blocked'] += blocked
+                        logger.info(
+                            "  ➜ [共享资源维护] 完结季汇总一致性不通过，已停止该季后续自动汇总: parent=%s S%02d, marked=%s -> %s",
+                            parent, _safe_int(season_number, 0), blocked, msg,
+                        )
+                    continue
+
                 logger.info(
                     "  ➜ [共享资源维护] 完结季汇总跳过: parent=%s S%02d -> %s",
-                    parent, _safe_int(season_number, 0), create_result.get('message') or 'unknown',
+                    parent, _safe_int(season_number, 0), msg,
                 )
                 continue
 
@@ -2731,7 +2900,7 @@ def _center_source_consumable(source: Dict[str, Any]) -> bool:
     return True
 
 
-def _share_alive_for_virtual(p115, share_code: str, receive_code: str = '', cache: Dict[tuple, Any] = None) -> bool | None:
+def _share_alive_for_virtual(p115, share_code: str, receive_code: str = '', cache: Dict[tuple, Any] = None) -> Any:
     """校验 115 分享是否仍可访问。None 表示网络/接口异常，不应据此删除虚拟项。"""
     share_code = str(share_code or '').strip()
     receive_code = str(receive_code or '').strip()

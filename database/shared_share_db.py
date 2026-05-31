@@ -989,7 +989,7 @@ def find_local_media_for_gap(tmdb_id: str, item_type: str, season: Any, episode:
                 return None
             return _row_to_dict(cur.fetchone())
 
-def get_completed_season_episode_share_groups(statuses: List[str], max_rows: int) -> List[Dict[str, Any]]:
+def get_completed_season_episode_share_groups(statuses: List[str], max_rows: int, include_rollup_blocked: bool = True) -> List[Dict[str, Any]]:
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1005,10 +1005,43 @@ def get_completed_season_episode_share_groups(statuses: List[str], max_rows: int
                 WHERE r.status = ANY(%s) AND COALESCE(s.watching_status, '') = 'Completed' AND COALESCE(r.share_code, '') <> '' AND r.season_number IS NOT NULL
                   AND (LOWER(COALESCE(r.share_type, '')) = 'episode_file' OR COALESCE(r.item_type, '') = 'Episode' OR r.episode_number IS NOT NULL)
                   AND LOWER(COALESCE(r.share_type, '')) NOT IN ('season_pack', 'series_pack', 'tv_pack', 'season')
+                  AND (
+                        %s = TRUE
+                        OR COALESCE(COALESCE(r.raw_json, '{}'::jsonb)->'season_completed_rollup_skip'->>'blocked', '') <> 'true'
+                  )
                 ORDER BY s.last_updated_at DESC NULLS LAST, r.parent_series_tmdb_id, r.season_number, r.episode_number NULLS LAST, r.created_at ASC
                 LIMIT %s
-            """, (statuses, max_rows))
+            """, (statuses, bool(include_rollup_blocked), max_rows))
             return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def mark_season_rollup_skipped_for_records(record_ids: List[Any], reason: str, message: str, raw_json_patch: Dict[str, Any] = None) -> int:
+    ids = []
+    for rid in record_ids or []:
+        try:
+            rid = int(rid)
+        except Exception:
+            continue
+        if rid not in ids:
+            ids.append(rid)
+    if not ids:
+        return 0
+
+    patch = raw_json_patch or {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE shared_share_records
+                SET raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
+                    last_error = %s,
+                    updated_at = NOW()
+                WHERE id = ANY(%s)
+                RETURNING id
+            """, (_as_jsonb(patch), str(message or reason or ''), ids))
+            rows = cur.fetchall()
+            conn.commit()
+            return len(rows)
+
 
 def check_active_season_pack_share(parent_series_tmdb_id: str, season_number: int, statuses: List[str]) -> bool:
     with get_db_connection() as conn:
