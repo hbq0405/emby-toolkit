@@ -415,10 +415,11 @@ class SchedulerManager:
             try:
                 from tasks.shared_resource_tasks import task_shared_resource_maintenance
                 import threading
+                logger.info("  ➜ 定时任务触发：共享资源自动维护。")
                 t = threading.Thread(
                     target=task_shared_resource_maintenance,
-                    kwargs={'maintenance_silent': True},
-                    name="SilentSharedMaintenance",
+                    kwargs={'maintenance_silent': False},
+                    name="SharedResourceMaintenance",
                     daemon=True
                 )
                 t.start()
