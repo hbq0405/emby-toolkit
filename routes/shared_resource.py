@@ -3534,6 +3534,166 @@ def api_list_share_items(record_id):
     return jsonify({"success": True, "items": shared_share_db.list_share_items(record_id)})
 
 
+def _manual_share_business_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    """统一整理手动分享 payload，不创建 115 分享。"""
+    data = dict(data or {})
+    share_request_payload = data.get('share_request_payload') if isinstance(data.get('share_request_payload'), dict) else {}
+
+    # 响应“单集求分享”时强制创建单集分享。
+    if str((share_request_payload or {}).get('target_type') or '').strip().lower() == 'episode':
+        data['share_type'] = 'episode_file'
+        data['item_type'] = 'Episode'
+        if (share_request_payload or {}).get('season_number') not in (None, ''):
+            data['season_number'] = share_request_payload.get('season_number')
+        if (share_request_payload or {}).get('episode_number') not in (None, ''):
+            data['episode_number'] = share_request_payload.get('episode_number')
+
+    share_type = str(data.get('share_type') or '').strip()
+    item_type = str(data.get('item_type') or '').strip()
+    if share_type == 'series_pack':
+        if str((share_request_payload or {}).get('target_type') or '').strip().lower() not in ('series', 'tv'):
+            return {'ok': False, 'message': '普通手动分享仍禁用整剧分享；只有响应全剧求分享时才允许创建全剧包', 'data': data}
+        data['item_type'] = 'Series'
+        data['season_number'] = None
+        data['episode_number'] = None
+        item_type = 'Series'
+
+    if share_type == 'season_pack':
+        check_row = {
+            'item_type': 'Season',
+            'tmdb_id': data.get('parent_series_tmdb_id') or data.get('tmdb_id'),
+            'parent_series_tmdb_id': data.get('parent_series_tmdb_id') or data.get('tmdb_id'),
+            'season_number': data.get('season_number'),
+        }
+        policy = _share_policy_for_media(check_row)
+        if not policy.get('allowed'):
+            return {'ok': False, 'message': policy.get('message') or '未完结季禁止按季包分享，请选择单集分享', 'data': data, 'policy': policy}
+
+    if item_type == 'Episode':
+        data['share_type'] = 'episode_file'
+
+    return {'ok': True, 'data': data}
+
+
+def _collect_manual_share_files_for_payload(data: Dict[str, Any], client=None) -> Dict[str, Any]:
+    """按手动分享候选实际收集待分享视频文件，供预校验和正式创建共用。"""
+    normalized = _manual_share_business_payload(data)
+    if not normalized.get('ok'):
+        return {**normalized, 'files': [], 'root_name': '', 'root_is_dir': True, 'info_resp': {}}
+    data = normalized.get('data') or {}
+
+    root_fid = str(data.get('root_fid') or '').strip()
+    if not root_fid:
+        return {'ok': False, 'message': '缺少要分享的 115 文件/目录 FID/CID', 'data': data, 'files': [], 'root_name': '', 'root_is_dir': True, 'info_resp': {}}
+
+    if client is None:
+        client = P115Service.get_client()
+    if not client:
+        return {'ok': False, 'message': '未配置可用的 115 Cookie 客户端，无法创建分享', 'data': data, 'files': [], 'root_name': '', 'root_is_dir': True, 'info_resp': {}}
+
+    info_resp = client.fs_get_info(root_fid)
+    node = (info_resp or {}).get('data') or {}
+    root_name = data.get('root_name') or _node_name(node) or root_fid
+    if 'root_is_dir' in data:
+        root_is_dir = _boolish(data.get('root_is_dir'), default=True)
+    else:
+        root_is_dir = _is_folder(node) if node else True
+
+    max_depth = int(data.get('max_depth') or 6)
+    files = _collect_files_from_115(client, root_fid, root_name=root_name, max_depth=max_depth, assume_dir=root_is_dir)
+    if not files:
+        files = _collect_files_from_media_payload(data)
+    if not files:
+        return {
+            'ok': False,
+            'message': '未能定位到可分享的视频文件，禁止创建空分享',
+            'data': data,
+            'files': [],
+            'root_name': root_name,
+            'root_is_dir': root_is_dir,
+            'info_resp': info_resp,
+        }
+
+    share_type_now = str(data.get('share_type') or '').strip().lower()
+    for item in files:
+        if not item.get('tmdb_id'):
+            item['tmdb_id'] = str(data.get('tmdb_id') or '')
+
+        if share_type_now == 'series_pack':
+            parsed_s, parsed_e = _guess_season_episode_numbers(item.get('relative_path') or item.get('file_name') or '')
+            if not item.get('season_number') and parsed_s is not None:
+                item['season_number'] = parsed_s
+            if not item.get('episode_number') and parsed_e is not None:
+                item['episode_number'] = parsed_e
+            item['item_type'] = 'Episode' if item.get('episode_number') else 'Series'
+        elif share_type_now == 'episode_file':
+            item['item_type'] = 'Episode'
+            if not item.get('episode_number') and data.get('episode_number'):
+                item['episode_number'] = data.get('episode_number')
+        elif not item.get('item_type'):
+            item['item_type'] = 'Episode' if share_type_now in ('season_pack', 'series_pack') and item.get('episode_number') else data.get('item_type')
+
+        if share_type_now != 'series_pack' and not item.get('season_number'):
+            item['season_number'] = data.get('season_number')
+        if not item.get('episode_number') and data.get('episode_number'):
+            item['episode_number'] = data.get('episode_number')
+
+    return {
+        'ok': True,
+        'message': '已定位到可分享视频文件',
+        'data': data,
+        'files': files,
+        'root_name': root_name,
+        'root_is_dir': root_is_dir,
+        'info_resp': info_resp,
+    }
+
+
+@shared_resource_bp.route('/shares/manual-validate', methods=['POST'])
+@admin_required
+def api_manual_validate_share():
+    """前端选择候选后立即预校验，避免点“创建分享”后才失败。"""
+    data = _request_json()
+    client = P115Service.get_client()
+    prepared = _collect_manual_share_files_for_payload(data, client=client)
+    share_data = prepared.get('data') or data or {}
+    share_type = str(share_data.get('share_type') or '').strip().lower()
+    result = {
+        'valid': False,
+        'share_type': share_type,
+        'item_type': share_data.get('item_type'),
+        'file_count': len(prepared.get('files') or []),
+        'root_fid': share_data.get('root_fid'),
+        'root_name': prepared.get('root_name') or share_data.get('root_name'),
+        'root_is_dir': prepared.get('root_is_dir'),
+        'message': prepared.get('message') or '校验失败',
+    }
+
+    if not prepared.get('ok'):
+        return jsonify({'success': True, 'message': result['message'], 'data': result})
+
+    files = prepared.get('files') or []
+    missing_raw = _files_missing_raw_ffprobe(files)
+    result['missing_raw'] = missing_raw
+    if missing_raw:
+        result['message'] = _raw_missing_message(missing_raw)
+        return jsonify({'success': True, 'message': result['message'], 'data': result})
+
+    if share_type == 'season_pack':
+        consistency = _validate_season_pack_consistency(files, share_data)
+        result['season_pack_consistency'] = consistency
+        if not consistency.get('ok'):
+            result['message'] = consistency.get('message') or '季包媒体参数不一致，禁止创建分享'
+            return jsonify({'success': True, 'message': result['message'], 'data': result})
+        result['valid'] = True
+        result['message'] = consistency.get('message') or f"季包一致性校验通过：共 {len(files)} 个视频文件，可创建分享"
+        return jsonify({'success': True, 'message': result['message'], 'data': result})
+
+    result['valid'] = True
+    result['message'] = f"预校验通过：共 {len(files)} 个视频文件，可创建分享"
+    return jsonify({'success': True, 'message': result['message'], 'data': result})
+
+
 @shared_resource_bp.route('/shares/manual-create', methods=['POST'])
 @admin_required
 def api_manual_create_share():

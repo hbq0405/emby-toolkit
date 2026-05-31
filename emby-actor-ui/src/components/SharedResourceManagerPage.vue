@@ -346,6 +346,15 @@
           115 {{ manualShareForm.root_is_dir ? '目录' : '文件' }}：{{ manualShareForm.root_name || manualShareForm.root_fid }}
         </div>
         <div class="selected-desc" v-if="selectedMedia.message">{{ selectedMedia.message }}</div>
+        <n-alert
+          v-if="manualShareValidationLoading || manualShareValidation"
+          :type="manualShareValidationAlertType"
+          :bordered="false"
+          class="share-validation-alert"
+        >
+          <template #header>{{ manualShareValidationTitle }}</template>
+          <div>{{ manualShareValidationMessage }}</div>
+        </n-alert>
       </div>
 
       <n-form :model="manualShareForm" label-placement="left" label-width="90" style="margin-top: 12px;">
@@ -359,7 +368,7 @@
           <n-text depth="3">找不到候选时，先确认该媒体已入库且 media_metadata 中已有 PC/SHA1。</n-text>
           <n-space>
             <n-button @click="showManualShareModal = false">取消</n-button>
-            <n-button type="primary" :disabled="!manualShareForm.root_fid" :loading="manualCreating" @click="manualCreateShare">创建永久分享</n-button>
+            <n-button type="primary" :disabled="manualCreateDisabled" :loading="manualCreating" @click="manualCreateShare">创建永久分享</n-button>
           </n-space>
         </n-space>
       </template>
@@ -497,6 +506,34 @@ const centerOrderOptions = [
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
   share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: ''
+});
+const manualShareValidation = ref(null);
+const manualShareValidationLoading = ref(false);
+let manualShareValidationSeq = 0;
+const isManualShareSeasonPack = computed(() => String(manualShareForm.share_type || '').toLowerCase() === 'season_pack');
+const manualShareValidationAlertType = computed(() => {
+  if (manualShareValidationLoading.value) return 'info';
+  if (!manualShareValidation.value) return 'info';
+  return manualShareValidation.value.valid ? 'success' : 'error';
+});
+const manualShareValidationTitle = computed(() => {
+  if (manualShareValidationLoading.value) return isManualShareSeasonPack.value ? '正在校验季包一致性' : '正在预校验分享文件';
+  if (!manualShareValidation.value) return '';
+  if (isManualShareSeasonPack.value) return manualShareValidation.value.valid ? '季包一致性校验通过' : '季包一致性校验未通过';
+  return manualShareValidation.value.valid ? '分享文件预校验通过' : '分享文件预校验未通过';
+});
+const manualShareValidationMessage = computed(() => {
+  if (manualShareValidationLoading.value) return '正在读取 115 文件列表、检查 RAW 媒体信息，并对季包执行集数/分辨率/编码/杜比版本一致性校验……';
+  if (!manualShareValidation.value) return '';
+  const fileCount = manualShareValidation.value.file_count;
+  const prefix = fileCount ? `已定位 ${fileCount} 个视频文件。` : '';
+  return `${prefix}${manualShareValidation.value.message || ''}`.trim();
+});
+const manualCreateDisabled = computed(() => {
+  if (!manualShareForm.root_fid) return true;
+  if (manualShareValidationLoading.value) return true;
+  if (!manualShareValidation.value) return true;
+  return manualShareValidation.value.valid !== true;
 });
 
 const defaultShareRequestParams = () => ({
@@ -1950,6 +1987,9 @@ const registerCenterDevice = async () => {
 const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献值已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献值失败'); } finally { refreshingCredit.value = false; } };
 
 const resetManualShareForm = () => {
+  manualShareValidationSeq += 1;
+  manualShareValidation.value = null;
+  manualShareValidationLoading.value = false;
   Object.assign(manualShareForm, {
     root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
     share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: manualShareForm.receive_code || ''
@@ -1987,10 +2027,61 @@ const searchShareableMedia = async () => {
   }
 };
 
+const buildManualSharePayload = () => {
+  const payload = { ...manualShareForm };
+  if (activeLocalShareRequest.value) {
+    payload.share_request_group_id = activeLocalShareRequest.value.group_id || '';
+    payload.share_request_payload = {
+      group_id: activeLocalShareRequest.value.group_id,
+      tmdb_id: activeLocalShareRequest.value.tmdb_id,
+      media_type: activeLocalShareRequest.value.media_type,
+      target_type: activeLocalShareRequest.value.target_type,
+      season_number: activeLocalShareRequest.value.season_number,
+      episode_number: activeLocalShareRequest.value.episode_number,
+      episode_numbers: activeLocalShareRequest.value.episode_numbers || [],
+      params_json: activeLocalShareRequest.value.params_json || {},
+    };
+  }
+  return payload;
+};
+
+const validateManualShareSelection = async () => {
+  const seq = ++manualShareValidationSeq;
+  manualShareValidation.value = null;
+  if (!manualShareForm.root_fid) return null;
+  manualShareValidationLoading.value = true;
+  try {
+    const res = await axios.post('/api/shared/resources/shares/manual-validate', buildManualSharePayload());
+    if (seq !== manualShareValidationSeq) return null;
+    const data = res.data?.data || {};
+    manualShareValidation.value = {
+      valid: data.valid === true,
+      message: data.message || res.data?.message || (data.valid ? '校验通过' : '校验未通过'),
+      file_count: data.file_count || 0,
+      missing_raw: data.missing_raw || [],
+      season_pack_consistency: data.season_pack_consistency || null,
+    };
+    return manualShareValidation.value;
+  } catch (e) {
+    if (seq !== manualShareValidationSeq) return null;
+    manualShareValidation.value = {
+      valid: false,
+      message: e.response?.data?.message || '预校验失败，请稍后重试',
+      file_count: 0,
+    };
+    return manualShareValidation.value;
+  } finally {
+    if (seq === manualShareValidationSeq) manualShareValidationLoading.value = false;
+  }
+};
+
 const chooseMediaCandidate = (row) => {
   if (!row?.resolvable || !row.root_fid) {
     return message.warning(row?.message || '该媒体暂时无法自动定位 115 目录/FID');
   }
+  manualShareValidationSeq += 1;
+  manualShareValidation.value = null;
+  manualShareValidationLoading.value = false;
   selectedMedia.value = row;
   Object.assign(manualShareForm, {
     root_fid: row.root_fid || '',
@@ -2004,27 +2095,22 @@ const chooseMediaCandidate = (row) => {
     season_number: row.season_number || null,
     release_year: row.release_year || null,
   });
-  message.success('已自动填充分享信息');
+  message.success('已自动填充分享信息，开始预校验');
+  validateManualShareSelection();
 };
 
 const manualCreateShare = async () => {
   if (!manualShareForm.root_fid) return message.warning('请先搜索并选择一个可分享媒体');
+  if (manualShareValidationLoading.value) return message.warning('正在预校验分享文件，请稍候');
+  if (!manualShareValidation.value || manualShareValidation.value.valid !== true) {
+    const result = await validateManualShareSelection();
+    if (!result || result.valid !== true) {
+      return message.error(result?.message || '预校验未通过，不能创建分享');
+    }
+  }
   manualCreating.value = true;
   try {
-    const payload = { ...manualShareForm };
-    if (activeLocalShareRequest.value) {
-      payload.share_request_group_id = activeLocalShareRequest.value.group_id || '';
-      payload.share_request_payload = {
-        group_id: activeLocalShareRequest.value.group_id,
-        tmdb_id: activeLocalShareRequest.value.tmdb_id,
-        media_type: activeLocalShareRequest.value.media_type,
-        target_type: activeLocalShareRequest.value.target_type,
-        season_number: activeLocalShareRequest.value.season_number,
-        episode_number: activeLocalShareRequest.value.episode_number,
-        episode_numbers: activeLocalShareRequest.value.episode_numbers || [],
-        params_json: activeLocalShareRequest.value.params_json || {},
-      };
-    }
+    const payload = buildManualSharePayload();
     await axios.post('/api/shared/resources/shares/manual-create', payload);
     message.success('分享已创建，等待审核');
     showManualShareModal.value = false;
@@ -2135,6 +2221,7 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .selected-share-box { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.06); }
 .selected-title { font-weight: 700; margin-bottom: 6px; }
 .selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
+.share-validation-alert { margin-top: 10px; }
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
 
 .share-request-grid {
