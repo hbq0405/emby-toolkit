@@ -2885,6 +2885,38 @@ def _has_active_season_pack_share(parent_series_tmdb_id: str, season_number) -> 
     return shared_share_db.check_active_season_pack_share(parent_series_tmdb_id, season_number, _active_share_statuses())
 
 
+def _load_active_episode_share_records_for_season(parent_series_tmdb_id: str, season_number) -> List[Dict[str, Any]]:
+    """加载同剧同季仍活动的单集分享，用于季包创建/已存在季包后的清理。"""
+    parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
+    try:
+        season_number = int(season_number)
+    except Exception:
+        return []
+    if not parent_series_tmdb_id:
+        return []
+
+    statuses = _active_episode_share_statuses_for_rollup()
+    try:
+        return shared_share_db.get_active_episode_share_records_for_season(
+            parent_series_tmdb_id,
+            season_number,
+            statuses,
+            include_rollup_blocked=True,
+        ) or []
+    except AttributeError:
+        # 兼容未更新 DB 层的临时环境，退回旧的完结季分组查询。
+        groups = _load_completed_season_episode_share_groups(limit=80, include_rollup_blocked=True)
+        for group in groups:
+            if str(group.get('parent_series_tmdb_id') or '').strip() == parent_series_tmdb_id and _safe_int(group.get('season_number'), None) == season_number:
+                return group.get('episode_records') or []
+    except Exception as e:
+        logger.warning(
+            "  ➜ [共享资源] 查询完结季同季单集分享失败: parent=%s S%s -> %s",
+            parent_series_tmdb_id, season_number, e, exc_info=True,
+        )
+    return []
+
+
 def _select_season_pack_candidate(sr, season_row: Dict[str, Any]) -> Dict[str, Any]:
     """复用手动分享候选构造，只接受真正的 season_pack 候选。"""
     candidates = []
@@ -3082,7 +3114,7 @@ def _center_has_open_season_gap(client: SharedCenterClient, parent_series_tmdb_i
 
 
 def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tmdb_id: str = '', season_number=None) -> Dict[str, Any]:
-    """智能追剧确认完美完结后触发季包分享；只在中心存在同季缺口时创建。"""
+    """智能追剧确认完美完结后触发季包分享；创建/发现季包后同步清理同季单集分享。"""
     if not _enabled():
         return {'enabled': False, 'created': 0}
     parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
@@ -3094,32 +3126,100 @@ def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tm
     if not client.ready:
         return {'enabled': True, 'created': 0, 'message': '共享中心未配置'}
 
+    # 完结一致性通过后，单集分享必须跟随季包生命周期清理。
+    # 之前这里直接创建季包但传入 []，导致新季包建成后旧单集分享继续留在 115 和中心。
+    episode_records = _load_active_episode_share_records_for_season(parent_series_tmdb_id, season_number)
+    has_active_pack = shared_share_db.check_active_season_pack_share(
+        parent_series_tmdb_id,
+        season_number,
+        _active_share_statuses(),
+    )
+
+    p115 = None
+    if episode_records or not has_active_pack:
+        p115 = P115Service.get_client()
+        if not p115:
+            return {
+                'enabled': True,
+                'created': 0,
+                'episode_cancelled': 0,
+                'episode_cancel_failed': 0,
+                'message': '115 客户端未初始化，无法创建季包或清理单集分享',
+            }
+
+    if has_active_pack:
+        cancel_result = {'cancelled': 0, 'failed': 0}
+        if episode_records:
+            cancel_result = _cancel_episode_records_after_season_rollup(
+                client,
+                p115,
+                episode_records,
+                new_pack_record=None,
+                reason='season_completed_rollup_existing_pack',
+            )
+        logger.info(
+            "  ➜ [共享资源] 完结季包已存在，已清理同季单集分享：%s S%02d, checked=%s, cancelled=%s, failed=%s",
+            parent_series_tmdb_id,
+            int(season_number),
+            len(episode_records),
+            cancel_result.get('cancelled', 0),
+            cancel_result.get('failed', 0),
+        )
+        return {
+            'enabled': True,
+            'created': 0,
+            'message': '本地已有活动季包分享，已执行同季单集清理',
+            'episode_checked': len(episode_records),
+            'episode_cancelled': cancel_result.get('cancelled', 0),
+            'episode_cancel_failed': cancel_result.get('failed', 0),
+        }
+
     if not _center_has_open_season_gap(client, parent_series_tmdb_id, season_number):
         logger.info(
             "  ➜ [共享资源] 完结季包分享跳过：中心没有同季 Season open 缺口 %s S%02d",
             parent_series_tmdb_id, int(season_number)
         )
-        return {'enabled': True, 'created': 0, 'message': 'center_season_gap_not_open'}
-
-    if shared_share_db.check_active_season_pack_share(parent_series_tmdb_id, season_number, _active_share_statuses()):
-        return {'enabled': True, 'created': 0, 'message': '本地已有活动季包分享'}
-
-    p115 = P115Service.get_client()
-    if not p115:
-        return {'enabled': True, 'created': 0, 'message': '115 客户端未初始化'}
+        return {
+            'enabled': True,
+            'created': 0,
+            'episode_checked': len(episode_records),
+            'message': 'center_season_gap_not_open',
+        }
 
     season_row = shared_share_db.find_local_media_for_gap(parent_series_tmdb_id, 'Season', season_number, None)
     if not season_row:
         return {'enabled': True, 'created': 0, 'message': '本地未找到已入库季'}
 
-    result = _create_completed_season_pack_share(client, p115, season_row, [])
+    result = _create_completed_season_pack_share(client, p115, season_row, episode_records)
     if result.get('ok'):
         record = result.get('record') or {}
+        cancel_result = {'cancelled': 0, 'failed': 0}
+        if episode_records:
+            cancel_result = _cancel_episode_records_after_season_rollup(
+                client,
+                p115,
+                episode_records,
+                new_pack_record=record,
+                reason='season_completed_rollup',
+            )
         logger.info(
-            "  ➜ [共享资源] 完结一致性通过后已创建季包分享，等待 115 审核：%s S%02d share=%s",
-            parent_series_tmdb_id, int(season_number), record.get('share_code') or '-'
+            "  ➜ [共享资源] 完结一致性通过后已创建季包分享并清理同季单集：%s S%02d share=%s, checked=%s, cancelled=%s, failed=%s",
+            parent_series_tmdb_id,
+            int(season_number),
+            record.get('share_code') or '-',
+            len(episode_records),
+            cancel_result.get('cancelled', 0),
+            cancel_result.get('failed', 0),
         )
-        return {'enabled': True, 'created': 1, 'record_id': record.get('id'), 'share_code': record.get('share_code')}
+        return {
+            'enabled': True,
+            'created': 1,
+            'record_id': record.get('id'),
+            'share_code': record.get('share_code'),
+            'episode_checked': len(episode_records),
+            'episode_cancelled': cancel_result.get('cancelled', 0),
+            'episode_cancel_failed': cancel_result.get('failed', 0),
+        }
     logger.info(
         "  ➜ [共享资源] 完结一致性通过但创建季包分享失败：%s S%02d -> %s",
         parent_series_tmdb_id, int(season_number), result.get('message') or result
@@ -4033,7 +4133,7 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
 
 
 def _shared_device_event_listener_worker():
-    # logger.info("  ➜ [共享事件监听] 长轮询监听已启动。")
+    logger.info("  ➜ [共享事件监听] 长轮询监听已启动。")
     client = SharedCenterClient()
     idle_errors = 0
     use_legacy_share_request_poll = False

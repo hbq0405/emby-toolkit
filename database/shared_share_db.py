@@ -1172,6 +1172,74 @@ def get_completed_season_episode_share_groups(statuses: List[str], max_rows: int
             """, (statuses, bool(include_rollup_blocked), max_rows))
             return [_row_to_dict(r) for r in cur.fetchall()]
 
+def get_active_episode_share_records_for_season(
+    parent_series_tmdb_id: str,
+    season_number: int,
+    statuses: List[str],
+    include_rollup_blocked: bool = True,
+) -> List[Dict[str, Any]]:
+    """查询某剧某季当前仍活动的单集分享记录，用于完结季包创建后清理旧单集分享。
+
+    和 get_completed_season_episode_share_groups 不同，这个函数不要求 Season 行仍然能 JOIN 到，
+    也不按 watching_status 过滤；调用方已经处在“智能追剧一致性通过”的链路中。
+    这样可以兜住：Webhook/追剧触发季包分享时，旧维护汇总任务没有再扫描到的单集分享。
+    """
+    parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
+    season_number = _nullable_int(season_number)
+    if not parent_series_tmdb_id or season_number is None:
+        return []
+    statuses = [str(x) for x in (statuses or []) if str(x or '').strip()]
+    if not statuses:
+        return []
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT r.*
+                FROM shared_share_records r
+                LEFT JOIN shared_share_items i ON i.share_record_id = r.id
+                WHERE r.status = ANY(%s)
+                  AND COALESCE(r.share_code, '') <> ''
+                  AND COALESCE(r.season_number, i.season_number, -1) = %s
+                  AND (
+                        COALESCE(r.parent_series_tmdb_id, '') = %s
+                     OR COALESCE(r.tmdb_id, '') = %s
+                     OR EXISTS (
+                            SELECT 1
+                            FROM shared_share_items ii
+                            WHERE ii.share_record_id = r.id
+                              AND COALESCE(ii.season_number, -1) = %s
+                              AND (
+                                    COALESCE(ii.raw_json, '{}'::jsonb)->>'parent_series_tmdb_id' = %s
+                                 OR COALESCE(ii.raw_json, '{}'::jsonb)->'_etk'->>'parent_series_tmdb_id' = %s
+                              )
+                        )
+                  )
+                  AND (
+                        LOWER(COALESCE(r.share_type, '')) = 'episode_file'
+                     OR COALESCE(r.item_type, '') = 'Episode'
+                     OR r.episode_number IS NOT NULL
+                     OR LOWER(COALESCE(i.item_type, '')) = 'episode'
+                     OR i.episode_number IS NOT NULL
+                  )
+                  AND LOWER(COALESCE(r.share_type, '')) NOT IN ('season_pack', 'series_pack', 'tv_pack', 'season')
+                  AND (
+                        %s = TRUE
+                        OR COALESCE(COALESCE(r.raw_json, '{}'::jsonb)->'season_completed_rollup_skip'->>'blocked', '') <> 'true'
+                  )
+                ORDER BY r.episode_number NULLS LAST, r.created_at ASC, r.id ASC
+            """, (
+                statuses,
+                season_number,
+                parent_series_tmdb_id,
+                parent_series_tmdb_id,
+                season_number,
+                parent_series_tmdb_id,
+                parent_series_tmdb_id,
+                bool(include_rollup_blocked),
+            ))
+            return [_row_to_dict(r) for r in cur.fetchall()]
+
 
 def mark_season_rollup_skipped_for_records(record_ids: List[Any], reason: str, message: str, raw_json_patch: Dict[str, Any] = None) -> int:
     ids = []
