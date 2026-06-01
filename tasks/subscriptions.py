@@ -24,6 +24,7 @@ try:
 except Exception:
     TGUserBotManager = None
     tg_task_queue = None
+from handler.tg_media_candidate import build_channel_task_payload
 
 try:
     from handler.shared_subscription_service import try_consume_shared_resource, report_shared_gap
@@ -561,24 +562,18 @@ def _enqueue_channel_resource_download(resource: Dict, tmdb_id, media_type: str,
         except Exception:
             season_number = target_season
 
-    tg_task_queue.put({
-        'type': 'channel_resource_complex',
-        'tmdb_id': str(tmdb_id) if tmdb_id is not None else resource.get('tmdb_id'),
-        'title': title or resource.get('title') or resource.get('name'),
-        'year': resource.get('year'),
-        'item_type': media_type,
-        'target_link': target_link,
-        'magnet_url': magnet_url,
-        'receive_code': resource.get('receive_code') or '',
-        'season_number': season_number,
-        'episode_number': resource.get('episode_number'),
-        'is_pack': bool(resource.get('is_pack')),
-        'is_completed_pack': bool(resource.get('is_completed_pack')),
-        # 统一订阅自动选中的频道资源已经由本函数做过过滤，交给队列时直接放行。
-        'is_brainless': True,
-        'is_keyword_matched': True,
-        'is_subscribe': False,
-    })
+    tg_task_queue.put(
+        build_channel_task_payload(
+            resource,
+            is_brainless=True,
+            is_keyword_matched=True,
+            is_subscribe=False,
+            title_override=title or resource.get('title') or resource.get('name'),
+            tmdb_id_override=str(tmdb_id) if tmdb_id is not None else resource.get('tmdb_id'),
+            media_type_override=media_type,
+            year_override=resource.get('year'),
+        ) | {'season_number': season_number}
+    )
     return True
 
 

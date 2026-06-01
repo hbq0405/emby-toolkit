@@ -10,6 +10,7 @@ from handler.emby import get_emby_item_details
 from database import user_db, request_db, media_db
 from database.connection import get_db_connection
 import constants
+from handler.tg_media_candidate import build_channel_task_payload
 
 logger = logging.getLogger(__name__)
 
@@ -1505,24 +1506,16 @@ def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
         try:
             from handler.tg_userbot import tg_task_queue
 
-            task = {
-                "type": "channel_resource_complex",
-                "tmdb_id": tmdb_id,
-                "title": title,
-                "year": year,
-                "item_type": media_type,
-                "target_link": resource.get("target_link"),
-                "magnet_url": resource.get("magnet_url"),
-                "receive_code": resource.get("receive_code") or "",
-                "season_number": resource.get("season_number"),
-                "episode_number": resource.get("episode_number"),
-                "is_pack": bool(resource.get("is_pack")),
-                "is_completed_pack": bool(resource.get("is_completed_pack")),
-                "is_brainless": False,
-                # 手动选择频道搜索结果，直接放行转存。
-                "is_keyword_matched": True,
-                "is_subscribe": False,
-            }
+            task = build_channel_task_payload(
+                resource,
+                is_brainless=False,
+                is_keyword_matched=True,
+                is_subscribe=False,
+                title_override=title,
+                tmdb_id_override=tmdb_id,
+                media_type_override=media_type,
+                year_override=year,
+            )
 
             if not task.get("target_link") and not task.get("magnet_url"):
                 _tg_send_plain(chat_id, "❌ 当前频道资源缺少 115/影巢/磁力链接，无法转存。")

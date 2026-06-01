@@ -20,6 +20,7 @@ import handler.tmdb as tmdb
 from tasks import helpers
 import utils
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
+from handler.tg_media_candidate import candidate_to_recognition_hints, is_recognition_hint_eligible, lookup_candidate_hint_for_name
 try:
     from p115client import P115Client
 except ImportError:
@@ -2721,6 +2722,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         self.rating_priority = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
         self.country_map = settings_db.get_setting('country_mapping') or utils.DEFAULT_COUNTRY_MAPPING
         self.language_map = settings_db.get_setting('language_mapping') or utils.DEFAULT_LANGUAGE_MAPPING
+        self.recognition_hints = {}
 
         self.raw_metadata = self._fetch_raw_metadata()
         self.details = self.raw_metadata
@@ -3405,7 +3407,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         return None, None, None
 
-    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False):
+    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False, recognition_hints=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         rel_path = file_node.get('rel_path', '')
         rule_result = _build_rule_parse_result(
@@ -3415,6 +3417,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             forced_media_type='tv' if is_tv else 'movie',
             is_folder=False,
         )
+        normalized_hints = candidate_to_recognition_hints(recognition_hints or file_node.get('_recognition_hints') or {})
         
         # ★ 修复 1：无后缀文件的提前返回，补齐为 8 个返回值
         if '.' not in original_name: 
@@ -3507,6 +3510,21 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             if (real_info.get('season_number') not in (None, '') or real_info.get('episode_number') not in (None, '')) and not silent_log:
                 logger.info(
                     f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
+                    f"S{int(season_num if season_num is not None else 1):02d}"
+                    f"E{int(episode_num if episode_num is not None else 0):02d} | {original_name}"
+                )
+
+        if is_tv and normalized_hints:
+            if season_num is None and normalized_hints.get('season_number') is not None:
+                season_num = _se_int(normalized_hints.get('season_number'))
+            if episode_num is None and normalized_hints.get('episode_number') is not None:
+                episode_num = _se_int(normalized_hints.get('episode_number'))
+            if (
+                (normalized_hints.get('season_number') not in (None, '') or normalized_hints.get('episode_number') not in (None, ''))
+                and not silent_log
+            ):
+                logger.info(
+                    f"  ➜ [TG Candidate季集] 命中 hints -> "
                     f"S{int(season_num if season_num is not None else 1):02d}"
                     f"E{int(episode_num if episode_num is not None else 0):02d} | {original_name}"
                 )
@@ -3605,6 +3623,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             # 4. 终极兜底
             if season_num is None:
                 season_num = 1
+
+        if is_tv and normalized_hints.get('is_special') and season_num is None:
+            season_num = 0
+
+        if is_tv and normalized_hints.get('is_special') and season_num == 1 and episode_num is None:
+            season_num = 0
 
         if is_tv and rule_result.get('is_special') and season_num is None:
             season_num = 0
@@ -3829,12 +3853,14 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     except Exception:
                         pass
 
+                sub_hint = lookup_candidate_hint_for_name(sub_name, alt_texts=[root_name])
                 tmdb_id, sub_type, sub_title = _identify_media_enhanced(
                     sub_name, 
                     ai_translator=self.ai_translator, 
                     use_ai=self.use_ai,
                     is_folder=(str(sub_fc_val) == '0'),
-                    sha1=sub_sha1
+                    sha1=sub_sha1,
+                    recognition_hints=sub_hint
                 )
                 
                 # 2. 模糊匹配 (仅当有官方合集列表时)
@@ -3901,6 +3927,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 logger.info(f"    ├─ 准备批量整理合集子项: {sub_title} -> ID:{tmdb_id} (共 {len(items)} 个文件)")
                 try:
                     organizer = SmartOrganizer(self.client, tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
+                    organizer.recognition_hints = sub_hint or {}
                     target_cid_for_sub = organizer.get_target_cid()
                     if organizer.execute(items, target_cid_for_sub):
                         processed_count += len(items)
@@ -4355,7 +4382,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), 
                         original_title=original_title, pre_fetched_mediainfo=pre_fetched_mediainfo, 
                         local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
-                        silent_log=True  # ★ 开启静默，防止预扫描时重复打印日志
+                        silent_log=True,  # ★ 开启静默，防止预扫描时重复打印日志
+                        recognition_hints=self.recognition_hints,
                     )
                     key = (v_s, v_e, v_part) if self.media_type == 'tv' else ('movie', v_part)
                     # 电影只保留第一个视频作为基准 (通常电影只有一个正片)
@@ -4517,7 +4545,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     original_title=original_title,
                     pre_fetched_mediainfo=pre_fetched_mediainfo,
                     local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
-                    silent_log=True
+                    silent_log=True,
+                    recognition_hints=self.recognition_hints,
                 )
 
                 # ★ 核心：只保留文件名
@@ -4589,7 +4618,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 new_filename, season_num, episode_num, s_name, video_info, has_real_info, part_num = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
                     pre_fetched_mediainfo=pre_fetched_mediainfo,
-                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo 
+                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
+                    recognition_hints=self.recognition_hints,
                 )
 
                 real_target_cid = final_home_cid
@@ -5861,7 +5891,7 @@ def _build_rule_parse_result(filename, main_dir_name=None, has_season_subdirs=Fa
     return result
 
 
-def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False, is_folder=False, sha1=None, raw_ffprobe_json=None):
+def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False, is_folder=False, sha1=None, raw_ffprobe_json=None, recognition_hints=None):
     """
     【绝对正确版】识别逻辑：
     1. 先定类型：综合主目录、子目录特征、文件名，判断是 Movie 还是 TV。
@@ -5882,6 +5912,13 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
         forced_media_type=forced_media_type,
         is_folder=is_folder,
     )
+    normalized_hints = candidate_to_recognition_hints(recognition_hints or {})
+    eligible_hints = normalized_hints if is_recognition_hint_eligible(normalized_hints) else {}
+    if normalized_hints:
+        if normalized_hints.get('media_type') and not forced_media_type:
+            media_type = normalized_hints.get('media_type')
+        if normalized_hints.get('identify_title') or normalized_hints.get('clean_title') or normalized_hints.get('title'):
+            title = normalized_hints.get('identify_title') or normalized_hints.get('clean_title') or normalized_hints.get('title')
 
     # =================================================================
     # ★ 第一步：铁腕判定媒体类型 (Movie or TV)
@@ -5907,6 +5944,14 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             f"year={rule_result.get('year')}, type={rule_result.get('media_type')}, "
             f"season={rule_result.get('season_number')}, episode={rule_result.get('episode_number')}, "
             f"special={rule_result.get('is_special')} (confidence={rule_result.get('confidence')}, evidence={evidence_text})"
+        )
+
+    if normalized_hints:
+        logger.debug(
+            f"  ➜ [TG Candidate] 命中识别 hints: title='{normalized_hints.get('identify_title') or normalized_hints.get('clean_title') or normalized_hints.get('title')}', "
+            f"year={normalized_hints.get('year')}, type={normalized_hints.get('media_type')}, "
+            f"season={normalized_hints.get('season_number')}, episode={normalized_hints.get('episode_number')}, "
+            f"special={normalized_hints.get('is_special')} (confidence={normalized_hints.get('confidence')})"
         )
 
     # 辅助函数：用已锁定的类型去 TMDb 查官方标题
@@ -5955,6 +6000,15 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                 f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
             )
             return tmdb_id, media_type, official_title or filename
+
+    if normalized_hints.get('tmdb_id') and normalized_hints.get('confidence') == 'high':
+        hinted_type = normalized_hints.get('media_type') or media_type
+        official_title = _fetch_title_by_id(normalized_hints.get('tmdb_id'), hinted_type)
+        logger.info(
+            f"  ➜ [TG Candidate] 命中高置信显式 TMDb ID: {normalized_hints.get('tmdb_id')} "
+            f"(evidence={','.join(normalized_hints.get('evidence') or []) or 'candidate'})"
+        )
+        return normalized_hints.get('tmdb_id'), hinted_type, official_title or title or filename
 
     if rule_result.get('tmdb_id') and rule_result.get('confidence') == 'high':
         official_title = _fetch_title_by_id(rule_result.get('tmdb_id'), media_type)
@@ -6072,6 +6126,21 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             )
             return res
 
+    if normalized_hints.get('identify_title') and normalized_hints.get('confidence') in ('medium', 'high'):
+        res = _search_by_title_year(
+            filename,
+            query_override=normalized_hints.get('identify_title') or normalized_hints.get('clean_title'),
+            year_override=normalized_hints.get('year'),
+            type_override=normalized_hints.get('media_type') or media_type,
+        )
+        if res:
+            logger.info(
+                f"  ➜ [TG Candidate] hints 命中后 TMDb 搜索成功: "
+                f"title='{normalized_hints.get('identify_title') or normalized_hints.get('clean_title')}', year={normalized_hints.get('year')}, "
+                f"type={normalized_hints.get('media_type') or media_type}"
+            )
+            return res
+
     # 2.1 优先从 filename 搜索
     res = _search_by_title_year(filename)
     if res: return res
@@ -6095,7 +6164,11 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                 return _MP_PARSE_CACHE[target_name]
                 
             logger.debug(f"  ➜ 本地正则失败，尝试调用 MoviePilot 辅助识别: {target_name}")
-            mp_res = mp.recognize_media(target_name, config_manager.APP_CONFIG)
+            mp_res = mp.recognize_media_from_candidate(
+                eligible_hints if eligible_hints else rule_result,
+                fallback_title=target_name,
+                config=config_manager.APP_CONFIG
+            )
             
             if mp_res:
                 logger.info(f"  ➜ [MP辅助识别] 成功命中: {mp_res[2]} (ID:{mp_res[0]})")
