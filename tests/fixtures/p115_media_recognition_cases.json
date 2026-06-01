@@ -1,0 +1,107 @@
+[
+  {
+    "name": "standard_movie",
+    "raw": "Dune.Part.Two.2024.2160p.WEB-DL.H265.DDP5.1.mkv",
+    "main_dir_name": "Dune Part Two (2024)",
+    "expect": {
+      "title": "Dune Part Two",
+      "year": 2024,
+      "media_type": "movie"
+    }
+  },
+  {
+    "name": "standard_tv_sxe",
+    "raw": "The.Last.of.Us.S01E03.1080p.NF.WEB-DL.mkv",
+    "main_dir_name": "The Last of Us",
+    "expect": {
+      "title": "The Last of Us",
+      "media_type": "tv",
+      "season_number": 1,
+      "episode_number": 3
+    }
+  },
+  {
+    "name": "chinese_season_episode",
+    "raw": "庆余年 第2季 第03集 4K.mkv",
+    "main_dir_name": "庆余年 第2季",
+    "expect": {
+      "title": "庆余年",
+      "media_type": "tv",
+      "season_number": 2,
+      "episode_number": 3
+    }
+  },
+  {
+    "name": "anime_special",
+    "raw": "My.Anime.SP01.1080p.BluRay.mkv",
+    "main_dir_name": "My Anime Specials",
+    "expect": {
+      "title": "My Anime",
+      "media_type": "tv",
+      "season_number": 0,
+      "episode_number": 1,
+      "is_special": true
+    }
+  },
+  {
+    "name": "anime_ova_cn",
+    "raw": "某动画 OVA 第1话 1080p.mkv",
+    "main_dir_name": "某动画 OVA",
+    "expect": {
+      "title": "某动画",
+      "media_type": "tv",
+      "season_number": 0,
+      "episode_number": 1,
+      "is_special": true
+    }
+  },
+  {
+    "name": "variety_date_episode",
+    "raw": "Amazing.Show.2024.05.17.1080p.WEB-DL.mkv",
+    "main_dir_name": "Amazing Show",
+    "expect": {
+      "title": "Amazing Show",
+      "media_type": "movie",
+      "year": 2024,
+      "episode_number": 20240517
+    }
+  },
+  {
+    "name": "explicit_tmdbid",
+    "raw": "Some.Movie.tmdbid=123456.1080p.mkv",
+    "main_dir_name": "Some Movie",
+    "expect": {
+      "tmdb_id": "123456",
+      "media_type": "movie"
+    }
+  },
+  {
+    "name": "noisy_release_group",
+    "raw": "[Group] City.of.God.2002.1080p.BluRay.x264.DTS-WiKi.mkv",
+    "main_dir_name": "City.of.God.2002",
+    "expect": {
+      "title": "City of God",
+      "year": 2002,
+      "media_type": "movie"
+    }
+  },
+  {
+    "name": "collection_sub_item",
+    "raw": "Spider-Man.2.2004.1080p.BluRay.x264.mkv",
+    "main_dir_name": "Spider-Man Collection",
+    "expect": {
+      "title": "Spider-Man 2",
+      "year": 2004,
+      "media_type": "movie"
+    }
+  },
+  {
+    "name": "fallback_miss",
+    "raw": "totally_unstructured_file.bin",
+    "main_dir_name": "misc",
+    "expect": {
+      "title": "totally unstructured file",
+      "confidence": "low"
+    }
+  }
+]
