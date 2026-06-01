@@ -677,6 +677,7 @@ def _decorate_my_share_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
         str(raw.get('source_label') or ''),
     ]).strip().lower()
 
+    backup_providers = {'backup_mirror', 'backup_share', 'auto_backup_share'}
     auto_providers = {
         'auto_gap_share', 'request_share', 'auto_share', 'auto_task', 'auto',
         'maintenance', 'maintenance_task', 'maintenance_share', 'maintenance_auto_share',
@@ -686,6 +687,9 @@ def _decorate_my_share_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
         'user_share', 'manual_share', 'manual', 'user', 'local_manual', 'manual_create', 'manual_created',
     }
 
+    raw_backup = any(raw.get(k) for k in (
+        'auto_backup_share', 'backup_share', 'backup_mirror', 'backup_instruction',
+    ))
     raw_auto = any(raw.get(k) for k in (
         'auto_gap', 'auto_payload', 'auto_task', 'maintenance_payload', 'maintenance_task',
         'auto_share_payload', 'auto_context',
@@ -694,25 +698,35 @@ def _decorate_my_share_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
         'manual_payload', 'manual_share', 'manual_create', 'manual_created', 'manual_context',
     ))
 
+    is_backup = False
+    # 备份分享是中心指令自动生成的镜像源，不能兜底成“手动分享”。
+    if raw_backup or provider_norm in backup_providers or '备份分享' in label_text:
+        is_auto = True
+        is_backup = True
+        provider = provider or 'backup_mirror'
+        label = '备份分享'
     # 明确手动 > 明确自动。手动创建的记录即便后续由维护任务自动检查/登记中心，
     # 备注仍应显示“手动分享”，因为资源来源是用户手动创建。
-    if raw_manual or provider_norm in manual_providers or '手动分享' in label_text:
+    elif raw_manual or provider_norm in manual_providers or '手动分享' in label_text:
         is_auto = False
         provider = provider or 'manual_share'
+        label = '手动分享'
     elif raw_auto or provider_norm in auto_providers or '自动分享' in label_text:
         is_auto = True
         provider = provider or 'auto_gap_share'
+        label = '自动分享'
     else:
         # 老数据没有来源字段时，按本地前端手动分享兜底。
         is_auto = False
         provider = provider or 'manual_share'
+        label = '手动分享'
 
-    label = '自动分享' if is_auto else '手动分享'
     item['source_provider'] = provider
     item['source_provider_label'] = label
     item['source_label'] = label
     item['is_auto_share'] = bool(is_auto)
-    item['is_manual_share'] = not bool(is_auto)
+    item['is_manual_share'] = not bool(is_auto) and not is_backup
+    item['is_backup_share'] = bool(is_backup)
     return item
 
 
@@ -4781,6 +4795,9 @@ _CENTER_SOURCE_PROVIDER_LABELS = {
     'hdhive': '影巢外来分享',
     'tg_channel': 'TG频道外来分享',
     'tg_channel_hdhive': 'TG频道影巢外来分享',
+    'backup_mirror': '备份分享',
+    'backup_share': '备份分享',
+    'auto_backup_share': '备份分享',
 }
 
 

@@ -811,6 +811,8 @@ const ledgerEventLabel = (eventType) => {
     center_initial_credit: '基础贡献值',
     center_source_registered: '中心登记共享源',
     center_source_registered_group: '中心登记共享源',
+    center_backup_source_registered: '备份分享入池',
+    center_backup_source_registered_group: '备份分享入池',
     center_deleted_shared_source_summary: '已删除共享源',
     center_shared_source_served: '共享被转存',
     center_shared_source_served_group: '共享被转存',
@@ -871,6 +873,8 @@ const ledgerReasonDisplay = (row) => {
     center_share_request_bounty_received: `求分享悬赏收入：${title}，${deltaText}`,
     share_request_service_fee: `求分享服务费：${title}，${deltaText}`,
     center_share_request_service_fee: `求分享服务费：${title}，${deltaText}`,
+    center_backup_source_registered: `备份分享入池：${title}，${deltaText}`,
+    center_backup_source_registered_group: `备份分享入池：${title}，${deltaText}`,
   };
   return reasonMap[event] || row?.reason || '-';
 };

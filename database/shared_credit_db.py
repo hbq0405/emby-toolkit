@@ -152,35 +152,54 @@ def add_credit_ledger(
             return row
 
 
-def _center_credit_event_label(reason: str) -> str:
-    reason = str(reason or '')
+def _normalize_center_reason_code(reason: str) -> str:
+    """中心 reason 归一化。
+
+    本地展示表的 event_type 会自动加 center_ 前缀；如果中心或历史数据已经
+    带了 center_，这里先剥掉，避免出现 center_center_xxx。
+    """
+    reason = str(reason or '').strip()
+    if reason.startswith('center_'):
+        reason = reason[len('center_'):]
+    return reason
+
+
+def _center_source_provider(item: Dict[str, Any]) -> str:
+    item = item or {}
+    provider = str(item.get('source_provider') or '').strip().lower().replace('-', '_').replace(' ', '_')
+    if provider:
+        return provider
+    raw = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
+    center_item = raw.get('center_item') if isinstance(raw.get('center_item'), dict) else {}
+    return str(center_item.get('source_provider') or '').strip().lower().replace('-', '_').replace(' ', '_')
+
+
+def _is_backup_center_ledger_item(item: Dict[str, Any], reason: str = '') -> bool:
+    """判断中心流水是否为备份分享入池。
+
+    新中心会带 source_provider=backup_mirror；少数历史补丁可能直接把 reason
+    写成 backup_source_registered，也一并兼容。
+    """
+    reason = _normalize_center_reason_code(reason)
+    if reason in {'backup_source_registered', 'backup_share_registered'}:
+        return True
+    provider = _center_source_provider(item)
+    if provider in {'backup_mirror', 'backup_share', 'auto_backup_share'}:
+        return True
+    return False
+
+
+def _center_credit_event_label(reason: str, item: Dict[str, Any] = None) -> str:
+    reason = _normalize_center_reason_code(reason)
+    if _is_backup_center_ledger_item(item or {}, reason):
+        return '备份分享入池'
     mapping = {
         'initial_credit': '设备注册基础贡献值',
         'source_registered': '成功分享视频，中心首次登记',
-        'backup_source_registered': '备份分享入池',
         'shared_source_served': '共享资源被其他设备成功转存',
         'shared_source_consumed': '从共享中心成功转存资源',
     }
     return mapping.get(reason, reason or '中心贡献值变化')
-
-
-def _center_credit_is_backup_registration(item: Dict[str, Any]) -> bool:
-    item = item or {}
-    reason = str(item.get('reason') or '')
-    if reason == 'backup_source_registered':
-        return True
-    if reason != 'source_registered':
-        return False
-    provider = str(item.get('source_provider') or '').strip().lower()
-    if provider in ('backup_mirror', 'backup_share', 'auto_backup', 'backup', 'mirror_backup'):
-        return True
-    if str(item.get('registration_kind') or '').strip().lower() == 'backup':
-        return True
-    # 兼容中心已产生的旧流水：当前口径首发入池 +2，备份/同 SHA1 冗余 +1。
-    try:
-        return int(float(item.get('delta') or 0)) == 1
-    except Exception:
-        return False
 
 
 def _safe_int(value, default=0) -> int:
@@ -272,16 +291,15 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
             cur.execute("DELETE FROM shared_credit_ledger_local WHERE event_type LIKE 'center_%'")
             count = 0
             for item in items:
-                reason_code = str(item.get('reason') or '')
-                if _center_credit_is_backup_registration(item):
-                    reason_code = 'backup_source_registered'
+                reason_code = _normalize_center_reason_code(item.get('reason') or '')
                 delta = int(item.get('delta') or 0)
                 ref_id = str(item.get('ref_id') or item.get('source_id') or item.get('id') or '')
                 title = item.get('title') or item.get('file_name') or ''
                 file_name = item.get('file_name') or ''
                 tmdb_id = item.get('tmdb_id') or ''
                 item_type = item.get('item_type') or ''
-                source_related_reasons = {'source_registered', 'shared_source_served', 'shared_source_consumed'}
+                event_reason_code = 'backup_source_registered' if _is_backup_center_ledger_item(item, reason_code) else reason_code
+                source_related_reasons = {'source_registered', 'backup_source_registered', 'shared_source_served', 'shared_source_consumed'}
                 source_id = str(item.get('source_id') or '').strip()
                 has_source_title = bool(str(title or '').strip() or str(file_name or '').strip())
                 display = _center_credit_display_title(item) if has_source_title else ''
@@ -292,7 +310,7 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
                     continue
                 if not display:
                     display = title or file_name or ref_id
-                label = _center_credit_event_label(reason_code)
+                label = _center_credit_event_label(reason_code, item)
                 sign = '+' if delta > 0 else ''
                 reason_text = f"{label}：{display}，贡献值 {sign}{delta}"
                 if reason_code == 'initial_credit':
@@ -301,7 +319,7 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
 
                 columns = "event_type, delta, reason, ref_id, source_id, tmdb_id, item_type, title, raw_json"
                 values = [
-                    f"center_{reason_code or 'credit'}", delta, reason_text, ref_id,
+                    f"center_{event_reason_code or 'credit'}", delta, reason_text, ref_id,
                     item.get('source_id') or ref_id, tmdb_id, item_type, display,
                     _as_jsonb({'origin': 'center', 'center_item': item}),
                 ]
