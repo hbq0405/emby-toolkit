@@ -3019,67 +3019,192 @@ def _select_season_pack_candidate(sr, season_row: Dict[str, Any]) -> Dict[str, A
     return {}
 
 
-def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_identity: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
-    """收集季包文件，并做 raw / 一致性校验。"""
-    root_fid = str(candidate.get('root_fid') or '').strip()
-    root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
-    root_is_dir = candidate.get('root_is_dir') is not False
 
-    files = sr._collect_files_from_115(p115, root_fid, root_name=root_name, max_depth=8, assume_dir=root_is_dir)
-    if not files:
-        payload = {
-            'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id'),
-            'item_type': candidate.get('share_item_type') or candidate.get('item_type') or 'Season',
-            'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id'),
-            'season_number': candidate.get('season_number'),
-            'title': candidate.get('display_title') or candidate.get('title') or standard_identity.get('title'),
-            'root_name': root_name,
-        }
-        files = sr._collect_files_from_media_payload(payload)
+def _season_pack_root_meta_from_exact_files(sr, files: List[Dict[str, Any]], standard_identity: Dict[str, Any], target_season) -> Dict[str, Any]:
+    """根据精确命中的目标季文件选择展示用 root，不再把 root 当作分享范围。"""
+    target_season = _safe_int(target_season, None)
+    title = (standard_identity or {}).get('title') or ''
+    root_name_fallback = f"{title} S{_safe_int(target_season, 0):02d} 多文件分享" if target_season is not None else (title or '多文件分享')
 
-    target_season = _safe_int(candidate.get('season_number') or standard_identity.get('season_number'), None)
-    out_of_scope = []
+    parent_ids = []
     for item in files or []:
-        item.setdefault('tmdb_id', str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or standard_identity.get('tmdb_id') or ''))
-        parsed_s, parsed_e = (None, None)
-        if hasattr(sr, '_guess_season_episode_numbers'):
-            parsed_s, parsed_e = sr._guess_season_episode_numbers(item.get('relative_path') or item.get('file_name') or '')
-        if parsed_s is not None:
-            if target_season is not None and _safe_int(parsed_s, None) != target_season:
-                out_of_scope.append(item.get('file_name') or item.get('relative_path') or '')
-            item['season_number'] = parsed_s
-        if parsed_e is not None and not item.get('episode_number'):
-            item['episode_number'] = parsed_e
-        # 季包里的每个文件仍保留 Episode 明细，中心登记时会由 record.share_type=season_pack 聚合成季包源。
-        if not item.get('item_type'):
-            item['item_type'] = 'Episode' if item.get('episode_number') else 'Season'
-        item.setdefault('season_number', candidate.get('season_number'))
-        if not item.get('episode_number') and candidate.get('episode_number'):
-            item['episode_number'] = candidate.get('episode_number')
+        raw = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
+        cache_row = raw.get('cache_row') if isinstance(raw.get('cache_row'), dict) else {}
+        parent_id = str(cache_row.get('parent_id') or '').strip()
+        if parent_id:
+            parent_ids.append(parent_id)
 
-    if out_of_scope:
-        return [], (
-            f"季包文件范围不匹配：目标是 S{_safe_int(target_season, 0):02d}，"
-            f"但候选根目录混入其它季文件：{'；'.join(out_of_scope[:6])}"
-            + (f" 等 {len(out_of_scope)} 个" if len(out_of_scope) > 6 else '')
-        ), {'reason': 'season_pack_scope_mismatch', 'out_of_scope': out_of_scope}
+    unique_parents = list(dict.fromkeys(parent_ids))
+    if len(unique_parents) == 1:
+        parent_id = unique_parents[0]
+        node = {}
+        try:
+            node = sr._get_p115_node(parent_id) if hasattr(sr, '_get_p115_node') else {}
+        except Exception:
+            node = {}
+        parent_name = str((node or {}).get('name') or parent_id)
+        # 只有明确是 Season/Sxx/第X季 目录时，才把它记录为 root_fid。
+        # 如果所有集直接铺在整剧目录，不能把整剧目录当 root，否则后续按 root_fid 去重会误伤其它季。
+        try:
+            season_dir = bool(hasattr(sr, '_season_dir_name_matches') and sr._season_dir_name_matches(parent_name, target_season))
+        except Exception:
+            season_dir = False
+        if season_dir:
+            return {
+                'root_fid': parent_id,
+                'root_name': parent_name,
+                'root_is_dir': True,
+                'root_source': 'season_directory_from_p115_cache',
+                'parent_ids': unique_parents,
+            }
 
+    first = (files or [{}])[0] if files else {}
+    first_fid = str(first.get('fid') or '').strip()
+    first_name = str(first.get('file_name') or first.get('relative_path') or first_fid or root_name_fallback)
+    return {
+        'root_fid': first_fid,
+        'root_name': root_name_fallback if len(files or []) > 1 else first_name,
+        'root_is_dir': False,
+        'root_source': 'exact_file_fids',
+        'parent_ids': unique_parents,
+    }
+
+
+def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_identity: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
+    """完结季包文件定位：以 media_metadata 的目标季 Episode PC/SHA1 为准。
+
+    旧逻辑会先定位一个候选 root_fid，再递归扫描 115 目录；如果 root_fid 恰好是整剧目录，
+    就会把其它季文件扫进来。这里反过来：先按父剧 TMDb + season_number 查 Episode 行，
+    再用每一集的 PC/SHA1 精确反查 p115_filesystem_cache，最后只拿这些文件 fid 创建多文件分享。
+    """
+    candidate = dict(candidate or {})
+    standard_identity = dict(standard_identity or {})
+    target_season = _safe_int(candidate.get('season_number') or standard_identity.get('season_number'), None)
+    parent_series_id = str(
+        standard_identity.get('parent_series_tmdb_id') or
+        candidate.get('parent_series_tmdb_id') or
+        candidate.get('share_tmdb_id') or
+        candidate.get('tmdb_id') or ''
+    ).strip()
+    if not parent_series_id or target_season is None:
+        return [], '季包文件定位失败：缺少父剧 TMDb ID 或季号，无法按 Episode 的 PC/SHA1 精确定位', {
+            'reason': 'season_pack_identity_missing',
+            'parent_series_tmdb_id': parent_series_id,
+            'season_number': target_season,
+        }
+
+    payload = {
+        'tmdb_id': parent_series_id,
+        'item_type': 'Season',
+        'parent_series_tmdb_id': parent_series_id,
+        'season_number': target_season,
+        'title': candidate.get('display_title') or candidate.get('title') or standard_identity.get('title'),
+        'root_name': candidate.get('root_name') or standard_identity.get('title'),
+    }
+    files = sr._collect_files_from_media_payload(payload) if hasattr(sr, '_collect_files_from_media_payload') else []
     if not files:
-        return [], '未能定位到可分享的视频文件，跳过完结季汇总', {'reason': 'season_pack_files_missing'}
+        return [], (
+            f"季包文件定位失败：S{_safe_int(target_season, 0):02d} 的 Episode 行没有可用 PC/SHA1，"
+            "或未能通过 PC/SHA1 在 p115_filesystem_cache 反查到文件"
+        ), {
+            'reason': 'season_pack_exact_files_missing',
+            'parent_series_tmdb_id': parent_series_id,
+            'season_number': target_season,
+            'payload': payload,
+        }
+
+    normalized: List[Dict[str, Any]] = []
+    seen_fids = set()
+    bad_scope = []
+    missing_fid = []
+    for item in files or []:
+        item = dict(item or {})
+        fid = str(item.get('fid') or '').strip()
+        if not fid:
+            missing_fid.append(item.get('file_name') or item.get('relative_path') or item.get('sha1') or '')
+            continue
+        if fid in seen_fids:
+            continue
+        seen_fids.add(fid)
+
+        item_season = _safe_int(item.get('season_number'), target_season)
+        if item_season is not None and target_season is not None and item_season != target_season:
+            bad_scope.append({
+                'fid': fid,
+                'file_name': item.get('file_name') or item.get('relative_path') or '',
+                'season_number': item_season,
+            })
+            continue
+
+        item['season_number'] = target_season
+        item['item_type'] = 'Episode' if item.get('episode_number') not in (None, '') else 'Episode'
+        item['tmdb_id'] = str(item.get('tmdb_id') or '')
+        raw = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
+        raw.setdefault('season_pack_exact_source', {
+            'parent_series_tmdb_id': parent_series_id,
+            'season_number': target_season,
+            'source': 'media_metadata_episode_pc_sha1+p115_filesystem_cache',
+        })
+        item['raw_json'] = raw
+        normalized.append(item)
+
+    if missing_fid:
+        return [], (
+            f"季包文件定位失败：S{_safe_int(target_season, 0):02d} 命中的部分文件缺少 FID："
+            + '；'.join([x for x in missing_fid if x][:6])
+            + (f" 等 {len(missing_fid)} 个" if len(missing_fid) > 6 else '')
+        ), {'reason': 'season_pack_exact_file_missing_fid', 'missing_fid': missing_fid}
+
+    if bad_scope:
+        shown = [f"{x.get('file_name')} => S{_safe_int(x.get('season_number'), 0):02d}" for x in bad_scope[:6]]
+        return [], (
+            f"季包文件定位异常：按 S{_safe_int(target_season, 0):02d} 的 PC/SHA1 反查后仍出现其它季文件："
+            + '；'.join(shown)
+            + (f" 等 {len(bad_scope)} 个" if len(bad_scope) > 6 else '')
+        ), {'reason': 'season_pack_exact_scope_mismatch', 'bad_scope': bad_scope}
+
+    if not normalized:
+        return [], '季包文件定位失败：没有可分享的视频文件 FID', {'reason': 'season_pack_exact_files_empty'}
+
+    normalized.sort(key=lambda x: (_safe_int(x.get('episode_number'), 999999), str(x.get('file_name') or x.get('relative_path') or '')))
 
     if hasattr(sr, '_files_missing_raw_ffprobe'):
-        missing_raw = sr._files_missing_raw_ffprobe(files)
+        missing_raw = sr._files_missing_raw_ffprobe(normalized)
         if missing_raw:
             if hasattr(sr, '_raw_missing_message'):
                 return [], sr._raw_missing_message(missing_raw), {'reason': 'missing_raw_ffprobe', 'missing_raw': missing_raw}
             return [], f'缺少 raw_ffprobe_json：{missing_raw}', {'reason': 'missing_raw_ffprobe', 'missing_raw': missing_raw}
 
+    consistency_context = {
+        **candidate,
+        **standard_identity,
+        'tmdb_id': parent_series_id,
+        'parent_series_tmdb_id': parent_series_id,
+        'season_number': target_season,
+        'item_type': 'Season',
+        'share_type': 'season_pack',
+    }
     if hasattr(sr, '_validate_season_pack_consistency'):
-        consistency = sr._validate_season_pack_consistency(files, {**candidate, **standard_identity})
+        consistency = sr._validate_season_pack_consistency(normalized, consistency_context)
         if not consistency.get('ok'):
-            return [], consistency.get('message') or '季包媒体参数不一致，跳过完结季汇总', {'reason': 'season_pack_consistency_failed', 'consistency': consistency}
+            return [], consistency.get('message') or '季包媒体参数不一致，跳过完结季汇总', {
+                'reason': 'season_pack_consistency_failed',
+                'consistency': consistency,
+            }
 
-    return files, '', {}
+    share_fids = [str(item.get('fid') or '').strip() for item in normalized if str(item.get('fid') or '').strip()]
+    root_meta = _season_pack_root_meta_from_exact_files(sr, normalized, standard_identity, target_season)
+    meta = {
+        'reason': 'season_pack_exact_files_ok',
+        'exact_media_identifier': True,
+        'share_fids': share_fids,
+        'share_fid_count': len(share_fids),
+        'parent_series_tmdb_id': parent_series_id,
+        'season_number': target_season,
+        'file_count': len(normalized),
+        **root_meta,
+    }
+    return normalized, '', meta
 
 
 def _create_completed_season_pack_share(
@@ -3103,14 +3228,21 @@ def _create_completed_season_pack_share(
         if not policy.get('allowed') or str(policy.get('share_type') or '').lower() != 'season_pack':
             return {'ok': False, 'message': policy.get('message') or '当前季不符合季包分享策略'}
 
-    candidate = _select_season_pack_candidate(sr, season_row)
-    if not candidate:
-        return {'ok': False, 'message': '未找到可创建季包的分享根目录'}
+    # 完结季包不再依赖候选 root_fid 是否能安全定位到季目录。
+    # 候选只用于补充标题/年份等展示信息；真实分享范围由 _prepare_season_pack_files
+    # 按 media_metadata Episode 的 PC/SHA1 精确反查 p115_filesystem_cache 决定。
+    candidate = _select_season_pack_candidate(sr, season_row) or {}
+    candidate = {**dict(season_row or {}), **dict(candidate or {})}
+    candidate.setdefault('share_type', 'season_pack')
+    candidate.setdefault('share_item_type', 'Season')
+    candidate.setdefault('item_type', 'Season')
+    candidate.setdefault('parent_series_tmdb_id', season_row.get('parent_series_tmdb_id') or season_row.get('tmdb_id'))
+    candidate.setdefault('season_number', season_row.get('season_number'))
 
     standard_identity = sr._standard_media_identity_for_share({
         'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or season_row.get('parent_series_tmdb_id') or season_row.get('tmdb_id'),
         'item_type': 'Season',
-        'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id') or season_row.get('parent_series_tmdb_id'),
+        'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id') or season_row.get('parent_series_tmdb_id') or season_row.get('tmdb_id'),
         'season_number': candidate.get('season_number') or season_row.get('season_number'),
         'title': candidate.get('standard_title') or candidate.get('title') or season_row.get('title'),
         'release_year': candidate.get('release_year') or season_row.get('release_year'),
@@ -3126,13 +3258,17 @@ def _create_completed_season_pack_share(
             'error_meta': file_error_meta,
         }
 
-    root_fid = str(candidate.get('root_fid') or '').strip()
-    root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
-    root_is_dir = candidate.get('root_is_dir') is not False
+    root_fid = str(file_error_meta.get('root_fid') or candidate.get('root_fid') or '').strip()
+    root_name = file_error_meta.get('root_name') or candidate.get('root_name') or standard_identity.get('title') or root_fid
+    root_is_dir = bool(file_error_meta.get('root_is_dir', candidate.get('root_is_dir') is not False))
 
-    share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
+    share_fids = [str(x).strip() for x in (file_error_meta.get('share_fids') or []) if str(x or '').strip()]
+    if not share_fids:
+        return {'ok': False, 'message': '创建完结季季包分享失败：缺少可分享 FID', 'reason': 'season_pack_share_fids_missing'}
+
+    share_resp = p115.share_create(share_fids, share_duration=-1, receive_code=None)
     if not share_resp or not share_resp.get('state'):
-        return {'ok': False, 'message': f'创建完结季季包分享失败：{share_resp}', 'share_response': share_resp}
+        return {'ok': False, 'message': f'创建完结季季包分享失败：{share_resp}', 'share_response': share_resp, 'share_fids': share_fids}
 
     data = share_resp.get('data') or {}
     share_code = data.get('share_code') or share_resp.get('share_code')
@@ -3154,6 +3290,14 @@ def _create_completed_season_pack_share(
         'share_response': share_resp,
         'candidate': candidate,
         'standard_identity': standard_identity,
+        'season_exact_files': {
+            k: v for k, v in (file_error_meta or {}).items()
+            if k in (
+                'exact_media_identifier', 'share_fid_count', 'parent_series_tmdb_id',
+                'season_number', 'file_count', 'root_source', 'parent_ids'
+            )
+        },
+        'share_fids': share_fids,
     }
     if is_backup_share:
         raw_json.update({
