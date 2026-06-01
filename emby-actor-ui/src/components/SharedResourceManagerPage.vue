@@ -223,15 +223,18 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
-      <n-alert v-if="!activeLocalShareRequest" type="info" :bordered="false" style="margin-bottom: 12px;">
+    <n-modal v-model:show="showManualShareModal" preset="card" :title="manualShareModalTitle" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
+      <n-alert v-if="activeCenterReplenishSource" type="success" :bordered="false" style="margin-bottom: 12px;">
+        正在补充中心待补充资源：{{ appendYear(centerTitleText(activeCenterReplenishSource), activeCenterReplenishSource.release_year) }}。系统已按中心 SHA1 精确匹配本机完全相同资源，并自动填入下方手动分享表单；确认无误后点击“创建永久分享”。
+      </n-alert>
+      <n-alert v-else-if="!activeLocalShareRequest" type="info" :bordered="false" style="margin-bottom: 12px;">
         直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可分享的 115 目录或文件。剧集会优先按季目录分享，不创建单集分享。
       </n-alert>
       <n-alert v-if="activeLocalShareRequest" type="warning" :bordered="false" style="margin-bottom: 12px;">
         正在响应求分享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。系统会自动检索本地库并按求分享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。没有候选就是本地没有符合条件的资源。
       </n-alert>
 
-      <n-space v-if="!activeLocalShareRequest" class="toolbar" :vertical="isMobile" :size="12">
+      <n-space v-if="!activeLocalShareRequest && !activeCenterReplenishSource" class="toolbar" :vertical="isMobile" :size="12">
         <n-input v-model:value="mediaSearchKeyword" placeholder="输入片名 / TMDb ID 搜索本地媒体库" clearable @keyup.enter="searchShareableMedia">
           <template #prefix><n-icon :component="SearchIcon" /></template>
         </n-input>
@@ -275,7 +278,7 @@
 
       <template #footer>
         <n-space justify="space-between" align="center">
-          <n-text depth="3">找不到候选时，先确认该媒体已入库且 media_metadata 中已有 PC/SHA1。</n-text>
+          <n-text depth="3">{{ activeCenterReplenishSource ? '补充会复用手动分享流程：先创建 115 永久分享，审核通过后在“我的分享”里登记中心。' : '找不到候选时，先确认该媒体已入库且 media_metadata 中已有 PC/SHA1。' }}</n-text>
           <n-space>
             <n-button @click="showManualShareModal = false">取消</n-button>
             <n-button type="primary" :disabled="manualCreateDisabled" :loading="manualCreating" @click="manualCreateShare">创建永久分享</n-button>
@@ -349,6 +352,7 @@ const sharedConfigForm = reactive({
 const showManualShareModal = ref(false);
 const showShareRequestModal = ref(false);
 const activeLocalShareRequest = ref(null);
+const activeCenterReplenishSource = ref(null);
 const mediaSearchKeyword = ref('');
 const mediaSearchLoading = ref(false);
 const mediaCandidates = ref([]);
@@ -400,8 +404,10 @@ const centerOrderOptions = [
 
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
-  share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: ''
+  share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: '',
+  center_replenish_source_id: '', center_replenish_payload: null
 });
+const manualShareModalTitle = computed(() => activeCenterReplenishSource.value ? '补充中心待补充资源' : (activeLocalShareRequest.value ? '响应求分享' : '手动创建共享资源'));
 const manualShareValidation = ref(null);
 const manualShareValidationLoading = ref(false);
 let manualShareValidationSeq = 0;
@@ -1138,9 +1144,17 @@ const centerUsableResourceCount = (row) => {
   const count = Number(row?.version_count);
   return Number.isFinite(count) && count > 0 ? count : 1;
 };
+const canCenterReplenishRow = (row) => {
+  if (!isCenterReplenishRow(row)) return false;
+  const info = localLibraryInfo(row);
+  if (!info?.is_fully_in_library && info?.status !== 'full') return false;
+  const files = Array.isArray(info.files) ? info.files : [];
+  if (files.length && !files.some(f => f?.sha1)) return false;
+  return true;
+};
 const centerReplenishActionNode = () => h(NTooltip, { trigger: 'hover', placement: 'top' }, {
   trigger: () => h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '等待补充' }),
-  default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源，不能转存。'
+  default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源；本机没有完整相同资源时不能补充。'
 });
 const executeImport = async (row, mode) => {
   const modeText = '转存';
@@ -1194,6 +1208,37 @@ const importCenterSource = (row, mode) => {
       executeImport(row, mode);
     }
   });
+};
+
+
+
+const openManualShareForCenterReplenish = async (row) => {
+  if (!canCenterReplenishRow(row)) {
+    message.warning('本机没有完整相同资源，不能补充');
+    return;
+  }
+  const loadingKey = row.source_id || row.group_key || `${row.tmdb_id || ''}-${row.season_number || ''}-${row.episode_number || ''}`;
+  importingMap[loadingKey] = 'replenish';
+  try {
+    const res = await axios.post('/api/shared/resources/center/replenish/prepare', { source: row });
+    const candidate = res.data?.data;
+    if (!candidate?.resolvable || !candidate.root_fid) {
+      return message.error(res.data?.message || '未能定位可补充资源');
+    }
+    activeLocalShareRequest.value = null;
+    activeCenterReplenishSource.value = row;
+    resetManualShareForm();
+    activeCenterReplenishSource.value = row;
+    mediaSearchKeyword.value = centerTitleText(row);
+    mediaCandidates.value = [candidate];
+    showManualShareModal.value = true;
+    chooseMediaCandidate(candidate);
+    message.success(res.data?.message || '已自动填入补充资源，请确认后创建永久分享');
+  } catch (e) {
+    message.error(e.response?.data?.message || '准备补充资源失败');
+  } finally {
+    delete importingMap[loadingKey];
+  }
 };
 
 const centerGroupKey = (row) => {
@@ -1438,7 +1483,18 @@ const centerColumns = [
   { title: '转存', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
   { title: '操作', key: 'actions', width: 120, fixed: 'right', render: row => lineStack(row.versions, it => {
     const isImportingPermanent = importingMap[it.source_id] === 'permanent';
+    const isPreparingReplenish = importingMap[it.source_id] === 'replenish';
     if (isCenterReplenishRow(it)) {
+      if (canCenterReplenishRow(it)) {
+        return h(NButton, {
+          size: 'small',
+          type: 'primary',
+          secondary: true,
+          loading: isPreparingReplenish,
+          disabled: Boolean(importingMap[it.source_id]) && !isPreparingReplenish,
+          onClick: () => openManualShareForCenterReplenish(it)
+        }, { default: () => '补充' });
+      }
       return centerReplenishActionNode();
     }
     return h(NButton, {
@@ -1735,6 +1791,7 @@ const confirmCancelShareRequest = (row) => {
 };
 
 const openLocalShareForRequest = async (row) => {
+  activeCenterReplenishSource.value = null;
   resetManualShareForm();
   mediaCandidates.value = [];
   activeLocalShareRequest.value = row || null;
@@ -1797,13 +1854,15 @@ const resetManualShareForm = () => {
   manualShareValidationLoading.value = false;
   Object.assign(manualShareForm, {
     root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
-    share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: manualShareForm.receive_code || ''
+    share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: manualShareForm.receive_code || '',
+    center_replenish_source_id: '', center_replenish_payload: null
   });
   selectedMedia.value = null;
 };
 
 const openManualShareModal = () => {
   activeLocalShareRequest.value = null;
+  activeCenterReplenishSource.value = null;
   resetManualShareForm();
   mediaCandidates.value = [];
   mediaSearchKeyword.value = '';
@@ -1899,6 +1958,8 @@ const chooseMediaCandidate = (row) => {
     item_type: row.share_item_type || row.item_type || 'Season',
     season_number: row.season_number || null,
     release_year: row.release_year || null,
+    center_replenish_source_id: row.center_replenish_source_id || '',
+    center_replenish_payload: row.center_replenish_payload || null,
   });
   message.success('已自动填充分享信息，开始预校验');
   validateManualShareSelection();
@@ -1920,8 +1981,9 @@ const manualCreateShare = async () => {
     message.success('分享已创建，等待审核');
     showManualShareModal.value = false;
     activeLocalShareRequest.value = null;
+    activeCenterReplenishSource.value = null;
     activeTab.value = 'shares';
-    await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]);
+    await Promise.allSettled([loadShares(), loadCenterSources(), loadSummary(), loadLedger()]);
   } catch (e) {
     message.error(e.response?.data?.message || '创建分享失败');
   } finally { manualCreating.value = false; }

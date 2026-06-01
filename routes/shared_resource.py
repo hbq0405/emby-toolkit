@@ -5035,6 +5035,240 @@ def api_center_sources():
         return jsonify({'success': False, 'message': f'拉取中心资源库失败: {e}'}), 500
 
 
+
+def _center_replenish_file_entries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """从中心待补充展示行提取需要补齐的 SHA1 清单。"""
+    row = row or {}
+    entries = _center_row_file_entries(row)
+    local = row.get('local_library') if isinstance(row.get('local_library'), dict) else {}
+    local_files = local.get('files') if isinstance(local.get('files'), list) else []
+
+    # 新中心 display-list 可能不返回完整 pack_items；本地入库标记里的 files 往往更完整。
+    entry_sha_count = len([e for e in entries if _center_norm_sha1(e.get('sha1'))])
+    local_sha_count = len([e for e in local_files if _center_norm_sha1(e.get('sha1'))])
+    if local_sha_count > entry_sha_count:
+        entries = local_files
+
+    out = []
+    seen = set()
+    for item in entries or []:
+        if not isinstance(item, dict):
+            continue
+        sha1 = _center_norm_sha1(item.get('sha1'))
+        if not sha1 or sha1 in seen:
+            continue
+        seen.add(sha1)
+        out.append({
+            'source_id': item.get('source_id') or row.get('source_id'),
+            'sha1': sha1,
+            'file_name': item.get('file_name') or item.get('relative_path') or item.get('label') or row.get('file_name') or row.get('title') or sha1,
+            'relative_path': item.get('relative_path') or item.get('file_name') or '',
+            'season_number': item.get('season_number') if item.get('season_number') not in (None, '') else row.get('season_number'),
+            'episode_number': item.get('episode_number') if item.get('episode_number') not in (None, '') else row.get('episode_number'),
+            'size': item.get('size') or 0,
+        })
+    return out
+
+
+def _prepare_center_replenish_manual_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
+    """把中心“待补充”行转换为手动分享模态框可直接选择的候选。只准备，不创建分享。"""
+    row = dict(row or {})
+    status = str(row.get('status') or '').strip().lower()
+    if status != CENTER_SOURCE_STATUS_REPLENISH:
+        return {'ok': False, 'message': '只有待补充资源才能执行补充'}
+
+    local = row.get('local_library') if isinstance(row.get('local_library'), dict) else {}
+    if local and not local.get('is_fully_in_library'):
+        return {'ok': False, 'message': local.get('label') or '本机没有完整相同资源，不能补充'}
+
+    entries = _center_replenish_file_entries(row)
+    expected = max(_safe_int(row.get('pack_item_count'), 0), _safe_int(local.get('total_count'), 0), len(entries))
+    if not entries:
+        return {'ok': False, 'message': '中心行没有可用于补充的 SHA1 明细'}
+    if expected > len(entries):
+        return {'ok': False, 'message': f'中心资源需要 {expected} 个文件，但当前只拿到 {len(entries)} 个 SHA1，不能确认完全相同'}
+
+    sha1s = [e['sha1'] for e in entries]
+    file_rows = _get_p115_file_rows([], sha1s)
+    by_sha: Dict[str, List[Dict[str, Any]]] = {}
+    for r in file_rows or []:
+        sha = _center_norm_sha1(r.get('sha1'))
+        if sha:
+            by_sha.setdefault(sha, []).append(r)
+
+    chosen_rows = []
+    files = []
+    missing = []
+    used_fids = set()
+    for entry in entries:
+        sha = entry.get('sha1')
+        candidates = by_sha.get(sha) or []
+        if not candidates:
+            missing.append(entry.get('file_name') or sha)
+            continue
+        target_size = _safe_size_bytes(entry.get('size'))
+        candidates = sorted(candidates, key=lambda r: (
+            1 if target_size and _safe_size_bytes(r.get('size')) == target_size else 0,
+            _safe_size_bytes(r.get('size')),
+        ), reverse=True)
+        picked = candidates[0]
+        fid = str(picked.get('id') or '')
+        if not fid or fid in used_fids:
+            continue
+        used_fids.add(fid)
+        chosen_rows.append(picked)
+        name = str(picked.get('name') or entry.get('file_name') or sha)
+        files.append({
+            'fid': fid,
+            'sha1': sha,
+            'size': _safe_size_bytes(picked.get('size') or entry.get('size')),
+            'file_name': name,
+            'relative_path': picked.get('local_path') or entry.get('relative_path') or name,
+            'tmdb_id': str(row.get('tmdb_id') or row.get('share_tmdb_id') or ''),
+            'item_type': 'Episode',
+            'season_number': entry.get('season_number') if entry.get('season_number') not in (None, '') else row.get('season_number'),
+            'episode_number': entry.get('episode_number') if entry.get('episode_number') not in (None, '') else _guess_episode_number(entry.get('file_name') or name),
+            'raw_json': {'source': 'center_replenish_prepare+p115_filesystem_cache', 'center_entry': entry, 'cache_row': picked},
+        })
+
+    if missing:
+        shown = '；'.join(str(x) for x in missing[:8])
+        return {'ok': False, 'message': f'本地 p115_filesystem_cache 未命中这些 SHA1，不能补充：{shown}' + (f' 等 {len(missing)} 个' if len(missing) > 8 else '')}
+    if len(files) != len(entries):
+        return {'ok': False, 'message': f'本地可用文件数不完整：{len(files)}/{len(entries)}，不能确认完全相同'}
+
+    display_type = _center_display_type(row)
+    src_share_type = _center_norm_item_type(row.get('share_type'))
+    if display_type == 'Movie':
+        share_type = 'movie_file' if len(files) == 1 else 'movie_folder'
+        item_type = 'Movie'
+        for f in files:
+            f['item_type'] = 'Movie'
+            f['season_number'] = None
+            f['episode_number'] = None
+    elif display_type == 'Episode':
+        share_type = 'episode_file'
+        item_type = 'Episode'
+        for f in files:
+            f['item_type'] = 'Episode'
+            if f.get('season_number') in (None, ''):
+                f['season_number'] = row.get('season_number')
+            if f.get('episode_number') in (None, ''):
+                f['episode_number'] = row.get('episode_number')
+    else:
+        share_type = 'series_pack' if src_share_type == 'series_pack' else 'season_pack'
+        item_type = 'Series' if share_type == 'series_pack' else 'Season'
+        for f in files:
+            f['item_type'] = 'Episode'
+            if f.get('season_number') in (None, ''):
+                f['season_number'] = row.get('season_number')
+
+    parent_series_id = str(row.get('parent_series_tmdb_id') or row.get('series_tmdb_id') or row.get('share_tmdb_id') or row.get('tmdb_id') or '').strip()
+    identity = _standard_media_identity_for_share({
+        **row,
+        'item_type': item_type,
+        'share_type': share_type,
+        'tmdb_id': row.get('share_tmdb_id') or row.get('tmdb_id'),
+        'parent_series_tmdb_id': parent_series_id if item_type in ('Series', 'Season', 'Episode') else '',
+        'season_number': row.get('season_number'),
+        'episode_number': row.get('episode_number'),
+    })
+
+    if share_type in ('movie_file', 'episode_file') and len(chosen_rows) == 1:
+        root_fid = str(chosen_rows[0].get('id') or '')
+        root_is_dir = False
+        root_name = chosen_rows[0].get('name') or files[0].get('file_name') or root_fid
+    else:
+        parent_ids = [str(r.get('parent_id') or '') for r in chosen_rows if r.get('parent_id')]
+        if not parent_ids:
+            return {'ok': False, 'message': '已命中文件，但 p115_filesystem_cache 缺少 parent_id，无法定位可分享目录'}
+        chains = [_ancestor_chain(pid) for pid in parent_ids]
+        common = []
+        if chains:
+            for node_id in chains[0]:
+                if all(node_id in ch for ch in chains[1:]):
+                    common.append(node_id)
+        root_fid = common[0] if common else parent_ids[0]
+        root_node = _get_p115_node(root_fid) or {}
+        root_name = root_node.get('name') or root_fid
+        root_is_dir = True
+        if share_type == 'season_pack':
+            narrowed = _narrow_season_pack_root(root_fid, root_name, parent_ids, row.get('season_number'))
+            if not narrowed.get('ok'):
+                return {'ok': False, 'message': narrowed.get('message') or '无法安全定位单季目录，已阻止补充'}
+            root_fid = narrowed.get('root_id') or root_fid
+            root_name = narrowed.get('root_name') or root_name
+
+    if root_is_dir:
+        root_files = _collect_files_from_cache(root_fid, root_name=root_name, max_depth=8)
+        root_sha1s = {_center_norm_sha1(f.get('sha1')) for f in root_files or [] if _center_norm_sha1(f.get('sha1'))}
+        expected_sha1s = set(sha1s)
+        extra_sha1s = sorted(root_sha1s - expected_sha1s)
+        if extra_sha1s:
+            return {
+                'ok': False,
+                'message': f'已定位到目录 {root_name}，但目录内还有 {len(extra_sha1s)} 个额外视频，不能确认是完全相同资源；请改用手动分享重新选择更精确目录',
+            }
+
+    title = identity.get('title') or row.get('title') or row.get('media_title') or row.get('file_name') or root_name
+    display_title = title
+    if item_type == 'Season' and row.get('season_number') not in (None, ''):
+        try:
+            display_title = f"{title} S{int(row.get('season_number')):02d}"
+        except Exception:
+            display_title = f"{title} S{row.get('season_number')}"
+    elif item_type == 'Episode':
+        s = row.get('season_number')
+        e = row.get('episode_number')
+        try:
+            if s not in (None, '') and e not in (None, ''):
+                display_title = f"{title} S{int(s):02d}E{int(e):02d}"
+        except Exception:
+            pass
+
+    candidate = {
+        'resolvable': True,
+        'display_title': display_title,
+        'series_title': title,
+        'standard_title': title,
+        'title': title,
+        'release_year': identity.get('release_year') or row.get('release_year'),
+        'tmdb_id': str(identity.get('tmdb_id') or row.get('tmdb_id') or row.get('share_tmdb_id') or ''),
+        'share_tmdb_id': str(identity.get('tmdb_id') or row.get('share_tmdb_id') or row.get('tmdb_id') or ''),
+        'parent_series_tmdb_id': identity.get('parent_series_tmdb_id') or row.get('parent_series_tmdb_id') or '',
+        'item_type': item_type,
+        'share_item_type': item_type,
+        'share_type': share_type,
+        'season_number': row.get('season_number'),
+        'episode_number': row.get('episode_number') if share_type == 'episode_file' else None,
+        'root_fid': root_fid,
+        'root_name': root_name,
+        'root_is_dir': root_is_dir,
+        'file_count': len(files),
+        'message': f'已按中心待补充资源的 SHA1 在本机定位到完全相同文件 {len(files)}/{expected}，请确认后创建永久分享',
+        'center_replenish_source_id': row.get('source_id'),
+        'center_replenish_payload': row,
+    }
+    return {'ok': True, 'candidate': candidate, 'files': files}
+
+
+@shared_resource_bp.route('/center/replenish/prepare', methods=['POST'])
+@admin_required
+def api_prepare_center_replenish_share():
+    """中心资源库待补充行：本机有完全相同 SHA1 时，生成手动分享模态框候选。"""
+    data = _request_json()
+    row = data.get('source') if isinstance(data.get('source'), dict) else (data.get('context') if isinstance(data.get('context'), dict) else {})
+    if not row:
+        return jsonify({'success': False, 'message': '缺少待补充资源信息'}), 400
+    prepared = _prepare_center_replenish_manual_candidate(row)
+    if not prepared.get('ok'):
+        return jsonify({'success': False, 'message': prepared.get('message') or '该资源不能补充', 'data': prepared}), 400
+    return jsonify({
+        'success': True,
+        'message': '已自动填入本机完全相同资源，请在弹窗中确认后点击“创建永久分享”',
+        'data': prepared.get('candidate'),
+    })
+
 @shared_resource_bp.route('/center/import', methods=['POST'])
 @admin_required
 def api_center_import_sources():
