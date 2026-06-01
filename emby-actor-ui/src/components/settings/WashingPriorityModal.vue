@@ -14,7 +14,7 @@
             </n-button>
           </div>
           
-          <draggable v-model="groups" item-key="id" handle=".drag-handle" @end="saveGroups" style="padding: 8px;">
+          <draggable v-model="groups" item-key="id" handle=".drag-handle" style="padding: 8px;">
             <template #item="{ element: group, index }">
               <div 
                 class="group-item" 
@@ -45,7 +45,7 @@
               <n-grid :cols="2" :x-gap="24">
                 <n-gi>
                   <n-form-item label="规则组名称">
-                    <n-input v-model:value="activeGroup.name" placeholder="例如: 欧美电影" @blur="saveGroups" />
+                    <n-input v-model:value="activeGroup.name" placeholder="例如: 欧美电影" />
                   </n-form-item>
                 </n-gi>
                 <n-gi>
@@ -53,7 +53,6 @@
                     <n-select 
                       v-model:value="activeGroup.media_type" 
                       :options="[{label:'通用 (电影+剧集)', value:'All'}, {label:'电影', value:'Movie'}, {label:'剧集', value:'Series'}]" 
-                      @update:value="saveGroups" 
                     />
                   </n-form-item>
                 </n-gi>
@@ -64,7 +63,6 @@
                       multiple 
                       :options="categoryOptions" 
                       placeholder="留空则适用于所有分类" 
-                      @update:value="saveGroups"
                     />
                   </n-form-item>
                 </n-gi>
@@ -83,7 +81,7 @@
 
             <!-- 优先级卡片列表 (可滚动区域) -->
             <div style="flex: 1; overflow-y: auto; padding-right: 8px; margin-right: -8px;">
-              <draggable v-model="activeGroup.priorities" item-key="_uid" handle=".priority-drag-handle" @end="saveGroups" style="display: flex; flex-direction: column; gap: 12px; padding-bottom: 20px;">
+              <draggable v-model="activeGroup.priorities" item-key="_uid" handle=".priority-drag-handle" style="display: flex; flex-direction: column; gap: 12px; padding-bottom: 20px;">
                 <template #item="{ element: priority, index }">
                   <n-card 
                     size="small" 
@@ -132,7 +130,7 @@
                           {{ tag.label }}
                         </n-tag>
                         <n-text v-if="getPrioritySummary(priority).length === (priority.is_exclude ? 1 : 0)" depth="3" style="font-size: 13px; font-style: italic;">
-                          未配置任何条件
+                          未配置任何条件，保存时将被自动忽略
                         </n-text>
                       </n-space>
                     </div>
@@ -144,37 +142,37 @@
                           <n-alert v-if="priority.is_exclude" type="error" :show-icon="false" style="margin-bottom: 8px; padding: 8px 12px;">
                             <div style="display: flex; align-items: center; justify-content: space-between;">
                               <span style="font-weight: bold;">⛔ 排除模式：命中以下任意条件的资源将被直接丢弃，不再参与后续洗版。</span>
-                              <n-switch v-model:value="priority.is_exclude" @update:value="saveGroups">
+                              <n-switch v-model:value="priority.is_exclude">
                                 <template #checked>排除模式</template>
                                 <template #unchecked>普通模式</template>
                               </n-switch>
                             </div>
                           </n-alert>
                           <div v-else style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
-                            <n-switch v-model:value="priority.is_exclude" @update:value="saveGroups">
+                            <n-switch v-model:value="priority.is_exclude">
                               <template #checked>排除模式</template>
                               <template #unchecked>设为排除规则</template>
                             </n-switch>
                           </div>
                         </n-gi>
                         <n-gi>
-                          <n-select v-model:value="priority.resolution" multiple tag :options="resOptions" placeholder="分辨率 (如 4K, 1080p)" @update:value="saveGroups" />
+                          <n-select v-model:value="priority.resolution" multiple tag :options="resOptions" placeholder="分辨率 (如 4K, 1080p)" />
                         </n-gi>
                         <n-gi>
-                          <n-select v-model:value="priority.codec" multiple tag :options="codecOptions" placeholder="编码 (如 HEVC)" @update:value="saveGroups" />
+                          <n-select v-model:value="priority.codec" multiple tag :options="codecOptions" placeholder="编码 (如 HEVC)" />
                         </n-gi>
                         <n-gi>
-                          <n-select v-model:value="priority.effect" multiple tag :options="effectOptions" placeholder="特效 (如 DoVi P8)" @update:value="saveGroups" />
+                          <n-select v-model:value="priority.effect" multiple tag :options="effectOptions" placeholder="特效 (如 DoVi P8)" />
                         </n-gi>
                         <n-gi>
-                          <n-select v-model:value="priority.audio" multiple tag :options="audioOptions" placeholder="必须包含的音轨 (如 chi)" @update:value="saveGroups" />
+                          <n-select v-model:value="priority.audio" multiple tag :options="audioOptions" placeholder="必须包含的音轨 (如 chi)" />
                         </n-gi>
                         <n-gi>
-                          <n-select v-model:value="priority.subtitle" multiple tag :options="subOptions" placeholder="必须包含的字幕 (如 chi)" @update:value="saveGroups" />
+                          <n-select v-model:value="priority.subtitle" multiple tag :options="subOptions" placeholder="必须包含的字幕 (如 chi)" />
                         </n-gi>
                         <n-gi span="1">
                           <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 8px; background: var(--n-color-modal); border-radius: 4px;">
-                            <n-switch v-model:value="priority.exempt_original_lang" size="small" @update:value="saveGroups" />
+                            <n-switch v-model:value="priority.exempt_original_lang" size="small" />
                             <span style="font-size: 12px; color: var(--n-text-color-3);">
                               <strong>原产国豁免音轨/字幕规则</strong>
                             </span>
@@ -183,13 +181,13 @@
                         <n-gi>
                           <n-input-group>
                             <n-input-group-label>最小体积</n-input-group-label>
-                            <n-input-number v-model:value="priority.min_size_gb" :min="0" :step="1" placeholder="GB" @blur="saveGroups" style="width: 100%;" />
+                            <n-input-number v-model:value="priority.min_size_gb" :min="0" :step="1" placeholder="GB" style="width: 100%;" />
                           </n-input-group>
                         </n-gi>
                         <n-gi>
                           <n-input-group>
                             <n-input-group-label>最大体积</n-input-group-label>
-                            <n-input-number v-model:value="priority.max_size_gb" :min="0" :step="1" placeholder="GB" @blur="saveGroups" style="width: 100%;" />
+                            <n-input-number v-model:value="priority.max_size_gb" :min="0" :step="1" placeholder="GB" style="width: 100%;" />
                           </n-input-group>
                         </n-gi>
                       </n-grid>
@@ -206,6 +204,14 @@
         </n-layout-content>
       </n-layout>
     </n-spin>
+    
+    <!-- 底部操作栏 -->
+    <template #action>
+      <n-space justify="end">
+        <n-button @click="showModal = false">取消</n-button>
+        <n-button type="primary" :loading="loading" @click="saveGroups">保存配置</n-button>
+      </n-space>
+    </template>
   </n-modal>
 </template>
 
@@ -275,15 +281,12 @@ const getPrioritySummary = (p) => {
   const subLabels = getLabels(p.subtitle, subOptions);
   if (subLabels.length) tags.push({ type: 'default', label: '字: ' + subLabels.join(', ') });
   
-  // ★★★ 核心修改：根据是否为排除模式，动态调整体积的显示符号 ★★★
   let sizeStr = '';
   if (p.is_exclude) {
-    // 排除模式：填了最大体积，意味着排除大于该体积的；填了最小体积，意味着排除小于该体积的
     if (p.min_size_gb && p.max_size_gb) sizeStr = `< ${p.min_size_gb}G 或 > ${p.max_size_gb}G`;
     else if (p.min_size_gb) sizeStr = `< ${p.min_size_gb}G`;
     else if (p.max_size_gb) sizeStr = `> ${p.max_size_gb}G`;
   } else {
-    // 普通模式：必须在区间内
     if (p.min_size_gb && p.max_size_gb) sizeStr = `${p.min_size_gb}G - ${p.max_size_gb}G`;
     else if (p.min_size_gb) sizeStr = `> ${p.min_size_gb}G`;
     else if (p.max_size_gb) sizeStr = `< ${p.max_size_gb}G`;
@@ -325,14 +328,33 @@ const open = async () => {
 
 const saveGroups = async () => {
   try {
-    // 移除内部 _uid
+    loading.value = true;
     const payload = JSON.parse(JSON.stringify(groups.value));
+    
+    // 过滤空规则并移除内部 _uid
     payload.forEach(g => {
-      if (g.priorities) g.priorities.forEach(p => delete p._uid);
+      if (g.priorities) {
+        g.priorities = g.priorities.filter(p => {
+          // 只要配置了任意一项条件，就认为是有效规则
+          return (p.resolution && p.resolution.length > 0) ||
+                 (p.codec && p.codec.length > 0) ||
+                 (p.effect && p.effect.length > 0) ||
+                 (p.audio && p.audio.length > 0) ||
+                 (p.subtitle && p.subtitle.length > 0) ||
+                 (p.min_size_gb !== null && p.min_size_gb !== undefined) ||
+                 (p.max_size_gb !== null && p.max_size_gb !== undefined);
+        });
+        g.priorities.forEach(p => delete p._uid);
+      }
     });
+
     await axios.post('/api/p115/washing_priority_groups', payload);
+    message.success('保存成功');
+    showModal.value = false; // 保存成功后关闭弹窗
   } catch (e) {
     message.error('保存失败');
+  } finally {
+    loading.value = false;
   }
 };
 
@@ -345,20 +367,18 @@ const addGroup = () => {
   const newGroup = {
     id: Date.now(),
     name: '新规则组',
-    media_type: 'All', // ★ 明确写入字符串 'All'
+    media_type: 'All',
     target_cids: [],
     priorities: []
   };
   groups.value.push(newGroup);
   switchGroup(newGroup.id);
-  saveGroups();
 };
 
 const deleteGroup = (index) => {
   groups.value.splice(index, 1);
   if (groups.value.length > 0) switchGroup(groups.value[0].id);
   else switchGroup(null);
-  saveGroups();
 };
 
 const addPriority = () => {
@@ -368,7 +388,7 @@ const addPriority = () => {
   const newUid = Math.random().toString(36).substr(2, 9);
   activeGroup.value.priorities.push({
     _uid: newUid,
-    is_exclude: false, // ★ 默认不是排除规则
+    is_exclude: false,
     exempt_original_lang: false,
     resolution: [], codec: [], effect: [], audio: [], subtitle: [], min_size_gb: null, max_size_gb: null
   });
@@ -381,8 +401,6 @@ const addPriority = () => {
     const container = document.querySelector('.n-layout-content > div > div:last-child');
     if (container) container.scrollTop = container.scrollHeight;
   }, 100);
-  
-  saveGroups();
 };
 
 const editPriority = (uid) => {
@@ -391,7 +409,6 @@ const editPriority = (uid) => {
 
 const finishEdit = () => {
   editingUid.value = null;
-  saveGroups();
 };
 
 const deletePriority = (index) => {
@@ -400,7 +417,6 @@ const deletePriority = (index) => {
   if (editingUid.value === deletedUid) editingUid.value = null;
   
   activeGroup.value.priorities.splice(index, 1);
-  saveGroups();
 };
 
 defineExpose({ open });
