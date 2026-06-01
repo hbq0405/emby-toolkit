@@ -98,11 +98,15 @@ def get_available_task_definitions(context: str = 'chain'):
     返回给前端使用的任务列表。
     - chain：只返回适合任务链编排的子任务。
     - all：返回全部任务，供 TG 菜单等需要完整任务池的地方使用。
-    - manual：返回临时任务按钮列表，排除页面顶部已有专用按钮的任务链入口。
+    - manual：返回临时任务按钮列表，沿用任务链可编排任务池，只额外排除页面顶部已有专用按钮的任务链入口。
     - 保持 get_task_registry() 的执行侧返回结构不变，避免影响任务调度。
     """
     normalized_context = context if context in ('chain', 'all', 'manual') else 'chain'
-    registry_context = 'all' if normalized_context == 'manual' else normalized_context
+
+    # manual 是页面上的“临时任务”按钮池。
+    # 这里不能从 all 取，否则 full_registry 里标记为 False 的后台/参数型任务也会全部暴露到前端。
+    # 原页面行为等同于 chain：只展示 info[3] == True 的常规任务。
+    registry_context = 'chain' if normalized_context == 'manual' else normalized_context
     registry = get_task_registry(context=registry_context)
 
     available_tasks = []
