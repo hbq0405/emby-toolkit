@@ -1868,6 +1868,12 @@ class WatchlistProcessor:
         # ★ 将标志位合入数据库更新字典
         if set_waiting_flag is not None:
             updates_to_db['waiting_for_completed_pack'] = set_waiting_flag
+
+        # ★★★ 新增：如果最终判定为已完结，同时彻底重置订阅状态，防止残留 ★★★
+        if final_status == STATUS_COMPLETED:
+            updates_to_db['subscription_status'] = 'NONE'
+            updates_to_db['ignore_reason'] = None
+            
         # 如果是待定状态，强制修改总集数为“虚标”值
         if final_status == STATUS_PENDING:
             # 获取配置的默认集数，默认为 99

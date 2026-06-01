@@ -249,7 +249,10 @@ def batch_force_end_watchlist_items(tmdb_ids: List[str]) -> int:
                 UPDATE media_metadata
                 SET watching_status = 'Completed',
                     force_ended = TRUE,
-                    watchlist_is_airing = FALSE
+                    watchlist_is_airing = FALSE,
+                    -- ★★★ 新增：强制完结时，一并清理订阅状态 ★★★
+                    subscription_status = 'NONE',
+                    ignore_reason = NULL
                 WHERE 
                     -- 1. 匹配剧集本身
                     (tmdb_id = ANY(%s) AND item_type = 'Series')
