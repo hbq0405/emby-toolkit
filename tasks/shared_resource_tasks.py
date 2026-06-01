@@ -3288,8 +3288,8 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
                     P115CacheManager.save_cid(parent_id, base_id, parent_name)
                 except Exception:
                     pass
-                logger.info(
-                    "  ➜ [共享资源] p115_filesystem_cache 父目录疑似脏数据，已现场回查 115 季目录: "
+                logger.debug(
+                    "  ➜ [共享资源] 父目录疑似脏数据，重新查找季目录: "
                     "%s S%02d %s(%s) -> %s(%s)",
                     parent_series_id, target_season, old_parent_name, old_parent_id, parent_name, parent_id,
                 )
@@ -3298,7 +3298,7 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
     if not selected.get('season_dir'):
         return [], (
             f'季包文件定位失败：已按 PC/SHA1 命中 S{target_season:02d} 视频，但最佳父目录不是季目录：{parent_name}。'
-            '已现场回查 115，但未找到明确的 Season 子目录；已拒绝分享，避免误分享整剧目录。'
+            '已现场回查 115，但未找到明确的季目录；已拒绝分享。'
         ), {
             'reason': 'season_parent_not_season_dir',
             'parent_series_tmdb_id': parent_series_id,
