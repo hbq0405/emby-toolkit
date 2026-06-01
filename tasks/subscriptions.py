@@ -1672,19 +1672,23 @@ def task_auto_subscribe(processor):
             # ==========================================
             # 动态订阅源处理 (云资源 / MP)
             # ==========================================
-            subscription_sources = strategy_config.get('subscription_sources')
-            if not subscription_sources:
+            raw_sources = strategy_config.get('subscription_sources')
+            # 只有当配置完全不存在(None)时，才走兼容老版本的逻辑；如果是空列表[]说明用户全取消勾选了
+            if raw_sources is None:
                 old_priority = strategy_config.get('subscription_priority', 'mp')
                 if old_priority in ['hdhive', 'cloud']:
                     subscription_sources = ['hdhive', 'mp']
                 else:
                     subscription_sources = ['mp']
+            else:
+                # 必须 copy 一份，防止后续 remove 操作污染全局配置缓存
+                subscription_sources = list(raw_sources)
 
             if is_subscribed_recheck:
-                if 'hdhive' not in subscription_sources:
-                    subscription_sources.append('hdhive')
+                # 补库模式下，绝对不能再投递给 MP，直接移除
                 if 'mp' in subscription_sources:
                     subscription_sources.remove('mp')
+                # 移除强制添加 hdhive 的逻辑，完全尊重前端用户的勾选；如果用户勾选了 hdhive 就走，没勾选就算补库也不走。
 
             for source_type in subscription_sources:
                 if success:
