@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import time
 import threading
 from typing import Dict, Any, List
@@ -3092,10 +3093,7 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
             'sha1s': len(sha1s),
         }
 
-    files: List[Dict[str, Any]] = []
-    seen_episode_keys = set()
-    seen_fids = set()
-    parent_ids = []
+    matched_rows: List[Dict[str, Any]] = []
     for row in cache_rows:
         row = dict(row or {})
         name = str(row.get('name') or '')
@@ -3104,33 +3102,15 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
         pc = str(row.get('pick_code') or '').strip()
         sha1 = str(row.get('sha1') or '').strip().upper()
         ep = pc_to_episode.get(pc) or sha1_to_episode.get(sha1) or {}
-        ep_key = str(ep.get('tmdb_id') or '') or f"S{target_season}E{_safe_int(ep.get('episode_number'), 0)}"
-        fid = str(row.get('id') or '').strip()
-        parent_id = str(row.get('parent_id') or '').strip()
-        if not fid or fid in seen_fids or ep_key in seen_episode_keys:
+        if not ep:
             continue
-        seen_fids.add(fid)
-        seen_episode_keys.add(ep_key)
-        if parent_id and parent_id not in parent_ids:
-            parent_ids.append(parent_id)
-        files.append({
-            'fid': fid,
-            'sha1': sha1 or None,
-            'size': safe_size(row.get('size')),
-            'file_name': name,
-            'relative_path': row.get('local_path') or name,
-            'tmdb_id': str(ep.get('tmdb_id') or ''),
-            'item_type': 'Episode',
-            'season_number': target_season,
-            'episode_number': ep.get('episode_number'),
-            'raw_json': {
-                'source': 'media_metadata_episode_pc_sha1+p115_filesystem_cache',
-                'cache_row': row,
-                'episode_meta': ep,
-            },
-        })
+        parent_id = str(row.get('parent_id') or '').strip()
+        fid = str(row.get('id') or '').strip()
+        if not parent_id or not fid:
+            continue
+        matched_rows.append({'row': row, 'episode': ep, 'parent_id': parent_id, 'fid': fid})
 
-    if not files:
+    if not matched_rows:
         return [], f'季包文件定位失败：S{target_season:02d} 未能通过 PC/SHA1 在 p115_filesystem_cache 反查到视频文件', {
             'reason': 'p115_cache_no_video_match',
             'parent_series_tmdb_id': parent_series_id,
@@ -3139,20 +3119,109 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
             'sha1s': len(sha1s),
             'cache_rows': len(cache_rows),
         }
-    if not parent_ids:
-        return [], f'季包文件定位失败：S{target_season:02d} 未能找到父目录', {'reason': 'missing_parent_id'}
 
-    from collections import Counter
-    pid_counts = Counter(parent_ids)
-    parent_id = pid_counts.most_common(1)[0][0]
+    def _season_dir_matches(name: str) -> bool:
+        try:
+            if hasattr(sr, '_season_dir_name_matches') and sr._season_dir_name_matches(name, target_season):
+                return True
+        except Exception:
+            pass
+        text = str(name or '').strip().lower().replace('_', ' ').replace('-', ' ')
+        compact = re.sub(r'\s+', '', text)
+        return compact in {
+            f's{target_season}', f's{target_season:02d}',
+            f'season{target_season}', f'season{target_season:02d}',
+            f'第{target_season}季',
+        }
 
-    if len(pid_counts) > 1:
-        # 【核心修复】如果文件散落在多个目录，只保留主目录下的文件。
-        # 缺失的文件会让后续的一致性校验自然拦截，而不会导致分享错目录。
-        files = [f for f in files if str(f.get('raw_json', {}).get('cache_row', {}).get('parent_id')) == parent_id]
-    parent_node = shared_share_db.get_p115_node_by_id(parent_id) or {}
-    parent_name = str(parent_node.get('name') or parent_id)
+    groups: Dict[str, Dict[str, Any]] = {}
+    for item in matched_rows:
+        parent_id = item['parent_id']
+        group = groups.setdefault(parent_id, {'parent_id': parent_id, 'rows': [], 'episodes': set(), 'parent_name': parent_id, 'season_dir': False})
+        group['rows'].append(item)
+        ep = item.get('episode') or {}
+        ep_no = _safe_int(ep.get('episode_number'), None)
+        if ep_no is not None:
+            group['episodes'].add(ep_no)
 
+    for group in groups.values():
+        node = shared_share_db.get_p115_node_by_id(group['parent_id']) or {}
+        group['parent_name'] = str(node.get('name') or group['parent_id'])
+        group['season_dir'] = _season_dir_matches(group['parent_name'])
+
+    # 同一 PC/SHA1 在 p115_filesystem_cache 里可能有旧路径残留，不能先按集去重。
+    # 必须先按 parent_id 分组，优先选择目录名明确匹配 Sxx/Season xx/第x季 的父目录。
+    selected = sorted(
+        groups.values(),
+        key=lambda g: (1 if g.get('season_dir') else 0, len(g.get('episodes') or set()), len(g.get('rows') or [])),
+        reverse=True,
+    )[0]
+    parent_id = str(selected.get('parent_id') or '').strip()
+    parent_name = str(selected.get('parent_name') or parent_id)
+    parent_candidates = [
+        {
+            'parent_id': g.get('parent_id'),
+            'parent_name': g.get('parent_name'),
+            'season_dir': bool(g.get('season_dir')),
+            'episode_count': len(g.get('episodes') or set()),
+            'row_count': len(g.get('rows') or []),
+        }
+        for g in sorted(groups.values(), key=lambda x: len(x.get('episodes') or set()), reverse=True)
+    ]
+    if not selected.get('season_dir'):
+        return [], (
+            f'季包文件定位失败：已按 PC/SHA1 命中 S{target_season:02d} 视频，但最佳父目录不是季目录：{parent_name}。'
+            '已拒绝分享，避免误分享整剧目录；请检查 p115_filesystem_cache 是否有旧路径残留或重新同步 115 目录缓存。'
+        ), {
+            'reason': 'season_parent_not_season_dir',
+            'parent_series_tmdb_id': parent_series_id,
+            'season_number': target_season,
+            'parent_candidates': parent_candidates,
+        }
+
+    files: List[Dict[str, Any]] = []
+    seen_episode_keys = set()
+    seen_fids = set()
+    for item in selected.get('rows') or []:
+        row = dict(item.get('row') or {})
+        ep = dict(item.get('episode') or {})
+        fid = str(row.get('id') or '').strip()
+        pc = str(row.get('pick_code') or '').strip()
+        sha1 = str(row.get('sha1') or '').strip().upper()
+        ep_key = str(ep.get('tmdb_id') or '') or f"S{target_season}E{_safe_int(ep.get('episode_number'), 0)}"
+        if not fid or fid in seen_fids or ep_key in seen_episode_keys:
+            continue
+        seen_fids.add(fid)
+        seen_episode_keys.add(ep_key)
+        files.append({
+            'fid': fid,
+            'sha1': sha1 or None,
+            'size': safe_size(row.get('size')),
+            'file_name': str(row.get('name') or ''),
+            'relative_path': row.get('local_path') or row.get('name') or '',
+            'tmdb_id': str(ep.get('tmdb_id') or ''),
+            'item_type': 'Episode',
+            'season_number': target_season,
+            'episode_number': ep.get('episode_number'),
+            'raw_json': {
+                'source': 'media_metadata_episode_pc_sha1+p115_filesystem_cache',
+                'cache_row': row,
+                'episode_meta': ep,
+                'selected_parent_id': parent_id,
+                'selected_parent_name': parent_name,
+            },
+        })
+
+    if not files:
+        return [], f'季包文件定位失败：S{target_season:02d} 选中的季目录下没有可登记的视频文件', {
+            'reason': 'season_selected_parent_no_files',
+            'parent_series_tmdb_id': parent_series_id,
+            'season_number': target_season,
+            'parent_candidates': parent_candidates,
+        }
+
+    # parent_id / parent_name 已经来自上面按 p115_filesystem_cache.parent_id 分组后选中的季目录，
+    # 这里不能再引用旧变量 parent_ids，否则会把目录选择逻辑打断。
     files.sort(key=lambda x: (_safe_int(x.get('episode_number'), 999999), str(x.get('file_name') or '')))
 
     if hasattr(sr, '_files_missing_raw_ffprobe'):
@@ -3188,6 +3257,7 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
         'parent_series_tmdb_id': parent_series_id,
         'season_number': target_season,
         'file_count': len(files),
+        'parent_candidates': parent_candidates,
         'episode_rows': len(episode_rows),
         'pickcodes': len(pickcodes),
         'sha1s': len(sha1s),
