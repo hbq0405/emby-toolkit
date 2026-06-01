@@ -68,9 +68,17 @@
             <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
               <div v-if="enabledHighFreqTaskChain.length > 0" class="flowchart-container">
-                <div v-for="task in enabledHighFreqTaskChain" :key="task.key" class="flowchart-node">
-                  {{ task.name }}
-                </div>
+                <n-tooltip v-for="task in enabledHighFreqTaskChain" :key="task.key" trigger="hover" placement="top">
+                  <template #trigger>
+                    <div class="flowchart-node">
+                      {{ task.name }}
+                    </div>
+                  </template>
+                  <div class="task-tooltip-content">
+                    <div class="task-tooltip-title">{{ task.name }}</div>
+                    <div>{{ getTaskHelp(task) }}</div>
+                  </div>
+                </n-tooltip>
               </div>
               <div v-else class="flowchart-container empty">
                 <n-text depth="3">暂未配置任何任务...</n-text>
@@ -138,9 +146,17 @@
             <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
               <div v-if="enabledLowFreqTaskChain.length > 0" class="flowchart-container">
-                <div v-for="task in enabledLowFreqTaskChain" :key="task.key" class="flowchart-node">
-                  {{ task.name }}
-                </div>
+                <n-tooltip v-for="task in enabledLowFreqTaskChain" :key="task.key" trigger="hover" placement="top">
+                  <template #trigger>
+                    <div class="flowchart-node">
+                      {{ task.name }}
+                    </div>
+                  </template>
+                  <div class="task-tooltip-content">
+                    <div class="task-tooltip-title">{{ task.name }}</div>
+                    <div>{{ getTaskHelp(task) }}</div>
+                  </div>
+                </n-tooltip>
               </div>
               <div v-else class="flowchart-container empty">
                 <n-text depth="3">暂未配置任何任务...</n-text>
@@ -175,9 +191,17 @@
             <n-text strong>当前 TG 菜单列表</n-text>
             <div class="flowchart-wrapper">
               <div v-if="enabledTgMenuTasks.length > 0" class="flowchart-container">
-                <div v-for="task in enabledTgMenuTasks" :key="task.key" class="flowchart-node" style="background-color: var(--n-action-color);">
-                  {{ task.name }}
-                </div>
+                <n-tooltip v-for="task in enabledTgMenuTasks" :key="task.key" trigger="hover" placement="top">
+                  <template #trigger>
+                    <div class="flowchart-node" style="background-color: var(--n-action-color);">
+                      {{ task.name }}
+                    </div>
+                  </template>
+                  <div class="task-tooltip-content">
+                    <div class="task-tooltip-title">{{ task.name }}</div>
+                    <div>{{ getTaskHelp(task) }}</div>
+                  </div>
+                </n-tooltip>
               </div>
               <div v-else class="flowchart-container empty">
                 <n-text depth="3">暂未配置任何 TG 菜单任务...</n-text>
@@ -203,13 +227,21 @@
         </template>
         <n-grid cols="1 m:2 l:5" :x-gap="24" :y-gap="16" responsive="screen">
           <n-gi v-for="task in availableTasksForManualRun" :key="task.key">
-            <div class="temp-task-item">
-              <n-text>{{ task.name }}</n-text>
-              <n-button size="small" type="primary" ghost @click="triggerTaskNow(task.key)" :loading="isTriggeringTask === task.key" :disabled="isBackgroundTaskRunning">
-                <template #icon><n-icon :component="Play24Regular" /></template>
-                立即执行
-              </n-button>
-            </div>
+            <n-tooltip trigger="hover" placement="top">
+              <template #trigger>
+                <div class="temp-task-item">
+                  <n-text>{{ task.name }}</n-text>
+                  <n-button size="small" type="primary" ghost @click="triggerTaskNow(task.key)" :loading="isTriggeringTask === task.key" :disabled="isBackgroundTaskRunning">
+                    <template #icon><n-icon :component="Play24Regular" /></template>
+                    立即执行
+                  </n-button>
+                </div>
+              </template>
+              <div class="task-tooltip-content">
+                <div class="task-tooltip-title">{{ task.name }}</div>
+                <div>{{ getTaskHelp(task) }}</div>
+              </div>
+            </n-tooltip>
           </n-gi>
         </n-grid>
       </n-card>
@@ -224,10 +256,18 @@
     <n-modal v-model:show="showHighFreqChainConfigModal" class="custom-card" preset="card" title="配置高频刷新任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
       <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">请勾选需要定时执行的任务，并拖动调整顺序。</n-alert>
       <div class="task-chain-list" ref="draggableContainerHighFreq">
-        <div v-for="task in configuredHighFreqTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
-          <n-icon :component="Drag24Regular" class="drag-handle" />
-          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
-        </div>
+        <n-tooltip v-for="task in configuredHighFreqTaskSequence" :key="task.key" trigger="hover" placement="right">
+          <template #trigger>
+            <div class="task-chain-item" :data-key="task.key">
+              <n-icon :component="Drag24Regular" class="drag-handle" />
+              <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
+            </div>
+          </template>
+          <div class="task-tooltip-content">
+            <div class="task-tooltip-title">{{ task.name }}</div>
+            <div>{{ getTaskHelp(task) }}</div>
+          </div>
+        </n-tooltip>
       </div>
       <template #footer>
         <n-space justify="end">
@@ -241,10 +281,18 @@
     <n-modal v-model:show="showLowFreqChainConfigModal" class="custom-card" preset="card" title="配置低频维护任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
       <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">请勾选需要定时执行的任务，并拖动调整顺序。</n-alert>
       <div class="task-chain-list" ref="draggableContainerLowFreq">
-        <div v-for="task in configuredLowFreqTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
-          <n-icon :component="Drag24Regular" class="drag-handle" />
-          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
-        </div>
+        <n-tooltip v-for="task in configuredLowFreqTaskSequence" :key="task.key" trigger="hover" placement="right">
+          <template #trigger>
+            <div class="task-chain-item" :data-key="task.key">
+              <n-icon :component="Drag24Regular" class="drag-handle" />
+              <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
+            </div>
+          </template>
+          <div class="task-tooltip-content">
+            <div class="task-tooltip-title">{{ task.name }}</div>
+            <div>{{ getTaskHelp(task) }}</div>
+          </div>
+        </n-tooltip>
       </div>
       <template #footer>
         <n-space justify="end">
@@ -261,10 +309,18 @@
         注意：Telegram 限制菜单命令最多显示 100 个，建议只保留常用任务。
       </n-alert>
       <div class="task-chain-list" ref="draggableContainerTgMenu">
-        <div v-for="task in configuredTgMenuSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
-          <n-icon :component="Drag24Regular" class="drag-handle" />
-          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
-        </div>
+        <n-tooltip v-for="task in configuredTgMenuSequence" :key="task.key" trigger="hover" placement="right">
+          <template #trigger>
+            <div class="task-chain-item" :data-key="task.key">
+              <n-icon :component="Drag24Regular" class="drag-handle" />
+              <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
+            </div>
+          </template>
+          <div class="task-tooltip-content">
+            <div class="task-tooltip-title">{{ task.name }}</div>
+            <div>{{ getTaskHelp(task) }}</div>
+          </div>
+        </n-tooltip>
       </div>
       <template #footer>
         <n-space justify="end">
@@ -291,7 +347,7 @@ import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue'
 import {
   NForm, NFormItem, NInput, NCheckbox, NGrid, NGi, NAlert,
   NButton, NCard, NSpace, NSwitch, NIcon, NText, NInputNumber,
-  useMessage, NLayout, NSpin, NModal, NButtonGroup
+  useMessage, NLayout, NSpin, NModal, NButtonGroup, NTooltip
 } from 'naive-ui';
 import { Play24Regular, Settings24Regular, Drag24Regular, Save24Regular } from '@vicons/fluent';
 import { useConfig } from '../../composables/useConfig.js';
@@ -319,6 +375,11 @@ const DEFAULT_TG_TASKS = [
   'scan-cleanup-issues',
   'system-auto-update'
 ];
+
+const getTaskHelp = (task) => {
+  if (!task) return '暂无任务说明。';
+  return task.help || task.description || task.name || '暂无任务说明。';
+};
 
 // --- Composable Hooks ---
 const {
@@ -584,6 +645,7 @@ watch([configModel, availableTasksForChain, availableTasksForManualRun], ([newCo
   padding: 8px 12px;
   border: 1px solid var(--n-border-color);
   border-radius: 4px;
+  cursor: help;
 }
 .task-chain-list {
   display: flex;
@@ -598,6 +660,7 @@ watch([configModel, availableTasksForChain, availableTasksForManualRun], ([newCo
   border-radius: 4px;
   border: 1px solid var(--n-border-color);
   transition: background-color 0.3s;
+  cursor: help;
 }
 .task-chain-item.sortable-ghost {
   background-color: var(--n-color-target-suppl);
@@ -609,6 +672,15 @@ watch([configModel, availableTasksForChain, availableTasksForManualRun], ([newCo
 }
 .drag-handle:active {
   cursor: grabbing;
+}
+.task-tooltip-content {
+  max-width: 320px;
+  line-height: 1.6;
+  white-space: normal;
+}
+.task-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 4px;
 }
 
 /* --- 流程图核心样式 --- */
@@ -640,6 +712,7 @@ watch([configModel, availableTasksForChain, availableTasksForManualRun], ([newCo
   text-align: center;
   white-space: nowrap;
   position: relative;
+  cursor: help;
 }
 .flowchart-node:not(:last-child)::after {
   content: '';

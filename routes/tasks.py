@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify
 import task_manager 
 from extensions import admin_required, processor_ready_required, task_lock_required
 # ★★★ 导入任务注册表，这是“翻译”的关键 ★★★
-from tasks.core import get_task_registry
+from tasks.core import get_task_registry, get_available_task_definitions
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +19,15 @@ tasks_bp = Blueprint('tasks', __name__, url_prefix='/api/tasks')
 @admin_required
 def get_available_tasks():
     """
-    返回一个可用于任务链配置的、有序的、人类可读的任务列表。
-    它现在只返回那些被标记为适合在任务链中运行的任务。
+    返回可供前端选择/展示的任务列表。
+    支持 context=chain/all，并从 tasks.core 透传任务说明 help，避免前端硬编码说明 map。
     """
     try:
-        # 调用 get_task_registry 时，明确告诉它我们需要用于“任务链”的上下文
-        registry = get_task_registry(context='chain')
-        
-        available_tasks = [
-            {"key": key, "name": info[1]} 
-            for key, info in registry.items()
-        ]
+        context = (request.args.get('context') or 'chain').strip().lower()
+        if context not in ('chain', 'all'):
+            context = 'chain'
+
+        available_tasks = get_available_task_definitions(context=context)
         return jsonify(available_tasks), 200
     except Exception as e:
         logger.error(f"获取可用任务列表时出错: {e}", exc_info=True)

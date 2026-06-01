@@ -31,6 +31,87 @@ from .shared_resource_tasks import task_shared_resource_maintenance, task_shared
 
 logger = logging.getLogger(__name__)
 
+
+# 任务说明：作为任务注册表的补充元数据，供前端悬停提示、TG 菜单说明等场景复用。
+# 新增任务时只需要在 full_registry 里登记任务，再在这里补一句 help，不需要再改前端。
+TASK_HELP_TEXTS = {
+    'task-chain-high-freq': '按已配置的高频刷新任务链顺序执行多个子任务，适合白天定时刷新媒体数据、追剧和订阅等轻量任务。',
+    'task-chain-low-freq': '按已配置的低频维护任务链顺序执行多个子任务，适合夜间处理耗时更长、资源占用更高的维护任务。',
+    'populate-metadata': '同步 Emby 媒体库基础数据到本地缓存，用于后续追剧、订阅、整理、统计和共享匹配。',
+    'role-translation': '为影视条目中的角色名补充中文显示，让演员角色展示更友好。',
+    'actor-translation': '为演员、导演等人物信息补充中文名和中文资料。',
+    'process-watchlist': '刷新智能追剧列表，检查连载剧更新、缺集和订阅状态，并按策略处理追更。',
+    'actor-tracking': '刷新演员订阅，根据关注演员检查新作品并触发后续订阅处理。',
+    'custom-collections': '刷新全部自建合集，把符合规则的媒体重新归类到自定义合集。',
+    'auto-subscribe': '统一处理电影、剧集、追更和求资源等订阅需求，按规则搜索、转存或登记缺口。',
+    'generate-all-covers': '批量生成原生媒体封面，适合封面缺失或封面风格需要统一时执行。',
+    'generate-custom-collection-covers': '批量生成自建合集封面，让合集封面保持统一风格。',
+    'check-expired-users': '检查会员或体验卡到期用户，并执行到期后的权限处理。',
+    'refresh_completed_series': '全量刷新剧集完结状态和季集信息，适合修复追剧状态不准、完结状态变化等问题。',
+    'scan-monitor-folders': '扫描配置的监控目录，发现新增媒体文件后进入识别、整理或入库流程。',
+    'scan-organize-115': '扫描 115 网盘文件并按规则识别、整理、生成记录，适合新增资源后手动触发。',
+    'full-sync-strm': '全量重建 STRM 与字幕文件，适合目录结构或生成规则调整后统一刷新。',
+    'monitor-115-life-events': '增量处理 115 网盘文件变化，只针对新增、移动、删除等变化生成或更新 STRM。',
+    'backup-mediainfo': '备份本地媒体信息缓存，避免重建库或迁移后丢失媒体参数。',
+    'restore_mediainfo': '从备份中还原媒体信息缓存，适合重装、迁移或缓存损坏后恢复数据。',
+    'hdhive-auto-checkin': '执行影巢自动签到，获取签到奖励或保持账号活跃。',
+    'restore-nfo-and-images': '从备份或缓存中还原 NFO、海报、背景图等媒体附属文件。',
+    'shared-resource-maintenance': '维护共享资源池，包含登记缺口、自动分享、状态检查、清理失效分享和共享订阅消费等。',
+    'add-all-series-to-watchlist': '扫描全库剧集并加入智能追剧管理，适合首次启用追剧功能时使用。',
+    'process_all_custom_collections': '立即重新生成所有自建合集，通常用于合集规则调整后手动刷新。',
+    'process-single-custom-collection': '只刷新指定的单个自建合集，通常由合集详情页触发。',
+    'scan-cleanup-issues': '扫描重复媒体、异常文件和可清理项目，帮助发现占空间或重复入库的问题。',
+    'resubscribe-library': '执行媒体订阅删除/洗版相关处理，按配置清理并重新订阅需要替换的资源。',
+    'update-daily-theme': '更新每日主题推荐内容，用于首页或发现页的主题展示。',
+    'manual_subscribe_batch': '处理手动批量订阅队列，适合一次性提交多个想看的电影或剧集。',
+    'scan_old_seasons_backfill': '扫描缺季老剧并尝试补齐缺失季度，适合老剧季信息不完整时使用。',
+    'contribute-mediainfo': '把本地媒体信息贡献到中心，用于共享资源匹配和参数展示。',
+    'generate_embeddings': '为媒体生成向量索引，用于语义搜索、相似推荐等智能功能。',
+    'refresh-collections': '刷新 TMDb 原生合集信息，让电影系列合集保持最新。',
+    'update-resubscribe-cache': '刷新媒体整理/洗版缓存，为后续洗版筛选和订阅判断提供基础数据。',
+    'merge-duplicate-actors': '合并重复演员条目，减少同一演员因别名、翻译不同造成的分身。',
+    'sync-all-user-data': '同步全部用户数据，例如播放记录、收藏、观看状态等用户维度信息。',
+    'execute-auto-tagging-rules': '执行自动打标规则，根据媒体参数、路径、类型等条件批量添加标签。',
+    'enrich-aliases': '补充演员别名、译名等资料，提高搜索和人物匹配命中率。',
+    'purge-ghost-actors': '删除没有有效关联作品的幽灵演员，清理人物库冗余数据。',
+    'sync-115-directory-tree': '同步 115 网盘目录树缓存，适合目录结构变化大或缓存不准时使用。',
+    'fill-studio-images': '补全制作公司/工作室图标，让媒体详情页展示更完整。',
+    'shared-share-status-sync': '高频同步共享分享状态，检查分享是否仍可用并更新中心状态。',
+    'system-auto-update': '检查并执行系统容器自动更新，适合需要保持 ETK 最新版本时使用。',
+}
+
+
+def get_task_help(task_key: str, fallback_name: str = '') -> str:
+    """返回任务说明文案，供前端和其它展示入口复用。"""
+    return TASK_HELP_TEXTS.get(task_key) or fallback_name or '暂无任务说明。'
+
+
+def get_available_task_definitions(context: str = 'chain'):
+    """
+    返回给前端使用的任务列表。
+    - 保持 get_task_registry() 的执行侧返回结构不变，避免影响任务调度。
+    - 前端只消费 key/name/help，不再需要硬编码任务说明 map。
+    """
+    normalized_context = context if context in ('chain', 'all') else 'chain'
+    registry = get_task_registry(context=normalized_context)
+
+    available_tasks = []
+    for key, info in registry.items():
+        task_name = info[1]
+        task_help = get_task_help(key, task_name)
+        task_item = {
+            'key': key,
+            'name': task_name,
+            'help': task_help,
+            # 兼容前端旧字段命名，避免部分组件仍然读 description 时显示为空。
+            'description': task_help,
+        }
+        if normalized_context == 'all' and len(info) >= 3:
+            task_item['processor_type'] = info[2]
+        available_tasks.append(task_item)
+
+    return available_tasks
+
 def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str, max_runtime_config_key: str):
     """
     【V10 - 内部通用任务链执行器】
