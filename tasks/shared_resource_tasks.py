@@ -4062,7 +4062,7 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
             'season_number': event.get('season_number') if event.get('season_number') is not None else payload.get('season_number'),
             'episode_number': event.get('episode_number') if event.get('episode_number') is not None else payload.get('episode_number'),
         }
-        label = '求分享命中' if event_type == 'request_matched' else '订阅资源可用'
+        label = '求分享命中' if event_type == 'request_matched' else '订阅资源入池'
         logger.info("  ➜ [共享事件监听] 收到%s事件，开始自动转存: %s source=%s", label, title, source_id)
         result = consume_center_sources([source_id], mode='permanent', context=context) or {}
         ok = bool(result.get('success'))
