@@ -1874,6 +1874,115 @@ class P115CacheManager:
         except Exception as e:
             logger.error(f"  ➜ 写入 115 文件缓存失败: {e}")
 
+
+    @staticmethod
+    def _filesystem_cache_row_to_dict(row):
+        """把 p115_filesystem_cache 查询结果转成普通 dict，方便任务层复用。"""
+        if not row:
+            return None
+        try:
+            return dict(row)
+        except Exception:
+            return row
+
+    @staticmethod
+    def get_file_cache_by_id(fid):
+        """按 115 文件 FID 获取完整文件缓存行。"""
+        if not fid:
+            return None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        FROM p115_filesystem_cache
+                        WHERE id = %s
+                        LIMIT 1
+                    """, (str(fid),))
+                    return P115CacheManager._filesystem_cache_row_to_dict(cursor.fetchone())
+        except Exception as e:
+            logger.debug(f"  ➜ 读取 115 文件缓存失败(fid={fid}): {e}")
+            return None
+
+    @staticmethod
+    def get_file_cache_by_pickcode(pick_code):
+        """按 115 PickCode 获取完整文件缓存行。"""
+        if not pick_code:
+            return None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        FROM p115_filesystem_cache
+                        WHERE pick_code = %s
+                        LIMIT 1
+                    """, (str(pick_code),))
+                    return P115CacheManager._filesystem_cache_row_to_dict(cursor.fetchone())
+        except Exception as e:
+            logger.debug(f"  ➜ 读取 115 文件缓存失败(pc={pick_code}): {e}")
+            return None
+
+    @staticmethod
+    def get_file_cache_by_sha1(sha1):
+        """按 SHA1 获取完整文件缓存行。"""
+        if not sha1:
+            return None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        FROM p115_filesystem_cache
+                        WHERE UPPER(sha1) = UPPER(%s)
+                        ORDER BY updated_at DESC NULLS LAST
+                        LIMIT 1
+                    """, (str(sha1),))
+                    return P115CacheManager._filesystem_cache_row_to_dict(cursor.fetchone())
+        except Exception as e:
+            logger.debug(f"  ➜ 读取 115 文件缓存失败(sha1={str(sha1)[:12]}...): {e}")
+            return None
+
+    @staticmethod
+    def get_file_cache_by_local_path(local_path):
+        """按本地相对路径获取完整文件缓存行，兼容 / 与 \\ 分隔符。"""
+        if not local_path:
+            return None
+
+        normalized = str(local_path).strip().replace('\\', '/')
+        normalized = re.sub(r'/+', '/', normalized).strip('/')
+        if not normalized:
+            return None
+
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        FROM p115_filesystem_cache
+                        WHERE local_path = %s
+                        LIMIT 1
+                    """, (normalized,))
+                    row = cursor.fetchone()
+                    if row:
+                        return P115CacheManager._filesystem_cache_row_to_dict(row)
+
+                    # 挂载/路径前缀不一致时的兜底：只允许“完整路径段后缀”匹配，避免单文件名误命中。
+                    if '/' in normalized:
+                        cursor.execute("""
+                            SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                            FROM p115_filesystem_cache
+                            WHERE local_path IS NOT NULL
+                              AND %s LIKE '%%/' || local_path
+                            ORDER BY length(local_path) DESC
+                            LIMIT 1
+                        """, (normalized,))
+                        return P115CacheManager._filesystem_cache_row_to_dict(cursor.fetchone())
+        except Exception as e:
+            logger.debug(f"  ➜ 读取 115 文件缓存失败(local_path={normalized}): {e}")
+
+        return None
+
     @staticmethod
     def delete_files(fids):
         """批量从缓存中物理删除文件记录"""

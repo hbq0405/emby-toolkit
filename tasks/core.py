@@ -13,7 +13,7 @@ import task_manager
 from .actors import (task_enrich_aliases, task_persons_translation, 
                      task_process_actor_subscriptions, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
-from .media import task_role_translation, task_populate_metadata_cache, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_backup_mediainfo, task_restore_mediainfo, task_contribute_mediainfo_to_center, task_restore_nfo_and_images, task_fill_studio_images
+from .media import task_role_translation, task_populate_metadata_cache, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_backup_mediainfo, task_restore_mediainfo, task_repair_p115_fingerprints, task_contribute_mediainfo_to_center, task_restore_nfo_and_images, task_fill_studio_images
 from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_old_seasons_backfill, task_add_all_series_to_watchlist
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
@@ -53,6 +53,7 @@ TASK_HELP_TEXTS = {
     'full-sync-strm': '全量重建 STRM 与字幕文件，适合目录结构或生成规则调整后统一刷新。',
     'monitor-115-life-events': '增量处理 115 网盘文件变化，只针对新增、移动、删除等变化生成或更新 STRM。',
     'backup-mediainfo': '备份本地媒体信息缓存，避免重建库或迁移后丢失媒体参数。',
+    'repair-p115-fingerprints': '扫描在库电影和分集，补齐共享资源必需的 115 PC 与 SHA1；优先从本地 115 缓存恢复，必要时现场查询 115。',
     'restore_mediainfo': '从备份中还原媒体信息缓存，适合重装、迁移或缓存损坏后恢复数据。',
     'hdhive-auto-checkin': '执行影巢自动签到，获取签到奖励或保持账号活跃。',
     'restore-nfo-and-images': '从备份或缓存中还原 NFO、海报、背景图等媒体附属文件。',
@@ -297,6 +298,7 @@ def get_task_registry(context: str = 'all'):
         'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
         'monitor-115-life-events': (task_monitor_115_life_events, "增量生成STRM", 'media', True),
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
+        'repair-p115-fingerprints': (task_repair_p115_fingerprints, "补齐共享指纹", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'hdhive-auto-checkin': (task_hdhive_auto_checkin, "影巢自动签到", 'media', True),
         'restore-nfo-and-images': (task_restore_nfo_and_images, "还原NFO和封面", 'media', True),

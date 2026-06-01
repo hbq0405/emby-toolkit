@@ -756,6 +756,9 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_name ON p115_filesystem_cache (name);")
                     # 加速共享资源按 SHA1 判断本账号是否已存在同文件，避免重复 share_import。
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_sha1_upper ON p115_filesystem_cache (UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
+                    # 指纹修复任务会按 PC / local_path 从目录树缓存反查文件身份。
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_pick_code ON p115_filesystem_cache (pick_code) WHERE pick_code IS NOT NULL AND pick_code <> '';")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_local_path ON p115_filesystem_cache (local_path) WHERE local_path IS NOT NULL AND local_path <> '';")
 
                     # 12.5 【共享资源】加速我的共享和贡献值页面
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_status_updated ON shared_share_records (status, updated_at DESC);")

@@ -1937,6 +1937,401 @@ def task_scan_monitor_folders(processor):
     logger.info(f"  ➜ 监控目录扫描完成。扫描: {scan_count}, 触发处理: {trigger_count}")
     task_manager.update_status_from_thread(100, f"扫描完成，处理了 {trigger_count} 个新项目")
 
+
+# --- 补齐共享资源所需的 115 指纹 ---
+def _p115_fp_is_missing(value) -> bool:
+    """判断 media_metadata 中的 PC/SHA1 槽位是否为空。"""
+    if value is None:
+        return True
+    text = str(value).strip()
+    return text == '' or text.lower() in {'none', 'null', '[]', '{}'}
+
+
+def _p115_fp_safe_json_list(value) -> list:
+    """兼容 jsonb / 字符串 / None，统一返回 list。"""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _p115_fp_clean_path(value) -> Optional[str]:
+    """清洗路径字符串，去掉 query/hash，统一路径分隔符。"""
+    if not value:
+        return None
+    try:
+        from urllib.parse import unquote
+        text = unquote(str(value).strip())
+    except Exception:
+        text = str(value).strip()
+    if not text:
+        return None
+    if text.startswith('file://'):
+        text = text[7:]
+    text = text.split('#', 1)[0].split('?', 1)[0]
+    return text.replace('\\', '/')
+
+
+def _p115_fp_read_strm_target(path: str) -> Optional[str]:
+    """读取 STRM 内容，失败时返回 None。"""
+    if not path or not str(path).lower().endswith('.strm'):
+        return None
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        return content.replace('\\', '/') if content else None
+    except Exception:
+        return None
+
+
+def _p115_fp_build_local_path_candidates(path: str, strm_target: Optional[str], local_root: str = '') -> List[str]:
+    """
+    为挂载模式/STRM 模式构造 p115_filesystem_cache.local_path 候选值。
+    - 标准 STRM：asset path 是 .strm，本地缓存是同目录真实视频扩展名。
+    - 挂载模式：STRM 内容可能没有 PC，只能靠路径映射到 local_path。
+    """
+    candidates = []
+
+    def _add(raw_path):
+        cleaned = _p115_fp_clean_path(raw_path)
+        if not cleaned:
+            return
+        if re.match(r'^https?://', cleaned, re.IGNORECASE):
+            return
+
+        variants = [cleaned]
+        if local_root:
+            try:
+                root_norm = os.path.normpath(local_root).replace('\\', '/').rstrip('/')
+                path_norm = os.path.normpath(cleaned).replace('\\', '/')
+                if path_norm == root_norm:
+                    return
+                if path_norm.startswith(root_norm + '/'):
+                    variants.append(path_norm[len(root_norm):].lstrip('/'))
+            except Exception:
+                pass
+
+        for item in variants:
+            norm = re.sub(r'/+', '/', str(item).replace('\\', '/')).strip('/')
+            if norm and norm not in candidates:
+                candidates.append(norm)
+
+    _add(path)
+    _add(strm_target)
+
+    # STRM 文件本身通常是 xxx.strm，而 p115_filesystem_cache.local_path 记录的是 xxx.mkv/mp4 等真实视频名。
+    clean_path = _p115_fp_clean_path(path)
+    clean_target = _p115_fp_clean_path(strm_target)
+    if clean_path and clean_path.lower().endswith('.strm') and clean_target:
+        real_ext = os.path.splitext(clean_target)[1]
+        if real_ext and real_ext.lower() in {'.mkv', '.mp4', '.ts', '.avi', '.rmvb', '.wmv', '.mov', '.m2ts', '.flv', '.mpg', '.iso'}:
+            _add(os.path.splitext(clean_path)[0] + real_ext)
+
+    return candidates
+
+
+def _p115_fp_compute_fid_from_pickcode(pick_code: Optional[str]):
+    """本地按 pick_code 计算 115 FID，库不存在时回退 DB 缓存。"""
+    if not pick_code:
+        return None
+    try:
+        from p115pickcode import to_id
+        return str(to_id(pick_code))
+    except Exception:
+        pass
+    try:
+        from p115client.tool.iterdir import to_id
+        return str(to_id(pick_code))
+    except Exception:
+        pass
+    try:
+        from handler.p115_service import P115CacheManager
+        fid = P115CacheManager.get_fid_by_pickcode(pick_code)
+        return str(fid) if fid else None
+    except Exception:
+        return None
+
+
+def _p115_fp_extract_info_data(info_res) -> Dict[str, Any]:
+    """统一提取 fs_get_info 返回中的关键字段。"""
+    if not isinstance(info_res, dict) or not info_res.get('state'):
+        return {}
+    data = info_res.get('data')
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        return {}
+
+    return {
+        'id': data.get('fid') or data.get('file_id') or data.get('id'),
+        'parent_id': data.get('parent_id') or data.get('pid') or data.get('cid'),
+        'name': data.get('fn') or data.get('n') or data.get('file_name') or data.get('name'),
+        'sha1': data.get('sha1') or data.get('sha') or data.get('file_sha1'),
+        'pick_code': data.get('pc') or data.get('pick_code') or data.get('pickcode'),
+        'size': data.get('fs') or data.get('size') or data.get('file_size') or 0,
+    }
+
+
+def task_repair_p115_fingerprints(processor):
+    """
+    扫描所有在库电影/分集视频，补齐共享资源模块依赖的 115 PC 和 SHA1。
+
+    修复顺序：
+    1. 先用 processor._extract_115_fingerprints 解析 URL/STRM/挂载路径；
+    2. 再从 p115_filesystem_cache 按 PC、SHA1、FID、local_path 反查；
+    3. 如果仍缺 SHA1/PC，则按 PC 计算 FID，或用缓存里的 FID，现场请求 115 fs_get_info；
+    4. 成功后同时写回 p115_filesystem_cache 和 media_metadata。
+    """
+    task_name = "补齐115指纹"
+    logger.info(f"--- 开始执行 {task_name} 任务 ---")
+    task_manager.update_status_from_thread(0, "正在扫描缺失 PC/SHA1 的在库视频...")
+
+    from handler.p115_service import P115Service, P115CacheManager
+
+    client = P115Service.get_client()
+    local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, '') or ''
+    video_exts = {'.mkv', '.mp4', '.ts', '.avi', '.rmvb', '.wmv', '.mov', '.m2ts', '.flv', '.mpg', '.iso', '.strm'}
+
+    try:
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT tmdb_id, item_type, title, parent_series_tmdb_id,
+                       season_number, episode_number,
+                       asset_details_json, file_sha1_json, file_pickcode_json
+                FROM media_metadata
+                WHERE in_library = TRUE
+                  AND item_type IN ('Movie', 'Episode')
+                  AND asset_details_json IS NOT NULL
+                ORDER BY item_type, title NULLS LAST, tmdb_id
+            """)
+            rows = [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"  ➜ [{task_name}] 读取媒体库资产失败: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, "读取媒体库资产失败")
+        return
+
+    total_rows = len(rows)
+    if total_rows == 0:
+        logger.info(f"  ➜ [{task_name}] 没有可处理的在库电影/分集资产。")
+        task_manager.update_status_from_thread(100, "没有可处理的在库视频")
+        return
+
+    scanned_assets = 0
+    missing_assets = 0
+    fixed_assets = 0
+    api_fixed_assets = 0
+    cache_fixed_assets = 0
+    failed_assets = 0
+    updated_rows = 0
+    cache_updates = 0
+
+    def _merge_cache_row(cache_row, values: Dict[str, Any]) -> bool:
+        if not cache_row:
+            return False
+        changed = False
+        for src_key, dst_key in [
+            ('id', 'fid'),
+            ('parent_id', 'parent_id'),
+            ('name', 'name'),
+            ('sha1', 'sha1'),
+            ('pick_code', 'pc'),
+            ('local_path', 'local_path'),
+            ('size', 'size'),
+        ]:
+            val = cache_row.get(src_key) if isinstance(cache_row, dict) else None
+            if val not in (None, '') and not values.get(dst_key):
+                values[dst_key] = str(val) if dst_key != 'size' else val
+                changed = True
+        return changed
+
+    for row_idx, row in enumerate(rows):
+        if processor.is_stop_requested():
+            logger.warning(f"  ➜ [{task_name}] 收到停止信号，提前结束。")
+            break
+
+        if row_idx % 50 == 0:
+            progress = int((row_idx / max(total_rows, 1)) * 100)
+            task_manager.update_status_from_thread(
+                progress,
+                f"正在检查 ({row_idx + 1}/{total_rows})，已修复 {fixed_assets} 个资产..."
+            )
+
+        tmdb_id = str(row.get('tmdb_id'))
+        item_type = row.get('item_type')
+        title = row.get('title') or tmdb_id
+        assets = _p115_fp_safe_json_list(row.get('asset_details_json'))
+        sha1s = _p115_fp_safe_json_list(row.get('file_sha1_json'))
+        pcs = _p115_fp_safe_json_list(row.get('file_pickcode_json'))
+
+        if not assets:
+            continue
+
+        while len(sha1s) < len(assets):
+            sha1s.append(None)
+        while len(pcs) < len(assets):
+            pcs.append(None)
+
+        row_changed = False
+
+        for asset_idx, asset in enumerate(assets):
+            if not isinstance(asset, dict):
+                continue
+
+            path = asset.get('path') or asset.get('Path')
+            if not path:
+                continue
+
+            clean_path = _p115_fp_clean_path(path) or str(path)
+            ext = os.path.splitext(clean_path)[1].lower()
+            if ext and ext not in video_exts:
+                continue
+
+            scanned_assets += 1
+            current_sha1 = sha1s[asset_idx] if asset_idx < len(sha1s) else None
+            current_pc = pcs[asset_idx] if asset_idx < len(pcs) else None
+
+            need_sha1 = _p115_fp_is_missing(current_sha1)
+            need_pc = _p115_fp_is_missing(current_pc)
+            if not need_sha1 and not need_pc:
+                continue
+
+            missing_assets += 1
+            strm_target = _p115_fp_read_strm_target(clean_path)
+            local_candidates = _p115_fp_build_local_path_candidates(clean_path, strm_target, local_root)
+            values = {
+                'fid': None,
+                'parent_id': None,
+                'name': os.path.basename(clean_path) if clean_path else None,
+                'sha1': None if need_sha1 else str(current_sha1).strip().upper(),
+                'pc': None if need_pc else str(current_pc).strip(),
+                # 优先写相对路径；如果只能拿到挂载绝对路径，也先保留，后续同步目录树会刷新。
+                'local_path': min(local_candidates, key=len) if local_candidates else None,
+                'size': asset.get('size') or asset.get('Size') or 0,
+            }
+
+            # 1) 走已有万能提取器，兼容 URL、STRM 内容、挂载路径映射。
+            extractor = getattr(processor, '_extract_115_fingerprints', None)
+            if callable(extractor):
+                for probe_path in [clean_path, strm_target]:
+                    if not probe_path:
+                        continue
+                    try:
+                        extracted_pc, extracted_sha1 = extractor(probe_path)
+                        if extracted_pc and need_pc and not values.get('pc'):
+                            values['pc'] = str(extracted_pc).strip()
+                        if extracted_sha1 and need_sha1 and not values.get('sha1'):
+                            values['sha1'] = str(extracted_sha1).strip().upper()
+                    except Exception as e:
+                        logger.debug(f"  ➜ [{task_name}] 指纹提取器跳过异常路径: {probe_path} -> {e}")
+
+            # 2) 从 p115_filesystem_cache 反查，优先 PC/SHA1/FID，再用 local_path 兼容挂载模式。
+            cache_hit = False
+            try:
+                cache_row = None
+                if values.get('pc'):
+                    cache_row = P115CacheManager.get_file_cache_by_pickcode(values['pc'])
+                if not cache_row and values.get('sha1'):
+                    cache_row = P115CacheManager.get_file_cache_by_sha1(values['sha1'])
+                if not cache_row and values.get('fid'):
+                    cache_row = P115CacheManager.get_file_cache_by_id(values['fid'])
+
+                if not cache_row:
+                    for local_candidate in local_candidates:
+                        cache_row = P115CacheManager.get_file_cache_by_local_path(local_candidate)
+                        if cache_row:
+                            break
+
+                cache_hit = _merge_cache_row(cache_row, values)
+            except Exception as e:
+                logger.debug(f"  ➜ [{task_name}] 查询 p115_filesystem_cache 失败: {e}")
+
+            # 3) 仍然缺字段时，现场按 PC 计算 FID，再查 115 详情。
+            if (need_sha1 and not values.get('sha1')) or (need_pc and not values.get('pc')):
+                if not values.get('fid') and values.get('pc'):
+                    values['fid'] = _p115_fp_compute_fid_from_pickcode(values['pc'])
+
+                if values.get('fid') and client:
+                    try:
+                        info_res = client.fs_get_info(values['fid'])
+                        info_data = _p115_fp_extract_info_data(info_res)
+                        if info_data:
+                            if info_data.get('sha1') and not values.get('sha1'):
+                                values['sha1'] = str(info_data['sha1']).strip().upper()
+                            if info_data.get('pick_code') and not values.get('pc'):
+                                values['pc'] = str(info_data['pick_code']).strip()
+                            values['parent_id'] = values.get('parent_id') or info_data.get('parent_id')
+                            values['name'] = values.get('name') or info_data.get('name')
+                            values['size'] = values.get('size') or info_data.get('size') or 0
+                            api_fixed_assets += 1
+                    except Exception as e:
+                        logger.warning(f"  ➜ [{task_name}] 现场查询 115 详情失败 fid={values.get('fid')}: {e}")
+
+            # 4) 成功拿到字段后，回写 p115_filesystem_cache。
+            if values.get('fid') and values.get('parent_id') and values.get('name'):
+                try:
+                    P115CacheManager.save_file_cache(
+                        fid=values['fid'],
+                        parent_id=values['parent_id'],
+                        name=values['name'],
+                        sha1=values.get('sha1'),
+                        pick_code=values.get('pc'),
+                        local_path=values.get('local_path'),
+                        size=values.get('size') or 0,
+                    )
+                    cache_updates += 1
+                except Exception as e:
+                    logger.debug(f"  ➜ [{task_name}] 回写 p115_filesystem_cache 失败 fid={values.get('fid')}: {e}")
+
+            asset_fixed = False
+            if need_sha1 and values.get('sha1'):
+                sha1s[asset_idx] = str(values['sha1']).strip().upper()
+                row_changed = True
+                asset_fixed = True
+            if need_pc and values.get('pc'):
+                pcs[asset_idx] = str(values['pc']).strip()
+                row_changed = True
+                asset_fixed = True
+
+            if asset_fixed:
+                fixed_assets += 1
+                if cache_hit:
+                    cache_fixed_assets += 1
+                logger.info(
+                    f"  ➜ [{task_name}] 已补齐 {title} #{asset_idx + 1}: "
+                    f"PC={'✓' if not _p115_fp_is_missing(pcs[asset_idx]) else '×'}, "
+                    f"SHA1={'✓' if not _p115_fp_is_missing(sha1s[asset_idx]) else '×'}"
+                )
+            else:
+                failed_assets += 1
+                logger.warning(
+                    f"  ➜ [{task_name}] 暂无法补齐 {title} #{asset_idx + 1}: "
+                    f"path={clean_path}"
+                )
+
+        if row_changed:
+            try:
+                media_db.update_media_sha1_and_pc_json(tmdb_id, item_type, sha1s, pcs)
+                updated_rows += 1
+            except Exception as e:
+                logger.error(f"  ➜ [{task_name}] 写回 media_metadata 失败 {tmdb_id}/{item_type}: {e}", exc_info=True)
+
+    final_msg = (
+        f"{task_name}完成：扫描资产 {scanned_assets}，缺失 {missing_assets}，"
+        f"成功补齐 {fixed_assets}，缓存命中 {cache_fixed_assets}，现场查询 {api_fixed_assets}，"
+        f"写回媒体项 {updated_rows}，回写115缓存 {cache_updates}，失败 {failed_assets}。"
+    )
+    logger.info(f"  ➜ {final_msg}")
+    task_manager.update_status_from_thread(100, final_msg)
+
+
 # --- 终极媒体信息备份任务 ---
 def task_backup_mediainfo(processor):
     """
