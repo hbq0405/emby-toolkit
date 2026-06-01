@@ -98,118 +98,17 @@ def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, An
 # 获取用于自动订阅的媒体项 (包含 WANTED、SUBSCRIBED 以及追剧中的季)
 def get_all_wanted_media() -> List[Dict[str, Any]]:
     """
-    获取统一订阅处理队列。
+    获取统一订阅处理队列 (精简优化版)。
 
     口径说明：
-    - WANTED：仍按旧逻辑进入完整订阅链路，共享池/云资源/MP 都可以处理；
-    - SUBSCRIBED：代表 MP 已经接收过订阅，ETK 只继续负责网盘侧补库，不能再次下滑给 MP；
-    - SUBSCRIBED 的 Season 会额外带 missing_episode_numbers / missing_episode_count，
-      供共享池按缺失集精确匹配；影巢和频道仍只使用父剧 TMDb + season_number。
+    - 电影 (Movie)：依赖 subscription_status IN ('WANTED', 'SUBSCRIBED')。
+    - 剧集季 (Season)：依赖 watching_status IN ('Watching', 'Paused')，不再依赖 subscription_status。
+    - 自动聚合 Season 下缺失的 Episode 编号。
+    - 彻底移除了冗余的单集(Episode)兜底逻辑，大幅提升查询性能。
     """
     sql = """
-        WITH wanted_base AS (
-            SELECT
-                m.tmdb_id,
-                m.item_type,
-                m.title,
-                m.release_date,
-                m.release_year,
-                m.poster_path,
-                m.overview,
-                m.parent_series_tmdb_id,
-                m.season_number,
-                NULL::integer AS episode_number,
-                m.subscription_status,
-                m.subscription_sources_json,
-                m.in_library,
-                m.first_requested_at,
-                m.last_subscribed_at
-            FROM media_metadata m
-            WHERE m.subscription_status = 'WANTED'
-              -- 统一订阅队列里电视资源只允许出现 Series / Season，不再吐 Episode。
-              -- Episode 只参与下面的 wanted_episode_season_items 聚合，避免一季逐集登记缺口。
-              AND m.item_type IN ('Movie', 'Series', 'Season')
-        ),
-        wanted_with_missing AS (
-            SELECT
-                wb.tmdb_id,
-                wb.item_type,
-                wb.title,
-                wb.release_date,
-                wb.release_year,
-                wb.poster_path,
-                wb.overview,
-                wb.parent_series_tmdb_id,
-                wb.season_number,
-                wb.episode_number,
-                wb.subscription_status,
-                wb.subscription_sources_json,
-                COALESCE(
-                    jsonb_agg(e.episode_number ORDER BY e.episode_number)
-                        FILTER (WHERE e.episode_number IS NOT NULL),
-                    '[]'::jsonb
-                ) AS missing_episode_numbers,
-                COUNT(e.episode_number)::integer AS missing_episode_count,
-                wb.first_requested_at,
-                wb.last_subscribed_at,
-                wb.in_library
-            FROM wanted_base wb
-            LEFT JOIN media_metadata e
-              ON wb.item_type = 'Season'
-             AND e.item_type = 'Episode'
-             AND e.parent_series_tmdb_id = COALESCE(wb.parent_series_tmdb_id, wb.tmdb_id)
-             AND COALESCE(e.season_number, -1) = COALESCE(wb.season_number, -1)
-             AND COALESCE(e.in_library, FALSE) = FALSE
-             AND e.episode_number IS NOT NULL
-             AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
-            GROUP BY
-                wb.tmdb_id, wb.item_type, wb.title, wb.release_date, wb.release_year,
-                wb.poster_path, wb.overview, wb.parent_series_tmdb_id, wb.season_number,
-                wb.episode_number, wb.subscription_status, wb.subscription_sources_json,
-                wb.first_requested_at, wb.last_subscribed_at, wb.in_library
-        ),
-        wanted_episode_season_items AS (
-            -- 兼容历史/追更补缺遗留数据：如果库里只有 Episode=WANTED，
-            -- 也按父剧+季号聚合成一条 Season 处理项。统一订阅任务永远不再逐集处理 Episode。
-            SELECT
-                e.parent_series_tmdb_id::text AS tmdb_id,
-                'Season'::text AS item_type,
-                COALESCE(MAX(series.title), MAX(e.title)) AS title,
-                MIN(e.release_date) AS release_date,
-                COALESCE(MAX(series.release_year), MIN(e.release_year)) AS release_year,
-                MAX(series.poster_path) AS poster_path,
-                MAX(series.overview) AS overview,
-                e.parent_series_tmdb_id,
-                e.season_number,
-                NULL::integer AS episode_number,
-                'WANTED'::text AS subscription_status,
-                COALESCE(MIN(e.subscription_sources_json::text)::jsonb, '[]'::jsonb) AS subscription_sources_json,
-                jsonb_agg(e.episode_number ORDER BY e.episode_number) AS missing_episode_numbers,
-                COUNT(e.episode_number)::integer AS missing_episode_count,
-                MIN(e.first_requested_at) AS first_requested_at,
-                MAX(e.last_subscribed_at) AS last_subscribed_at
-            FROM media_metadata e
-            LEFT JOIN media_metadata series
-              ON series.item_type = 'Series'
-             AND series.tmdb_id = e.parent_series_tmdb_id
-            WHERE e.subscription_status = 'WANTED'
-              AND e.item_type = 'Episode'
-              AND COALESCE(e.in_library, FALSE) = FALSE
-              AND e.parent_series_tmdb_id IS NOT NULL
-              AND e.season_number IS NOT NULL
-              AND e.episode_number IS NOT NULL
-              AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM media_metadata s
-                    WHERE s.subscription_status IN ('WANTED', 'SUBSCRIBED')
-                      AND s.item_type = 'Season'
-                      AND COALESCE(s.parent_series_tmdb_id, s.tmdb_id) = e.parent_series_tmdb_id
-                      AND COALESCE(s.season_number, -1) = COALESCE(e.season_number, -1)
-              )
-            GROUP BY e.parent_series_tmdb_id, e.season_number
-        ),
-        wanted_items AS (
+        WITH target_media AS (
+            -- 1. 筛选出所有符合条件的目标媒体 (电影 + 剧集季)
             SELECT
                 tmdb_id,
                 item_type,
@@ -220,201 +119,74 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
                 overview,
                 parent_series_tmdb_id,
                 season_number,
-                episode_number,
-                subscription_status,
-                subscription_sources_json,
-                missing_episode_numbers,
-                missing_episode_count,
-                first_requested_at,
-                last_subscribed_at
-            FROM wanted_with_missing
-
-            UNION ALL
-
-            SELECT
-                tmdb_id,
-                item_type,
-                title,
-                release_date,
-                release_year,
-                poster_path,
-                overview,
-                parent_series_tmdb_id,
-                season_number,
-                episode_number,
-                subscription_status,
-                subscription_sources_json,
-                missing_episode_numbers,
-                missing_episode_count,
-                first_requested_at,
-                last_subscribed_at
-            FROM wanted_episode_season_items
-        ),
-        subscribed_base AS (
-            SELECT
-                m.tmdb_id,
-                m.item_type,
-                m.title,
-                m.release_date,
-                m.release_year,
-                m.poster_path,
-                m.overview,
-                m.parent_series_tmdb_id,
-                m.season_number,
                 NULL::integer AS episode_number,
-                m.subscription_status,
-                m.subscription_sources_json,
-                m.in_library,
-                m.first_requested_at,
-                m.last_subscribed_at
-            FROM media_metadata m
-            WHERE m.subscription_status = 'SUBSCRIBED'
-              -- SUBSCRIBED 补库队列不再直接吐 Episode 行；
-              -- 缺失集由 Season.missing_episode_numbers 聚合承载，避免一季上千集逐条登记缺口。
-              AND m.item_type IN ('Movie', 'Series', 'Season')
-        ),
-        subscribed_with_missing AS (
-            SELECT
-                sb.tmdb_id,
-                sb.item_type,
-                sb.title,
-                sb.release_date,
-                sb.release_year,
-                sb.poster_path,
-                sb.overview,
-                sb.parent_series_tmdb_id,
-                sb.season_number,
-                sb.episode_number,
-                sb.subscription_status,
-                sb.subscription_sources_json,
-                COALESCE(
-                    jsonb_agg(e.episode_number ORDER BY e.episode_number)
-                        FILTER (WHERE e.episode_number IS NOT NULL),
-                    '[]'::jsonb
-                ) AS missing_episode_numbers,
-                COUNT(e.episode_number)::integer AS missing_episode_count,
-                sb.first_requested_at,
-                sb.last_subscribed_at,
-                sb.in_library
-            FROM subscribed_base sb
-            LEFT JOIN media_metadata e
-              ON sb.item_type = 'Season'
-             AND e.item_type = 'Episode'
-             AND e.parent_series_tmdb_id = COALESCE(sb.parent_series_tmdb_id, sb.tmdb_id)
-             AND COALESCE(e.season_number, -1) = COALESCE(sb.season_number, -1)
-             AND COALESCE(e.in_library, FALSE) = FALSE
-             AND e.episode_number IS NOT NULL
-             AND (
-                    e.release_date IS NULL
-                 OR e.release_date <= CURRENT_DATE
-             )
-            GROUP BY
-                sb.tmdb_id, sb.item_type, sb.title, sb.release_date, sb.release_year,
-                sb.poster_path, sb.overview, sb.parent_series_tmdb_id, sb.season_number,
-                sb.episode_number, sb.subscription_status, sb.subscription_sources_json,
-                sb.first_requested_at, sb.last_subscribed_at, sb.in_library
-        ),
-        subscribed_episode_season_items AS (
-            -- 兼容历史数据：如果库里只有 Episode=SUBSCRIBED、没有对应 Season=SUBSCRIBED，
-            -- 也把同父剧同季的缺失单集聚合成一条“虚拟 Season 补库项”。
-            -- 这样共享池登记/中心查询仍然只有季缺口，不会退回逐集缺口。
-            SELECT
-                e.parent_series_tmdb_id::text AS tmdb_id,
-                'Season'::text AS item_type,
-                COALESCE(MAX(series.title), MAX(e.title)) AS title,
-                MIN(e.release_date) AS release_date,
-                COALESCE(MAX(series.release_year), MIN(e.release_year)) AS release_year,
-                MAX(series.poster_path) AS poster_path,
-                MAX(series.overview) AS overview,
-                e.parent_series_tmdb_id,
-                e.season_number,
-                NULL::integer AS episode_number,
-                'SUBSCRIBED'::text AS subscription_status,
-                COALESCE(MIN(e.subscription_sources_json::text)::jsonb, '[]'::jsonb) AS subscription_sources_json,
-                jsonb_agg(e.episode_number ORDER BY e.episode_number) AS missing_episode_numbers,
-                COUNT(e.episode_number)::integer AS missing_episode_count,
-                MIN(e.first_requested_at) AS first_requested_at,
-                MAX(e.last_subscribed_at) AS last_subscribed_at
-            FROM media_metadata e
-            LEFT JOIN media_metadata series
-              ON series.item_type = 'Series'
-             AND series.tmdb_id = e.parent_series_tmdb_id
-            WHERE e.subscription_status = 'SUBSCRIBED'
-              AND e.item_type = 'Episode'
-              AND COALESCE(e.in_library, FALSE) = FALSE
-              AND e.parent_series_tmdb_id IS NOT NULL
-              AND e.season_number IS NOT NULL
-              AND e.episode_number IS NOT NULL
-              AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM media_metadata s
-                    WHERE s.subscription_status = 'SUBSCRIBED'
-                      AND s.item_type = 'Season'
-                      AND COALESCE(s.parent_series_tmdb_id, s.tmdb_id) = e.parent_series_tmdb_id
-                      AND COALESCE(s.season_number, -1) = COALESCE(e.season_number, -1)
-              )
-            GROUP BY e.parent_series_tmdb_id, e.season_number
-        ),
-        subscribed_items AS (
-            SELECT
-                tmdb_id,
-                item_type,
-                title,
-                release_date,
-                release_year,
-                poster_path,
-                overview,
-                parent_series_tmdb_id,
-                season_number,
-                episode_number,
                 subscription_status,
+                watching_status,
                 subscription_sources_json,
-                missing_episode_numbers,
-                missing_episode_count,
+                in_library,
                 first_requested_at,
                 last_subscribed_at
-            FROM subscribed_with_missing
+            FROM media_metadata
             WHERE
-                -- 电影：MP 已订阅但仍未入库时，允许共享池/云资源继续补库。
-                (item_type = 'Movie' AND COALESCE(in_library, FALSE) = FALSE)
+                -- 电影：按订阅状态获取
+                (item_type = 'Movie' AND subscription_status IN ('WANTED', 'SUBSCRIBED'))
                 OR
-                -- 季：只要还有缺集，或者季本身还没任何入库痕迹，就继续给网盘侧补库。
-                (item_type = 'Season' AND (missing_episode_count > 0 OR COALESCE(in_library, FALSE) = FALSE))
-                OR
-                -- 整剧：保守保留给共享池/云资源兜底；不会再下滑给 MP。
-                item_type = 'Series'
-
-            UNION ALL
-
-            SELECT
-                tmdb_id,
-                item_type,
-                title,
-                release_date,
-                release_year,
-                poster_path,
-                overview,
-                parent_series_tmdb_id,
-                season_number,
-                episode_number,
-                subscription_status,
-                subscription_sources_json,
-                missing_episode_numbers,
-                missing_episode_count,
-                first_requested_at,
-                last_subscribed_at
-            FROM subscribed_episode_season_items
+                -- 剧集季：按观看状态获取 (忽略 Series，只取 Season)
+                (item_type = 'Season' AND watching_status IN ('Watching', 'Paused'))
         )
-        SELECT *
-        FROM (
-            SELECT * FROM wanted_items
-            UNION ALL
-            SELECT * FROM subscribed_items
-        ) AS unified_subscription_queue
+        SELECT
+            t.tmdb_id,
+            t.item_type,
+            t.title,
+            t.release_date,
+            t.release_year,
+            t.poster_path,
+            t.overview,
+            t.parent_series_tmdb_id,
+            t.season_number,
+            t.episode_number,
+            t.subscription_status,
+            t.watching_status,
+            t.subscription_sources_json,
+            t.first_requested_at,
+            t.last_subscribed_at,
+            t.in_library,
+            -- 2. 聚合缺失的集数 (仅对 Season 有效)
+            COALESCE(
+                jsonb_agg(e.episode_number ORDER BY e.episode_number)
+                    FILTER (WHERE e.episode_number IS NOT NULL),
+                '[]'::jsonb
+            ) AS missing_episode_numbers,
+            COUNT(e.episode_number)::integer AS missing_episode_count
+        FROM target_media t
+        LEFT JOIN media_metadata e
+          ON t.item_type = 'Season'
+         AND e.item_type = 'Episode'
+         AND e.parent_series_tmdb_id = COALESCE(t.parent_series_tmdb_id, t.tmdb_id)
+         AND COALESCE(e.season_number, -1) = COALESCE(t.season_number, -1)
+         AND COALESCE(e.in_library, FALSE) = FALSE
+         AND e.episode_number IS NOT NULL
+         AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
+        GROUP BY
+            t.tmdb_id, t.item_type, t.title, t.release_date, t.release_year,
+            t.poster_path, t.overview, t.parent_series_tmdb_id, t.season_number,
+            t.episode_number, t.subscription_status, t.watching_status, t.subscription_sources_json,
+            t.first_requested_at, t.last_subscribed_at, t.in_library
+        HAVING
+            -- 3. 最终过滤：剔除已经完全入库且不需要处理的项目
+            -- 电影：WANTED 状态全要，SUBSCRIBED 状态仅要未入库的
+            (t.item_type = 'Movie' AND (t.subscription_status = 'WANTED' OR COALESCE(t.in_library, FALSE) = FALSE))
+            OR
+            -- 季：只要有缺集，或者整季未入库，就要处理
+            (t.item_type = 'Season' AND (COUNT(e.episode_number) > 0 OR COALESCE(t.in_library, FALSE) = FALSE))
         ORDER BY
-            CASE subscription_status WHEN 'WANTED' THEN 0 ELSE 1 END,
-            COALESCE(first_requested_at, last_subscribed_at, NOW()) ASC;
+            -- 4. 优先级排序：WANTED 的电影 和 Watching 的季 优先处理
+            CASE
+                WHEN t.item_type = 'Movie' AND t.subscription_status = 'WANTED' THEN 0
+                WHEN t.item_type = 'Season' AND t.watching_status = 'Watching' THEN 0
+                ELSE 1
+            END,
+            COALESCE(t.first_requested_at, t.last_subscribed_at, NOW()) ASC;
     """
     try:
         with get_db_connection() as conn:
