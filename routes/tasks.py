@@ -24,7 +24,7 @@ def get_available_tasks():
     """
     try:
         context = (request.args.get('context') or 'chain').strip().lower()
-        if context not in ('chain', 'all'):
+        if context not in ('chain', 'all', 'manual'):
             context = 'chain'
 
         available_tasks = get_available_task_definitions(context=context)

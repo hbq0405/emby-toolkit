@@ -81,6 +81,13 @@ TASK_HELP_TEXTS = {
 }
 
 
+# 任务链入口只应该作为页面顶部的专用按钮出现，不放进“临时任务”网格里重复展示。
+TASK_KEYS_HIDDEN_FROM_MANUAL_RUN = {
+    'task-chain-high-freq',
+    'task-chain-low-freq',
+}
+
+
 def get_task_help(task_key: str, fallback_name: str = '') -> str:
     """返回任务说明文案，供前端和其它展示入口复用。"""
     return TASK_HELP_TEXTS.get(task_key) or fallback_name or '暂无任务说明。'
@@ -89,14 +96,20 @@ def get_task_help(task_key: str, fallback_name: str = '') -> str:
 def get_available_task_definitions(context: str = 'chain'):
     """
     返回给前端使用的任务列表。
+    - chain：只返回适合任务链编排的子任务。
+    - all：返回全部任务，供 TG 菜单等需要完整任务池的地方使用。
+    - manual：返回临时任务按钮列表，排除页面顶部已有专用按钮的任务链入口。
     - 保持 get_task_registry() 的执行侧返回结构不变，避免影响任务调度。
-    - 前端只消费 key/name/help，不再需要硬编码任务说明 map。
     """
-    normalized_context = context if context in ('chain', 'all') else 'chain'
-    registry = get_task_registry(context=normalized_context)
+    normalized_context = context if context in ('chain', 'all', 'manual') else 'chain'
+    registry_context = 'all' if normalized_context == 'manual' else normalized_context
+    registry = get_task_registry(context=registry_context)
 
     available_tasks = []
     for key, info in registry.items():
+        if normalized_context == 'manual' and key in TASK_KEYS_HIDDEN_FROM_MANUAL_RUN:
+            continue
+
         task_name = info[1]
         task_help = get_task_help(key, task_name)
         task_item = {
@@ -106,7 +119,7 @@ def get_available_task_definitions(context: str = 'chain'):
             # 兼容前端旧字段命名，避免部分组件仍然读 description 时显示为空。
             'description': task_help,
         }
-        if normalized_context == 'all' and len(info) >= 3:
+        if registry_context == 'all' and len(info) >= 3:
             task_item['processor_type'] = info[2]
         available_tasks.append(task_item)
 

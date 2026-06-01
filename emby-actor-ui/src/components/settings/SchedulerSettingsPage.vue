@@ -393,8 +393,9 @@ const {
 const { isBackgroundTaskRunning } = useTaskStatus();
 
 // --- State ---
-const availableTasksForChain = ref([]); 
+const availableTasksForChain = ref([]);
 const availableTasksForManualRun = ref([]);
+const availableTasksForTgMenu = ref([]);
 const isTriggeringTask = ref(null);
 
 // 高频任务链状态
@@ -443,8 +444,11 @@ const fetchAvailableTasks = async () => {
     const chainResponse = await axios.get('/api/tasks/available?context=chain');
     availableTasksForChain.value = chainResponse.data;
 
+    const manualResponse = await axios.get('/api/tasks/available?context=manual');
+    availableTasksForManualRun.value = manualResponse.data;
+
     const allResponse = await axios.get('/api/tasks/available?context=all');
-    availableTasksForManualRun.value = allResponse.data;
+    availableTasksForTgMenu.value = allResponse.data;
 
   } catch (error) {
     message.error('获取可用任务列表失败！');
@@ -613,15 +617,15 @@ watch(showTgMenuConfigModal, (newValue) => {
 });
 
 // ★★★ 修改：统一初始化三个列表 ★★★
-watch([configModel, availableTasksForChain, availableTasksForManualRun], ([newConfig, chainTasks, allTasks]) => {
+watch([configModel, availableTasksForChain, availableTasksForTgMenu], ([newConfig, chainTasks, tgMenuTasks]) => {
   if (newConfig) {
     if (chainTasks.length > 0) {
       initializeSequence(newConfig.task_chain_sequence || [], configuredHighFreqTaskSequence, chainTasks);
       initializeSequence(newConfig.task_chain_low_freq_sequence || [], configuredLowFreqTaskSequence, chainTasks);
     }
-    if (allTasks.length > 0) {
-      // TG 菜单使用 allTasks (包含所有任务)，如果没有配置则使用默认值
-      initializeSequence(newConfig.tg_menu_tasks || DEFAULT_TG_TASKS, configuredTgMenuSequence, allTasks);
+    if (tgMenuTasks.length > 0) {
+      // TG 菜单使用完整任务池，临时任务列表则使用 manual 任务池，避免任务链入口在临时任务里重复出现。
+      initializeSequence(newConfig.tg_menu_tasks || DEFAULT_TG_TASKS, configuredTgMenuSequence, tgMenuTasks);
     }
   }
 }, { immediate: true, deep: true });
