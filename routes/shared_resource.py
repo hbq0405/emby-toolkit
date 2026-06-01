@@ -2369,37 +2369,30 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
         if len(candidates) > 1:
             messages.append(f'该集存在 {len(candidates)} 个版本，已默认选择体积最大的文件')
     elif parent_ids:
-        chains = [_ancestor_chain(pid) for pid in parent_ids]
-        common = []
-        if chains:
-            for node_id in chains[0]:
-                if all(node_id in ch for ch in chains[1:]):
-                    common.append(node_id)
-        root_id = common[0] if common else parent_ids[0]
-        root_node = _get_p115_node(root_id) or {}
-        root_name = root_node.get('name') or root_id
-        if item_type == 'Season':
-            narrowed = _narrow_season_pack_root(root_id, root_name, parent_ids, season_number)
-            if not narrowed.get('ok'):
-                return {
-                    'resolvable': False,
-                    'root_fid': '',
-                    'root_name': root_name,
-                    'root_is_dir': True,
-                    'file_count': len(file_rows),
-                    'matched_pickcodes': len(ids['pickcodes']),
-                    'matched_sha1s': len(ids['sha1s']),
-                    'share_type': share_type,
-                    'share_item_type': share_item_type,
-                    'message': narrowed.get('message') or '无法安全定位单季分享目录',
-                    'completion': policy.get('completion'),
-                }
-            if narrowed.get('root_id') and narrowed.get('root_id') != root_id:
-                root_id = narrowed.get('root_id')
-                root_name = narrowed.get('root_name') or root_id
-                messages.append(narrowed.get('message'))
-        if len(set(parent_ids)) > 1:
-            messages.append(f'文件分布在 {len(set(parent_ids))} 个目录，已自动选择共同上级目录：{root_name}')
+        from collections import Counter
+        pid_counts = Counter(parent_ids)
+        
+        if item_type == 'Season' or share_type in ('season_pack', 'tv_pack'):
+            # 【核心修复】季包定位：直接取包含最多该季视频文件的父目录作为季目录。
+            # 彻底抛弃复杂的祖先推导，避免误把整剧目录分享出去。
+            root_id = pid_counts.most_common(1)[0][0]
+            root_node = _get_p115_node(root_id) or {}
+            root_name = root_node.get('name') or root_id
+            if len(pid_counts) > 1:
+                messages.append(f'该季文件分布在 {len(pid_counts)} 个目录，已自动选择包含最多文件的目录作为季目录：{root_name}')
+        else:
+            # Series 全剧包：寻找公共祖先 (全剧包确实需要找公共祖先)
+            chains = [_ancestor_chain(pid) for pid in parent_ids]
+            common = []
+            if chains:
+                for node_id in chains[0]:
+                    if all(node_id in ch for ch in chains[1:]):
+                        common.append(node_id)
+            root_id = common[0] if common else parent_ids[0]
+            root_node = _get_p115_node(root_id) or {}
+            root_name = root_node.get('name') or root_id
+            if len(set(parent_ids)) > 1:
+                messages.append(f'文件分布在 {len(set(parent_ids))} 个目录，已自动选择共同上级目录：{root_name}')
     else:
         root_id = str(file_rows[0].get('id') or '')
         root_is_dir = False

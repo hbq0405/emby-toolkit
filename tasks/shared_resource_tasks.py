@@ -3139,19 +3139,17 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
             'sha1s': len(sha1s),
             'cache_rows': len(cache_rows),
         }
-    if len(parent_ids) != 1:
-        return [], (
-            f'季包文件定位失败：S{target_season:02d} 的视频文件分布在 {len(parent_ids)} 个 115 父目录，'
-            '无法按目录创建季包分享，请先整理到同一个季目录'
-        ), {
-            'reason': 'season_files_cross_parent_dirs',
-            'parent_series_tmdb_id': parent_series_id,
-            'season_number': target_season,
-            'parent_ids': parent_ids,
-            'file_count': len(files),
-        }
+    if not parent_ids:
+        return [], f'季包文件定位失败：S{target_season:02d} 未能找到父目录', {'reason': 'missing_parent_id'}
 
-    parent_id = parent_ids[0]
+    from collections import Counter
+    pid_counts = Counter(parent_ids)
+    parent_id = pid_counts.most_common(1)[0][0]
+
+    if len(pid_counts) > 1:
+        # 【核心修复】如果文件散落在多个目录，只保留主目录下的文件。
+        # 缺失的文件会让后续的一致性校验自然拦截，而不会导致分享错目录。
+        files = [f for f in files if str(f.get('raw_json', {}).get('cache_row', {}).get('parent_id')) == parent_id]
     parent_node = shared_share_db.get_p115_node_by_id(parent_id) or {}
     parent_name = str(parent_node.get('name') or parent_id)
 
