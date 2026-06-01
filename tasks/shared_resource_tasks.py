@@ -3168,10 +3168,137 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
         }
         for g in sorted(groups.values(), key=lambda x: len(x.get('episodes') or set()), reverse=True)
     ]
+    remote_season_dir = None
+
+    def _p115_node_name(node: Dict[str, Any]) -> str:
+        return str(
+            (node or {}).get('fn') or
+            (node or {}).get('n') or
+            (node or {}).get('file_name') or
+            (node or {}).get('name') or
+            (node or {}).get('title') or
+            ''
+        ).strip()
+
+    def _p115_node_id(node: Dict[str, Any]) -> str:
+        return str(
+            (node or {}).get('fid') or
+            (node or {}).get('file_id') or
+            (node or {}).get('id') or
+            (node or {}).get('cid') or
+            ''
+        ).strip()
+
+    def _p115_node_is_dir(node: Dict[str, Any]) -> bool:
+        node = node or {}
+        fc = node.get('fc') if node.get('fc') is not None else node.get('type') if node.get('type') is not None else node.get('file_category')
+        if str(fc) == '0':
+            return True
+        if str(fc) == '1':
+            return False
+        if node.get('is_dir') or node.get('is_folder') or node.get('is_directory'):
+            return True
+        # 兼容 115 Cookie 目录项：目录经常只有 cid/name/pid，没有 sha1/pc/size。
+        return bool(node.get('cid') and not (node.get('fid') or node.get('pc') or node.get('pick_code') or node.get('sha1') or node.get('size') or node.get('fs')))
+
+    def _remote_find_child_season_dir(base_cid: str) -> Dict[str, Any]:
+        base_cid = str(base_cid or '').strip()
+        if not base_cid or not p115:
+            return {}
+
+        search_names = list(dict.fromkeys([
+            f'Season {target_season:02d}',
+            f'Season {target_season}',
+            f'S{target_season:02d}',
+            f'S{target_season}',
+            f'第{target_season}季',
+        ]))
+
+        def _scan(resp):
+            for node in (resp or {}).get('data') or []:
+                if not _p115_node_is_dir(node):
+                    continue
+                name = _p115_node_name(node)
+                cid = _p115_node_id(node)
+                if cid and _season_dir_matches(name):
+                    return {'id': cid, 'name': name, 'raw': node}
+            return {}
+
+        # 先精准 search_value，避免父目录条目过多时扫不到。
+        for name in search_names:
+            try:
+                found = _scan(p115.fs_files({
+                    'cid': base_cid,
+                    'search_value': name,
+                    'limit': 100,
+                    'show_dir': 1,
+                    'record_open_time': 0,
+                    'count_folders': 0,
+                }))
+                if found:
+                    return found
+            except Exception as e:
+                logger.debug(
+                    "  ➜ [共享资源] 远程回查季目录失败: base=%s, name=%s, err=%s",
+                    base_cid, name, e,
+                )
+
+        # search_value 失效时，兜底扫一级子目录。
+        try:
+            return _scan(p115.fs_files({
+                'cid': base_cid,
+                'limit': 1000,
+                'show_dir': 1,
+                'record_open_time': 0,
+                'count_folders': 0,
+            }))
+        except Exception as e:
+            logger.debug("  ➜ [共享资源] 远程扫描季目录失败: base=%s, err=%s", base_cid, e)
+            return {}
+
+    if not selected.get('season_dir'):
+        # p115_filesystem_cache 可能出现脏数据：文件 parent_id 仍指向剧目录，
+        # 但 local_path/115 实际已经在 Season 03 子目录中。此时现场查 115 一级子目录，
+        # 找到明确的季目录后直接分享该目录。
+        search_base_ids = []
+        for value in (parent_id, candidate.get('root_fid')):
+            value = str(value or '').strip()
+            if value and value not in search_base_ids:
+                search_base_ids.append(value)
+
+        for base_id in search_base_ids:
+            remote_season_dir = _remote_find_child_season_dir(base_id)
+            if remote_season_dir:
+                old_parent_id, old_parent_name = parent_id, parent_name
+                parent_id = str(remote_season_dir.get('id') or '').strip()
+                parent_name = str(remote_season_dir.get('name') or parent_id)
+                selected['season_dir'] = True
+                parent_candidates.insert(0, {
+                    'parent_id': parent_id,
+                    'parent_name': parent_name,
+                    'season_dir': True,
+                    'episode_count': len(selected.get('episodes') or set()),
+                    'row_count': len(selected.get('rows') or []),
+                    'source': 'remote_115_child_dir_fallback',
+                    'fallback_from_parent_id': old_parent_id,
+                    'fallback_from_parent_name': old_parent_name,
+                })
+                try:
+                    from handler.p115_service import P115CacheManager
+                    P115CacheManager.save_cid(parent_id, base_id, parent_name)
+                except Exception:
+                    pass
+                logger.info(
+                    "  ➜ [共享资源] p115_filesystem_cache 父目录疑似脏数据，已现场回查 115 季目录: "
+                    "%s S%02d %s(%s) -> %s(%s)",
+                    parent_series_id, target_season, old_parent_name, old_parent_id, parent_name, parent_id,
+                )
+                break
+
     if not selected.get('season_dir'):
         return [], (
             f'季包文件定位失败：已按 PC/SHA1 命中 S{target_season:02d} 视频，但最佳父目录不是季目录：{parent_name}。'
-            '已拒绝分享，避免误分享整剧目录；请检查 p115_filesystem_cache 是否有旧路径残留或重新同步 115 目录缓存。'
+            '已现场回查 115，但未找到明确的 Season 子目录；已拒绝分享，避免误分享整剧目录。'
         ), {
             'reason': 'season_parent_not_season_dir',
             'parent_series_tmdb_id': parent_series_id,
@@ -3248,12 +3375,13 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
             }
 
     return files, '', {
-        'reason': 'season_directory_from_db_parent_id',
+        'reason': 'season_directory_from_remote_115_fallback' if remote_season_dir else 'season_directory_from_db_parent_id',
         'root_fid': parent_id,
         'root_name': parent_name,
         'root_is_dir': True,
         'share_fids': [parent_id],
         'share_mode': 'directory',
+        'remote_season_dir': remote_season_dir or None,
         'parent_series_tmdb_id': parent_series_id,
         'season_number': target_season,
         'file_count': len(files),
