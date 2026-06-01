@@ -1837,7 +1837,7 @@ def task_auto_subscribe(processor):
                     source_type = source.get('type')
                     if source_type == 'resubscribe':
                         rule_name = telegram.escape_markdown(source.get('rule_name', '未知规则'))
-                        source_display_parts.append(f"`[自动洗版]` ({rule_name})")
+                        source_display_parts.append(f"`[自动洗版]` \\({rule_name}\\)")
                     elif source_type == 'user_request' and (user_id := source.get('user_id')):
                         if user_id not in notifications_to_send:
                             notifications_to_send[user_id] = []
@@ -1851,16 +1851,16 @@ def task_auto_subscribe(processor):
 
                         notifications_to_send[user_id].append(user_notify_title)
                         user_name = telegram.escape_markdown(user_db.get_username_by_id(user_id) or user_id)
-                        source_display_parts.append(f"`[用户请求]` ({user_name})")
+                        source_display_parts.append(f"`[用户请求]` \\({user_name}\\)")
                     elif source_type == 'actor_subscription':
                         actor_name = telegram.escape_markdown(source.get('name', '未知'))
-                        source_display_parts.append(f"`[演员订阅]` ({actor_name})")
+                        source_display_parts.append(f"`[演员订阅]` \\({actor_name}\\)")
                     elif source_type in ['custom_collection', 'native_collection']:
                         coll_name = telegram.escape_markdown(source.get('name', '未知'))
-                        source_display_parts.append(f"`[合集]` ({coll_name})")
+                        source_display_parts.append(f"`[合集]` \\({coll_name}\\)")
                     elif source_type == 'telegram_search':
                         tg_name = telegram.escape_markdown(source.get('name', '未知'))
-                        source_display_parts.append(f"`[TG搜索]` ({tg_name})")
+                        source_display_parts.append(f"`[TG搜索]` \\({tg_name}\\)")
                     elif source_type == 'watchlist':
                         source_display_parts.append("`[追剧补全]`")
 
@@ -1884,7 +1884,7 @@ def task_auto_subscribe(processor):
             try:
                 user_chat_id = user_db.get_user_telegram_chat_id(user_id)
                 if user_chat_id:
-                    items_list_str = "\n".join([f"· `{item}`" for item in subscribed_items])
+                    items_list_str = "\n".join([f"· `{telegram._markdown_code_text(item)}`" for item in subscribed_items])
                     message_text = (f"🎉 *您的 {len(subscribed_items)} 个订阅已成功处理*\n\n您之前想看的下列内容现已加入下载队列：\n{items_list_str}")
                     telegram.send_telegram_message(user_chat_id, message_text)
             except Exception as e:
@@ -1896,7 +1896,7 @@ def task_auto_subscribe(processor):
             try:
                 user_chat_id = user_db.get_user_telegram_chat_id(user_id)
                 if user_chat_id:
-                    items_list_str = "\n".join([f"· `{item}`" for item in failed_items])
+                    items_list_str = "\n".join([f"· `{telegram._markdown_code_text(item)}`" for item in failed_items])
                     message_text = (f"➜ *您的部分订阅请求未被处理*\n\n下列内容因不满足条件而被跳过：\n{items_list_str}")
                     telegram.send_telegram_message(user_chat_id, message_text)
             except Exception as e:

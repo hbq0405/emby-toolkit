@@ -1000,6 +1000,79 @@ def _select_sources_by_washing_before_import(
         return [], errors or ['所有中心共享源均未通过洗版预检']
 
     candidates.sort(key=lambda x: (x['score'], -x['index']), reverse=True)
+
+    # ★ 修复：Season SUBSCRIBED 补库时，不能在整季 51 个缺集中只全局选 1 个最佳源。
+    # 应该按“每一集”各自选出最佳版本；同一集的同版本备份分享仍保留给后续重试。
+    missing_eps = _normalize_episode_number_list((context or {}).get('missing_episode_numbers'))
+    is_partial_season_recheck = (
+        str((context or {}).get('item_type') or '').strip() == 'Season'
+        and bool(missing_eps)
+    )
+
+    def _candidate_single_episode_number(candidate):
+        eps = set()
+        for row in candidate.get('rows') or []:
+            _, e_num = _guess_se_from_source(row, context)
+            e_num = _safe_int(e_num, None)
+            if e_num is not None and (not missing_eps or e_num in missing_eps):
+                eps.add(e_num)
+        return next(iter(eps)) if len(eps) == 1 else None
+
+    if is_partial_season_recheck:
+        best_by_episode = {}
+
+        # candidates 已经按分数从高到低排好了；第一次遇到的就是该集最佳版本。
+        for candidate in candidates:
+            ep_num = _candidate_single_episode_number(candidate)
+            if ep_num is None:
+                continue
+            if ep_num not in best_by_episode:
+                best_by_episode[ep_num] = candidate
+
+        if best_by_episode:
+            wanted_pairs = {
+                (
+                    ep_num,
+                    str(best.get('resource_key') or '').strip(),
+                )
+                for ep_num, best in best_by_episode.items()
+            }
+
+            selected_candidates = []
+            seen_candidate = set()
+
+            # 同一集选定最佳 resource_key 后，把该 resource_key 的备份分享也带上。
+            for candidate in candidates:
+                ep_num = _candidate_single_episode_number(candidate)
+                resource_key = str(candidate.get('resource_key') or '').strip()
+                if (ep_num, resource_key) not in wanted_pairs:
+                    continue
+
+                dedupe_key = (candidate.get('share_code'), resource_key)
+                if dedupe_key in seen_candidate:
+                    continue
+                seen_candidate.add(dedupe_key)
+                selected_candidates.append(candidate)
+
+            selected_candidates.sort(key=lambda x: (
+                _safe_int(_candidate_single_episode_number(x), 999999),
+                -x['score'],
+                x['index'],
+            ))
+
+            selected_rows = []
+            for candidate in selected_candidates:
+                selected_rows.extend(candidate.get('rows') or [])
+
+            logger.info(
+                f"  ➜ [共享资源] SUBSCRIBED 补库洗版预检按缺集选源: "
+                f"缺集={missing_eps}, 选中={len(best_by_episode)} 集/{len(selected_candidates)} 个分享, "
+                f"示例={[c.get('share_code') for c in selected_candidates[:5]]}"
+            )
+
+            return selected_rows, errors
+
+    # 普通电影 / 单集 / 非补库场景：保持原来的“全局选最佳版本”逻辑。
     best = candidates[0]
     best_resource_key = best.get('resource_key') or ''
     selected_candidates = [c for c in candidates if best_resource_key and c.get('resource_key') == best_resource_key]
