@@ -3020,10 +3020,15 @@ def _select_season_pack_candidate(sr, season_row: Dict[str, Any]) -> Dict[str, A
 
 
 
-def _season_pack_root_meta_from_exact_files(sr, files: List[Dict[str, Any]], standard_identity: Dict[str, Any], target_season) -> Dict[str, Any]:
-    """根据精确命中的目标季文件选择展示用 root，不再把 root 当作分享范围。"""
+def _season_pack_share_target_from_exact_files(sr, files: List[Dict[str, Any]], standard_identity: Dict[str, Any], target_season) -> Dict[str, Any]:
+    """根据精确命中的目标季文件选择真正传给 115 的分享目标。
+
+    优先分享“安全的季目录”，这样 115 分享列表显示为正常文件夹；只有无法证明
+    父目录只包含目标季视频时，才退回多文件 FID 分享，避免误分享整剧目录。
+    """
     target_season = _safe_int(target_season, None)
     title = (standard_identity or {}).get('title') or ''
+    exact_fids = [str(item.get('fid') or '').strip() for item in (files or []) if str(item.get('fid') or '').strip()]
     root_name_fallback = f"{title} S{_safe_int(target_season, 0):02d} 多文件分享" if target_season is not None else (title or '多文件分享')
 
     parent_ids = []
@@ -3035,7 +3040,7 @@ def _season_pack_root_meta_from_exact_files(sr, files: List[Dict[str, Any]], sta
             parent_ids.append(parent_id)
 
     unique_parents = list(dict.fromkeys(parent_ids))
-    if len(unique_parents) == 1:
+    if exact_fids and len(unique_parents) == 1:
         parent_id = unique_parents[0]
         node = {}
         try:
@@ -3043,19 +3048,34 @@ def _season_pack_root_meta_from_exact_files(sr, files: List[Dict[str, Any]], sta
         except Exception:
             node = {}
         parent_name = str((node or {}).get('name') or parent_id)
-        # 只有明确是 Season/Sxx/第X季 目录时，才把它记录为 root_fid。
-        # 如果所有集直接铺在整剧目录，不能把整剧目录当 root，否则后续按 root_fid 去重会误伤其它季。
+
+        # 只有能证明“父目录里的视频 == 本次目标季视频”时，才分享父目录。
+        # 这样 115 侧显示为正常文件夹；如果父目录里混有 S02/S04，则继续走多文件分享兜底。
+        parent_video_fids = set()
         try:
-            season_dir = bool(hasattr(sr, '_season_dir_name_matches') and sr._season_dir_name_matches(parent_name, target_season))
+            if hasattr(sr, '_collect_files_from_cache'):
+                parent_files = sr._collect_files_from_cache(parent_id, root_name=parent_name, max_depth=3) or []
+            else:
+                parent_files = []
+            for row in parent_files:
+                fid = str(row.get('fid') or '').strip()
+                if fid:
+                    parent_video_fids.add(fid)
         except Exception:
-            season_dir = False
-        if season_dir:
+            parent_video_fids = set()
+
+        exact_set = set(exact_fids)
+        if parent_video_fids and parent_video_fids == exact_set:
             return {
                 'root_fid': parent_id,
                 'root_name': parent_name,
                 'root_is_dir': True,
-                'root_source': 'season_directory_from_p115_cache',
+                'root_source': 'safe_parent_directory_exact_video_match',
+                'share_fids': [parent_id],
+                'share_mode': 'directory',
                 'parent_ids': unique_parents,
+                'exact_file_fids': exact_fids,
+                'parent_video_fid_count': len(parent_video_fids),
             }
 
     first = (files or [{}])[0] if files else {}
@@ -3066,7 +3086,10 @@ def _season_pack_root_meta_from_exact_files(sr, files: List[Dict[str, Any]], sta
         'root_name': root_name_fallback if len(files or []) > 1 else first_name,
         'root_is_dir': False,
         'root_source': 'exact_file_fids',
+        'share_fids': exact_fids,
+        'share_mode': 'multi_file',
         'parent_ids': unique_parents,
+        'exact_file_fids': exact_fids,
     }
 
 
@@ -3192,13 +3215,16 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
                 'consistency': consistency,
             }
 
-    share_fids = [str(item.get('fid') or '').strip() for item in normalized if str(item.get('fid') or '').strip()]
-    root_meta = _season_pack_root_meta_from_exact_files(sr, normalized, standard_identity, target_season)
+    exact_file_fids = [str(item.get('fid') or '').strip() for item in normalized if str(item.get('fid') or '').strip()]
+    root_meta = _season_pack_share_target_from_exact_files(sr, normalized, standard_identity, target_season)
+    share_fids = [str(x).strip() for x in (root_meta.get('share_fids') or exact_file_fids) if str(x or '').strip()]
     meta = {
         'reason': 'season_pack_exact_files_ok',
         'exact_media_identifier': True,
         'share_fids': share_fids,
         'share_fid_count': len(share_fids),
+        'exact_file_fids': exact_file_fids,
+        'exact_file_count': len(exact_file_fids),
         'parent_series_tmdb_id': parent_series_id,
         'season_number': target_season,
         'file_count': len(normalized),
@@ -3293,8 +3319,8 @@ def _create_completed_season_pack_share(
         'season_exact_files': {
             k: v for k, v in (file_error_meta or {}).items()
             if k in (
-                'exact_media_identifier', 'share_fid_count', 'parent_series_tmdb_id',
-                'season_number', 'file_count', 'root_source', 'parent_ids'
+                'exact_media_identifier', 'share_fid_count', 'exact_file_count', 'parent_series_tmdb_id',
+                'season_number', 'file_count', 'root_source', 'share_mode', 'parent_ids', 'parent_video_fid_count'
             )
         },
         'share_fids': share_fids,
