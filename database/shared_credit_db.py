@@ -157,10 +157,30 @@ def _center_credit_event_label(reason: str) -> str:
     mapping = {
         'initial_credit': '设备注册基础贡献值',
         'source_registered': '成功分享视频，中心首次登记',
+        'backup_source_registered': '备份分享入池',
         'shared_source_served': '共享资源被其他设备成功转存',
         'shared_source_consumed': '从共享中心成功转存资源',
     }
     return mapping.get(reason, reason or '中心贡献值变化')
+
+
+def _center_credit_is_backup_registration(item: Dict[str, Any]) -> bool:
+    item = item or {}
+    reason = str(item.get('reason') or '')
+    if reason == 'backup_source_registered':
+        return True
+    if reason != 'source_registered':
+        return False
+    provider = str(item.get('source_provider') or '').strip().lower()
+    if provider in ('backup_mirror', 'backup_share', 'auto_backup', 'backup', 'mirror_backup'):
+        return True
+    if str(item.get('registration_kind') or '').strip().lower() == 'backup':
+        return True
+    # 兼容中心已产生的旧流水：当前口径首发入池 +2，备份/同 SHA1 冗余 +1。
+    try:
+        return int(float(item.get('delta') or 0)) == 1
+    except Exception:
+        return False
 
 
 def _safe_int(value, default=0) -> int:
@@ -253,6 +273,8 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
             count = 0
             for item in items:
                 reason_code = str(item.get('reason') or '')
+                if _center_credit_is_backup_registration(item):
+                    reason_code = 'backup_source_registered'
                 delta = int(item.get('delta') or 0)
                 ref_id = str(item.get('ref_id') or item.get('source_id') or item.get('id') or '')
                 title = item.get('title') or item.get('file_name') or ''
