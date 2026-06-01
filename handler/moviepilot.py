@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import handler.tmdb as tmdb
 import constants
 from database import settings_db
+from handler.tg_media_candidate import candidate_to_recognition_hints, is_recognition_hint_eligible
 
 logger = logging.getLogger(__name__)
 
@@ -1092,6 +1093,54 @@ def recognize_media(title: str, config: Dict[str, Any] = None) -> Optional[tuple
     except Exception as e:
         logger.warning(f"  ➜ 调用 MoviePilot 识别接口失败: {e}")
         return None
+
+
+def build_recognition_queries_from_hints(hints: Dict[str, Any] = None, fallback_title: str = "") -> List[str]:
+    hints = candidate_to_recognition_hints(hints or {})
+    queries: List[str] = []
+
+    def _append(value: str):
+        value = str(value or '').strip()
+        if value and value not in queries:
+            queries.append(value)
+
+    allow_hint_queries = is_recognition_hint_eligible(hints)
+    identify_title = (hints.get('identify_title') or hints.get('title')) if allow_hint_queries else ""
+    clean_title = (hints.get('clean_title') or hints.get('title')) if allow_hint_queries else ""
+    year = hints.get('year')
+    media_type = hints.get('media_type')
+    season_number = hints.get('season_number')
+    is_special = bool(hints.get('is_special'))
+
+    _append(identify_title)
+    if identify_title and year:
+        _append(f"{identify_title} ({year})")
+
+    if clean_title and clean_title != identify_title:
+        _append(clean_title)
+        if year:
+            _append(f"{clean_title} ({year})")
+
+    if media_type == 'tv' and identify_title and season_number not in (None, ''):
+        try:
+            season_int = int(season_number)
+            _append(f"{identify_title} S{season_int:02d}")
+        except Exception:
+            pass
+
+    if media_type == 'tv' and identify_title and is_special:
+        _append(f"{identify_title} Special")
+
+    _append(fallback_title)
+    return queries
+
+
+def recognize_media_from_candidate(candidate_or_hints: Dict[str, Any] = None, fallback_title: str = "", config: Dict[str, Any] = None) -> Optional[tuple]:
+    for query in build_recognition_queries_from_hints(candidate_or_hints, fallback_title=fallback_title):
+        res = recognize_media(query, config=config)
+        if res:
+            return res
+    return None
 
 def cleanup_stale_washing_subscriptions(config: Dict[str, Any], timeout_days: int) -> List[Dict]:
     """

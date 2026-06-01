@@ -26,6 +26,7 @@ from handler.p115_service import (
     _identify_media_enhanced
 )
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
+from handler.tg_media_candidate import lookup_candidate_hint_for_name
 
 logger = logging.getLogger(__name__)
 
@@ -301,10 +302,12 @@ def task_scan_and_organize_115(processor=None):
                         if group_sha1:
                             break
 
+                recognition_hints = lookup_candidate_hint_for_name(g_top_name, alt_texts=[top_name], media_type=forced_type)
                 tmdb_id, media_type, title = _identify_media_enhanced(
                     g_top_name, main_dir_name=g_top_name, has_season_subdirs=group["has_season_dir"],
                     forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai, is_folder=False,
-                    sha1=group_sha1  # 👈 关键：传入 SHA1
+                    sha1=group_sha1,  # 👈 关键：传入 SHA1
+                    recognition_hints=recognition_hints
                 )
                 
                 if not tmdb_id:
@@ -314,6 +317,7 @@ def task_scan_and_organize_115(processor=None):
                     
                 try:
                     organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
+                    organizer.recognition_hints = recognition_hints or {}
                     if season_num is not None: organizer.forced_season = season_num
                     
                     # 执行整理 (直接传 None，让 execute 内部统一计算最终的 target_cid)

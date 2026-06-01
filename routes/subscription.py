@@ -6,6 +6,7 @@ from database import settings_db
 from handler.hdhive_client import HDHiveClient
 from tasks.hdhive import task_download_from_hdhive, filter_hdhive_resources
 from handler.tg_userbot import TGUserBotManager, tg_task_queue
+from handler.tg_media_candidate import build_channel_task_payload
 import threading
 
 subscription_bp = Blueprint('subscription_bp', __name__, url_prefix='/api/subscription')
@@ -503,24 +504,18 @@ def trigger_cloud_download():
         if not target_link and not magnet_url:
             return jsonify({"success": False, "message": "频道资源缺少可转存链接"}), 400
 
-        tg_task_queue.put({
-            "type": "channel_resource_complex",
-            "tmdb_id": tmdb_id,
-            "title": title,
-            "year": data.get('year') or resource.get('year'),
-            "item_type": media_type,
-            "target_link": target_link,
-            "magnet_url": magnet_url,
-            "receive_code": resource.get('receive_code') or '',
-            "season_number": resource.get('season_number'),
-            "episode_number": resource.get('episode_number'),
-            "is_pack": bool(resource.get('is_pack')),
-            "is_completed_pack": bool(resource.get('is_completed_pack')),
-            # 手动云搜索选择的资源应直接转存，不再要求已订阅/追剧。
-            "is_brainless": True,
-            "is_keyword_matched": True,
-            "is_subscribe": False
-        })
+        tg_task_queue.put(
+            build_channel_task_payload(
+                resource,
+                is_brainless=True,
+                is_keyword_matched=True,
+                is_subscribe=False,
+                title_override=title,
+                tmdb_id_override=tmdb_id,
+                media_type_override=media_type,
+                year_override=data.get('year') or resource.get('year'),
+            )
+        )
         return jsonify({"success": True, "message": "已推送频道资源转存任务，后台正在处理！"})
 
     return jsonify({"success": False, "message": "未知资源来源，无法执行转存"}), 400

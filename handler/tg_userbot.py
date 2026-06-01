@@ -14,6 +14,12 @@ import constants
 from database import settings_db
 from handler.p115_service import P115Service
 from utils import DEFAULT_TG_REGEX
+from handler.tg_media_candidate import (
+    build_channel_task_payload,
+    build_tg_media_candidate,
+    candidate_to_recognition_hints,
+    remember_candidate_hint,
+)
 from database.connection import get_db_connection
 from gevent import spawn
 
@@ -346,159 +352,31 @@ class TGUserBotManager:
             return None
 
         custom_regex = cfg.get('custom_regex', {})
-        all_urls = []
+        all_urls = self._extract_message_urls(event.message)
+        candidate = build_tg_media_candidate(
+            text,
+            urls=all_urls,
+            chat_username=chat_username,
+            chat_id=chat_id,
+            chat_title=getattr(chat, 'title', '') or chat_username or chat_id,
+            message_id=getattr(event.message, 'id', None),
+            message_date=(getattr(event.message, 'date', None).strftime('%Y-%m-%d %H:%M') if getattr(event.message, 'date', None) else ''),
+            message_link=(f"https://t.me/{chat_username}/{getattr(event.message, 'id', None)}" if chat_username and getattr(event.message, 'id', None) else ''),
+            custom_regex=custom_regex,
+        )
+        if not candidate:
+            return
 
-        # 1. 提取 Markdown/HTML 隐藏的超链接
-        if event.message.entities:
-            for entity in event.message.entities:
-                if hasattr(entity, 'url') and entity.url:
-                    all_urls.append(entity.url)
-
-        # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接
-        if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
-            for row in event.message.reply_markup.rows:
-                for button in row.buttons:
-                    if hasattr(button, 'url') and button.url:
-                        all_urls.append(button.url)
-
-        # 3. 寻找目标链接 (115 或 中间页) 和 提取码
-        target_link = None
-        receive_code = ""
-
-        link_match = re.search(r'(https?://(?:115cdn|115)\.com/s/[a-zA-Z0-9]+(?:[?&]password=[a-zA-Z0-9]+)?)', text, re.IGNORECASE)
-        if link_match:
-            all_urls.insert(0, link_match.group(1))
-
-        for url in all_urls:
-            if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/' in url:
-                target_link = url
-                pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'], chat_username, chat_id)
-                if pwd_in_url:
-                    receive_code = pwd_in_url.group(1)
-                break
-
-        # 4. 如果 URL 里没有密码，再从正文里找
-        if not receive_code:
-            pwd_match = _apply_regex(text, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_text'], chat_username, chat_id)
-            if pwd_match:
-                receive_code = pwd_match.group(1)
-
-        # 5. 提取 TMDB ID
-        tmdb_id = None
-        tmdb_match = _apply_regex(text, custom_regex.get('tmdb', []), DEFAULT_TG_REGEX['tmdb'], chat_username, chat_id)
-        if tmdb_match:
-            tmdb_id = tmdb_match.group(1)
-
-        # 6. 提取标题和年份
-        title = None
-        year = None
-        title_match = _apply_regex(text, custom_regex.get('title_year', []), DEFAULT_TG_REGEX['title_year'], chat_username, chat_id, flags=0)
-        if title_match:
-            title = title_match.group(1).strip()
-            title = re.sub(r'^\[.*?\]\s*', '', title).strip()
-            title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
-            year = title_match.group(2)
-
-        # 7. 提取季号和集号
-        season_number = None
-        episode_number = None
-        is_pack = False 
-        is_completed_pack = False 
-
-        if re.search(r'(完结|全\d+集|\d+集全)', text, re.IGNORECASE):
-            is_completed_pack = True
-            is_pack = True
-        
-        # ★ 季集自定义正则 (支持频道隔离)
-        custom_se = custom_regex.get('season_episode', [])
-        se_matched = False
-        for rule_obj in custom_se:
-            if isinstance(rule_obj, str):
-                pattern = rule_obj
-                target_channel = ""
-            else:
-                pattern = rule_obj.get('pattern', '').strip()
-                target_channel = rule_obj.get('channel', '').strip().lower()
-                
-            if not pattern: continue
-            
-            # 校验频道
-            if target_channel:
-                target_clean = target_channel.replace('-100', '') if target_channel.startswith('-100') else target_channel
-                curr_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
-                if not (chat_username.lower() == target_clean or chat_id == target_channel or curr_id_clean == target_clean):
-                    continue
-                    
-            try:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    groups = match.groups()
-                    if len(groups) >= 2:
-                        season_number = int(groups[0])
-                        episode_number = int(groups[1])
-                    elif len(groups) == 1:
-                        episode_number = int(groups[0])
-                    se_matched = True
-                    break
-            except Exception as e:
-                logger.error(f"  ➜ [频道监听] 季集自定义正则错误: {pattern} -> {e}")
-
-        if not se_matched:
-            range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
-            if range_match:
-                season_number = int(range_match.group(1))
-                episode_number = int(range_match.group(3)) 
-                is_pack = True
-            else:
-                se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
-                if se_match:
-                    season_number = int(se_match.group(1))
-                    episode_number = int(se_match.group(2))
-                else:
-                    s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
-                    e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
-                    if s_match: season_number = int(s_match.group(1))
-                    if e_match: episode_number = int(e_match.group(1))
-                    
-                    if episode_number is None:
-                        bulk_match = re.search(r'(?:更新至|全|至)(?:第)?\s*(\d{1,4})\s*(?:集|话)|(?:^|\s)\d{1,3}-(\d{1,4})(?:集|话)?', text)
-                        if bulk_match:
-                            ep_str = bulk_match.group(1) or bulk_match.group(2)
-                            if ep_str:
-                                episode_number = int(ep_str)
-                                is_pack = True 
-
-        if episode_number is not None and season_number is None:
-            season_number = 1
-
-        # 8. 精准判定媒体类型
-        item_type = 'movie' 
-        
-        # 1. 最高优先级：明确带有 [电影] / 【电影】 等标识，或者 电影:
-        if re.search(r'(?:\[|【)电影(?:\]|】)|(?:🎬|🎥|🎞️)?\s*电影[:：]', text, re.IGNORECASE):
-            item_type = 'movie'
-        # 2. 明确带有 [剧集] / [动漫] 等标识，或者 剧集:
-        elif re.search(r'(?:\[|【)(?:电视剧|剧集|动漫|番剧)(?:\]|】)|(?:📺|🖥️)?\s*(?:电视剧|剧集|动漫|番剧)[:：]', text, re.IGNORECASE):
-            item_type = 'tv'
-        # 3. 提取到了季号或集号，必然是剧集
-        elif season_number is not None or episode_number is not None:
-            item_type = 'tv'
-        # 4. 标签和正文前缀判定
-        else:
-            tags = " ".join(re.findall(r'#\w+', text))
-            # 先判断是否明确有电影标签 (优先级高于动画)
-            if re.search(r'#(?:电影|Movie)', tags, re.IGNORECASE):
-                item_type = 'movie'
-            # 再判断是否有剧集/动漫标签
-            elif re.search(r'#(?:电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集|动画)', tags, re.IGNORECASE):
-                item_type = 'tv'
-            else:
-                header_text = "\n".join(text.split('\n')[:8])
-                # 同样，正文前8行先找电影关键字
-                if re.search(r'(电影|Movie)', header_text, re.IGNORECASE):
-                    item_type = 'movie'
-                elif re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集)', header_text, re.IGNORECASE):
-                    item_type = 'tv'
+        target_link = candidate.get('target_link')
+        receive_code = candidate.get('receive_code', '')
+        tmdb_id = candidate.get('tmdb_id')
+        title = candidate.get('title')
+        year = candidate.get('year')
+        season_number = candidate.get('season_number')
+        episode_number = candidate.get('episode_number')
+        is_pack = bool(candidate.get('is_pack'))
+        is_completed_pack = bool(candidate.get('is_completed_pack'))
+        item_type = candidate.get('media_type') or candidate.get('item_type') or 'movie'
 
         allowed_types = cfg.get('monitor_types', ['movie', 'tv'])
         
@@ -506,17 +384,7 @@ class TGUserBotManager:
         if item_type not in allowed_types and not is_brainless and not is_keyword_matched:
             return
 
-        is_magnet = text.lower().startswith('magnet:?')
-        is_ed2k = text.lower().startswith('ed2k://')
-        magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
-
-        # 提取磁力/ED2K
-        is_magnet = text.lower().startswith('magnet:?')
-        is_ed2k = text.lower().startswith('ed2k://')
-        magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
-        magnet_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else None
-        if not magnet_url and (is_magnet or is_ed2k):
-            magnet_url = text.strip()
+        magnet_url = candidate.get('magnet_url')
 
         # =================================================================
         # ★ 核心分流逻辑 (统一合并到复杂校验流水线)
@@ -524,23 +392,14 @@ class TGUserBotManager:
         if (target_link or magnet_url) and (tmdb_id or title or is_brainless or is_keyword_matched):
             logger.debug(f"  ➜ [频道监听] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
-            tg_task_queue.put({
-                "type": "channel_resource_complex",
-                "tmdb_id": tmdb_id,
-                "title": title,
-                "year": year,
-                "item_type": item_type,
-                "target_link": target_link, # 115 分享链接
-                "magnet_url": magnet_url,   # 磁力/ED2K 链接
-                "receive_code": receive_code,
-                "season_number": season_number,
-                "episode_number": episode_number,
-                "is_pack": is_pack,
-                "is_completed_pack": is_completed_pack,
-                "is_brainless": is_brainless,
-                "is_keyword_matched": is_keyword_matched,
-                "is_subscribe": is_subscribe
-            })
+            tg_task_queue.put(
+                build_channel_task_payload(
+                    candidate,
+                    is_brainless=is_brainless,
+                    is_keyword_matched=is_keyword_matched,
+                    is_subscribe=is_subscribe,
+                )
+            )
 
 
     # ==========================================
@@ -826,152 +685,31 @@ class TGUserBotManager:
         custom_regex = cfg.get('custom_regex', {}) or {}
         urls = self._extract_message_urls(message)
 
-        target_link = None
-        receive_code = ''
-
-        for url in urls:
-            if ('115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/' in url):
-                target_link = url
-                pwd_in_url = self._apply_search_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX.get('password_url', []))
-                if pwd_in_url:
-                    receive_code = pwd_in_url.group(1)
-                break
-
-        if not receive_code:
-            pwd_match = self._apply_search_regex(text, custom_regex.get('password', []), DEFAULT_TG_REGEX.get('password_text', []))
-            if pwd_match:
-                receive_code = pwd_match.group(1)
-
-        magnet_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE | re.DOTALL)
-        magnet_url = magnet_match.group(1).strip() if magnet_match else None
-
-        if not target_link and not magnet_url:
-            return None
-
         chat_username = getattr(chat, 'username', '') or ''
         chat_id = str(getattr(chat, 'id', ''))
         chat_title = getattr(chat, 'title', '') or chat_username or chat_id
-
-        tmdb_id = None
-        tmdb_match = self._apply_search_regex(text, custom_regex.get('tmdb', []), DEFAULT_TG_REGEX.get('tmdb', []), chat_username, chat_id)
-        if tmdb_match:
-            tmdb_id = tmdb_match.group(1)
-        if not tmdb_id:
-            tmdb_id = self._extract_explicit_tmdb_id(text)
-
-        # 匹配优先级：
-        # 1. 频道正文明确写了 TMDb ID：只按 ID 判断。ID 相同直接通过；ID 不同直接丢弃。
-        # 2. 频道正文没有 TMDb ID：才使用“片名 + 年份”兜底，年份不一致或缺失都丢弃。
-        if expected_tmdb_id and tmdb_id:
-            if str(tmdb_id) != str(expected_tmdb_id):
-                logger.debug(
-                    "  ➜ [频道搜索] 丢弃 TMDb ID 不匹配结果：目标=%s，消息=%s，预览=%s",
-                    expected_tmdb_id, tmdb_id, self._normalize_text(text)[:80]
-                )
-                return None
-        elif strict_title_match and query:
-            if not self._channel_text_matches_query_title(text, query):
-                logger.debug(
-                    "  ➜ [频道搜索] 丢弃片名不匹配结果：搜索片名=%s，消息预览=%s",
-                    query, self._normalize_text(text)[:80]
-                )
-                return None
-            if expected_year and not self._channel_text_matches_year(text, expected_year):
-                logger.debug(
-                    "  ➜ [频道搜索] 丢弃年份不匹配结果：搜索片名=%s，目标年份=%s，消息预览=%s",
-                    query, expected_year, self._normalize_text(text)[:80]
-                )
-                return None
-
-        title = None
-        year = None
-        title_match = self._apply_search_regex(text, custom_regex.get('title_year', []), DEFAULT_TG_REGEX.get('title_year', []), chat_username, chat_id, flags=0)
-        if title_match:
-            title = title_match.group(1).strip()
-            title = re.sub(r'^\[.*?\]\s*', '', title).strip()
-            title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
-            year = title_match.group(2)
-
-        if not title:
-            title = query or self._guess_title_from_text(text)
-
-        season_number = None
-        episode_number = None
-        is_pack = False
-        is_completed_pack = False
-        if re.search(r'(完结|全\d+集|\d+集全)', text, re.IGNORECASE):
-            is_completed_pack = True
-            is_pack = True
-
-        range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
-        if range_match:
-            season_number = int(range_match.group(1))
-            episode_number = int(range_match.group(3))
-            is_pack = True
-        else:
-            se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
-            if se_match:
-                season_number = int(se_match.group(1))
-                episode_number = int(se_match.group(2))
-            else:
-                s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
-                e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
-                if s_match:
-                    season_number = int(s_match.group(1))
-                if e_match:
-                    episode_number = int(e_match.group(1))
-
-        if episode_number is not None and season_number is None:
-            season_number = 1
-
-        item_type = expected_media_type or ('tv' if season_number is not None or episode_number is not None else 'movie')
-        if re.search(r'(?:\[|【)(?:电视剧|剧集|动漫|番剧)(?:\]|】)|(?:电视剧|剧集|动漫|番剧)[:：]', text, re.IGNORECASE):
-            item_type = 'tv'
-        elif re.search(r'(?:\[|【)电影(?:\]|】)|电影[:：]', text, re.IGNORECASE):
-            item_type = 'movie'
-
         msg_id = getattr(message, 'id', None)
         date_obj = getattr(message, 'date', None)
         date_text = date_obj.strftime('%Y-%m-%d %H:%M') if date_obj else ''
         message_link = ''
         if chat_username and msg_id:
             message_link = f"https://t.me/{chat_username}/{msg_id}"
-
-        quality = self._guess_quality_text(text)
-        resolution = self._guess_resolution(text)
-        size_text = self._guess_size_text(text)
-        snippet = self._normalize_text(text)
-        if len(snippet) > 180:
-            snippet = snippet[:179] + '…'
-
-        return {
-            '_tg_source': 'channel',
-            'source': 'channel',
-            'title': title or query or '频道资源',
-            'name': title or query or '频道资源',
-            'remark': snippet,
-            'quality': quality,
-            'resolution': resolution or '未知',
-            'share_size': size_text,
-            'pan_type': '115' if target_link else '离线',
-            'unlock_points': 0,
-            'source_channel': chat_title,
-            'source_username': chat_username,
-            'source_chat_id': chat_id,
-            'message_id': msg_id,
-            'message_date': date_text,
-            'message_link': message_link,
-            'text': text,
-            'tmdb_id': tmdb_id or expected_tmdb_id,
-            'item_type': item_type,
-            'target_link': target_link,
-            'magnet_url': magnet_url,
-            'receive_code': receive_code,
-            'season_number': season_number,
-            'episode_number': episode_number,
-            'is_pack': is_pack,
-            'is_completed_pack': is_completed_pack,
-        }
+        return build_tg_media_candidate(
+            text,
+            urls=urls,
+            chat_username=chat_username,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            message_id=msg_id,
+            message_date=date_text,
+            message_link=message_link,
+            custom_regex=custom_regex,
+            query=query,
+            expected_tmdb_id=expected_tmdb_id,
+            expected_year=expected_year,
+            expected_media_type=expected_media_type,
+            strict_title_match=strict_title_match,
+        )
 
     async def _search_channel_resources_async(self, query, media_type=None, tmdb_id=None, year=None, limit=10, extra_queries=None, include_tmdb_query=False, strict_title_match=False):
         """在已配置监听频道的历史消息里搜索资源。"""
@@ -1190,6 +928,7 @@ def _process_tg_queue():
                 continue
 
             if task_type == "channel_resource_complex":
+                candidate = task.get('candidate') or {}
                 tmdb_id = task.get('tmdb_id')
                 title = task.get('title')
                 year = task.get('year')
@@ -1203,6 +942,25 @@ def _process_tg_queue():
                 is_subscribe = task.get('is_subscribe', True)
 
                 item_type = task.get('item_type', 'movie')
+                candidate_hints = candidate_to_recognition_hints(candidate) if candidate else {}
+                if candidate_hints:
+                    remember_candidate_hint(candidate_hints)
+                    tmdb_id = tmdb_id or candidate_hints.get('tmdb_id')
+                    title = candidate_hints.get('identify_title') or candidate_hints.get('clean_title') or title
+                    year = year or candidate_hints.get('year')
+                    item_type = candidate_hints.get('media_type') or item_type
+                    if season_number is None:
+                        season_number = candidate_hints.get('season_number')
+                    if episode_number is None:
+                        episode_number = candidate_hints.get('episode_number')
+                    task['tmdb_id'] = tmdb_id
+                    task['title'] = title
+                    task['year'] = year
+                    task['item_type'] = item_type
+                    task['season_number'] = season_number
+                    task['episode_number'] = episode_number
+                    task['is_special'] = bool(task.get('is_special') or candidate_hints.get('is_special'))
+
                 if not tmdb_id and title:
                     logger.debug(f"  ➜ [频道监听] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
                     from handler import tmdb

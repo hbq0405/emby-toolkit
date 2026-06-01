@@ -1,0 +1,78 @@
+[
+  {
+    "name": "movie_basic",
+    "raw_text": "[Group] Dune.Part.Two.2024.2160p.WEB-DL.H265.DDP5.1\nTMDB ID: 693134\nhttps://115.com/s/abc123?password=1a2b",
+    "query": "Dune Part Two",
+    "expected": {
+      "tmdb_id": "693134",
+      "identify_title": "Dune Part Two",
+      "year": 2024,
+      "media_type": "movie"
+    }
+  },
+  {
+    "name": "tv_sxe",
+    "raw_text": "The.Last.of.Us.S01E03.1080p.NF.WEB-DL\nhttps://115.com/s/def456",
+    "query": "The Last of Us",
+    "expected": {
+      "identify_title": "The Last of Us",
+      "media_type": "tv",
+      "season_number": 1,
+      "episode_number": 3,
+      "platform_tag": "NETFLIX"
+    }
+  },
+  {
+    "name": "chinese_season_episode",
+    "raw_text": "庆余年 第2季 第03集 4K 杜比视界\nhttps://115.com/s/ghi789",
+    "query": "庆余年",
+    "expected": {
+      "identify_title": "庆余年",
+      "media_type": "tv",
+      "season_number": 2,
+      "episode_number": 3
+    }
+  },
+  {
+    "name": "anime_special",
+    "raw_text": "某动画 OVA 第1话 1080p 内嵌中字\nhttps://115.com/s/jkl012",
+    "query": "某动画",
+    "expected": {
+      "identify_title": "某动画",
+      "media_type": "tv",
+      "season_number": 1,
+      "episode_number": 1,
+      "is_special": true
+    }
+  },
+  {
+    "name": "variety_date",
+    "raw_text": "Amazing.Show.2024.05.17.1080p.WEB-DL\nhttps://115.com/s/mno345",
+    "query": "Amazing Show",
+    "expected": {
+      "identify_title": "Amazing Show",
+      "year": 2024,
+      "episode_number": 517
+    }
+  },
+  {
+    "name": "multi_links",
+    "raw_text": "Noisy.Show.S01E08.1080p.AMZN.WEB-DL\n备用网址 https://example.com/x\nhttps://115.com/s/pqr678",
+    "query": "Noisy Show",
+    "expected": {
+      "identify_title": "Noisy Show",
+      "media_type": "tv",
+      "season_number": 1,
+      "episode_number": 8,
+      "platform_tag": "AMZN"
+    }
+  },
+  {
+    "name": "fallback_miss",
+    "raw_text": "just some text with magnet:?xt=urn:btih:abcdef1234567890",
+    "query": "",
+    "expected": {
+      "confidence": "low"
+    }
+  }
+]
