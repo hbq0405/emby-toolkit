@@ -268,13 +268,27 @@
       <n-form label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         
         <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
-        <n-form-item label="订阅优先通道">
-          <n-radio-group v-model:value="strategyConfig.subscription_priority">
-            <n-radio-button value="mp">MoviePilot 优先</n-radio-button>
-            <n-radio-button value="hdhive">云下载优先</n-radio-button>
-          </n-radio-group>
+        <n-form-item label="订阅源">
+          <div class="source-list">
+            <div 
+              v-for="(source, index) in sourceList" 
+              :key="source.value"
+              class="source-item"
+              draggable="true"
+              @dragstart="onDragStart(index)"
+              @dragover.prevent
+              @drop="onDrop(index)"
+            >
+              <n-checkbox v-model:checked="source.enabled">
+                {{ source.label }}
+              </n-checkbox>
+              <n-icon class="drag-handle" :component="MenuIcon" />
+            </div>
+          </div>
           <template #feedback>
-            <b>云下载优先：</b>优先从云资源下载，成功则直接 115 秒传整理，失败或无资源再交由 MP 兜底。云资源过滤规则在影巢和频道中应用。<br/>
+            <b>拖动调整优先级，勾选启用。</b><br/>
+            共享池为最高优先级（若开启），随后按此列表顺序依次尝试。<br/>
+            <b>云下载：</b>优先从云资源下载，成功则直接 115 秒传整理。<br/>
             <span style="color: var(--n-warning-color);">* 注：因云资源模糊搜索限制，剧集订阅不保证绝对准确性。</span>
           </template>
         </n-form-item>
@@ -348,7 +362,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NCheckboxGroup, NRadio, NForm, NFormItem, NInputNumber, NModal, NPopconfirm } from 'naive-ui';
-import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloseOutline as CloseIcon, CloudDownloadOutline as CloudDownloadIcon } from '@vicons/ionicons5';
+import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloseOutline as CloseIcon, CloudDownloadOutline as CloudDownloadIcon, MenuOutline as MenuIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 import HDHiveResourceModal from './HDHiveResourceModal.vue';
 const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [
@@ -385,8 +399,24 @@ const strategyConfig = ref({
   delay_subscription_days: 0,
   timeout_revive_days: 0,
   download_timeout_hours: 0,
-  subscription_priority: 'mp',
 });
+
+const sourceList = ref([
+  { label: 'MoviePilot', value: 'mp', enabled: true },
+  { label: '云下载 (影巢/频道)', value: 'hdhive', enabled: false }
+]);
+
+let draggedIndex = null;
+const onDragStart = (index) => {
+  draggedIndex = index;
+};
+const onDrop = (index) => {
+  if (draggedIndex !== null && draggedIndex !== index) {
+    const item = sourceList.value.splice(draggedIndex, 1)[0];
+    sourceList.value.splice(index, 0, item);
+  }
+  draggedIndex = null;
+};
 
 // ★★★ 影巢搜索相关状态与方法 ★★★
 const showHDHiveModal = ref(false);
@@ -411,6 +441,25 @@ const loadStrategyConfig = async () => {
   try {
     const res = await axios.get('/api/subscription/strategy');
     
+    let sources = res.data.subscription_sources;
+    if (!sources) {
+      sources = res.data.subscription_priority === 'hdhive' ? ['hdhive', 'mp'] : ['mp'];
+    }
+    
+    const newSourceList = [];
+    sources.forEach(val => {
+      const opt = sourceList.value.find(o => o.value === val);
+      if (opt) {
+        newSourceList.push({ ...opt, enabled: true });
+      }
+    });
+    sourceList.value.forEach(opt => {
+      if (!sources.includes(opt.value)) {
+        newSourceList.push({ ...opt, enabled: false });
+      }
+    });
+    sourceList.value = newSourceList;
+
     strategyConfig.value = {
       movie_protection_days: 180,
       movie_search_window_days: 1,
@@ -418,7 +467,6 @@ const loadStrategyConfig = async () => {
       delay_subscription_days: 0,
       timeout_revive_days: 0,
       download_timeout_hours: 0,
-      subscription_priority: res.data.subscription_priority || 'mp',
       ...res.data 
     };
   } catch (e) {
@@ -429,6 +477,7 @@ const loadStrategyConfig = async () => {
 const saveStrategyConfig = async () => {
   savingStrategy.value = true;
   try {
+    strategyConfig.value.subscription_sources = sourceList.value.filter(o => o.enabled).map(o => o.value);
     await axios.post('/api/subscription/strategy', strategyConfig.value);
     message.success('策略配置已保存');
     showStrategyModal.value = false;
@@ -1279,6 +1328,35 @@ watch(loaderRef, (newEl, oldEl) => {
   opacity: 0;
   transform: translate(-50%, 20px); 
 }
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 300px;
+}
+.source-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+  background-color: var(--n-card-color);
+  cursor: grab;
+  transition: box-shadow 0.2s;
+}
+.source-item:active {
+  cursor: grabbing;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.drag-handle {
+  cursor: grab;
+  color: var(--n-text-color-3);
+  font-size: 18px;
+}
+
 @media (max-width: 768px) {
   .responsive-grid {
     grid-template-columns: 1fr; 

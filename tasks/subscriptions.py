@@ -1638,7 +1638,6 @@ def task_auto_subscribe(processor):
             action_type = "MP"
             watchlist_config = settings_db.get_setting('watchlist_config') or {}
             tg_channel_tracking = watchlist_config.get('tg_channel_tracking', False)
-            subscription_priority = strategy_config.get('subscription_priority', 'mp')
 
             # ==========================================
             # 共享资源优先：启用共享资源后，先查中心共享池；命中后按配置执行永久转存/虚拟入库。
@@ -1671,125 +1670,130 @@ def task_auto_subscribe(processor):
                     logger.error(f"  ➜ [共享资源] 处理《{title}》时异常，自动降级原有订阅链路: {e}", exc_info=True)
 
             # ==========================================
-            # 云资源优先：电影 / 剧集 / 季统一先查影巢，失败再查已监听 TG 频道，最后 MP 兜底
-            # - Movie: 使用电影 TMDb ID + movie
-            # - Series: 使用剧集 TMDb ID + tv
-            # - Season: 使用父剧集 TMDb ID + tv；自动流程必须按目标季过滤，避免错季误转
+            # 动态订阅源处理 (云资源 / MP)
             # ==========================================
-            cloud_allowed = subscription_priority in ['hdhive', 'cloud'] or is_subscribed_recheck
-            if (not success) and cloud_allowed and item_type in ['Movie', 'Series', 'Season']:
-                hdhive_tmdb_id = tmdb_id
-                hdhive_media_type = 'movie'
-                hdhive_item_label = '电影'
-                hdhive_target_season = None
-                hdhive_require_complete = False
+            subscription_sources = strategy_config.get('subscription_sources')
+            if not subscription_sources:
+                old_priority = strategy_config.get('subscription_priority', 'mp')
+                if old_priority in ['hdhive', 'cloud']:
+                    subscription_sources = ['hdhive', 'mp']
+                else:
+                    subscription_sources = ['mp']
 
-                if item_type in ['Series', 'Season']:
-                    hdhive_tmdb_id = parent_tmdb_id or tmdb_id
-                    hdhive_media_type = 'tv'
-                    hdhive_item_label = '剧集'
+            if is_subscribed_recheck:
+                if 'hdhive' not in subscription_sources:
+                    subscription_sources.append('hdhive')
+                if 'mp' in subscription_sources:
+                    subscription_sources.remove('mp')
 
-                    if item_type == 'Season' and season_number is not None:
-                        hdhive_target_season = int(season_number)
-                        logger.info(
-                            f"  ➜ [策略] 季《{title}》S{int(season_number):02d} 走云资源时请求不带季号，"
-                            f"仅使用父剧集 TMDb ID {hdhive_tmdb_id} 检索；返回后本地按季号排序。"
-                        )
-
-                    try:
-                        hdhive_require_complete = check_series_completion(
-                            int(hdhive_tmdb_id),
-                            tmdb_api_key,
-                            season_number=hdhive_target_season,
-                            series_name=title
-                        )
-                    except Exception as e:
+            for source_type in subscription_sources:
+                if success:
+                    break
+                    
+                if source_type == 'hdhive':
+                    if item_type in ['Movie', 'Series', 'Season']:
+                        hdhive_tmdb_id = tmdb_id
+                        hdhive_media_type = 'movie'
+                        hdhive_item_label = '电影'
+                        hdhive_target_season = None
                         hdhive_require_complete = False
-                        logger.warning(f"  ➜ [策略] 检查剧集《{title}》完结状态失败，影巢不强制完结包: {e}")
 
-                    if hdhive_require_complete:
-                        first_season_note = ""
-                        try:
-                            if hdhive_target_season is not None and int(hdhive_target_season) == 1:
-                                first_season_note = "第一季完结包允许不写季号；"
-                        except Exception:
-                            first_season_note = ""
+                        if item_type in ['Series', 'Season']:
+                            hdhive_tmdb_id = parent_tmdb_id or tmdb_id
+                            hdhive_media_type = 'tv'
+                            hdhive_item_label = '剧集'
 
-                        logger.info(
-                            f"  ➜ [策略] 剧集《{title}》{f'S{int(hdhive_target_season):02d}' if hdhive_target_season is not None else ''} 已判定完结，"
-                            f"影巢仅允许转存全集/全结/完结包，分段资源不转存；{first_season_note}明确错季仍排除。"
-                        )
-                    else:
-                        logger.info(
-                            f"  ➜ [策略] 剧集《{title}》{f'S{int(hdhive_target_season):02d}' if hdhive_target_season is not None else ''} 未判定完结，"
-                            f"影巢不强制完结包，转存后由智能追剧处理追更。"
-                        )
+                            if item_type == 'Season' and season_number is not None:
+                                hdhive_target_season = int(season_number)
+                                logger.info(
+                                    f"  ➜ [策略] 季《{title}》S{int(season_number):02d} 走云资源时请求不带季号，"
+                                    f"仅使用父剧集 TMDb ID {hdhive_tmdb_id} 检索；返回后本地按季号排序。"
+                                )
 
-                if hdhive_tmdb_id:
-                    cloud_source = _try_download_from_cloud_first(
-                        int(hdhive_tmdb_id),
-                        hdhive_media_type,
-                        title,
-                        item_label=hdhive_item_label,
-                        target_season=hdhive_target_season,
-                        require_complete=hdhive_require_complete,
-                        year=item_year
-                    )
-                    if cloud_source:
-                        success = True
-                        action_type = cloud_source
+                            try:
+                                hdhive_require_complete = check_series_completion(
+                                    int(hdhive_tmdb_id),
+                                    tmdb_api_key,
+                                    season_number=hdhive_target_season,
+                                    series_name=title
+                                )
+                            except Exception as e:
+                                hdhive_require_complete = False
+                                logger.warning(f"  ➜ [策略] 检查剧集《{title}》完结状态失败，影巢不强制完结包: {e}")
 
-            # 如果云资源没开、没找到资源、或者转存失败，WANTED 才允许交由 MP 兜底。
-            # SUBSCRIBED 表示 MP 已经接收过订阅，本轮只是网盘侧补库，绝不能再次提交 MP。
-            if not success:
-                if is_subscribed_recheck:
-                    logger.info(
-                        f"  ➜ [补库模式] 《{title}》本轮未从共享池/影巢/频道命中可补资源，"
-                        f"保持 SUBSCRIBED 状态，跳过 MoviePilot 重复订阅。"
-                    )
-                elif item_type == 'Movie':
-                    logger.info(f"  ➜ 正在向 MoviePilot 提交电影《{title}》的订阅...")
-                    mp_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
-                    success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-                elif item_type == 'Series':
-                    success = _subscribe_full_series_with_logic(int(tmdb_id), title, config, tmdb_api_key)
-                elif item_type == 'Episode':
-                    # Episode 只能走共享中心精确消费/缺口登记；这里不再错误地降级到 MP 整季订阅。
-                    logger.info(f"  ➜ [共享资源] 单集《{title}》未命中可消费资源，已跳过 MP 兜底。")
-                elif item_type == 'Season' and parent_tmdb_id and season_number is not None:
-                    mp_payload = {"name": title, "tmdbid": int(parent_tmdb_id), "type": "电视剧", "season": int(season_number)}
+                            if hdhive_require_complete:
+                                first_season_note = ""
+                                try:
+                                    if hdhive_target_season is not None and int(hdhive_target_season) == 1:
+                                        first_season_note = "第一季完结包允许不写季号；"
+                                except Exception:
+                                    first_season_note = ""
 
-                    # 判定洗版/追更
-                    is_pending, fake_eps = should_mark_as_pending(int(parent_tmdb_id), int(season_number), tmdb_api_key)
-                    is_completed = False
+                                logger.info(
+                                    f"  ➜ [策略] 剧集《{title}》{f'S{int(hdhive_target_season):02d}' if hdhive_target_season is not None else ''} 已判定完结，"
+                                    f"影巢仅允许转存全集/全结/完结包，分段资源不转存；{first_season_note}明确错季仍排除。"
+                                )
+                            else:
+                                logger.info(
+                                    f"  ➜ [策略] 剧集《{title}》{f'S{int(hdhive_target_season):02d}' if hdhive_target_season is not None else ''} 未判定完结，"
+                                    f"影巢不强制完结包，转存后由智能追剧处理追更。"
+                                )
 
-                    if not is_pending:
-                        is_completed = check_series_completion(
-                            int(parent_tmdb_id),
-                            tmdb_api_key,
-                            season_number=int(season_number),
-                            series_name=title
-                        )
-                        wash_mode = _apply_watchlist_mp_wash_flags(
-                            mp_payload,
-                            watchlist_config,
-                            force_full=is_completed
-                        )
-                        if is_completed:
-                            logger.info(f"  ➜ 《{title}》S{season_number} 已完结，强制使用 {wash_mode} 订阅。")
-                        else:
-                            logger.info(f"  ➜ 《{title}》S{season_number} 未完结，向 MoviePilot 提交 {wash_mode} 订阅。")
-                    else:
-                        logger.info(f"  ➜ 《{title}》S{season_number} 处于待定模式，向 MoviePilot 提交补缺订阅。")
+                        if hdhive_tmdb_id:
+                            cloud_source = _try_download_from_cloud_first(
+                                int(hdhive_tmdb_id),
+                                hdhive_media_type,
+                                title,
+                                item_label=hdhive_item_label,
+                                target_season=hdhive_target_season,
+                                require_complete=hdhive_require_complete,
+                                year=item_year
+                            )
+                            if cloud_source:
+                                success = True
+                                action_type = cloud_source
 
-                    # ★★★ 拦截 TG 频道追更 ★★★
-                    if tg_channel_tracking and not is_completed:
-                        logger.info(f"  ➜ [策略] TG频道追更已开启，跳过向 MoviePilot 提交未完结季 S{season_number} 的订阅。")
-                        success = True # 模拟成功
-                    else:
+                elif source_type == 'mp':
+                    if item_type == 'Movie':
+                        logger.info(f"  ➜ 正在向 MoviePilot 提交电影《{title}》的订阅...")
+                        mp_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
                         success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-                        if success and is_pending:
-                            moviepilot.update_subscription_status(int(parent_tmdb_id), int(season_number), 'P', config, total_episodes=fake_eps)
+                    elif item_type == 'Series':
+                        success = _subscribe_full_series_with_logic(int(tmdb_id), title, config, tmdb_api_key)
+                    elif item_type == 'Episode':
+                        logger.info(f"  ➜ [共享资源] 单集《{title}》未命中可消费资源，已跳过 MP 兜底。")
+                    elif item_type == 'Season' and parent_tmdb_id and season_number is not None:
+                        mp_payload = {"name": title, "tmdbid": int(parent_tmdb_id), "type": "电视剧", "season": int(season_number)}
+
+                        is_pending, fake_eps = should_mark_as_pending(int(parent_tmdb_id), int(season_number), tmdb_api_key)
+                        is_completed = False
+
+                        if not is_pending:
+                            is_completed = check_series_completion(
+                                int(parent_tmdb_id),
+                                tmdb_api_key,
+                                season_number=int(season_number),
+                                series_name=title
+                            )
+                            wash_mode = _apply_watchlist_mp_wash_flags(
+                                mp_payload,
+                                watchlist_config,
+                                force_full=is_completed
+                            )
+                            if is_completed:
+                                logger.info(f"  ➜ 《{title}》S{season_number} 已完结，强制使用 {wash_mode} 订阅。")
+                            else:
+                                logger.info(f"  ➜ 《{title}》S{season_number} 未完结，向 MoviePilot 提交 {wash_mode} 订阅。")
+                        else:
+                            logger.info(f"  ➜ 《{title}》S{season_number} 处于待定模式，向 MoviePilot 提交补缺订阅。")
+
+                        if tg_channel_tracking and not is_completed:
+                            logger.info(f"  ➜ [策略] TG频道追更已开启，跳过向 MoviePilot 提交未完结季 S{season_number} 的订阅。")
+                            success = True 
+                        else:
+                            success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+                            if success and is_pending:
+                                moviepilot.update_subscription_status(int(parent_tmdb_id), int(season_number), 'P', config, total_episodes=fake_eps)
 
             # 处理订阅结果
             if success:

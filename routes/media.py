@@ -635,6 +635,7 @@ def api_get_subscription_strategy():
             'movie_search_window_days': 1,
             'movie_pause_days': 7,
             'delay_subscription_days': 30,
+            'subscription_sources': ['mp'],
             'subscription_priority': 'mp',
             'hdhive_free_only': False,      
             'hdhive_max_points': 10,        
