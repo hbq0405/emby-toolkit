@@ -3169,6 +3169,8 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
         for g in sorted(groups.values(), key=lambda x: len(x.get('episodes') or set()), reverse=True)
     ]
     remote_season_dir = None
+    cache_file_parent_fix_count = 0
+    cache_file_parent_fix_error = ''
 
     def _p115_node_name(node: Dict[str, Any]) -> str:
         return str(
@@ -3285,13 +3287,62 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
                 })
                 try:
                     from handler.p115_service import P115CacheManager
+
+                    # 回填季目录节点本身；如果父目录有 local_path，也顺手补齐 Season 目录路径。
                     P115CacheManager.save_cid(parent_id, base_id, parent_name)
-                except Exception:
-                    pass
+                    season_local_path = None
+                    try:
+                        base_local_path = P115CacheManager.get_local_path(base_id)
+                        if base_local_path:
+                            season_local_path = f"{str(base_local_path).strip('/').rstrip('/')}/{parent_name}".replace('\\', '/')
+                            P115CacheManager.update_local_path(parent_id, season_local_path)
+                    except Exception:
+                        season_local_path = None
+
+                    # 关键兜底：不只回填 Season 03 目录，还要把本季视频文件的 parent_id
+                    # 从脏的剧目录修正为真正的季目录。否则下次查库仍会把视频当作剧目录直属文件。
+                    for dirty in selected.get('rows') or []:
+                        cache_row = dict((dirty or {}).get('row') or {})
+                        fid = str(cache_row.get('id') or '').strip()
+                        name = str(cache_row.get('name') or '').strip()
+                        if not fid or not name:
+                            continue
+                        if str(cache_row.get('parent_id') or '').strip() == parent_id:
+                            continue
+                        local_path = cache_row.get('local_path')
+                        if not local_path and season_local_path:
+                            local_path = f"{season_local_path.rstrip('/')}/{name}"
+
+                        P115CacheManager.save_file_cache(
+                            fid,
+                            parent_id,
+                            name,
+                            sha1=cache_row.get('sha1'),
+                            pick_code=cache_row.get('pick_code'),
+                            local_path=local_path,
+                            size=_safe_int(cache_row.get('size'), 0),
+                        )
+                        cache_row['parent_id'] = parent_id
+                        if local_path:
+                            cache_row['local_path'] = local_path
+                        dirty['row'] = cache_row
+                        dirty['parent_id'] = parent_id
+                        cache_file_parent_fix_count += 1
+
+                    if cache_file_parent_fix_count:
+                        parent_candidates[0]['fixed_cache_file_parent_count'] = cache_file_parent_fix_count
+                except Exception as e:
+                    cache_file_parent_fix_error = str(e)
+                    logger.debug(
+                        "  ➜ [共享资源] 回填 p115_filesystem_cache 季目录/文件父级失败: "
+                        "parent=%s S%02d season_dir=%s -> %s",
+                        parent_series_id, target_season, parent_id, e,
+                    )
                 logger.debug(
                     "  ➜ [共享资源] 父目录疑似脏数据，重新查找季目录: "
-                    "%s S%02d %s(%s) -> %s(%s)",
+                    "%s S%02d %s(%s) -> %s(%s), fixed_files=%s",
                     parent_series_id, target_season, old_parent_name, old_parent_id, parent_name, parent_id,
+                    cache_file_parent_fix_count,
                 )
                 break
 
@@ -3382,6 +3433,8 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
         'share_fids': [parent_id],
         'share_mode': 'directory',
         'remote_season_dir': remote_season_dir or None,
+        'cache_file_parent_fix_count': cache_file_parent_fix_count,
+        'cache_file_parent_fix_error': cache_file_parent_fix_error or None,
         'parent_series_tmdb_id': parent_series_id,
         'season_number': target_season,
         'file_count': len(files),
