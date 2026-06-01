@@ -1135,6 +1135,50 @@ def _season_pack_consistency_identity(files: List[Dict[str, Any]], context: Dict
     }
 
 
+def _validate_season_pack_file_scope(files: List[Dict[str, Any]], ident: Dict[str, Any]) -> Dict[str, Any]:
+    """校验季包文件明细确实都属于目标季。
+
+    注意不要相信上游统一 setdefault 的 season_number；优先从 relative_path/file_name
+    重新解析 SxxEyy。这样即使误把整剧目录作为 root，也会在创建 115 分享前拦住。
+    """
+    expected_season = _safe_int((ident or {}).get('season_number'), None)
+    if expected_season is None:
+        return {'ok': True}
+
+    bad = []
+    for item in files or []:
+        name = str((item or {}).get('relative_path') or (item or {}).get('file_name') or '')
+        parsed_s, parsed_e = _guess_season_episode_numbers(name)
+        item_s = _safe_int((item or {}).get('season_number'), None)
+        actual_s = parsed_s if parsed_s is not None else item_s
+        if actual_s is not None and actual_s != expected_season:
+            bad.append({
+                'file_name': (item or {}).get('file_name') or name,
+                'relative_path': (item or {}).get('relative_path') or '',
+                'parsed_season': actual_s,
+                'expected_season': expected_season,
+            })
+
+    if bad:
+        shown = []
+        for item in bad[:8]:
+            shown.append(f"{item.get('file_name')} => S{_safe_int(item.get('parsed_season'), 0):02d}")
+        return {
+            'ok': False,
+            'reason': 'season_pack_scope_mismatch',
+            'message': (
+                f"季包文件范围不匹配：目标是 S{expected_season:02d}，但分享目录里混入其它季文件："
+                + '；'.join(shown)
+                + (f" 等 {len(bad)} 个" if len(bad) > len(shown) else '')
+                + '。已阻止创建/登记，避免误分享整剧目录。'
+            ),
+            'scope_mismatch': bad,
+            'source': 'local_file_scope_guard',
+            'season_pack_identity': ident,
+        }
+    return {'ok': True}
+
+
 def _validate_season_pack_consistency(files: List[Dict[str, Any]], context: Dict[str, Any] = None) -> Dict[str, Any]:
     """季包一致性校验统一入口。
 
@@ -1156,6 +1200,10 @@ def _validate_season_pack_consistency(files: List[Dict[str, Any]], context: Dict
             'source': 'helpers.asset_details_json',
             'season_pack_identity': ident,
         }
+
+    scope_guard = _validate_season_pack_file_scope(files, ident)
+    if not scope_guard.get('ok'):
+        return scope_guard
 
     result = helpers.check_season_consistency(
         tmdb_id=parent,
@@ -2081,6 +2129,67 @@ def _ancestor_chain(parent_id: str, max_depth: int = 20) -> List[str]:
     return chain
 
 
+def _season_dir_name_matches(name: str, season_number) -> bool:
+    season = _safe_int(season_number, None)
+    if season is None:
+        return False
+    text = str(name or '').strip().lower()
+    if not text:
+        return False
+    names = {
+        f"season {season}".lower(),
+        f"season {season:02d}".lower(),
+        f"s{season}".lower(),
+        f"s{season:02d}".lower(),
+        f"第{season}季".lower(),
+    }
+    return text in names
+
+
+def _narrow_season_pack_root(root_id: str, root_name: str, parent_ids: List[str], season_number) -> Dict[str, Any]:
+    """季包分享根目录二次收窄，避免 common ancestor 退到整剧目录。"""
+    root_id = str(root_id or '').strip()
+    parent_ids = [str(x or '').strip() for x in (parent_ids or []) if str(x or '').strip()]
+    if not root_id or not parent_ids:
+        return {'root_id': root_id, 'root_name': root_name, 'ok': True, 'message': ''}
+
+    if _season_dir_name_matches(root_name, season_number):
+        return {'root_id': root_id, 'root_name': root_name, 'ok': True, 'message': ''}
+
+    direct_children = set()
+    for pid in parent_ids:
+        chain = _ancestor_chain(pid)
+        if root_id not in chain:
+            continue
+        idx = chain.index(root_id)
+        child_id = chain[idx - 1] if idx > 0 else root_id
+        if child_id:
+            direct_children.add(child_id)
+
+    if len(direct_children) == 1:
+        child_id = next(iter(direct_children))
+        if child_id != root_id:
+            child_node = _get_p115_node(child_id) or {}
+            child_name = child_node.get('name') or child_id
+            if _season_dir_name_matches(child_name, season_number):
+                return {
+                    'root_id': child_id,
+                    'root_name': child_name,
+                    'ok': True,
+                    'message': f'季包根目录已从上级目录收窄到 {child_name}，避免误分享整剧目录',
+                }
+
+    if len(direct_children) > 1:
+        return {
+            'root_id': root_id,
+            'root_name': root_name,
+            'ok': False,
+            'message': '本季文件跨多个直属目录，无法安全定位单季目录，禁止按上级目录创建季包分享',
+        }
+
+    return {'root_id': root_id, 'root_name': root_name, 'ok': True, 'message': ''}
+
+
 
 def _episode_label_from_row(row: Dict[str, Any], series_title: str = '') -> str:
     s = row.get('season_number')
@@ -2199,6 +2308,9 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
     ids = _collect_media_identifiers(media_row)
     file_rows = _get_p115_file_rows(ids['pickcodes'], ids['sha1s'])
     item_type = media_row.get('item_type')
+    # 季包根目录收窄需要目标季号。这里原补丁漏定义 season_number，
+    # 会在 _narrow_season_pack_root 调用处触发未定义变量。
+    season_number = media_row.get('season_number')
     policy = _share_policy_for_media(media_row)
     share_type = policy.get('share_type') or 'movie_folder'
     share_item_type = policy.get('share_item_type') or item_type
@@ -2266,6 +2378,26 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
         root_id = common[0] if common else parent_ids[0]
         root_node = _get_p115_node(root_id) or {}
         root_name = root_node.get('name') or root_id
+        if item_type == 'Season':
+            narrowed = _narrow_season_pack_root(root_id, root_name, parent_ids, season_number)
+            if not narrowed.get('ok'):
+                return {
+                    'resolvable': False,
+                    'root_fid': '',
+                    'root_name': root_name,
+                    'root_is_dir': True,
+                    'file_count': len(file_rows),
+                    'matched_pickcodes': len(ids['pickcodes']),
+                    'matched_sha1s': len(ids['sha1s']),
+                    'share_type': share_type,
+                    'share_item_type': share_item_type,
+                    'message': narrowed.get('message') or '无法安全定位单季分享目录',
+                    'completion': policy.get('completion'),
+                }
+            if narrowed.get('root_id') and narrowed.get('root_id') != root_id:
+                root_id = narrowed.get('root_id')
+                root_name = narrowed.get('root_name') or root_id
+                messages.append(narrowed.get('message'))
         if len(set(parent_ids)) > 1:
             messages.append(f'文件分布在 {len(set(parent_ids))} 个目录，已自动选择共同上级目录：{root_name}')
     else:

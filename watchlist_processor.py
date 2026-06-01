@@ -47,6 +47,19 @@ def translate_internal_status(status: str) -> str:
     """★★★ 新增：一个辅助函数，用于翻译内部状态，用于日志显示 ★★★"""
     return INTERNAL_STATUS_TRANSLATION.get(status, status)
 
+
+def _shared_resource_auto_share_enabled() -> bool:
+    try:
+        cfg = settings_db.get_shared_resource_config() or {}
+        value = cfg.get('p115_shared_resource_enabled', False)
+        if isinstance(value, str):
+            return value.strip().lower() in ('1', 'true', 'yes', 'on', '启用', '开启')
+        return bool(value)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 读取共享资源总开关失败，跳过完结季包分享探测: {e}")
+        return False
+
+
 class WatchlistProcessor:
     """
     【V13 - media_metadata 适配版】
@@ -1112,11 +1125,11 @@ class WatchlistProcessor:
         return bool(result.get('ok'))
 
     def _trigger_completed_season_pack_share_detached(self, tmdb_id: str, season_number: int, series_name: str = ''):
-        """完结一致性通过后异步触发季包分享，避免阻塞单线程任务队列。
+        """完结一致性通过后异步触发季包分享探测（命中缺口正常分享，count=1 补备份），避免阻塞单线程任务队列。
 
         这里不能走 task_manager.submit_task：智能追剧本身通常已经运行在 task_manager
         的单 worker / 全局锁里，内部再提交任务容易被全局锁挡住，或者让追剧刷新长时间
-        等待 115 创建分享、删除单集分享、中心撤销等慢 I/O。
+        等待 115 创建备份分享、删除单集分享、中心撤销等慢 I/O。
         """
         parent_series_tmdb_id = str(tmdb_id or '').strip()
         try:
@@ -1129,6 +1142,12 @@ class WatchlistProcessor:
             return
         if not parent_series_tmdb_id:
             return
+        if not _shared_resource_auto_share_enabled():
+            logger.debug(
+                "  ➜ [共享资源] 共享资源未启用，跳过完结季包分享探测：%s S%02d",
+                series_name or parent_series_tmdb_id, season_no,
+            )
+            return
 
         def _runner():
             try:
@@ -1139,7 +1158,7 @@ class WatchlistProcessor:
                     season_number=season_no,
                 ) or {}
                 logger.debug(
-                    "  ➜ [共享资源] 完结季包分享异步任务完成：%s S%02d created=%s, episode_cancelled=%s, message=%s",
+                    "  ➜ [共享资源] 完结季包分享探测异步任务完成：%s S%02d created=%s, episode_cancelled=%s, message=%s",
                     series_name or parent_series_tmdb_id,
                     season_no,
                     result.get('created', 0),
@@ -1148,7 +1167,7 @@ class WatchlistProcessor:
                 )
             except Exception as e:
                 logger.warning(
-                    "  ➜ [共享资源] 完结季包分享异步任务失败：%s S%02d -> %s",
+                    "  ➜ [共享资源] 完结季包分享探测异步任务失败：%s S%02d -> %s",
                     series_name or parent_series_tmdb_id, season_no, e, exc_info=True,
                 )
 
@@ -1158,7 +1177,7 @@ class WatchlistProcessor:
             daemon=True,
         ).start()
         logger.info(
-            "  ➜ [共享资源] 检查完结季包是否需要分享：%s S%02d",
+            "  ➜ [共享资源] 检查完结季包是否需要分享/备份：%s S%02d",
             series_name or parent_series_tmdb_id, season_no,
         )
 
@@ -1176,7 +1195,7 @@ class WatchlistProcessor:
                 return
             # 2. 直接使用传入的集数进行一致性检查
             if self._check_season_consistency(tmdb_id, season_number, episode_count):
-                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包分享。")
+                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包分享探测。")
                 self._trigger_completed_season_pack_share_detached(tmdb_id, season_number, series_name)
                 return
             
@@ -1820,7 +1839,7 @@ class WatchlistProcessor:
                         
                         if tg_channel_tracking:
                             if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
-                                logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 本地文件一致性完美，无需洗版，异步触发季包分享。")
+                                logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 本地文件一致性完美，无需洗版，异步触发季包分享探测。")
                                 self._trigger_completed_season_pack_share_detached(tmdb_id, last_s_num, item_name)
                             else:
                                 # ★ 核心：不一致，开启等待标志！

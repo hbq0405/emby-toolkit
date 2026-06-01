@@ -219,12 +219,28 @@ def _enqueue_mp_file(file_info):
         task['timer'] = spawn_later(delay, _flush_mp_batch, key)
 
 
+def _shared_resource_auto_share_enabled() -> bool:
+    try:
+        cfg = settings_db.get_shared_resource_config() or {}
+        value = cfg.get('p115_shared_resource_enabled', False)
+        if isinstance(value, str):
+            return value.strip().lower() in ('1', 'true', 'yes', 'on', '启用', '开启')
+        return bool(value)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 读取共享资源总开关失败，跳过自动分享探测: {e}")
+        return False
+
+
 def _run_shared_auto_share_detached(task_name: str, **kwargs):
     """共享供给侧探测/创建分享必须脱离 task_manager 单线程队列。
 
     Webhook 本身已经运行在 task_manager 的单 worker + task_lock 中。
     如果这里再 submit_task，会在同一线程内二次获取 task_lock，导致 Webhook 任务假死。
     """
+    if not _shared_resource_auto_share_enabled():
+        logger.debug(f"  ➜ [共享资源] 共享资源未启用，跳过自动分享探测: {task_name}")
+        return
+
     def _runner():
         try:
             from tasks.shared_resource_tasks import trigger_shared_auto_share_for_library_item
@@ -247,11 +263,16 @@ def _run_shared_auto_share_detached(task_name: str, **kwargs):
 
 
 def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: str, item_type: str, tmdb_id: str, new_episode_ids: Optional[List[str]] = None):
-    """Movie/Episode 入库完成后，异步询问共享中心是否需要本机创建分享。"""
+    """Movie/Episode 入库完成后，异步询问共享中心是否需要本机创建分享。
+
+    这里保持原有正常分享链路：Movie 命中缺口分享、Episode 追更命中缺口分享。
+    Movie 的备份分享由任务内部在“正常分享不需要创建且中心可用分享数=1”时额外补充；
+    Episode 仍不创建备份分享。
+    """
     try:
         if item_type == 'Movie' and tmdb_id:
             _run_shared_auto_share_detached(
-                f"共享入库探测: {item_details.get('Name') or tmdb_id}",
+                f"共享电影入库探测: {item_details.get('Name') or tmdb_id}",
                 item_type='Movie',
                 tmdb_id=str(tmdb_id),
                 emby_item_id=str(item_id),
@@ -303,7 +324,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
-    # 2. 共享资源供给侧实时触发：Movie/本次新增 Episode 入库后，只针对本次资源询问中心是否需要分享。
+    # 2. 共享资源供给侧实时触发：保留 Movie/追更新集命中缺口分享，Movie 额外按 count=1 补备份；季包交给智能追剧完结流程。
     _submit_shared_auto_share_after_library_ready(item_details, item_id, item_type, tmdb_id, new_episode_ids)
 
     # 3. 智能追剧判断 - 初始入库
