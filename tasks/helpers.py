@@ -1094,12 +1094,19 @@ def check_season_consistency(
     series_name: str = '',
     rows: Optional[List[Dict[str, Any]]] = None,
     log_result: bool = True,
+    processor=None,
+    repair_missing_fingerprints: bool = True,
 ) -> Dict[str, Any]:
     """统一检查指定季本地文件是否满足“无需洗版/可分享季包”的一致性条件。
 
     规则继承自 watchlist_processor 原实现：
     1. 本地在库集数必须不少于 expected_episode_count（传 0 则不检查集数）。
     2. 每集主资产的分辨率、制作组、编码、HDR/杜比版本必须完全统一。
+
+    repair_missing_fingerprints=True 时，会在当前季范围内尝试补齐缺失的 115 PC/SHA1，
+    不调用 media.task_repair_p115_fingerprints，也不会扫描全库。调用方传入 processor 时，
+    会复用 processor._extract_115_fingerprints；未传 processor 时，也会尽量通过本地缓存/
+    STRM 路径反查补齐。
 
     返回结构化结果，调用方可直接使用 result['ok'] 作为布尔结果，也可把 message
     透传给前端/维护任务日志。
@@ -1118,13 +1125,17 @@ def check_season_consistency(
             'season_number': season_number,
         }
 
+    rows_were_provided = rows is not None
+    fingerprint_repair_stats = None
+
     try:
         if rows is None:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT tmdb_id, title, season_number, episode_number, asset_details_json
+                        SELECT tmdb_id, item_type, title, season_number, episode_number,
+                               asset_details_json, file_sha1_json, file_pickcode_json
                         FROM media_metadata
                         WHERE parent_series_tmdb_id = %s
                           AND season_number = %s
@@ -1158,6 +1169,51 @@ def check_season_consistency(
                 'expected_episode_count': expected_episode_count,
                 'local_episode_count': local_episode_count,
             }
+
+        # 只针对当前季做轻量 PC/SHA1 补齐。
+        # 如果 rows 是调用方传入的旧结构且没有 file_sha1_json/file_pickcode_json，
+        # 不主动回写，避免把未知旧值覆盖成空数组。
+        has_fingerprint_columns = any(
+            ('file_sha1_json' in row or 'file_pickcode_json' in row)
+            for row in (rows or [])
+            if isinstance(row, dict)
+        )
+        if repair_missing_fingerprints and rows and (not rows_were_provided or has_fingerprint_columns):
+            try:
+                from .p115_fingerprint_helpers import repair_p115_fingerprints_for_rows
+
+                local_root = ''
+                if processor is not None:
+                    try:
+                        local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, '') or ''
+                    except Exception:
+                        local_root = ''
+
+                fingerprint_repair_stats = repair_p115_fingerprints_for_rows(
+                    processor,
+                    rows,
+                    local_root=local_root,
+                    update_db=True,
+                    allow_api_fetch=True,
+                    log_prefix=f"一致性检查补齐指纹 S{season_number_int:02d}",
+                    should_stop=getattr(processor, 'is_stop_requested', None) if processor is not None else None,
+                    progress_callback=None,
+                    progress_interval=0,
+                )
+                if log_result and fingerprint_repair_stats.get('fixed_assets'):
+                    logger.info(
+                        f"  ➜ [一致性检查] 第 {season_number_int} 季 已实时补齐 "
+                        f"{fingerprint_repair_stats.get('fixed_assets')} 个缺失 PC/SHA1。"
+                    )
+            except Exception as e:
+                fingerprint_repair_stats = {
+                    'error': str(e),
+                    'fixed_assets': 0,
+                }
+                logger.warning(
+                    f"  ➜ [一致性检查] 第 {season_number_int} 季 实时补齐 115 指纹失败，继续执行一致性检查: {e}",
+                    exc_info=True
+                )
 
         resolutions = set()
         groups = set()
@@ -1232,6 +1288,7 @@ def check_season_consistency(
                 'local_episode_count': local_episode_count,
                 'invalid': invalid,
                 'signatures': signatures,
+                'fingerprint_repair': fingerprint_repair_stats,
             }
 
         is_consistent = bool(signatures) and len(resolutions) == 1 and len(groups) == 1 and len(codecs) == 1 and len(effects) == 1
@@ -1247,6 +1304,7 @@ def check_season_consistency(
             'codecs': sorted(codecs),
             'effects': sorted(effects),
             'signatures': signatures,
+            'fingerprint_repair': fingerprint_repair_stats,
         }
 
         if is_consistent:
