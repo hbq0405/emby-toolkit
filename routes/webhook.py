@@ -85,8 +85,8 @@ def _fix_mp_tv_parent_id(client, file_info):
         if season_cid and str(season_cid) != str(parent_id):
             old_parent_id = parent_id
             file_info['parent_id'] = str(season_cid)
-            logger.info(
-                f"  ➜ [MP直出父目录修正] 剧集父目录已修正: "
+            logger.debug(
+                f"  ➜ [MP直出] 季目录已修正: "
                 f"{old_parent_id} -> {season_cid} ({season_dir_name}) | {file_info.get('name')}"
             )
     except Exception as e:
