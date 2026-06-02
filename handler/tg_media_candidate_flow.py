@@ -363,6 +363,73 @@ class TgMediaCandidateFlowTests(unittest.TestCase):
         hit = tg_candidate.lookup_candidate_hint_for_name("Dune.2021.1080p", media_type="movie")
         self.assertIsNone(hit)
 
+    def test_lookup_candidate_hint_for_name_can_use_tmdb_alias_titles(self):
+        with mock.patch.object(
+            tg_candidate,
+            "_fetch_tmdb_alias_titles",
+            return_value=["When Will Ayumu Make His Move", "即使如此依旧步步逼近"],
+        ):
+            tg_candidate.remember_candidate_hint(
+                {
+                    "tmdb_id": "116168",
+                    "identify_title": "即使如此依旧步步逼近",
+                    "clean_title": "即使如此依旧步步逼近",
+                    "media_type": "tv",
+                    "season_number": 1,
+                    "confidence": "high",
+                    "target_link": "https://115.com/s/shareayumu?password=pass1",
+                    "receive_code": "pass1",
+                },
+                ttl_seconds=600,
+            )
+
+        hit = tg_candidate.lookup_candidate_hint_for_name(
+            "When Will Ayumu Make His Move.2022.S01E12.1080p.BluRay.Remux.mkv",
+            media_type="tv",
+            season_number=1,
+        )
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["tmdb_id"], "116168")
+        self.assertEqual(hit["identify_title"], "即使如此依旧步步逼近")
+
+    def test_remember_candidate_hint_refreshes_strong_keys_after_hdhive_unlock(self):
+        with mock.patch.object(
+            tg_candidate,
+            "_fetch_tmdb_alias_titles",
+            return_value=["When Will Ayumu Make His Move"],
+        ):
+            tg_candidate.remember_candidate_hint(
+                {
+                    "tmdb_id": "116168",
+                    "identify_title": "即使如此依旧步步逼近",
+                    "clean_title": "即使如此依旧步步逼近",
+                    "media_type": "tv",
+                    "confidence": "high",
+                    "target_link": "https://hdhive.com/resource/115/bee53dc13fd94156919ac43eed672087",
+                },
+                ttl_seconds=600,
+            )
+            tg_candidate.remember_candidate_hint(
+                {
+                    "tmdb_id": "116168",
+                    "identify_title": "即使如此依旧步步逼近",
+                    "clean_title": "即使如此依旧步步逼近",
+                    "media_type": "tv",
+                    "confidence": "high",
+                    "target_link": "https://115.com/s/shareayumu?password=pass1",
+                    "receive_code": "pass1",
+                },
+                ttl_seconds=600,
+            )
+
+        hit = tg_candidate.lookup_candidate_hint(
+            "When Will Ayumu Make His Move.2022.S01E12.1080p.BluRay.Remux.mkv",
+            media_type="tv",
+            lookup_key="sharepwd:shareayumu:pass1",
+        )
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["tmdb_id"], "116168")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ _CANDIDATE_HINT_TTL_SECONDS = 6 * 60 * 60
 _CANDIDATE_HINT_REGISTRY: List[Dict[str, Any]] = []
 _CANDIDATE_HINT_LOCK = threading.Lock()
 _LOOKUP_KEYS_BLOCKED = object()
+_TMDB_ALIAS_CACHE: Dict[str, List[str]] = {}
 
 _QUALITY_WORDS = (
     "WEB-DL", "WEBRIP", "BLURAY", "REMUX", "HDR", "DV", "DDP",
@@ -729,6 +730,7 @@ def candidate_to_recognition_hints(candidate):
         "matched_rules": list(candidate.get("matched_rules") or []),
         "conflict_reason": candidate.get("conflict_reason") or "",
         "parse_version": candidate.get("parse_version") or TG_CANDIDATE_PARSE_VERSION,
+        "alias_titles": list(candidate.get("alias_titles") or []),
         "source": "tg_candidate",
     }
 
@@ -740,6 +742,52 @@ def is_recognition_hint_eligible(candidate_or_hints):
     return hints.get("confidence") in ("medium", "high")
 
 
+def _fetch_tmdb_alias_titles(tmdb_id, media_type):
+    tmdb_id = str(tmdb_id or "").strip()
+    media_type = str(media_type or "").strip().lower()
+    if not tmdb_id or media_type not in ("movie", "tv"):
+        return []
+
+    cache_key = f"{media_type}:{tmdb_id}"
+    if cache_key in _TMDB_ALIAS_CACHE:
+        return list(_TMDB_ALIAS_CACHE.get(cache_key) or [])
+
+    aliases: List[str] = []
+    try:
+        import config_manager
+        import constants
+        import handler.tmdb as tmdb
+
+        api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+        if not api_key:
+            _TMDB_ALIAS_CACHE[cache_key] = []
+            return []
+
+        details = tmdb.get_tv_details(tmdb_id, api_key) if media_type == "tv" else tmdb.get_movie_details(tmdb_id, api_key)
+        if details:
+            if media_type == "tv":
+                candidates = [
+                    details.get("name"),
+                    details.get("original_name"),
+                    details.get("english_title"),
+                ]
+            else:
+                candidates = [
+                    details.get("title"),
+                    details.get("original_title"),
+                    details.get("english_title"),
+                ]
+            for value in candidates:
+                value = normalize_text(value)
+                if value and value not in aliases:
+                    aliases.append(value)
+    except Exception:
+        aliases = []
+
+    _TMDB_ALIAS_CACHE[cache_key] = list(aliases)
+    return aliases
+
+
 def remember_candidate_hint(candidate_or_hints, ttl_seconds=_CANDIDATE_HINT_TTL_SECONDS):
     hints = candidate_to_recognition_hints(candidate_or_hints)
     if not hints.get("identify_title") and not hints.get("clean_title") and not hints.get("title") and not hints.get("tmdb_id"):
@@ -747,11 +795,22 @@ def remember_candidate_hint(candidate_or_hints, ttl_seconds=_CANDIDATE_HINT_TTL_
 
     expiry = time.time() + max(int(ttl_seconds or 0), 60)
     hints["_expiry_at"] = expiry
+    alias_titles = list(hints.get("alias_titles") or [])
+    if hints.get("tmdb_id") and hints.get("media_type") and hints.get("confidence") in ("medium", "high"):
+        for alias in _fetch_tmdb_alias_titles(hints.get("tmdb_id"), hints.get("media_type")):
+            if alias and alias not in alias_titles:
+                alias_titles.append(alias)
+    hints["alias_titles"] = alias_titles
     hints["_normalized_titles"] = [
         normalize_title_for_match(hints.get("identify_title")),
         normalize_title_for_match(hints.get("clean_title")),
         normalize_title_for_match(hints.get("title")),
     ]
+    hints["_normalized_titles"].extend(
+        normalize_title_for_match(alias)
+        for alias in alias_titles
+        if alias
+    )
     hints["_normalized_titles"] = [x for x in hints["_normalized_titles"] if x]
     hints["_lookup_keys"] = _collect_lookup_keys(
         target_link=hints.get("target_link"),
