@@ -5376,40 +5376,66 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 continue
 
             # ==========================================================
-            # ★ MP 剧集直出修正：MP webhook 的 parent_id 可能是“剧目录”而不是“季目录”。
-            #   剧集视频必须以 115 实时详情为准，避免 p115_filesystem_cache 把集文件挂到爷爷目录。
-            #   同一次详情查询顺手补齐 SHA1，防止后面重复请求。
+            # ★ MP 剧集视频父目录兜底修正
+            # MP 直出模式下，MP webhook 传来的 target_diritem 可能是剧目录（爷爷），
+            # 但集文件真实落在季目录（爸爸）。这里优先吃 webhook 已实时校验的结果；
+            # 若上游未校验，则在 execute_mp_passthrough 内兜底调用 115 文件详情接口。
             # ==========================================================
-            if is_video and str(self.media_type or '').strip().lower() == 'tv' and fid:
-                try:
-                    info_res = self.client.fs_get_info(fid)
-                    info_data = info_res.get('data') if isinstance(info_res, dict) else None
-                    if isinstance(info_data, dict):
-                        real_parent_id = (
-                            info_data.get('parent_id')
-                            or info_data.get('pid')
-                            or info_data.get('parentId')
-                            or info_data.get('cid')
-                        )
-                        if real_parent_id and str(real_parent_id) != str(parent_id or ''):
-                            old_parent_id = parent_id or '空'
-                            parent_id = str(real_parent_id)
-                            file_item['pid'] = parent_id
-                            file_item['parent_id'] = parent_id
+            is_tv_media = str(self.media_type or '').strip().lower() in ('tv', 'series', 'episode', '电视剧')
+            has_episode_hint = file_item.get('_forced_season') is not None or file_item.get('_forced_episode') is not None
+            if is_video and fid and (is_tv_media or has_episode_hint):
+                if file_item.get('_mp_parent_id_checked'):
+                    checked_parent_id = file_item.get('parent_id') or file_item.get('pid') or file_item.get('cid')
+                    if checked_parent_id:
+                        parent_id = str(checked_parent_id)
+                        file_item['pid'] = parent_id
+                        file_item['parent_id'] = parent_id
+                        old_parent_id = file_item.get('_mp_original_parent_id')
+                        if old_parent_id and str(old_parent_id) != parent_id:
                             logger.info(
-                                f"  ➜ [MP直出] 季目录实时修正: {original_name} "
-                                f"{old_parent_id} -> {parent_id}"
+                                f"  ➜ [MP直出父目录] 使用 webhook 实时修正结果: "
+                                f"MP={old_parent_id} -> 115={parent_id} | {original_name}"
                             )
+                        else:
+                            logger.info(f"  ➜ [MP直出父目录] 使用 webhook 实时校验结果: {parent_id} | {original_name}")
+                else:
+                    try:
+                        info_res = self.client.fs_get_info(fid)
+                        if info_res.get('state') and isinstance(info_res.get('data'), dict):
+                            info_data = info_res.get('data') or {}
+                            realtime_parent_id = (
+                                info_data.get('parent_id')
+                                or info_data.get('pid')
+                                or info_data.get('parentId')
+                                or info_data.get('cid')
+                            )
+                            if realtime_parent_id:
+                                old_parent_id = parent_id
+                                parent_id = str(realtime_parent_id)
+                                file_item['pid'] = parent_id
+                                file_item['parent_id'] = parent_id
+                                file_item['_mp_parent_id_checked'] = True
+                                file_item['_mp_original_parent_id'] = str(old_parent_id) if old_parent_id else None
+                                file_item['_mp_parent_id_fixed'] = bool(old_parent_id and str(old_parent_id) != parent_id)
 
-                        if not sha1:
-                            fetched_sha1 = info_data.get('sha1') or info_data.get('sha')
-                            if fetched_sha1:
-                                sha1 = str(fetched_sha1).upper()
-                                file_item['sha1'] = sha1
-                    elif isinstance(info_res, dict) and not info_res.get('state'):
-                        logger.warning(f"  ➜ [MP直出] 剧集文件父目录实时查询失败: {original_name} -> {info_res}")
-                except Exception as e:
-                    logger.warning(f"  ➜ [MP直出] 剧集文件父目录实时查询异常: {original_name} -> {e}")
+                                fetched_sha1 = info_data.get('sha1') or info_data.get('sha') or info_data.get('file_sha1')
+                                if fetched_sha1 and not sha1:
+                                    sha1 = str(fetched_sha1).upper()
+                                    file_item['sha1'] = sha1
+
+                                if old_parent_id and str(old_parent_id) != parent_id:
+                                    logger.info(
+                                        f"  ➜ [MP直出] 已修正季目录ID "
+                                        f"MP={old_parent_id} -> 115={parent_id} | {original_name}"
+                                    )
+                                else:
+                                    logger.info(f"  ➜ [MP直出父目录确认] 剧集视频父目录ID已实时校验: {parent_id} | {original_name}")
+                            else:
+                                logger.warning(f"  ➜ [MP直出父目录修正] 115 文件详情缺少父目录字段，沿用 MP 目录ID: {original_name}")
+                        else:
+                            logger.warning(f"  ➜ [MP直出父目录修正] 查询 115 文件详情失败，沿用 MP 目录ID: {original_name}, resp={info_res}")
+                    except Exception as e:
+                        logger.warning(f"  ➜ [MP直出父目录修正] 实时查询 115 父目录异常，沿用 MP 目录ID: {original_name} -> {e}", exc_info=True)
 
             # ==========================================================
             # ★ 核心优化：直接从 Webhook 传来的 115_path 提取相对路径，0 API 消耗！
