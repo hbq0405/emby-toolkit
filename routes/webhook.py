@@ -158,7 +158,7 @@ def _process_mp_passthrough_immediate(file_info):
         # =========================================================
         real_parent_id = file_info.get('parent_id')
         
-        if media_type == 'tv' and file_id:
+        if file_id:
             try:
                 info_res = client.fs_get_info(file_id)
                 if info_res and info_res.get('state') and info_res.get('data'):
