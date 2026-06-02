@@ -21,8 +21,6 @@ logger = logging.getLogger(__name__)
 VIDEO_EXTS = {'.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.webm', '.iso'}
 _ORGANIZE_KICK_LOCK = threading.Lock()
 _LAST_ORGANIZE_KICK_AT = 0
-
-
 def _kick_115_organize_detached(reason: str = '', delay: float = 3.0) -> Dict[str, Any]:
     """共享资源永久转存成功后，绕过单线程 task_manager，异步踢 115 待整理扫描。"""
     global _LAST_ORGANIZE_KICK_AT
@@ -57,20 +55,11 @@ def _kick_115_organize_detached(reason: str = '', delay: float = 3.0) -> Dict[st
         'message': '已异步触发 115 待整理扫描',
     }
 
-
 class _MediainfoBuilder(P115MediaAnalyzerMixin):
     pass
-
-
 def _cfg(name: str, fallback: str, default=None):
     key = getattr(constants, name, fallback)
     return (config_manager.APP_CONFIG or {}).get(key, default)
-
-
-def _shared_cfg(key: str, default=None):
-    return settings_db.get_shared_resource_config().get(key, default)
-
-
 def _safe_int(value, default=0):
     try:
         if value in (None, ''):
@@ -78,8 +67,6 @@ def _safe_int(value, default=0):
         return int(float(value))
     except Exception:
         return default
-
-
 def _normalize_episode_number_list(value) -> List[int]:
     """共享池按季查询后，本地用缺集号列表做精确过滤。"""
     if value in (None, ''):
@@ -101,42 +88,6 @@ def _normalize_episode_number_list(value) -> List[int]:
         except Exception:
             pass
     return sorted(out)
-
-
-def _extract_episode_number_fallback(source: Dict[str, Any] | None = None, context: Dict[str, Any] | None = None):
-    source = source or {}
-    context = context or {}
-    for value in (
-        source.get('episode_number'),
-        context.get('episode_number'),
-    ):
-        episode = _safe_int(value, None)
-        if episode is not None:
-            return episode
-
-    text = ' '.join(
-        str(v or '').strip()
-        for v in (
-            source.get('file_name'),
-            source.get('title'),
-            context.get('file_name'),
-            context.get('title'),
-        )
-        if str(v or '').strip()
-    )
-    if not text:
-        return None
-
-    for pattern in (
-        r'(?i)\bS\d{1,2}\s*[._ -]*E(\d{1,4})\b',
-        r'第\s*(\d{1,4})\s*[集话話]',
-    ):
-        match = re.search(pattern, text)
-        if match:
-            return _safe_int(match.group(1), None)
-    return None
-
-
 def _tv_parent_tmdb_id(context: Dict[str, Any] | None = None, source: Dict[str, Any] | None = None) -> str:
     """统一提取父剧 TMDb ID。
 
@@ -172,19 +123,13 @@ def _tv_parent_tmdb_id(context: Dict[str, Any] | None = None, source: Dict[str, 
                 return value
 
     return ''
-
-
 def _norm_sha1(value: str) -> str:
     return str(value or '').strip().upper()
-
-
 def _share_import_resp_text(resp: Any) -> str:
     try:
         return json.dumps(resp, ensure_ascii=False)
     except Exception:
         return str(resp or '')
-
-
 def _share_import_resp_code(resp: Any) -> str:
     if isinstance(resp, dict):
         for key in ('errno', 'code', 'errNo'):
@@ -192,14 +137,10 @@ def _share_import_resp_code(resp: Any) -> str:
             if value not in (None, ''):
                 return str(value)
     return ''
-
-
 def _source_identity_code(src: Dict[str, Any]) -> str:
     if not isinstance(src, dict):
         return ''
     return str(src.get('share_code') or src.get('source_id') or '').strip()
-
-
 def _is_share_import_already_saved(resp: Any) -> bool:
     """115 返回“你已经转存过该文件”时，只代表本账号幂等限制，不代表中心共享源失效。"""
     code = _share_import_resp_code(resp)
@@ -217,8 +158,6 @@ def _is_share_import_already_saved(resp: Any) -> bool:
         or 'already received' in text
         or 'already saved' in text
     )
-
-
 def _share_import_success(resp: Any) -> bool:
     text = _share_import_resp_text(resp).lower()
     if _is_share_import_already_saved(resp):
@@ -230,8 +169,6 @@ def _share_import_success(resp: Any) -> bool:
         if code in ('0', '200'):
             return True
     return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist'))
-
-
 def _is_share_import_local_account_issue(resp: Any) -> bool:
     """本机账号/频率/空间/幂等问题，不应上报中心 failed。"""
     if _is_share_import_already_saved(resp):
@@ -242,8 +179,6 @@ def _is_share_import_local_account_issue(resp: Any) -> bool:
         '770004', '990001', '4100010', '4100025',
         'quota', 'limit', 'too many', 'rate',
     ))
-
-
 def _is_share_import_source_dead(resp: Any) -> bool:
     """只有明确死链/提取码错误/源文件删除，才允许向中心上报 failed。"""
     if _is_share_import_local_account_issue(resp):
@@ -258,8 +193,6 @@ def _is_share_import_source_dead(resp: Any) -> bool:
         '文件(夹)已被移动或删除', '已被移动或删除', '源文件不存在',
         'share not found', 'expired', 'cancelled', 'canceled', 'not found', 'deleted',
     ))
-
-
 def _find_local_p115_file_by_sha1(sha1: str) -> Dict[str, Any]:
     """按 SHA1 兜底判断本账号是否已经有这个文件。
 
@@ -292,8 +225,6 @@ def _find_local_p115_file_by_sha1(sha1: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 按 SHA1 查询 p115_filesystem_cache 失败: sha1={sha1}, err={e}")
     return {}
-
-
 def _source_relevant_to_context(src: Dict[str, Any], context: Dict[str, Any]) -> bool:
     """判断中心源是否和本次消费目标相关，用于按 SHA1 跳过重复转存。"""
     if not src or not context:
@@ -328,8 +259,6 @@ def _source_relevant_to_context(src: Dict[str, Any], context: Dict[str, Any]) ->
         src_type = str(src.get('item_type') or '').strip()
         return src_type in ('', 'Movie')
     return True
-
-
 def _local_existing_hit_for_import_group(src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """同一 share_code 可能聚合多条中心源；优先用本次目标相关源的 SHA1 查本地。
 
@@ -378,8 +307,6 @@ def _local_existing_hit_for_import_group(src: Dict[str, Any], context: Dict[str,
         if local:
             return {'source': src, 'local': local}
     return {}
-
-
 def _episode_guard_key(parent_tmdb_id, season_number, episode_number) -> str:
     parent = str(parent_tmdb_id or '').strip()
     season = _safe_int(season_number, -1)
@@ -387,8 +314,6 @@ def _episode_guard_key(parent_tmdb_id, season_number, episode_number) -> str:
     if not parent or season < 0 or episode < 0:
         return ''
     return f'{parent}|{season}|{episode}'
-
-
 def _collect_episode_guard_keys(sources: List[Dict[str, Any]], context: Dict[str, Any]) -> List[str]:
     keys = set()
     context_parent = _tv_parent_tmdb_id(context, None)
@@ -412,15 +337,6 @@ def _collect_episode_guard_keys(sources: List[Dict[str, Any]], context: Dict[str
         if key:
             keys.add(key)
     return sorted(keys)
-
-
-def _sanitize_filename(name: str) -> str:
-    name = str(name or '').strip()
-    name = re.sub(r'[\\/:*?"<>|]+', ' ', name)
-    name = re.sub(r'\s+', ' ', name).strip()
-    return name or 'Unknown'
-
-
 def _build_gap_item(*, tmdb_id, item_type, title='', season_number=None, episode_number=None, year='') -> Dict[str, Any]:
     item_type = str(item_type or '').strip()
     return {
@@ -431,8 +347,6 @@ def _build_gap_item(*, tmdb_id, item_type, title='', season_number=None, episode
         'title': title or None,
         'release_year': int(year) if str(year or '').isdigit() else None,
     }
-
-
 def _build_center_queries(item: Dict[str, Any], title: str, tmdb_id, item_type: str, parent_tmdb_id=None, season_number=None, year='') -> List[Dict[str, Any]]:
     """把本地待订阅项转换成中心查询。
 
@@ -456,8 +370,6 @@ def _build_center_queries(item: Dict[str, Any], title: str, tmdb_id, item_type: 
         if sid and s_num not in (None, ''):
             queries.append(_build_gap_item(tmdb_id=sid, item_type='Season', title=title, season_number=s_num, year=year))
     return [q for q in queries if q.get('tmdb_id')]
-
-
 def report_shared_gap(item: Dict[str, Any], title: str = '', tmdb_id=None, item_type: str = '', parent_tmdb_id=None, season_number=None, year='') -> bool:
     if not shared_center_enabled():
         return False
@@ -472,8 +384,6 @@ def report_shared_gap(item: Dict[str, Any], title: str = '', tmdb_id=None, item_
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 登记缺口失败: {e}")
         return False
-
-
 def _flatten_search_results(search_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     sources = []
     for block in (search_data or {}).get('results') or []:
@@ -490,12 +400,8 @@ def _flatten_search_results(search_data: Dict[str, Any]) -> List[Dict[str, Any]]
         seen.add(key)
         unique.append(src)
     return unique
-
-
 def _episode_transfer_disabled() -> bool:
     return bool(settings_db.get_shared_resource_config().get('p115_shared_disable_episode_transfer', False))
-
-
 def _filter_sources_by_episode_transfer_policy(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not _episode_transfer_disabled():
         return list(sources or [])
@@ -510,11 +416,6 @@ def _filter_sources_by_episode_transfer_policy(sources: List[Dict[str, Any]]) ->
     if blocked:
         logger.info(f"  ➜ [共享资源] 已按配置过滤中心单集资源 {blocked} 条。")
     return filtered
-
-
-
-# 虚拟入库已移除：不再生成本地 STRM 投影/sidecar，也不再写 shared_virtual_items。
-
 def _guess_se_from_source(src: Dict[str, Any], context: Dict[str, Any]):
     s_num = src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number')
     # ★ 核心修复：补充从 context 兜底获取 episode_number
@@ -539,8 +440,6 @@ def _guess_se_from_source(src: Dict[str, Any], context: Dict[str, Any]):
                 e_num = int(m.group(2))
 
     return s_num, e_num
-
-
 def _load_center_raw_map(client: SharedCenterClient, sources: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     raw_map = {}
 
@@ -566,17 +465,12 @@ def _load_center_raw_map(client: SharedCenterClient, sources: List[Dict[str, Any
                 raw_map[sha1] = raw
 
     return raw_map
-
-
-
 def _share_source_rows(src: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows = (src or {}).get('_group_sources') if isinstance(src, dict) else None
     rows = [x for x in (rows or []) if isinstance(x, dict)]
     if rows:
         return rows
     return [src] if isinstance(src, dict) else []
-
-
 def _source_status_rank_for_retry(value: str) -> int:
     value = str(value or '').strip().lower()
     if value == 'alive':
@@ -584,36 +478,21 @@ def _source_status_rank_for_retry(value: str) -> int:
     if value == 'pending':
         return 1
     return 2
-
-
 def _source_backup_rank(src: Dict[str, Any]) -> int:
     try:
         return int(float((src or {}).get('_backup_rank') or 999999))
     except Exception:
         return 999999
-
-
-def _source_backup_count(src: Dict[str, Any]) -> int:
-    try:
-        return int(float((src or {}).get('_backup_count') or 1))
-    except Exception:
-        return 1
-
-
 def _source_success_count(src: Dict[str, Any]) -> int:
     try:
         return int(float((src or {}).get('success_count') or (src or {}).get('_package_success_count') or 0))
     except Exception:
         return 0
-
-
 def _source_fail_count(src: Dict[str, Any]) -> int:
     try:
         return int(float((src or {}).get('fail_count') or (src or {}).get('_package_fail_count') or 0))
     except Exception:
         return 0
-
-
 def _source_retry_sort_key(src: Dict[str, Any]):
     rows = _share_source_rows(src)
     best_rank = min([_source_backup_rank(r) for r in rows] + [_source_backup_rank(src)])
@@ -623,8 +502,6 @@ def _source_retry_sort_key(src: Dict[str, Any]):
     first_time = min([str((r or {}).get('last_verified_at') or (r or {}).get('created_at') or '') for r in rows] or [''])
     created = min([str((r or {}).get('created_at') or '') for r in rows] or [''])
     return (best_rank, status_rank, success, fail, first_time, created, str((src or {}).get('source_id') or ''))
-
-
 def _season_pack_retry_fingerprint(rows: List[Dict[str, Any]], context: Dict[str, Any] = None) -> str:
     rows = [dict(r or {}) for r in (rows or []) if r]
     if not rows:
@@ -642,8 +519,6 @@ def _season_pack_retry_fingerprint(rows: List[Dict[str, Any]], context: Dict[str
     if not tmdb_id or season is None or not sha1s:
         return ''
     return f"season_pack:{tmdb_id}:S{int(season):02d}:{'|'.join(sha1s)}"
-
-
 def _permanent_resource_key_for_rows(rows: List[Dict[str, Any]], context: Dict[str, Any] = None) -> str:
     """永久转存冗余组 key：同 SHA1 / 同季包完整指纹归为一组。"""
     rows = [dict(r or {}) for r in (rows or []) if r]
@@ -667,12 +542,8 @@ def _permanent_resource_key_for_rows(rows: List[Dict[str, Any]], context: Dict[s
         str(first.get('episode_number') if first.get('episode_number') is not None else (context or {}).get('episode_number') or ''),
         sha1,
     ])
-
-
 def _permanent_resource_key(src: Dict[str, Any], context: Dict[str, Any] = None) -> str:
     return _permanent_resource_key_for_rows(_share_source_rows(src), context=context)
-
-
 def _build_permanent_import_plan(sources: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
     """把中心源整理为“资源版本 -> 多个备份分享码”的重试计划。"""
     package_map: Dict[str, Dict[str, Any]] = {}
@@ -714,40 +585,6 @@ def _build_permanent_import_plan(sources: List[Dict[str, Any]], context: Dict[st
         alts = sorted(group['alternatives'], key=_source_retry_sort_key)
         plan.append({'resource_key': resource_key, 'alternatives': alts})
     return plan
-
-
-def _source_season_number(src: Dict[str, Any], context: Dict[str, Any] = None):
-    context = context or {}
-    for value in (
-        (src or {}).get('season_number'),
-        context.get('season_number'),
-    ):
-        season = _safe_int(value, None)
-        if season is not None:
-            return season
-    for row in _share_source_rows(src):
-        season = _safe_int((row or {}).get('season_number'), None)
-        if season is not None:
-            return season
-    return None
-
-def _extract_created_cid(resp: Dict[str, Any]) -> str:
-    if not isinstance(resp, dict):
-        return ''
-    data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
-    return str(
-        resp.get('cid')
-        or resp.get('file_id')
-        or resp.get('id')
-        or data.get('cid')
-        or data.get('file_id')
-        or data.get('id')
-        or ''
-    ).strip()
-
-
-
-# 被动备份分享创建链路已移除：共享池消费只负责转存与上报；主动备份由 webhook / watchlist 触发。
 def _cache_center_raw_as_local_mediainfo(src: Dict[str, Any], raw: Dict[str, Any]) -> bool:
     """中心 RAW -> 本地 p115_mediainfo_cache.mediainfo_json，供 WashingService 读取。"""
     sha1 = _norm_sha1(src.get('sha1'))
@@ -772,8 +609,6 @@ def _cache_center_raw_as_local_mediainfo(src: Dict[str, Any], raw: Dict[str, Any
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 中心 RAW 转本地 MediaInfo 失败: {src.get('file_name')} -> {e}")
         return False
-
-
 def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: str,
                        media_type: str, original_lang: str = '', has_external_subtitle: bool = False):
     """读取 WashingService 的真实规则优先级。level 越小优先级越高。"""
@@ -800,8 +635,6 @@ def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: st
         return 999, '未配置优先级规则'
 
     return WashingService.get_level(norm_new, priorities)
-
-
 def _raw_quality_score(src: Dict[str, Any], raw: Dict[str, Any]) -> int:
     """同一洗版优先级下的兜底排序。主裁判仍是 WashingService。"""
     text = f"{src.get('file_name') or ''} {json.dumps(raw or {}, ensure_ascii=False)[:4000]}".upper()
@@ -834,8 +667,6 @@ def _raw_quality_score(src: Dict[str, Any], raw: Dict[str, Any]) -> int:
     size_gb = (_safe_int(src.get('size'), 0) or 0) / 1024 / 1024 / 1024
     score += min(int(size_gb), 30)
     return score
-
-
 def _select_sources_by_washing_before_import(
     client: SharedCenterClient,
     p115,
@@ -1083,7 +914,6 @@ def _select_sources_by_washing_before_import(
     )
 
     return selected_rows, errors
-
 def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]], context: Dict[str, Any]) -> Dict[str, Any]:
     p115 = P115Service.get_client()
     if not p115:
@@ -1270,8 +1100,6 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         'action_type': '共享永久转存',
         'errors': errors,
     }
-
-
 def try_consume_shared_resource(
     item: Dict[str, Any],
     title: str,
@@ -1283,6 +1111,7 @@ def try_consume_shared_resource(
     exclude_share_codes: List[str] | None = None,
     force_mode: str | None = None,
 ) -> Dict[str, Any]:
+    '''尝试查询并消费中心共享资源。返回结果包含是否启用共享池、是否成功消费、是否命中缺口、以及其他相关信息。'''
     if not shared_center_enabled():
         return {'enabled': False, 'success': False, 'reported_gap': False}
 
@@ -1405,10 +1234,6 @@ def try_consume_shared_resource(
     result['matched_share_codes'] = matched_share_codes
     result['covered_episode_keys'] = covered_episode_keys
     return result
-
-
-
-
 def consume_center_sources(source_ids: List[str], mode: str = 'permanent', context: Dict[str, Any] = None) -> Dict[str, Any]:
     """按中心 source_id 手动消费共享资源。
 
