@@ -1852,56 +1852,6 @@ class P115CacheManager:
             return []
 
     @staticmethod
-    def resolve_actual_file_info(client, fid, fallback_parent_id=None, fallback_name=None, fallback_sha1=None, fallback_pick_code=None, fallback_size=0):
-        """通过 115 实时详情解析文件真实信息，避免把 MP target_diritem 当成文件父目录。"""
-        result = {
-            'parent_id': str(fallback_parent_id) if fallback_parent_id else None,
-            'name': fallback_name,
-            'sha1': str(fallback_sha1).upper() if fallback_sha1 else None,
-            'pick_code': fallback_pick_code,
-            'size': _parse_115_size(fallback_size),
-        }
-        if not client or not fid:
-            return result
-
-        try:
-            info_res = client.fs_get_info(fid)
-            if not isinstance(info_res, dict):
-                return result
-            data = info_res.get('data') or {}
-            if isinstance(data, list):
-                data = data[0] if data else {}
-            if not isinstance(data, dict):
-                return result
-
-            parent_id = data.get('parent_id') or data.get('pid')
-            # 对文件详情，归一化后的 cid 也可能代表父目录；仅作兜底使用。
-            if not parent_id:
-                parent_id = data.get('cid')
-            if parent_id:
-                result['parent_id'] = str(parent_id)
-
-            name = data.get('fn') or data.get('n') or data.get('file_name') or data.get('name')
-            if name:
-                result['name'] = name
-
-            sha1 = data.get('sha1') or data.get('sha') or data.get('file_sha1')
-            if sha1:
-                result['sha1'] = str(sha1).upper()
-
-            pick_code = data.get('pc') or data.get('pick_code') or data.get('pickcode')
-            if pick_code:
-                result['pick_code'] = pick_code
-
-            size = _parse_115_size(data.get('fs') or data.get('size') or data.get('file_size') or data.get('s'))
-            if size > 0:
-                result['size'] = size
-        except Exception as e:
-            logger.debug(f"  ➜ [115缓存] 查询文件实时详情失败 fid={fid}: {e}")
-
-        return result
-
-    @staticmethod
     def delete_cid(cid):
         """从缓存中物理删除该目录及其子目录的记录"""
         if not cid: return
@@ -5415,7 +5365,6 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             ext = original_name.rsplit(".", 1)[-1].lower()
             fid = file_item.get("fid") or file_item.get("file_id")
             parent_id = file_item.get("pid") or file_item.get("parent_id")
-            mp_target_dir_id = file_item.get("mp_target_dir_id")
             pick_code = file_item.get("pc") or file_item.get("pick_code")
             sha1 = file_item.get("sha1") or file_item.get("sha")
             full_115_path = file_item.get("115_path")
@@ -5454,42 +5403,17 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             local_dir = os.path.join(local_root, parent_rel_path) if parent_rel_path else local_root
             os.makedirs(local_dir, exist_ok=True)
 
-            # MP 的 target_diritem 只代表任务目标目录，不保证是文件实际父目录。
-            # 写缓存前以 115 实时详情为准，避免剧集文件已在 Season 目录但 parent_id 写成剧目录。
-            actual_info = {}
-            actual_parent_id = parent_id
-            actual_pick_code = pick_code
-            actual_size = 0
-            if fid:
-                actual_info = P115CacheManager.resolve_actual_file_info(
-                    self.client,
-                    fid,
-                    fallback_parent_id=parent_id,
-                    fallback_name=original_name,
-                    fallback_sha1=sha1,
-                    fallback_pick_code=pick_code,
-                    fallback_size=file_item.get('fs') or file_item.get('size')
-                )
-                actual_parent_id = actual_info.get('parent_id') or parent_id
-                actual_pick_code = actual_info.get('pick_code') or pick_code
-                actual_size = actual_info.get('size') or 0
-                if actual_info.get('sha1'):
-                    sha1 = actual_info['sha1']
-                    file_item['sha1'] = sha1
-                if actual_pick_code and actual_pick_code != pick_code:
-                    pick_code = actual_pick_code
-                    file_item['pc'] = actual_pick_code
-                    file_item['pick_code'] = actual_pick_code
-                if parent_id and actual_parent_id and str(parent_id) != str(actual_parent_id):
-                    logger.warning(
-                        f"  ➜ [MP直出] MP传入父目录与 115 实际父目录不一致，已改用实时父目录: "
-                        f"fid={fid}, mp_parent={parent_id}, actual_parent={actual_parent_id}, path={full_115_path}"
-                    )
-                if mp_target_dir_id and actual_parent_id and str(mp_target_dir_id) != str(actual_parent_id):
-                    logger.warning(
-                        f"  ➜ [MP直出] MP target_diritem 不是文件实际父目录，已改用 115 实时父目录: "
-                        f"fid={fid}, mp_target_dir={mp_target_dir_id}, actual_parent={actual_parent_id}, path={full_115_path}"
-                    )
+            # 补齐 SHA1 (仅视频需要，用于缓存 mediainfo)
+            if is_video and not sha1 and fid:
+                try:
+                    info_res = self.client.fs_get_info(fid)
+                    if info_res.get('state') and info_res.get('data'):
+                        fetched_sha1 = info_res['data'].get('sha1')
+                        if fetched_sha1:
+                            sha1 = str(fetched_sha1).upper()
+                            file_item['sha1'] = sha1
+                except Exception:
+                    pass
 
             # 1. 处理视频 (STRM + Mediainfo)
             if is_video and pick_code:
@@ -5563,21 +5487,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
             # 3. 写入数据库缓存 (保持 Emby 扫库和后续删除的闭环)
             try:
-                file_size = actual_size or _parse_115_size(file_item.get('fs') or file_item.get('size'))
+                file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
             except Exception:
                 file_size = 0
 
             file_local_path = os.path.join(parent_rel_path, original_name).replace("\\", "/") if parent_rel_path else original_name
 
             if fid and pick_code:
-                cache_parent_id = actual_parent_id or parent_id
-                if not cache_parent_id:
-                    logger.warning(f"  ➜ [MP直出] 无法确定文件真实父目录，跳过 115 文件缓存写入: fid={fid}, name={original_name}")
-                    continue
-
                 P115CacheManager.save_file_cache(
                     fid=fid,
-                    parent_id=cache_parent_id,
+                    parent_id=parent_id,
                     name=original_name,
                     sha1=sha1,
                     pick_code=pick_code,
@@ -5592,7 +5511,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     status="success",
                     tmdb_id=self.tmdb_id,
                     media_type=self.media_type,
-                    target_cid=cache_parent_id,
+                    target_cid=parent_id,
                     category_name="MP直出",
                     renamed_name=original_name,
                     season_number=file_item.get('_forced_season')

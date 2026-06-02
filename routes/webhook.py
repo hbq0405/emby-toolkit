@@ -102,11 +102,8 @@ def _flush_mp_batch(key):
                 'file_name': f.get('name'),
                 'fc': '1',
                 'type': '1',
-                # MP target_diritem 可能只是剧目录/目标根目录，不保证是文件实际父目录。
-                # 实际父目录由 p115_service 在写缓存前通过 fs_get_info(fid) 校准。
                 'pid': f.get('parent_id'),
                 'parent_id': f.get('parent_id'),
-                'mp_target_dir_id': f.get('mp_target_dir_id'),
                 'pc': f.get('pickcode'),
                 'pick_code': f.get('pickcode'),
                 '115_path': f.get('115_path'), # ★ 核心新增：将 115 物理路径传递给底层
@@ -167,11 +164,8 @@ def _process_mp_passthrough_immediate(file_info):
             'file_name': file_name,
             'fc': '1',
             'type': '1',
-            # MP target_diritem 可能只是剧目录/目标根目录，不保证是文件实际父目录。
-            # 实际父目录由 p115_service 在写缓存前通过 fs_get_info(fid) 校准。
             'pid': file_info.get('parent_id'),
             'parent_id': file_info.get('parent_id'),
-            'mp_target_dir_id': file_info.get('mp_target_dir_id'),
             'pc': file_info.get('pickcode'),
             'pick_code': file_info.get('pickcode'),
             '115_path': file_info.get('115_path'),
@@ -1145,14 +1139,7 @@ def emby_webhook():
             file_name = target_item.get("name")
             file_type = target_item.get("type") 
             pickcode = target_item.get("pickcode")
-            # target_diritem.fileid 是 MP 的目标目录/媒体主目录；剧集时通常是剧目录，
-            # 并不等价于 target_item 的实际父目录(Season 目录)。
             dir_cid = target_dir.get("fileid")
-            item_parent_cid = (
-                target_item.get("parent_fileid")
-                or target_item.get("parent_id")
-                or target_item.get("pid")
-            )
             
             tmdb_id = media_info.get("tmdb_id")
             media_type_cn = media_info.get("type") 
@@ -1171,10 +1158,7 @@ def emby_webhook():
                 file_info = {
                     'file_id': file_id,
                     'name': file_name,
-                    # 不再把 target_diritem.fileid 当作文件父目录。
-                    # 该字段在剧集 webhook 中通常是剧目录；真实父目录交给 fs_get_info(fid) 校准。
-                    'parent_id': item_parent_cid,
-                    'mp_target_dir_id': dir_cid,
+                    'parent_id': dir_cid,
                     'pickcode': pickcode,
                     'tmdb_id': tmdb_id,
                     'media_type': media_type,
