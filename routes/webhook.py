@@ -47,6 +47,8 @@ WEBHOOK_BATCH_QUEUE = collections.deque()
 WEBHOOK_BATCH_LOCK = threading.Lock()
 WEBHOOK_BATCH_DEBOUNCE_TIME = 30
 WEBHOOK_BATCH_DEBOUNCER = None
+WEBHOOK_TASK_RETRY_DELAY = 8
+WEBHOOK_TASK_MAX_RETRIES = 3
 
 UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
@@ -62,6 +64,47 @@ SYNDROME_API_LOCK = Semaphore(1)
 # --- MP 单文件上传智能合并缓冲池 ---
 MP_BATCH_QUEUE = {}
 MP_BATCH_LOCK = threading.Lock()
+
+
+def _submit_webhook_media_task(
+    task_name,
+    *,
+    retry_count=0,
+    task_function=None,
+    processor_type='media',
+    **kwargs,
+):
+    task_function = task_function or _handle_full_processing_flow
+    submitted = task_manager.submit_task(
+        task_function,
+        task_name=task_name,
+        processor_type=processor_type,
+        **kwargs,
+    )
+    if submitted:
+        if retry_count > 0:
+            logger.info(f"  ➜ [Webhook重试] 任务 '{task_name}' 第 {retry_count} 次延迟重试后提交成功。")
+        return True
+
+    if retry_count >= WEBHOOK_TASK_MAX_RETRIES:
+        logger.warning(f"  ➜ [Webhook重试] 任务 '{task_name}' 多次重试后仍提交失败，放弃。")
+        return False
+
+    next_retry = retry_count + 1
+    logger.info(
+        f"  ➜ [Webhook重试] 任务 '{task_name}' 因媒体任务繁忙延迟 {WEBHOOK_TASK_RETRY_DELAY} 秒后重试 "
+        f"(第 {next_retry}/{WEBHOOK_TASK_MAX_RETRIES} 次)。"
+    )
+    spawn_later(
+        WEBHOOK_TASK_RETRY_DELAY,
+        _submit_webhook_media_task,
+        task_name,
+        retry_count=next_retry,
+        task_function=task_function,
+        processor_type=processor_type,
+        **kwargs,
+    )
+    return False
 
 def _flush_mp_batch(key):
     """缓冲结束，将收集到的同集视频和字幕打包送入核心处理"""
@@ -646,12 +689,10 @@ def _process_batch_webhook_events():
         
         logger.info(f"  ➜ 为 '{parent_name}' 分派任务: {task_name_prefix} (分集数: {len(episode_ids)})")
         
-        task_manager.submit_task(
-            _handle_full_processing_flow,
-            task_name=f"{task_name_prefix}: {parent_name}",
-            processor_type='media', # 确保传递 processor 实例
+        _submit_webhook_media_task(
+            f"{task_name_prefix}: {parent_name}",
             item_id=parent_id,
-            force_full_update=False, # Webhook 触发通常不需要强制深度刷新 TMDb
+            force_full_update=False,
             new_episode_ids=episode_ids if episode_ids else None,
             is_new_item=not is_already_processed
         )
@@ -711,10 +752,8 @@ def _dispatch_item(item_id, item_name, item_type):
         task_name_prefix = "Webhook追更" if is_already_processed else "Webhook入库"
         
         # 直接提交给任务管理器，不经过 WEBHOOK_BATCH_QUEUE
-        task_manager.submit_task(
-            _handle_full_processing_flow,
-            task_name=f"{task_name_prefix}: {item_name}",
-            processor_type='media',
+        _submit_webhook_media_task(
+            f"{task_name_prefix}: {item_name}",
             item_id=item_id,
             force_full_update=False,
             new_episode_ids=None,
