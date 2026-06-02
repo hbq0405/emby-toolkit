@@ -5403,44 +5403,17 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             local_dir = os.path.join(local_root, parent_rel_path) if parent_rel_path else local_root
             os.makedirs(local_dir, exist_ok=True)
 
-            # ==========================================================
-            # ★ 核心修复：补齐 SHA1 并修正剧集的真实父目录(季目录) ID
-            # ==========================================================
-            if fid and (not sha1 or self.media_type == 'tv'):
+            # 补齐 SHA1 (仅视频需要，用于缓存 mediainfo)
+            if is_video and not sha1 and fid:
                 try:
                     info_res = self.client.fs_get_info(fid)
                     if info_res.get('state') and info_res.get('data'):
-                        item_data = info_res['data']
-                        
-                        # 1. 补齐 SHA1 (仅视频需要)
-                        if is_video and not sha1:
-                            fetched_sha1 = item_data.get('sha1')
-                            if fetched_sha1:
-                                sha1 = str(fetched_sha1).upper()
-                                file_item['sha1'] = sha1
-                                
-                        # 2. 修正季目录 ID (仅剧集需要)
-                        if self.media_type == 'tv':
-                            fetched_pid = None
-                            paths = item_data.get('paths') or item_data.get('path')
-                            if isinstance(paths, list) and len(paths) > 0:
-                                last_node = paths[-1]
-                                last_id = str(last_node.get('file_id') or last_node.get('cid') or last_node.get('id'))
-                                if last_id == str(fid) and len(paths) >= 2:
-                                    # 如果最后一个节点是文件本身，取倒数第二个节点(季目录)
-                                    parent_node = paths[-2]
-                                    fetched_pid = parent_node.get('file_id') or parent_node.get('cid') or parent_node.get('id')
-                                elif last_id != str(fid):
-                                    # 如果最后一个节点不是文件，那它就是父目录
-                                    fetched_pid = last_id
-                            if not fetched_pid:
-                                fetched_pid = item_data.get('cid')
-                            
-                            if fetched_pid and str(fetched_pid) != '0':
-                                parent_id = fetched_pid
-                                logger.info(f"  ➜ [MP直出] 成功修正真实季目录 ID: {parent_id}")
-                except Exception as e:
-                    logger.warning(f"  ➜ [MP直出] 获取文件详情失败: {e}")
+                        fetched_sha1 = info_res['data'].get('sha1')
+                        if fetched_sha1:
+                            sha1 = str(fetched_sha1).upper()
+                            file_item['sha1'] = sha1
+                except Exception:
+                    pass
 
             # 1. 处理视频 (STRM + Mediainfo)
             if is_video and pick_code:
