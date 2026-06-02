@@ -1794,9 +1794,6 @@ def _get_series_identity(series_tmdb_id: str) -> Dict[str, Any]:
         'raw_row': row,
     }
 
-def _get_series_title(series_tmdb_id: str):
-    return (_get_series_identity(series_tmdb_id) or {}).get('title') or ''
-
 def _get_media_row_loose(tmdb_id: str, item_type: str = ''):
     return shared_share_db.get_media_metadata_row_loose(tmdb_id, item_type)
 
@@ -3496,14 +3493,6 @@ def api_cancel_share(record_id):
 
     return jsonify({"success": True, "message": final_msg, "data": row, "debug": attempts, "center": center_result})
 
-def _ensure_shared_install_id() -> str:
-    cfg = settings_db.get_shared_resource_config()
-    install_id = str(cfg.get('p115_shared_install_id') or '').strip()
-    if not install_id:
-        install_id = f"etk-{uuid.uuid4().hex}"
-        settings_db.save_shared_resource_config({'p115_shared_install_id': install_id})
-    return install_id
-
 @shared_resource_bp.route('/center/device/register', methods=['POST'])
 @admin_required
 def api_register_center_device():
@@ -4549,27 +4538,6 @@ def _annotate_center_rows_local_library(rows: List[Dict[str, Any]]) -> List[Dict
             'files': files[:200],
         }
     return rows
-
-def _center_row_not_fully_in_library(row: Dict[str, Any]) -> bool:
-    local = (row or {}).get('local_library') or {}
-    return not bool(local.get('is_fully_in_library'))
-
-def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    raw_map = {str(r.get('source_id') or ''): r for r in (raw_rows or []) if r.get('source_id')}
-    merged = []
-    for row in base_rows or []:
-        sid = str(row.get('source_id') or '')
-        if sid and sid in raw_map:
-            new_row = dict(row)
-            raw_row = raw_map[sid]
-            # 只用 raw 查询补充 raw_ffprobe_json 和 raw 相关字段，不覆盖原始排序/聚合字段。
-            for key in ('raw_ffprobe_json', 'summary_json', 'raw_error', 'object_key', 'raw_bytes', 'compressed_bytes', 'raw_schema_version', 'raw_created_at'):
-                if key in raw_row:
-                    new_row[key] = raw_row.get(key)
-            merged.append(new_row)
-        else:
-            merged.append(row)
-    return merged
 
 def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = CENTER_DISPLAY_SOURCE_STATUSES, order_by: str = 'latest', limit: int = 30, offset: int = 0, local_filter: str = '') -> Dict[str, Any]:
     """按展示口径加载中心资源库。
