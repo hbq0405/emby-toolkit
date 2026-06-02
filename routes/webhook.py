@@ -64,6 +64,56 @@ MP_BATCH_QUEUE = {}
 MP_BATCH_LOCK = threading.Lock()
 
 
+def _mp_rel_dir_from_115_path(path):
+    """复用 MP 直出的相对路径规则：从 115_path 得到文件所在相对目录。"""
+    parts = [p for p in (path or '').replace('\\', '/').split('/') if p]
+    if not parts:
+        return ''
+
+    media_root_name = str(get_config().get(constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME) or '').strip('/')
+    start_idx = parts.index(media_root_name) + 1 if media_root_name and media_root_name in parts else (1 if len(parts) > 1 else 0)
+    return '/'.join(parts[start_idx:-1])
+
+
+def _cache_mp_tv_dirs(client, series_cid, season_cid, season_name, file_info):
+    """MP 直出跳过整理流程，这里只补齐剧目录/季目录两级 DB 缓存。"""
+    try:
+        from handler.p115_service import P115CacheManager
+
+        path = (file_info.get('115_path') or '').replace('\\', '/').rstrip('/')
+        rel_dir = _mp_rel_dir_from_115_path(path)
+        series_rel_dir = os.path.dirname(rel_dir).replace('\\', '/') if rel_dir else ''
+
+        if series_cid and season_cid and season_name:
+            P115CacheManager.save_cid(season_cid, series_cid, season_name)
+            if rel_dir:
+                P115CacheManager.update_local_path(season_cid, rel_dir)
+
+        if not series_cid:
+            return
+
+        info = client.fs_files({'cid': series_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+        path_nodes = info.get('path') if isinstance(info, dict) else None
+        if not path_nodes:
+            return
+
+        for idx, node in enumerate(path_nodes):
+            node_cid = node.get('cid') or node.get('file_id') or node.get('fid') or node.get('id')
+            if str(node_cid) != str(series_cid):
+                continue
+
+            parent_node = path_nodes[idx - 1] if idx > 0 else None
+            parent_cid = parent_node and (parent_node.get('cid') or parent_node.get('file_id') or parent_node.get('fid') or parent_node.get('id'))
+            series_name = node.get('file_name') or node.get('fn') or node.get('name') or node.get('n') or os.path.basename(series_rel_dir)
+            if parent_cid and series_name:
+                P115CacheManager.save_cid(series_cid, parent_cid, series_name)
+                if series_rel_dir:
+                    P115CacheManager.update_local_path(series_cid, series_rel_dir)
+            break
+    except Exception as e:
+        logger.debug(f"  ➜ [MP直出目录缓存] 补齐剧/季目录缓存失败: {file_info.get('name')} -> {e}")
+
+
 def _fix_mp_tv_parent_id(client, file_info):
     """MP 直出剧集父目录轻量修正：MP 可能给剧目录，按 115_path 上级目录反查季目录 CID。"""
     try:
@@ -85,12 +135,13 @@ def _fix_mp_tv_parent_id(client, file_info):
         if season_cid and str(season_cid) != str(parent_id):
             old_parent_id = parent_id
             file_info['parent_id'] = str(season_cid)
-            logger.debug(
+            _cache_mp_tv_dirs(client, old_parent_id, str(season_cid), season_dir_name, file_info)
+            logger.info(
                 f"  ➜ [MP直出] 季目录已修正: "
                 f"{old_parent_id} -> {season_cid} ({season_dir_name}) | {file_info.get('name')}"
             )
     except Exception as e:
-        logger.warning(f"  ➜ [MP直出父目录修正] 查询季目录CID失败，沿用 MP 目录ID: {file_info.get('name')} -> {e}")
+        logger.warning(f"  ➜ [MP直出] 查询季目录CID失败，沿用 MP 目录ID: {file_info.get('name')} -> {e}")
 
 def _flush_mp_batch(key):
     """缓冲结束，将收集到的同集视频和字幕打包送入核心处理"""
