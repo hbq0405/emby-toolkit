@@ -1095,6 +1095,19 @@ def _process_tg_queue():
                                         pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + real_url, re.IGNORECASE)
                                         if pwd_match:
                                             receive_code = pwd_match.group(1)
+
+                                    if candidate_hints:
+                                        candidate_hints = dict(candidate_hints)
+                                        candidate_hints['target_link'] = real_url
+                                        candidate_hints['receive_code'] = receive_code or candidate_hints.get('receive_code')
+                                        remember_candidate_hint(candidate_hints)
+
+                                    if candidate:
+                                        candidate['target_link'] = real_url
+                                        candidate['receive_code'] = receive_code or candidate.get('receive_code')
+                                        task['candidate'] = candidate
+                                    task['target_link'] = real_url
+                                    task['receive_code'] = receive_code or task.get('receive_code', '')
                                             
                                     logger.debug(f"  ➜ [频道监听] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
                                 else:

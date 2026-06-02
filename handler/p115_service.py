@@ -5662,6 +5662,7 @@ def _clean_rule_title(text):
     value = str(text).replace('\\', '/')
     value = os.path.basename(value.strip())
     value = os.path.splitext(value)[0]
+    value = re.sub(r'[？?！!：:；;，,、]+', ' ', value)
 
     for pattern in _NOISE_TOKEN_PATTERNS:
         value = re.sub(pattern, ' ', value)
@@ -5671,6 +5672,10 @@ def _clean_rule_title(text):
     value = re.sub(r'(?i)\b(?:tmdb|tmdbid)[=\-_ ]*\d+\b', ' ', value)
     value = re.sub(r'(?<!\d)(?:19|20)\d{2}(?!\d)', ' ', value)
     value = re.sub(r'(?i)\b(?:specials?|ova|oad|sp|extra(?:s)?|collection|complete)\b', ' ', value)
+    value = re.sub(r'(?i)\b(?:h[ ._-]?26[45]|x26[45])\b', ' ', value)
+    value = re.sub(r'(?i)\b(?:flac|aac|ddp|dd|dts|truehd|atmos)[ ._-]*\d(?:\.\d)?\b', ' ', value)
+    value = re.sub(r'(?i)(?:[-_. ]+)?[A-Za-z0-9][A-Za-z0-9._-]{1,20}@[A-Za-z0-9][A-Za-z0-9._-]{1,20}$', ' ', value)
+    value = re.sub(r'(?<!\w)\d\.\d(?!\w)', ' ', value)
     value = re.sub(r'[\[\]\(\)\{\}]', ' ', value)
     value = re.sub(r'[._]+', ' ', value)
     value = re.sub(r'\s+', ' ', value).strip(' -_./')

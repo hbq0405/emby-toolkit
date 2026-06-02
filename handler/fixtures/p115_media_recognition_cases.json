@@ -96,6 +96,18 @@
     }
   },
   {
+    "name": "anime_tv_release_noise",
+    "raw": "When Will Ayumu Make His Move？.2022.S01E12.1080p.BluRay.Remux.H.264.FLAC 2.0-AnimeF@ADE.mkv",
+    "main_dir_name": "When Will Ayumu Make His Move？.2022.S01E12.1080p.BluRay.Remux.H.264.FLAC 2.0-AnimeF@ADE.mkv",
+    "expect": {
+      "title": "When Will Ayumu Make His Move",
+      "year": 2022,
+      "media_type": "tv",
+      "season_number": 1,
+      "episode_number": 12
+    }
+  },
+  {
     "name": "fallback_miss",
     "raw": "totally_unstructured_file.bin",
     "main_dir_name": "misc",
