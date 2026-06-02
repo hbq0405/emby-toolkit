@@ -63,6 +63,115 @@ SYNDROME_API_LOCK = Semaphore(1)
 MP_BATCH_QUEUE = {}
 MP_BATCH_LOCK = threading.Lock()
 
+
+def _iter_115_info_dicts(obj):
+    """遍历 115 详情响应里可能承载文件信息的 dict，兼容 OpenAPI/Cookie 原始或已归一化结构。"""
+    if isinstance(obj, dict):
+        yield obj
+        for key in ("data", "file_info", "info", "file", "item"):
+            value = obj.get(key)
+            if isinstance(value, dict):
+                yield from _iter_115_info_dicts(value)
+            elif isinstance(value, list):
+                for sub in value:
+                    if isinstance(sub, dict):
+                        yield from _iter_115_info_dicts(sub)
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, dict):
+                yield from _iter_115_info_dicts(item)
+
+
+def _first_non_empty_115_id(*values):
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _extract_parent_id_from_115_info(resp):
+    """从 115 文件详情里提取父目录 ID。
+
+    OpenAPI 常见字段是 parent_id/pid；Cookie/webapi 对文件常见字段是 cid。
+    p115_service 的统一客户端通常已经归一化为 data.parent_id，
+    这里仍做原始字段兜底，避免接口差异再次把父目录写偏。
+    """
+    for info in _iter_115_info_dicts(resp):
+        parent_id = _first_non_empty_115_id(
+            info.get("parent_id"),
+            info.get("parentId"),
+            info.get("pid"),
+            info.get("cid"),  # Cookie/webapi 文件详情里 cid 通常就是父目录 ID
+            info.get("parent_file_id"),
+            info.get("parent_fileid"),
+        )
+        if parent_id:
+            return parent_id
+    return None
+
+
+def _resolve_mp_tv_parent_id(client, file_info, *, log_prefix="MP直出"):
+    """MP 上传直出修正：剧集文件以 115 实时详情里的父目录为准。
+
+    MoviePilot 的 transfer webhook 在剧集场景下可能只给到剧目录/爷爷目录，
+    而 p115_filesystem_cache 需要写入文件实际所在的季目录/爸爸目录。
+    电影保持原 webhook 目录，不额外消耗 115 API。
+    """
+    if not isinstance(file_info, dict):
+        return None
+
+    media_type = str(file_info.get('media_type') or '').strip().lower()
+    if media_type != 'tv':
+        return file_info.get('parent_id')
+
+    file_id = file_info.get('file_id') or file_info.get('fid')
+    if not file_id:
+        logger.warning(f"  ➜ [{log_prefix}] 剧集文件缺少 file_id，无法实时修正父目录ID: {file_info.get('name')}")
+        return file_info.get('parent_id')
+
+    webhook_parent_id = _first_non_empty_115_id(file_info.get('parent_id'), file_info.get('pid'))
+
+    try:
+        info_res = client.fs_get_info(file_id)
+        real_parent_id = _extract_parent_id_from_115_info(info_res)
+
+        # 顺手把详情里可能有的 sha1/size 回填，避免后续重复查。
+        for info in _iter_115_info_dicts(info_res):
+            if not file_info.get('sha1'):
+                sha1 = info.get('sha1') or info.get('sha') or info.get('file_sha1')
+                if sha1:
+                    file_info['sha1'] = str(sha1).upper()
+            if not file_info.get('size'):
+                size = info.get('size') or info.get('fs') or info.get('file_size') or info.get('s')
+                if size not in (None, ''):
+                    file_info['size'] = size
+
+        if real_parent_id:
+            file_info['parent_id'] = real_parent_id
+            file_info['pid'] = real_parent_id
+            if webhook_parent_id and str(real_parent_id) != str(webhook_parent_id):
+                logger.info(
+                    f"  ➜ [{log_prefix}] 剧集父目录ID已实时修正: {webhook_parent_id} -> {real_parent_id} ({file_info.get('name')})"
+                )
+            else:
+                logger.debug(f"  ➜ [{log_prefix}] 剧集父目录ID实时校验通过: {real_parent_id} ({file_info.get('name')})")
+            return real_parent_id
+
+        logger.warning(
+            f"  ➜ [{log_prefix}] 实时查询 115 文件详情成功但未识别父目录ID，沿用 webhook 目录ID: "
+            f"{webhook_parent_id} ({file_info.get('name')})"
+        )
+    except Exception as e:
+        logger.warning(
+            f"  ➜ [{log_prefix}] 实时查询 115 父目录ID失败，沿用 webhook 目录ID: "
+            f"{webhook_parent_id} ({file_info.get('name')}) -> {e}"
+        )
+
+    return webhook_parent_id
+
 def _flush_mp_batch(key):
     """缓冲结束，将收集到的同集视频和字幕打包送入核心处理"""
     with MP_BATCH_LOCK:
@@ -93,8 +202,14 @@ def _flush_mp_batch(key):
         if season_num is not None and str(season_num).isdigit():
             organizer.forced_season = int(season_num)
 
+        config = get_config()
+        mp_classify_enabled = bool(config.get(constants.CONFIG_OPTION_115_MP_CLASSIFY, False))
+
         file_nodes = []
         for f in files:
+            if mp_classify_enabled:
+                _resolve_mp_tv_parent_id(client, f, log_prefix="MP直出")
+
             file_nodes.append({
                 'fid': f.get('file_id'),
                 'file_id': f.get('file_id'),
@@ -112,9 +227,6 @@ def _flush_mp_batch(key):
                 '_skip_gc': True,   
                 '_from_mp': True    
             })
-
-        config = get_config()
-        mp_classify_enabled = bool(config.get(constants.CONFIG_OPTION_115_MP_CLASSIFY, False))
 
         if mp_classify_enabled:
             logger.info("  ➜ [MP直出] MP分类已开启：跳过整理/归类/重命名，直接生成 STRM 和 -mediainfo.json。")
@@ -156,6 +268,8 @@ def _process_mp_passthrough_immediate(file_info):
         season_num = file_info.get('season_num')
         if season_num is not None and str(season_num).isdigit():
             organizer.forced_season = int(season_num)
+
+        _resolve_mp_tv_parent_id(client, file_info, log_prefix="MP直出")
 
         file_nodes = [{
             'fid': file_info.get('file_id'),
