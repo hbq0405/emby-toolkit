@@ -46,7 +46,6 @@ def _center_request_kwargs(timeout: int) -> Dict[str, Any]:
             kwargs['proxies'] = proxies
     return kwargs
 
-
 def _client_app_version() -> str:
     """当前 ETK 客户端版本号。
 
@@ -55,14 +54,12 @@ def _client_app_version() -> str:
     """
     return str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0').strip() or '0.0.0'
 
-
 def _center_headers_for_cfg(cfg: Dict[str, Any]) -> Dict[str, str]:
     return {
         'X-Device-Token': str((cfg or {}).get('device_token') or '').strip(),
         'Content-Type': 'application/json',
         'X-Client-Version': _client_app_version(),
     }
-
 
 def _request_json() -> Dict[str, Any]:
     """安全读取 JSON 请求体。
@@ -77,7 +74,6 @@ def _request_json() -> Dict[str, Any]:
     except Exception:
         return {}
 
-
 def _get_shared_config() -> Dict[str, Any]:
     cfg = settings_db.get_shared_resource_config()
     return {
@@ -88,52 +84,11 @@ def _get_shared_config() -> Dict[str, Any]:
         "install_id": cfg.get('p115_shared_install_id') or "",
     }
 
-
 def _shared_resource_config_payload() -> Dict[str, Any]:
     payload = settings_db.get_shared_resource_config()
     if isinstance(payload, dict):
         payload.setdefault('p115_shared_auto_share_requests_enabled', False)
     return payload
-
-
-def _sanitize_shared_resource_config(data: Dict[str, Any]) -> Dict[str, Any]:
-    data = dict(data or {})
-    data['p115_shared_resource_mode'] = 'permanent'
-    return settings_db.normalize_shared_resource_config(data, base=settings_db.get_shared_resource_config())
-
-
-def _jsonb_non_empty_sql_expr(column: str) -> str:
-    """生成 JSONB 标识字段非空判断。
-
-    media_metadata.file_sha1_json / file_pickcode_json 正常是数组，
-    这里顺手兼容历史上可能写入的对象/字符串结构。
-    """
-    return f"""
-    (
-        CASE jsonb_typeof({column})
-            WHEN 'array' THEN jsonb_array_length({column}) > 0
-            WHEN 'object' THEN {column} <> '{{}}'::jsonb
-            WHEN 'string' THEN btrim({column}::text, '"') <> ''
-            ELSE FALSE
-        END
-    )
-    """
-
-
-# 虚拟入库模式已移除，不再需要按物理分集强制切换入库模式。
-
-
-def _remove_file_quietly(path: str) -> bool:
-    if not path:
-        return False
-    try:
-        if os.path.exists(path) and os.path.isfile(path):
-            os.remove(path)
-            return True
-    except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 删除本地文件失败: {path} -> {e}")
-    return False
-
 
 def _fetch_center_credit() -> Dict[str, Any]:
     cfg = _get_shared_config()
@@ -182,10 +137,8 @@ def _fetch_center_credit() -> Dict[str, Any]:
     synced_ledger = shared_credit_db.sync_center_credit_ledger(center_ledger_items, device_snapshot=me)
     return {"ok": True, "snapshot": saved, "synced_ledger": synced_ledger}
 
-
 def _looks_like_video_name(name: str) -> bool:
     return os.path.splitext(str(name or ''))[1].lower() in VIDEO_EXTENSIONS
-
 
 def _is_folder(node: Dict[str, Any]) -> bool:
     """
@@ -216,14 +169,11 @@ def _is_folder(node: Dict[str, Any]) -> bool:
         return True
     return False
 
-
 def _node_name(node: Dict[str, Any]) -> str:
     return str(node.get('fn') or node.get('n') or node.get('file_name') or node.get('name') or node.get('title') or '')
 
-
 def _node_id(node: Dict[str, Any]) -> str:
     return str(node.get('fid') or node.get('file_id') or node.get('id') or node.get('cid') or '')
-
 
 def _guess_episode_number(name: str):
     text = str(name or '')
@@ -236,7 +186,6 @@ def _guess_episode_number(name: str):
             except Exception:
                 return None
     return None
-
 
 def _safe_size_bytes(value, default=0) -> int:
     """把 115/中心返回的文件大小统一转成字节数。
@@ -293,7 +242,6 @@ def _safe_size_bytes(value, default=0) -> int:
         return default
     return int(number * multiplier)
 
-
 def _collect_files_from_cache(root_fid: str, root_name: str = '', max_depth: int = 6) -> List[Dict[str, Any]]:
     rows = shared_share_db.get_p115_files_from_cache_tree(root_fid, max_depth)
     files = []
@@ -312,7 +260,6 @@ def _collect_files_from_cache(root_fid: str, root_name: str = '', max_depth: int
             'raw_json': {'source': 'p115_filesystem_cache', 'root_fid': root_fid, 'row': row},
         })
     return files
-
 
 def _collect_files_from_media_payload(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """用 media_metadata 的 PC/SHA1 反查 p115_filesystem_cache，作为剧集/季分享兜底。"""
@@ -395,7 +342,6 @@ def _collect_files_from_media_payload(data: Dict[str, Any]) -> List[Dict[str, An
         })
     return files
 
-
 def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_depth: int = 3, current_path: str = '', assume_dir=None) -> List[Dict[str, Any]]:
     """递归收集分享目录下的视频文件。
     目录识别优先使用前端/搜索阶段传来的 root_is_dir；远程返回不完整时自动兜底本地缓存。
@@ -465,7 +411,6 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
 
     return files
 
-
 def _parse_share_status(snap_resp: Dict[str, Any]) -> Dict[str, str]:
     if not snap_resp or not snap_resp.get('state'):
         msg = str((snap_resp or {}).get('error') or (snap_resp or {}).get('error_msg') or (snap_resp or {}).get('message') or snap_resp)
@@ -481,14 +426,11 @@ def _parse_share_status(snap_resp: Dict[str, Any]) -> Dict[str, str]:
         return {'status': 'rejected', 'review_status': 'rejected', 'message': forbid or '分享包含违规/被屏蔽文件'}
     return {'status': 'pending_review', 'review_status': 'pending_review', 'message': f'分享状态 {share_state or "未知"}'}
 
-
 def _center_headers():
     cfg = _get_shared_config()
     if not cfg['device_token']:
         raise RuntimeError('未配置共享中心 device_token')
     return cfg, _center_headers_for_cfg(cfg)
-
-
 
 def _center_json_request(method: str, path: str, *, params: Dict[str, Any] = None, json_body: Dict[str, Any] = None, timeout: int = 25) -> Dict[str, Any]:
     cfg, headers = _center_headers()
@@ -507,7 +449,6 @@ def _center_json_request(method: str, path: str, *, params: Dict[str, Any] = Non
         raise RuntimeError(msg or f'中心接口 HTTP {resp.status_code}')
     return resp.json() if resp.text else {}
 
-
 def _tmdb_api_key_for_share_request() -> str:
     candidates = []
     for attr in (
@@ -523,7 +464,6 @@ def _tmdb_api_key_for_share_request() -> str:
         if val:
             return str(val).strip()
     return ''
-
 
 def _normalize_tmdb_search_item(item: Dict[str, Any]) -> Dict[str, Any]:
     item = item or {}
@@ -549,9 +489,6 @@ def _normalize_tmdb_search_item(item: Dict[str, Any]) -> Dict[str, Any]:
         'overview': item.get('overview') or '',
         'raw': item,
     }
-
-
-
 
 def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> Dict[str, Any]:
     """撤销共享中心登记的源，并触发中心贡献值重算。"""
@@ -601,9 +538,6 @@ def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> 
         logger.warning(f"  ➜ [共享资源] 撤销中心共享源失败: record={record_id}, err={e}", exc_info=True)
         return {'ok': False, 'message': str(e), 'payload': payload}
 
-
-
-
 def _center_status_after_cancel_result(center_result: Dict[str, Any]) -> str:
     """中心撤销接口可能把源保留为待补充；本地中心状态要如实显示。"""
     if not isinstance(center_result, dict):
@@ -611,7 +545,6 @@ def _center_status_after_cancel_result(center_result: Dict[str, Any]) -> str:
     if int(center_result.get('replenish_count') or 0) > 0 or str(center_result.get('status') or '').lower() == CENTER_SOURCE_STATUS_REPLENISH:
         return CENTER_SOURCE_STATUS_REPLENISH
     return 'cancelled'
-
 
 def _center_cancel_result_text(center_result: Dict[str, Any]) -> str:
     if not isinstance(center_result, dict):
@@ -644,7 +577,6 @@ def _safe_json_obj(value):
         except Exception:
             return None
     return None
-
 
 # ----------------------------------------------------------------------
 # 我的分享来源标记
@@ -729,7 +661,6 @@ def _decorate_my_share_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     item['is_backup_share'] = bool(is_backup)
     return item
 
-
 def _raw_ffprobe_has_media_payload(raw: Dict[str, Any]) -> bool:
     """判断 raw_ffprobe_json 是否包含可用于展示/整理的真实媒体信息。"""
     if not isinstance(raw, dict):
@@ -739,7 +670,6 @@ def _raw_ffprobe_has_media_payload(raw: Dict[str, Any]) -> bool:
     if isinstance(raw.get('MediaSourceInfo'), dict) or isinstance(raw.get('MediaStreams'), list):
         return True
     return False
-
 
 def _load_local_raw_ffprobe(sha1: str):
     """从本地 p115_mediainfo_cache 读取 raw_ffprobe_json，并在上传前补齐 _etk 身份。"""
@@ -774,7 +704,6 @@ def _load_local_raw_ffprobe(sha1: str):
         logger.warning(f"  ➜ [共享资源] 查询/补齐本地 raw_ffprobe_json 失败: sha1={sha1}, err={e}")
         return None
 
-
 def _infer_size_from_raw(raw: Dict[str, Any]) -> int:
     if not isinstance(raw, dict):
         return 0
@@ -786,7 +715,6 @@ def _infer_size_from_raw(raw: Dict[str, Any]) -> int:
     except Exception:
         pass
     return 0
-
 
 def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, Any], final_size: int = 0) -> Dict[str, Any]:
     """上传 RAW 时同步生成中心列表页轻量 MediaInfo 摘要。
@@ -835,7 +763,6 @@ def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, A
     except Exception:
         return {}
 
-
 def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
     """上传单个分享文件的 raw_ffprobe_json 到中心服务器。返回 ok/missing/error。"""
     sha1 = str(item.get('sha1') or '').strip().upper()
@@ -872,11 +799,9 @@ def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any]
     except Exception as e:
         return {'ok': False, 'status': 'error', 'message': str(e)}
 
-
 def _is_season_pack_record(record: Dict[str, Any]) -> bool:
     """只有显式季包/剧集包才走批量链路，单集和电影保持原单条接口。"""
     return str((record or {}).get('share_type') or '').strip().lower() in ('season_pack', 'series_pack', 'season', 'tv_pack')
-
 
 def _upload_share_raw_ffprobe_to_center_single_loop(items: List[Dict[str, Any]], cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
     uploaded = 0
@@ -909,7 +834,6 @@ def _upload_share_raw_ffprobe_to_center_single_loop(items: List[Dict[str, Any]],
         'batch_used': False,
         'all_ok': (uploaded + skipped == len(items or []) and missing == 0 and not errors),
     }
-
 
 def _upload_share_raw_ffprobe_to_center_batch(items: List[Dict[str, Any]], cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
     uploaded = 0
@@ -1011,15 +935,12 @@ def _upload_share_raw_ffprobe_to_center_batch(items: List[Dict[str, Any]], cfg: 
         'all_ok': (uploaded + skipped == len(items or []) and missing == 0 and not errors),
     }
 
-
 def _upload_share_raw_ffprobe_to_center(record_id: int, cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
     record = shared_share_db.get_share_record(record_id) or {}
     items = shared_share_db.list_share_items(record_id) or []
     if _is_season_pack_record(record):
         return _upload_share_raw_ffprobe_to_center_batch(items, cfg, headers, force=force)
     return _upload_share_raw_ffprobe_to_center_single_loop(items, cfg, headers, force=force)
-
-
 
 def _files_missing_raw_ffprobe(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """返回缺失 raw_ffprobe_json 的分享文件列表。
@@ -1043,7 +964,6 @@ def _files_missing_raw_ffprobe(files: List[Dict[str, Any]]) -> List[Dict[str, An
             missing.append({'sha1': sha1, 'file_name': name, 'reason': '本地 p115_mediainfo_cache 缺少 raw_ffprobe_json'})
     return missing
 
-
 def _raw_missing_message(missing: List[Dict[str, Any]], limit: int = 6) -> str:
     shown = []
     for item in (missing or [])[:max(1, int(limit or 6))]:
@@ -1054,8 +974,6 @@ def _raw_missing_message(missing: List[Dict[str, Any]], limit: int = 6) -> str:
     if len(missing or []) > len(shown):
         suffix = f" 等 {len(missing)} 个文件"
     return "缺少 raw_ffprobe_json，禁止分享/登记中心：" + "；".join(shown) + suffix
-
-
 
 def _guess_season_episode_numbers(text: str):
     """从文件名/标题里尽量解析 SxxEyy，用于老数据和外来分享兜底。"""
@@ -1073,8 +991,6 @@ def _guess_season_episode_numbers(text: str):
         except Exception:
             return None, None
     return None, None
-
-
 
 def _season_pack_consistency_identity(files: List[Dict[str, Any]], context: Dict[str, Any] = None) -> Dict[str, Any]:
     """从手动分享 payload / 本地分享记录 / 自动维护候选中解析父剧 TMDb 与季号。"""
@@ -1134,7 +1050,6 @@ def _season_pack_consistency_identity(files: List[Dict[str, Any]], context: Dict
         'identity_payload': identity_payload,
     }
 
-
 def _validate_season_pack_file_scope(files: List[Dict[str, Any]], ident: Dict[str, Any]) -> Dict[str, Any]:
     """校验季包文件明细确实都属于目标季。
 
@@ -1177,7 +1092,6 @@ def _validate_season_pack_file_scope(files: List[Dict[str, Any]], ident: Dict[st
             'season_pack_identity': ident,
         }
     return {'ok': True}
-
 
 def _validate_season_pack_consistency(files: List[Dict[str, Any]], context: Dict[str, Any] = None) -> Dict[str, Any]:
     """季包一致性校验统一入口。
@@ -1246,7 +1160,6 @@ def _json_array_values(value):
         return [str(x).strip() for x in out if str(x or '').strip()]
     return [str(value).strip()] if str(value or '').strip() else []
 
-
 def _norm_sha1_list(values):
     out = []
     for v in values or []:
@@ -1254,7 +1167,6 @@ def _norm_sha1_list(values):
         if re.fullmatch(r'[A-Fa-f0-9]{40}', text):
             out.append(text)
     return list(dict.fromkeys(out))
-
 
 def _norm_pc_list(values):
     out = []
@@ -1264,8 +1176,6 @@ def _norm_pc_list(values):
             out.append(text)
     return list(dict.fromkeys(out))
 
-
-
 def _safe_int(value, default=0):
     try:
         if value in (None, ''):
@@ -1273,7 +1183,6 @@ def _safe_int(value, default=0):
         return int(float(value))
     except Exception:
         return default
-
 
 def _safe_float(value, default=0.0):
     try:
@@ -1283,7 +1192,6 @@ def _safe_float(value, default=0.0):
     except Exception:
         return default
 
-
 def _db_truthy(value) -> bool:
     if value is None:
         return False
@@ -1292,7 +1200,6 @@ def _db_truthy(value) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return str(value).strip().lower() in ('1', 'true', 'yes', 'y', 'on', 'enabled', '启用', '开启', '是')
-
 
 def _safe_json_value(value, fallback=None):
     if value is None:
@@ -1308,7 +1215,6 @@ def _safe_json_value(value, fallback=None):
         except Exception:
             return fallback
     return fallback
-
 
 def _asset_detail_items(value) -> List[Dict[str, Any]]:
     parsed = _safe_json_value(value, fallback=[])
@@ -1333,13 +1239,11 @@ def _asset_detail_items(value) -> List[Dict[str, Any]]:
         return [x for x in parsed if meaningful_asset(x)]
     return []
 
-
 def _norm_match_text(value: Any) -> str:
     text = str(value or '').strip().lower()
     if not text:
         return ''
     return re.sub(r'[\s._\-]+', '', text)
-
 
 def _split_display_values(value: Any) -> List[str]:
     text = str(value or '').strip()
@@ -1347,7 +1251,6 @@ def _split_display_values(value: Any) -> List[str]:
         return []
     parts = re.split(r'[,，/|、]+', text)
     return [p.strip() for p in parts if p.strip()]
-
 
 def _asset_numeric_frame_rate(asset: Dict[str, Any]) -> float:
     value = asset.get('frame_rate') or asset.get('fps') or asset.get('average_frame_rate')
@@ -1365,7 +1268,6 @@ def _asset_numeric_frame_rate(asset: Dict[str, Any]) -> float:
             return 0.0
     m = re.search(r'(\d+(?:\.\d+)?)', text)
     return float(m.group(1)) if m else 0.0
-
 
 def _parse_request_size_range(text: str):
     text = str(text or '').strip().lower().replace('gb', '').replace('g', '').replace(' ', '')
@@ -1388,7 +1290,6 @@ def _parse_request_size_range(text: str):
     except Exception:
         return None
     return None
-
 
 def _asset_matches_share_request_params(asset: Dict[str, Any], params: Dict[str, Any]) -> bool:
     asset = asset or {}
@@ -1448,7 +1349,6 @@ def _asset_matches_share_request_params(asset: Dict[str, Any], params: Dict[str,
 
     return True
 
-
 def _load_share_request_candidate_assets(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
     candidate = candidate or {}
     share_item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
@@ -1475,7 +1375,6 @@ def _load_share_request_candidate_assets(candidate: Dict[str, Any]) -> List[Dict
         assets.extend(_asset_detail_items(row.get('asset_details_json')))
     return assets
 
-
 def _share_request_filter_from_args(args) -> Dict[str, Any]:
     args = args or {}
     params = _safe_json_value(args.get('request_params_json'), fallback={})
@@ -1494,7 +1393,6 @@ def _share_request_filter_from_args(args) -> Dict[str, Any]:
         'episode_numbers': [_safe_int(x, None) for x in episode_numbers if _safe_int(x, None) is not None],
         'params': params,
     }
-
 
 def _candidate_matches_share_request_target(candidate: Dict[str, Any], request_filter: Dict[str, Any]) -> bool:
     request_tmdb_id = str((request_filter or {}).get('tmdb_id') or '').strip()
@@ -1537,7 +1435,6 @@ def _candidate_matches_share_request_target(candidate: Dict[str, Any], request_f
         return req_season is None or cand_season == req_season
     return True
 
-
 def _candidate_size_matches_share_request(assets: List[Dict[str, Any]], size_range: str, aggregate: bool = False) -> bool:
     size_range = str(size_range or '').strip()
     if not size_range:
@@ -1555,7 +1452,6 @@ def _candidate_size_matches_share_request(assets: List[Dict[str, Any]], size_ran
             return False
         return True
     return all(_asset_matches_share_request_params(asset, {'size_range': size_range}) for asset in assets or [])
-
 
 def _candidate_matches_share_request_params(candidate: Dict[str, Any], params: Dict[str, Any]) -> bool:
     params = {k: v for k, v in (params or {}).items() if str(v or '').strip()}
@@ -1580,9 +1476,6 @@ def _candidate_matches_share_request_params(candidate: Dict[str, Any], params: D
     if params_without_size and not any(_asset_matches_share_request_params(asset, params_without_size) for asset in assets):
         return False
     return _candidate_size_matches_share_request(assets, size_range, aggregate=False)
-
-
-
 
 def _load_series_row_for_share_request(request_filter: Dict[str, Any], fallback_row: Dict[str, Any] = None) -> Dict[str, Any]:
     request_filter = request_filter or {}
@@ -1619,7 +1512,6 @@ def _load_series_row_for_share_request(request_filter: Dict[str, Any], fallback_
         'watchlist_tmdb_status': fallback_row.get('watchlist_tmdb_status'),
     }
 
-
 def _load_real_completed_season_info_for_share_request(series_id: str) -> Dict[str, Any]:
     series_id = str(series_id or '').strip()
     if not series_id:
@@ -1652,7 +1544,6 @@ def _load_real_completed_season_info_for_share_request(series_id: str) -> Dict[s
         'empty_shell': sorted(set(empty_shell)),
         'rows': rows,
     }
-
 
 def _resolve_series_pack_root_for_share_request(series_row: Dict[str, Any], request_filter: Dict[str, Any] = None) -> Dict[str, Any]:
     """求分享响应专用：全剧请求允许按父剧目录创建整剧包分享。"""
@@ -1786,7 +1677,6 @@ def _resolve_series_pack_root_for_share_request(series_row: Dict[str, Any], requ
         'season_check': season_info,
     }
 
-
 def _build_series_pack_candidate_for_share_request(series_row: Dict[str, Any], request_filter: Dict[str, Any] = None) -> Dict[str, Any]:
     """构造“全剧求分享”的整剧包候选，不影响普通手动分享的季包优先策略。"""
     row = dict(series_row or {})
@@ -1821,7 +1711,6 @@ def _load_exact_episode_row_for_share_request(request_filter: Dict[str, Any]) ->
         logger.warning(f"  ➜ [共享资源] 求分享单集候选定位失败: series={parent_tmdb_id}, S{season_number}E{episode_number}, err={e}")
         return {}
 
-
 def _expand_share_candidates_for_share_request(row: Dict[str, Any], request_filter: Dict[str, Any]) -> List[Dict[str, Any]]:
     """求分享响应专用展开。
 
@@ -1838,7 +1727,6 @@ def _expand_share_candidates_for_share_request(row: Dict[str, Any], request_filt
         return [_build_media_candidate(ep_row)] if ep_row else []
     return _expand_share_candidates(row)
 
-
 def _filter_candidates_for_share_request(candidates: List[Dict[str, Any]], request_filter: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not request_filter or not request_filter.get('tmdb_id'):
         return candidates or []
@@ -1850,7 +1738,6 @@ def _filter_candidates_for_share_request(candidates: List[Dict[str, Any]], reque
             continue
         out.append(cand)
     return out
-
 
 def _boolish(value, default=False):
     """兼容前端传来的 bool / 0/1 / true/false / yes/no。
@@ -1884,21 +1771,17 @@ def _parse_release_year(row: Dict[str, Any]):
                     pass
     return None
 
-
 def _get_media_row(tmdb_id: str, item_type: str):
     return shared_share_db.get_media_metadata_row(tmdb_id, item_type)
-
 
 def _media_title_value(row: Dict[str, Any]) -> str:
     """只取 media_metadata.title 作为标准片名；没有时才兜底 original_title。"""
     row = row or {}
     return str(row.get('title') or row.get('original_title') or '').strip()
 
-
 def _media_release_year_value(row: Dict[str, Any]):
     row = row or {}
     return _parse_release_year(row)
-
 
 def _get_series_identity(series_tmdb_id: str) -> Dict[str, Any]:
     row = shared_share_db.get_series_identity(series_tmdb_id)
@@ -1911,14 +1794,11 @@ def _get_series_identity(series_tmdb_id: str) -> Dict[str, Any]:
         'raw_row': row,
     }
 
-
 def _get_series_title(series_tmdb_id: str):
     return (_get_series_identity(series_tmdb_id) or {}).get('title') or ''
 
-
 def _get_media_row_loose(tmdb_id: str, item_type: str = ''):
     return shared_share_db.get_media_metadata_row_loose(tmdb_id, item_type)
-
 
 def _standard_media_identity_for_share(data: Dict[str, Any], item: Dict[str, Any] = None) -> Dict[str, Any]:
     """返回共享展示/登记使用的标准媒体身份。
@@ -2045,7 +1925,6 @@ def _standard_media_identity_for_share(data: Dict[str, Any], item: Dict[str, Any
         'source': 'payload_fallback',
     }
 
-
 def _standard_share_identity(record: Dict[str, Any], item: Dict[str, Any] = None, center_item_type: str = '') -> Dict[str, Any]:
     """按本地分享记录 + 文件明细解析中心登记用标准标题。"""
     record = dict(record or {})
@@ -2066,7 +1945,6 @@ def _standard_share_identity(record: Dict[str, Any], item: Dict[str, Any] = None
     if not identity.get('release_year'):
         identity['release_year'] = record.get('release_year')
     return identity
-
 
 def _collect_media_identifiers(row: Dict[str, Any]) -> Dict[str, List[str]]:
     if not row: return {'pickcodes': [], 'sha1s': [], 'episode_rows': []}
@@ -2097,7 +1975,6 @@ def _collect_media_identifiers(row: Dict[str, Any]) -> Dict[str, List[str]]:
         'episode_rows': rows if rows != [row] else [],
     }
 
-
 def _get_p115_file_rows(pickcodes: List[str], sha1s: List[str]) -> List[Dict[str, Any]]:
     rows = shared_share_db.get_p115_file_rows_by_pc_sha1(pickcodes, sha1s)
     seen, out = set(), []
@@ -2108,10 +1985,8 @@ def _get_p115_file_rows(pickcodes: List[str], sha1s: List[str]) -> List[Dict[str
             out.append(r)
     return out
 
-
 def _get_p115_node(node_id: str):
     return shared_share_db.get_p115_node_by_id(node_id)
-
 
 def _ancestor_chain(parent_id: str, max_depth: int = 20) -> List[str]:
     chain = []
@@ -2128,7 +2003,6 @@ def _ancestor_chain(parent_id: str, max_depth: int = 20) -> List[str]:
         curr = str(node.get('parent_id') or '')
     return chain
 
-
 def _season_dir_name_matches(name: str, season_number) -> bool:
     season = _safe_int(season_number, None)
     if season is None:
@@ -2144,7 +2018,6 @@ def _season_dir_name_matches(name: str, season_number) -> bool:
         f"第{season}季".lower(),
     }
     return text in names
-
 
 def _narrow_season_pack_root(root_id: str, root_name: str, parent_ids: List[str], season_number) -> Dict[str, Any]:
     """季包分享根目录二次收窄，避免 common ancestor 退到整剧目录。"""
@@ -2189,8 +2062,6 @@ def _narrow_season_pack_root(root_id: str, root_name: str, parent_ids: List[str]
 
     return {'root_id': root_id, 'root_name': root_name, 'ok': True, 'message': ''}
 
-
-
 def _episode_label_from_row(row: Dict[str, Any], series_title: str = '') -> str:
     s = row.get('season_number')
     e = row.get('episode_number')
@@ -2201,7 +2072,6 @@ def _episode_label_from_row(row: Dict[str, Any], series_title: str = '') -> str:
     except Exception:
         pass
     return str(base or row.get('file_name') or 'Episode')
-
 
 def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = False, season_number=None) -> List[Dict[str, Any]]:
     row = row or {}
@@ -2228,7 +2098,6 @@ def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = Fal
         if _norm_pc_list(_json_array_values(r.get('file_pickcode_json'))) or _norm_sha1_list(_json_array_values(r.get('file_sha1_json'))):
             out.append(r)
     return out
-
 
 def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
     row = row or {}
@@ -2287,7 +2156,6 @@ def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
         'season_title': season_title, 'watching_status': watching_status, 'force_ended': force_ended,
     }
 
-
 def _share_policy_for_media(row: Dict[str, Any]) -> Dict[str, Any]:
     item_type = str((row or {}).get('item_type') or '')
     if item_type == 'Movie':
@@ -2302,7 +2170,6 @@ def _share_policy_for_media(row: Dict[str, Any]) -> Dict[str, Any]:
     if item_type == 'Series':
         return {'allowed': False, 'share_type': 'season_pack', 'share_item_type': 'Season', 'message': '不直接分享整剧：已完结季按季包，未完结季按单集分享'}
     return {'allowed': False, 'share_type': '', 'share_item_type': item_type, 'message': '未知媒体类型，无法分享'}
-
 
 def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
     ids = _collect_media_identifiers(media_row)
@@ -2434,7 +2301,6 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
         'completion': policy.get('completion'),
     }
 
-
 def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(row)
     parent_series_id = row.get('parent_series_tmdb_id')
@@ -2473,8 +2339,6 @@ def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         **resolved,
     }
 
-
-
 def _load_completed_season_row_for_episode(row: Dict[str, Any]) -> Dict[str, Any]:
     """Episode 搜索命中时，如果所属 Season 已 Completed，返回 Season 行用于提升为季包候选。"""
     row = row or {}
@@ -2509,7 +2373,6 @@ def _load_completed_season_row_for_episode(row: Dict[str, Any]) -> Dict[str, Any
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 查询单集所属 Completed 季失败: series={parent_series_id}, season={season_number}, err={e}")
         return {}
-
 
 def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     """搜索结果展开策略：
@@ -2576,7 +2439,6 @@ def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
         return out
     return [_build_media_candidate(row)]
 
-
 @shared_resource_bp.route('/media/search', methods=['GET'])
 @admin_required
 def api_search_shareable_media():
@@ -2615,7 +2477,6 @@ def api_search_shareable_media():
         "before_filter_count": before_filter_count,
     })
 
-
 @shared_resource_bp.route('/config', methods=['GET', 'POST'])
 @admin_required
 def api_shared_resource_config():
@@ -2628,7 +2489,6 @@ def api_shared_resource_config():
     if isinstance(payload, dict):
         payload.setdefault('p115_shared_auto_share_requests_enabled', data['p115_shared_auto_share_requests_enabled'])
     return jsonify({'success': True, 'message': '共享资源配置已保存', 'data': payload})
-
 
 @shared_resource_bp.route('/115/folders', methods=['GET'])
 @admin_required
@@ -2656,16 +2516,11 @@ def api_shared_115_folders():
         logger.warning(f"  ➜ [共享资源] 读取 115 目录失败: cid={cid}, err={e}", exc_info=True)
         return jsonify({'success': False, 'message': f'读取 115 目录失败: {e}'}), 500
 
-
 @shared_resource_bp.route('/summary', methods=['GET'])
 @admin_required
 def api_shared_summary():
     summary = shared_credit_db.get_shared_resource_summary()
     return jsonify({"success": True, "data": summary})
-
-
-# 虚拟入库 API 已移除。
-
 
 def _resp_text(resp) -> str:
     if resp is None:
@@ -2676,10 +2531,6 @@ def _resp_text(resp) -> str:
     except Exception:
         pass
     return str(resp)
-
-
-
-# 虚拟入库转正/投影处理代码已移除。
 
 @shared_resource_bp.route('/shares', methods=['GET'])
 @admin_required
@@ -2729,12 +2580,10 @@ def api_list_my_shares():
                 pass
     return jsonify({"success": True, "items": items, "total": total})
 
-
 @shared_resource_bp.route('/shares/<int:record_id>/items', methods=['GET'])
 @admin_required
 def api_list_share_items(record_id):
     return jsonify({"success": True, "items": shared_share_db.list_share_items(record_id)})
-
 
 def _manual_share_business_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """统一整理手动分享 payload，不创建 115 分享。"""
@@ -2775,7 +2624,6 @@ def _manual_share_business_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         data['share_type'] = 'episode_file'
 
     return {'ok': True, 'data': data}
-
 
 def _collect_manual_share_files_for_payload(data: Dict[str, Any], client=None) -> Dict[str, Any]:
     """按手动分享候选实际收集待分享视频文件，供预校验和正式创建共用。"""
@@ -2850,7 +2698,6 @@ def _collect_manual_share_files_for_payload(data: Dict[str, Any], client=None) -
         'info_resp': info_resp,
     }
 
-
 @shared_resource_bp.route('/shares/manual-validate', methods=['POST'])
 @admin_required
 def api_manual_validate_share():
@@ -2894,7 +2741,6 @@ def api_manual_validate_share():
     result['valid'] = True
     result['message'] = f"预校验通过：共 {len(files)} 个视频文件，可创建分享"
     return jsonify({'success': True, 'message': result['message'], 'data': result})
-
 
 @shared_resource_bp.route('/shares/manual-create', methods=['POST'])
 @admin_required
@@ -3055,7 +2901,6 @@ def api_manual_create_share():
 
     return jsonify({"success": True, "message": "分享已创建，等待 115 审核通过后再登记中心", "data": record, "items": files})
 
-
 @shared_resource_bp.route('/shares/<int:record_id>/check', methods=['POST'])
 @admin_required
 def api_check_share(record_id):
@@ -3131,8 +2976,6 @@ def api_check_share(record_id):
         msg = f"{msg}，已补扫到 {added_count} 个视频文件"
     return jsonify({"success": True, "message": msg, "data": row, "raw": snap})
 
-
-
 def _share_request_group_id_for_record(record: Dict[str, Any]) -> str:
     raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
     manual = raw.get('manual_payload') if isinstance(raw.get('manual_payload'), dict) else {}
@@ -3149,7 +2992,6 @@ def _share_request_group_id_for_record(record: Dict[str, Any]) -> str:
             return text
     return ''
 
-
 def _ensure_share_request_listener_async():
     """有 open 求分享时启动客户端后台长轮询，不依赖前端页面存活。"""
     try:
@@ -3157,7 +2999,6 @@ def _ensure_share_request_listener_async():
         ensure_share_request_event_listener()
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 启动求分享事件监听失败: {e}")
-
 
 def _build_center_source_payload(record: Dict[str, Any], item: Dict[str, Any], *, source_provider: str = 'user_share') -> Dict[str, Any]:
     """把本地 share_record/share_item 转成中心登记 payload。"""
@@ -3195,7 +3036,6 @@ def _build_center_source_payload(record: Dict[str, Any], item: Dict[str, Any], *
         payload['share_request_group_id'] = share_request_group_id
     return payload
 
-
 def _register_single_source_payload(payload: Dict[str, Any], item: Dict[str, Any], cfg: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
     resp = requests.post(
         f"{cfg['center_url']}/api/v1/sources/register",
@@ -3224,7 +3064,6 @@ def _register_single_source_payload(payload: Dict[str, Any], item: Dict[str, Any
     data = resp.json() or {}
     return {'ok': True, 'source_id': data.get('source_id'), 'data': data}
 
-
 def _source_provider_for_share_record(record: Dict[str, Any], fallback: str = 'user_share') -> str:
     raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
     if raw.get('auto_backup_share') or raw.get('backup_share') or raw.get('backup_mirror') or raw.get('backup_instruction'):
@@ -3234,7 +3073,6 @@ def _source_provider_for_share_record(record: Dict[str, Any], fallback: str = 'u
     if raw.get('auto_gap'):
         return 'auto_gap_share'
     return fallback or 'user_share'
-
 
 def _register_share_items_to_center(record: Dict[str, Any], items: List[Dict[str, Any]], cfg: Dict[str, Any], headers: Dict[str, str], *, source_provider: str = 'user_share') -> Dict[str, Any]:
     """登记分享项到中心。
@@ -3535,7 +3373,6 @@ def api_report_share_to_center(record_id):
         errors.extend(raw_summary.get('errors')[:5])
     return jsonify({"success": reported > 0 and not errors, "message": msg, "data": row, "errors": errors, "raw_summary": raw_summary, "source_register": source_register})
 
-
 @shared_resource_bp.route('/shares/<int:record_id>/upload-rawffprobe', methods=['POST'])
 @admin_required
 def api_upload_share_raw_ffprobe(record_id):
@@ -3558,7 +3395,6 @@ def api_upload_share_raw_ffprobe(record_id):
         f"补全大小 {summary.get('size_fixed', 0)} 条"
     )
     return jsonify({"success": ok_count > 0 or summary.get('total', 0) == 0, "message": msg, "data": summary})
-
 
 @shared_resource_bp.route('/shares/<int:record_id>/cancel', methods=['POST'])
 @admin_required
@@ -3660,9 +3496,6 @@ def api_cancel_share(record_id):
 
     return jsonify({"success": True, "message": final_msg, "data": row, "debug": attempts, "center": center_result})
 
-
-
-
 def _ensure_shared_install_id() -> str:
     cfg = settings_db.get_shared_resource_config()
     install_id = str(cfg.get('p115_shared_install_id') or '').strip()
@@ -3670,7 +3503,6 @@ def _ensure_shared_install_id() -> str:
         install_id = f"etk-{uuid.uuid4().hex}"
         settings_db.save_shared_resource_config({'p115_shared_install_id': install_id})
     return install_id
-
 
 @shared_resource_bp.route('/center/device/register', methods=['POST'])
 @admin_required
@@ -3735,7 +3567,6 @@ def api_register_center_device():
         logger.error(f"  ➜ [共享资源] 注册中心设备失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'注册中心设备失败: {e}'}), 500
 
-
 @shared_resource_bp.route('/credit/refresh', methods=['POST'])
 @admin_required
 def api_refresh_credit():
@@ -3747,7 +3578,6 @@ def api_refresh_credit():
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 刷新中心贡献值失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-
 
 @shared_resource_bp.route('/credit/ledger', methods=['GET'])
 @admin_required
@@ -3764,11 +3594,9 @@ def api_credit_ledger():
     rows = shared_credit_db.list_credit_ledger(limit=limit, actual_only=actual_only)
     return jsonify({"success": True, "items": rows, "sync": sync_result})
 
-
 # ======================================================================
 # 求分享 API：客户端代理中心端 + TMDb 搜索
 # ======================================================================
-
 def _share_request_default_param_options() -> Dict[str, Any]:
     return {
         'resolution': [
@@ -3815,7 +3643,6 @@ def _share_request_default_param_options() -> Dict[str, Any]:
         ],
     }
 
-
 def _share_request_param_options_from_helpers() -> Dict[str, Any]:
     try:
         from tasks.helpers import get_standard_asset_option_values
@@ -3825,7 +3652,6 @@ def _share_request_param_options_from_helpers() -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 读取 helpers 标准媒体参数失败，使用内置兜底: {e}")
     return _share_request_default_param_options()
-
 
 @shared_resource_bp.route('/share-requests/param-options', methods=['GET'])
 @admin_required
@@ -3867,7 +3693,6 @@ def api_share_request_tmdb_search():
         logger.error(f"  ➜ [共享资源] TMDb 求分享搜索失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'TMDb 搜索失败: {e}'}), 500
 
-
 @shared_resource_bp.route('/share-requests', methods=['GET'])
 @admin_required
 def api_list_share_requests():
@@ -3886,7 +3711,6 @@ def api_list_share_requests():
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 拉取求分享列表失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'拉取求分享列表失败: {e}'}), 500
-
 
 def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str, Any]:
     """本地代理侧为求分享报价补充可验证的 TMDb 元数据。
@@ -3959,7 +3783,6 @@ def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str
     # 不再使用本地 media_metadata 季数，避免需求侧计价被本地库污染。
     return data
 
-
 @shared_resource_bp.route('/share-requests/quote', methods=['POST'])
 @admin_required
 def api_quote_share_request():
@@ -3969,7 +3792,6 @@ def api_quote_share_request():
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         return jsonify({'success': False, 'message': f'求分享报价失败: {e}'}), 400
-
 
 @shared_resource_bp.route('/share-requests', methods=['POST'])
 @admin_required
@@ -3984,7 +3806,6 @@ def api_create_share_request():
         logger.error(f"  ➜ [共享资源] 创建求分享失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'创建求分享失败: {e}'}), 400
 
-
 @shared_resource_bp.route('/share-requests/<group_id>/co-request', methods=['POST'])
 @admin_required
 def api_co_request_share(group_id):
@@ -3996,7 +3817,6 @@ def api_co_request_share(group_id):
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 同求失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'同求失败: {e}'}), 400
-
 
 @shared_resource_bp.route('/share-requests/<group_id>/cancel', methods=['POST'])
 @admin_required
@@ -4032,7 +3852,6 @@ def _center_format_rate(value) -> str:
     except Exception:
         return str(value or '')
 
-
 def _center_codec_label(codec: str) -> str:
     c = str(codec or '').lower()
     return {
@@ -4043,7 +3862,6 @@ def _center_codec_label(codec: str) -> str:
         'ass': 'ASS', 'ssa': 'SSA', 'hdmv_pgs_subtitle': 'PGS', 'pgssub': 'PGS',
         'webvtt': 'VTT', 'mov_text': 'MOV_TEXT',
     }.get(c, c.upper() if c else '')
-
 
 def _center_resolution(width: int, height: int) -> str:
     try:
@@ -4060,7 +3878,6 @@ def _center_resolution(width: int, height: int) -> str:
     if width >= 1200:
         return '720p'
     return f'{height}p' if height else ''
-
 
 def _center_video_effect(video: Dict[str, Any]) -> str:
     if not video:
@@ -4094,7 +3911,6 @@ def _center_video_effect(video: Dict[str, Any]) -> str:
         return 'HDR'
     return ''
 
-
 def _center_track_display(stream: Dict[str, Any], stream_type: str) -> str:
     """优先使用 _build_emby_mediainfo_from_ffprobe 已经净化过的 DisplayTitle。"""
     if not stream:
@@ -4118,9 +3934,7 @@ def _center_track_display(stream: Dict[str, Any], stream_type: str) -> str:
         parts.append(str(title))
     return ' '.join([x for x in parts if x])
 
-
 _CENTER_MEDIAINFO_FORMATTER = None
-
 
 def _get_center_mediainfo_formatter():
     """懒加载 formatter，避免 routes 导入时和 p115_service / analyzer 互相循环。"""
@@ -4142,7 +3956,6 @@ def _get_center_mediainfo_formatter():
 
     _CENTER_MEDIAINFO_FORMATTER = _Formatter()
     return _CENTER_MEDIAINFO_FORMATTER
-
 
 def _build_center_emby_info(raw: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(raw, dict) or not raw:
@@ -4180,7 +3993,6 @@ def _build_center_emby_info(raw: Dict[str, Any], source: Dict[str, Any]) -> Dict
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] raw ffprobe 格式化失败，使用轻量兜底: {e}")
     return {}
-
 
 def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict[str, Any]:
     """中心资源库展示用：优先复用 _build_emby_mediainfo_from_ffprobe 得到标准化音轨/字幕标题。"""
@@ -4258,25 +4070,20 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
     }
 
-
-
 def _center_norm_item_type(value: str) -> str:
     """把中心/本地历史遗留 item_type 归一化到展示用三类。"""
     return str(value or '').strip().lower().replace('-', '_').replace(' ', '_')
-
 
 def _center_is_movie_row(item: Dict[str, Any]) -> bool:
     t = _center_norm_item_type(item.get('item_type'))
     share_type = _center_norm_item_type(item.get('share_type'))
     return t in {'movie', 'movies', 'film', 'movie_file', 'movie_folder'} or share_type in {'movie_file', 'movie_folder'}
 
-
 def _center_is_episode_row(item: Dict[str, Any]) -> bool:
     t = _center_norm_item_type(item.get('item_type'))
     if t in {'episode', 'episodes', 'episode_file'}:
         return True
     return item.get('episode_number') not in [None, ''] and not _center_is_movie_row(item)
-
 
 def _center_is_pack_like_row(item: Dict[str, Any]) -> bool:
     t = _center_norm_item_type(item.get('item_type'))
@@ -4302,8 +4109,6 @@ def _center_is_pack_like_row(item: Dict[str, Any]) -> bool:
         return True
     return False
 
-
-
 def _center_created_ts(item: Dict[str, Any]) -> float:
     value = (item or {}).get('created_at')
     if not value:
@@ -4320,8 +4125,6 @@ def _center_created_ts(item: Dict[str, Any]) -> float:
         return float(datetime.fromisoformat(text).timestamp())
     except Exception:
         return 0.0
-
-
 
 def _center_infer_episode_number(item: Dict[str, Any]):
     """从中心源记录里尽量推断单集集号，用于修复历史误登记的“假剧集包”。"""
@@ -4346,7 +4149,6 @@ def _center_infer_episode_number(item: Dict[str, Any]):
                 except Exception:
                     return etk.get(key)
     return None
-
 
 def _center_mark_as_episode_row(item: Dict[str, Any], episode_number=None) -> Dict[str, Any]:
     row = dict(item or {})
@@ -4385,7 +4187,6 @@ def _center_display_type(item: Dict[str, Any]) -> str:
         return 'Movie'
     return 'Unknown'
 
-
 def _center_match_display_type(item: Dict[str, Any], wanted: str) -> bool:
     wanted = str(wanted or '').strip().lower()
     if not wanted or wanted in {'all', '全部类型'}:
@@ -4397,7 +4198,6 @@ def _center_match_display_type(item: Dict[str, Any], wanted: str) -> bool:
         'episode': 'episode', 'episodes': 'episode', 'episode_file': 'episode', 'single': 'episode', '单集': 'episode',
     }
     return alias.get(wanted, wanted) == alias.get(dtype, dtype)
-
 
 def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """中心资源库展示层去重：同一分享码下的一组剧集文件视作一个“剧集包”。
@@ -4527,8 +4327,6 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
 
     return passthrough + collapsed
 
-
-
 def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: str = CENTER_DISPLAY_SOURCE_STATUSES) -> List[Dict[str, Any]]:
     """分页展示前补全同一分享码的剧集包条目，避免 30 条分页把 36 集包截成 30 集。"""
     items = list(items or [])
@@ -4617,11 +4415,9 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
 
     return [by_id[sid] for sid in ordered_ids if sid in by_id]
 
-
 def _center_norm_sha1(value: str) -> str:
     text = str(value or '').strip().upper()
     return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
-
 
 def _center_row_file_entries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     """把中心展示行拆成文件级条目，用于本地入库状态判断。"""
@@ -4666,7 +4462,6 @@ def _center_row_file_entries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
             })
     return entries
 
-
 def _center_file_entry_label(entry: Dict[str, Any]) -> str:
     entry = entry or {}
     season = entry.get('season_number')
@@ -4680,7 +4475,6 @@ def _center_file_entry_label(entry: Dict[str, Any]) -> str:
     except Exception:
         pass
     return (prefix + str(entry.get('file_name') or entry.get('sha1') or '未知文件')).strip()
-
 
 def _annotate_center_rows_local_library(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """为中心展示行补充文件级/包级本地入库状态。"""
@@ -4756,11 +4550,9 @@ def _annotate_center_rows_local_library(rows: List[Dict[str, Any]]) -> List[Dict
         }
     return rows
 
-
 def _center_row_not_fully_in_library(row: Dict[str, Any]) -> bool:
     local = (row or {}).get('local_library') or {}
     return not bool(local.get('is_fully_in_library'))
-
 
 def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     raw_map = {str(r.get('source_id') or ''): r for r in (raw_rows or []) if r.get('source_id')}
@@ -4778,7 +4570,6 @@ def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dic
         else:
             merged.append(row)
     return merged
-
 
 def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = CENTER_DISPLAY_SOURCE_STATUSES, order_by: str = 'latest', limit: int = 30, offset: int = 0, local_filter: str = '') -> Dict[str, Any]:
     """按展示口径加载中心资源库。
@@ -4884,13 +4675,11 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
         'scanned_raw': len(raw_rows),
     }
 
-
 def _center_episode_hidden_by_config() -> bool:
     try:
         return bool(settings_db.get_shared_resource_config().get('p115_shared_disable_episode_transfer', False))
     except Exception:
         return False
-
 
 def _filter_center_rows_by_episode_policy(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not _center_episode_hidden_by_config():
@@ -4907,7 +4696,6 @@ def _filter_center_rows_by_episode_policy(rows: List[Dict[str, Any]]) -> List[Di
     if blocked:
         logger.info(f"  ➜ [共享资源] 中心资源库已按配置隐藏单集资源 {blocked} 条。")
     return filtered
-
 
 _CENTER_STATUS_LABELS = {
     'alive': ('可用', 'success'),
@@ -4932,15 +4720,12 @@ _CENTER_SOURCE_PROVIDER_LABELS = {
     'auto_backup_share': '备份分享',
 }
 
-
-
 def _load_local_share_code_set(items: List[Dict[str, Any]]) -> set:
     try:
         return shared_share_db.get_existing_share_code_set(items)
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 查询本地分享来源失败: {e}")
         return set()
-
 
 def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     """给中心资源库行补充面向前端的可读来源/状态。"""
@@ -4985,7 +4770,6 @@ def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     item['source_scope_label'] = scope_label
     item['source_label'] = f"{scope_label} · {provider_label}" if provider_label not in scope_label else scope_label
     return item
-
 
 @shared_resource_bp.route('/center/sources', methods=['GET'])
 @admin_required
@@ -5034,8 +4818,6 @@ def api_center_sources():
         logger.error(f"  ➜ [共享资源] 拉取中心资源库失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'拉取中心资源库失败: {e}'}), 500
 
-
-
 def _center_replenish_file_entries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     """从中心待补充展示行提取需要补齐的 SHA1 清单。"""
     row = row or {}
@@ -5068,7 +4850,6 @@ def _center_replenish_file_entries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
             'size': item.get('size') or 0,
         })
     return out
-
 
 def _prepare_center_replenish_manual_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     """把中心“待补充”行转换为手动分享模态框可直接选择的候选。只准备，不创建分享。"""
@@ -5250,7 +5031,6 @@ def _prepare_center_replenish_manual_candidate(row: Dict[str, Any]) -> Dict[str,
         'center_replenish_payload': row,
     }
     return {'ok': True, 'candidate': candidate, 'files': files}
-
 
 @shared_resource_bp.route('/center/replenish/prepare', methods=['POST'])
 @admin_required
