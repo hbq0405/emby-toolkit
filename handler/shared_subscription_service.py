@@ -1183,10 +1183,6 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             import_container = {}
 
             resp = p115.share_import(share_code, receive_code, import_target_cid)
-            logger.info(
-                f"  ➜ [共享资源] 115分享转存返回：share={share_code}, cid={import_target_cid}, "
-                f"backup={alt_index}/{len(alternatives)}, resp={str(resp)[:300]}"
-            )
             text = _share_import_resp_text(resp)
             is_already_saved = _is_share_import_already_saved(resp)
             success = _share_import_success(resp)
@@ -1201,6 +1197,10 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                         f"  ➜ [共享资源] 115 提示本账号已转存过，视为本地幂等命中，跳过中心 failed 上报：share={share_code}"
                     )
                 else:
+                    logger.info(
+                        f"  ➜ [共享资源] 已成功转存：share={share_code}, cid={import_target_cid}, "
+                        f"backup={alt_index}/{len(alternatives)}"
+                    )
                     try:
                         client.report_transfer(
                             src.get('source_id'),
@@ -1212,6 +1212,11 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                     except Exception as e:
                         logger.debug(f"  ➜ [共享资源] 上报转存成功失败：share={share_code}, err={e}")
                 break
+            else:
+                logger.warning(
+                    f"  ➜ [共享资源] 115分享转存失败：share={share_code}, cid={import_target_cid}, "
+                    f"backup={alt_index}/{len(alternatives)}, resp={str(resp)[:300]}"
+                )
 
             errors.append(f"{src.get('file_name')}: {text[:120]}")
 
