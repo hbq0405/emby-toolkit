@@ -148,24 +148,42 @@ def _process_mp_passthrough_immediate(file_info):
     media_type = file_info.get('media_type')
     title = file_info.get('title') or ''
     file_name = file_info.get('name')
+    file_id = file_info.get('file_id')
 
     logger.info(f"  ➜ [MP直出] 开始处理单文件: {file_name} -> ID:{tmdb_id}")
 
     try:
+        # =========================================================
+        # ★ 核心修复：剧集单独查询真实的父目录(季目录) ID
+        # =========================================================
+        real_parent_id = file_info.get('parent_id')
+        
+        if media_type == 'tv' and file_id:
+            try:
+                info_res = client.fs_get_info(file_id)
+                if info_res and info_res.get('state') and info_res.get('data'):
+                    item_data = info_res['data']
+                    fetched_pid = item_data.get('parent_id') or item_data.get('pid') or item_data.get('cid')
+                    if fetched_pid and str(fetched_pid) != '0':
+                        real_parent_id = fetched_pid
+            except Exception as e:
+                logger.warning(f"  ➜ [MP直出] 获取剧集真实父目录 ID 失败，使用默认值: {e}")
+        # =========================================================
+
         organizer = SmartOrganizer(client, tmdb_id, media_type, title)
         season_num = file_info.get('season_num')
         if season_num is not None and str(season_num).isdigit():
             organizer.forced_season = int(season_num)
 
         file_nodes = [{
-            'fid': file_info.get('file_id'),
-            'file_id': file_info.get('file_id'),
+            'fid': file_id,
+            'file_id': file_id,
             'fn': file_name,
             'file_name': file_name,
             'fc': '1',
             'type': '1',
-            'pid': file_info.get('parent_id'),
-            'parent_id': file_info.get('parent_id'),
+            'pid': real_parent_id,        # ★ 使用真实的父目录 ID
+            'parent_id': real_parent_id,  # ★ 使用真实的父目录 ID
             'pc': file_info.get('pickcode'),
             'pick_code': file_info.get('pickcode'),
             '115_path': file_info.get('115_path'),
@@ -1155,30 +1173,10 @@ def emby_webhook():
             media_type = 'tv' if media_type_cn == '电视剧' else 'movie'
             
             if file_type == 'file':
-                # =========================================================
-                # ★ 核心修复：剧集单独查询真实的父目录(季目录) ID
-                # =========================================================
-                real_parent_id = dir_cid  # 默认使用 Webhook 传来的爷爷目录 ID 兜底
-                
-                if media_type == 'tv':
-                    client = P115Service.get_client()
-                    if client:
-                        try:
-                            info_res = client.fs_get_info(file_id)
-                            if info_res and info_res.get('state') and info_res.get('data'):
-                                item_data = info_res['data']
-                                # 兼容 OpenAPI 和 Cookie API 返回的字段差异
-                                fetched_pid = item_data.get('parent_id') or item_data.get('pid') or item_data.get('cid')
-                                if fetched_pid and str(fetched_pid) != '0':
-                                    real_parent_id = fetched_pid
-                        except Exception as e:
-                            logger.warning(f"  ➜ [MP直出] 获取剧集真实父目录 ID 失败，使用默认值: {e}")
-                # =========================================================
-
                 file_info = {
                     'file_id': file_id,
                     'name': file_name,
-                    'parent_id': real_parent_id,  # ★ 改为使用查询到的真实父目录 ID
+                    'parent_id': dir_cid,
                     'pickcode': pickcode,
                     'tmdb_id': tmdb_id,
                     'media_type': media_type,
