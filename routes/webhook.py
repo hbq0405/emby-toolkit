@@ -148,62 +148,24 @@ def _process_mp_passthrough_immediate(file_info):
     media_type = file_info.get('media_type')
     title = file_info.get('title') or ''
     file_name = file_info.get('name')
-    file_id = file_info.get('file_id')
 
     logger.info(f"  ➜ [MP直出] 开始处理单文件: {file_name} -> ID:{tmdb_id}")
 
     try:
-        # =========================================================
-        # ★ 核心修复：剧集单独查询真实的父目录(季目录) ID
-        # =========================================================
-        real_parent_id = file_info.get('parent_id')
-        
-        if file_id:
-            try:
-                info_res = client.fs_get_info(file_id)
-                if info_res and info_res.get('state') and info_res.get('data'):
-                    item_data = info_res['data']
-                    fetched_pid = None
-                    
-                    # 1. 最稳妥：从 paths (面包屑导航) 中精准提取直接父目录
-                    paths = item_data.get('paths') or item_data.get('path')
-                    if isinstance(paths, list) and len(paths) > 0:
-                        last_node = paths[-1]
-                        last_id = str(last_node.get('file_id') or last_node.get('cid') or last_node.get('id'))
-                        
-                        if last_id == str(file_id) and len(paths) >= 2:
-                            # 如果最后一个节点是文件本身，则取倒数第二个节点（季目录）
-                            parent_node = paths[-2]
-                            fetched_pid = parent_node.get('file_id') or parent_node.get('cid') or parent_node.get('id')
-                        elif last_id != str(file_id):
-                            # 如果最后一个节点不是文件，那它就是父目录
-                            fetched_pid = last_id
-                            
-                    # 2. 兜底：对于文件，115 的 cid 字段就是直接父目录 ID
-                    if not fetched_pid:
-                        fetched_pid = item_data.get('cid')
-                        
-                    if fetched_pid and str(fetched_pid) != '0':
-                        real_parent_id = fetched_pid
-                        logger.debug(f"  ➜ [MP直出] 成功获取真实季目录 ID: {real_parent_id}")
-            except Exception as e:
-                logger.warning(f"  ➜ [MP直出] 获取剧集真实父目录 ID 失败，使用默认值: {e}")
-        # =========================================================
-
         organizer = SmartOrganizer(client, tmdb_id, media_type, title)
         season_num = file_info.get('season_num')
         if season_num is not None and str(season_num).isdigit():
             organizer.forced_season = int(season_num)
 
         file_nodes = [{
-            'fid': file_id,
-            'file_id': file_id,
+            'fid': file_info.get('file_id'),
+            'file_id': file_info.get('file_id'),
             'fn': file_name,
             'file_name': file_name,
             'fc': '1',
             'type': '1',
-            'pid': real_parent_id,        # ★ 使用真实的父目录 ID
-            'parent_id': real_parent_id,  # ★ 使用真实的父目录 ID
+            'pid': file_info.get('parent_id'),
+            'parent_id': file_info.get('parent_id'),
             'pc': file_info.get('pickcode'),
             'pick_code': file_info.get('pickcode'),
             '115_path': file_info.get('115_path'),
