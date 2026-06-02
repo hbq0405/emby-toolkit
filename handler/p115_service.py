@@ -5364,7 +5364,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             # ★ 修复：使用 [-1] 提取后缀，防止文件名中包含多个点导致报错
             ext = original_name.rsplit(".", 1)[-1].lower()
             fid = file_item.get("fid") or file_item.get("file_id")
-            parent_id = file_item.get("pid") or file_item.get("parent_id") or file_item.get("cid")
+            parent_id = file_item.get("pid") or file_item.get("parent_id")
             pick_code = file_item.get("pc") or file_item.get("pick_code")
             sha1 = file_item.get("sha1") or file_item.get("sha")
             full_115_path = file_item.get("115_path")
@@ -5374,68 +5374,6 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             
             if not is_video and not is_sub:
                 continue
-
-            # ==========================================================
-            # ★ MP 剧集视频父目录兜底修正
-            # MP 直出模式下，MP webhook 传来的 target_diritem 可能是剧目录（爷爷），
-            # 但集文件真实落在季目录（爸爸）。这里优先吃 webhook 已实时校验的结果；
-            # 若上游未校验，则在 execute_mp_passthrough 内兜底调用 115 文件详情接口。
-            # ==========================================================
-            is_tv_media = str(self.media_type or '').strip().lower() in ('tv', 'series', 'episode', '电视剧')
-            has_episode_hint = file_item.get('_forced_season') is not None or file_item.get('_forced_episode') is not None
-            if is_video and fid and (is_tv_media or has_episode_hint):
-                if file_item.get('_mp_parent_id_checked'):
-                    checked_parent_id = file_item.get('parent_id') or file_item.get('pid') or file_item.get('cid')
-                    if checked_parent_id:
-                        parent_id = str(checked_parent_id)
-                        file_item['pid'] = parent_id
-                        file_item['parent_id'] = parent_id
-                        old_parent_id = file_item.get('_mp_original_parent_id')
-                        if old_parent_id and str(old_parent_id) != parent_id:
-                            logger.info(
-                                f"  ➜ [MP直出父目录] 使用 webhook 实时修正结果: "
-                                f"MP={old_parent_id} -> 115={parent_id} | {original_name}"
-                            )
-                        else:
-                            logger.info(f"  ➜ [MP直出父目录] 使用 webhook 实时校验结果: {parent_id} | {original_name}")
-                else:
-                    try:
-                        info_res = self.client.fs_get_info(fid)
-                        if info_res.get('state') and isinstance(info_res.get('data'), dict):
-                            info_data = info_res.get('data') or {}
-                            realtime_parent_id = (
-                                info_data.get('parent_id')
-                                or info_data.get('pid')
-                                or info_data.get('parentId')
-                                or info_data.get('cid')
-                            )
-                            if realtime_parent_id:
-                                old_parent_id = parent_id
-                                parent_id = str(realtime_parent_id)
-                                file_item['pid'] = parent_id
-                                file_item['parent_id'] = parent_id
-                                file_item['_mp_parent_id_checked'] = True
-                                file_item['_mp_original_parent_id'] = str(old_parent_id) if old_parent_id else None
-                                file_item['_mp_parent_id_fixed'] = bool(old_parent_id and str(old_parent_id) != parent_id)
-
-                                fetched_sha1 = info_data.get('sha1') or info_data.get('sha') or info_data.get('file_sha1')
-                                if fetched_sha1 and not sha1:
-                                    sha1 = str(fetched_sha1).upper()
-                                    file_item['sha1'] = sha1
-
-                                if old_parent_id and str(old_parent_id) != parent_id:
-                                    logger.info(
-                                        f"  ➜ [MP直出] 已修正季目录ID "
-                                        f"MP={old_parent_id} -> 115={parent_id} | {original_name}"
-                                    )
-                                else:
-                                    logger.info(f"  ➜ [MP直出父目录确认] 剧集视频父目录ID已实时校验: {parent_id} | {original_name}")
-                            else:
-                                logger.warning(f"  ➜ [MP直出父目录修正] 115 文件详情缺少父目录字段，沿用 MP 目录ID: {original_name}")
-                        else:
-                            logger.warning(f"  ➜ [MP直出父目录修正] 查询 115 文件详情失败，沿用 MP 目录ID: {original_name}, resp={info_res}")
-                    except Exception as e:
-                        logger.warning(f"  ➜ [MP直出父目录修正] 实时查询 115 父目录异常，沿用 MP 目录ID: {original_name} -> {e}", exc_info=True)
 
             # ==========================================================
             # ★ 核心优化：直接从 Webhook 传来的 115_path 提取相对路径，0 API 消耗！

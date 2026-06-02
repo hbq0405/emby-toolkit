@@ -63,80 +63,34 @@ SYNDROME_API_LOCK = Semaphore(1)
 MP_BATCH_QUEUE = {}
 MP_BATCH_LOCK = threading.Lock()
 
-_MP_VIDEO_EXTS = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
 
-def _is_mp_video_file(file_name: str) -> bool:
-    ext = str(file_name or '').rsplit('.', 1)[-1].lower() if '.' in str(file_name or '') else ''
-    return ext in _MP_VIDEO_EXTS
-
-
-def _extract_parent_id_from_115_info(info_data):
-    """兼容 OpenAPI / Cookie 返回结构，从文件详情里提取真实父目录 ID。"""
-    if not isinstance(info_data, dict):
-        return None
-
-    # OpenAPI / Cookie 经过 P115Service 归一化后通常已经有 parent_id / pid；
-    # 原始 Cookie 文件详情里文件的 cid 代表父目录，目录项才可能代表自身 ID。
-    for key in ('parent_id', 'pid', 'parentId', 'cid'):
-        val = info_data.get(key)
-        if val not in (None, ''):
-            return str(val)
-    return None
-
-
-def _resolve_mp_episode_parent_id(client, file_info: dict, log_prefix='MP直出') -> dict:
-    """MP 上传剧集视频时，实时向 115 查询文件真实父目录 ID，修正 MP 传来的剧目录/爷爷目录。"""
-    if not isinstance(file_info, dict):
-        return file_info
-
-    file_name = file_info.get('name') or ''
-    media_type = str(file_info.get('media_type') or '').strip().lower()
-
-    # 只修正剧集视频：电影不动，字幕不单独查，避免无意义 API 消耗。
-    if media_type not in ('tv', 'series', 'episode', '电视剧'):
-        return file_info
-    if not _is_mp_video_file(file_name):
-        return file_info
-
-    fid = file_info.get('file_id')
-    if not fid:
-        logger.warning(f"  ➜ [{log_prefix}父目录修正] 缺少 file_id，无法实时查询 115 父目录: {file_name}")
-        return file_info
-
-    old_parent_id = file_info.get('parent_id')
+def _fix_mp_tv_parent_id(client, file_info):
+    """MP 直出剧集父目录轻量修正：MP 可能给剧目录，按 115_path 上级目录反查季目录 CID。"""
     try:
-        info_res = client.fs_get_info(fid)
-        if not (isinstance(info_res, dict) and info_res.get('state')):
-            logger.warning(f"  ➜ [{log_prefix}父目录修正] 查询 115 文件详情失败，沿用 MP 目录ID: file={file_name}, resp={info_res}")
-            return file_info
+        if (file_info.get('media_type') or '').lower() != 'tv':
+            return
 
-        info_data = info_res.get('data') if isinstance(info_res.get('data'), dict) else {}
-        real_parent_id = _extract_parent_id_from_115_info(info_data)
-        if not real_parent_id:
-            logger.warning(f"  ➜ [{log_prefix}父目录修正] 115 文件详情缺少父目录字段，沿用 MP 目录ID: file={file_name}, data={info_data}")
-            return file_info
+        parent_id = file_info.get('parent_id')
+        path = (file_info.get('115_path') or '').replace('\\', '/').rstrip('/')
+        if not parent_id or not path or '/' not in path:
+            return
 
-        file_info['_mp_original_parent_id'] = str(old_parent_id) if old_parent_id not in (None, '') else None
-        file_info['_mp_parent_id_checked'] = True
-        file_info['_mp_parent_id_fixed'] = bool(old_parent_id and str(old_parent_id) != str(real_parent_id))
-        file_info['parent_id'] = str(real_parent_id)
+        season_dir_name = os.path.basename(os.path.dirname(path))
+        if not season_dir_name:
+            return
 
-        fetched_sha1 = info_data.get('sha1') or info_data.get('sha') or info_data.get('file_sha1')
-        if fetched_sha1 and not file_info.get('sha1'):
-            file_info['sha1'] = str(fetched_sha1).upper()
-
-        if old_parent_id and str(old_parent_id) != str(real_parent_id):
+        # P115Service.get_client() 包装器里已有精准查找子目录的方法，直接复用，避免在 webhook 堆复杂逻辑。
+        finder = getattr(client, '_find_child_dir', None)
+        season_cid = finder(parent_id, season_dir_name) if callable(finder) else None
+        if season_cid and str(season_cid) != str(parent_id):
+            old_parent_id = parent_id
+            file_info['parent_id'] = str(season_cid)
             logger.info(
-                f"  ➜ [{log_prefix}父目录修正] 剧集视频已实时纠正父目录ID: "
-                f"MP={old_parent_id} -> 115={real_parent_id} | {file_name}"
+                f"  ➜ [MP直出父目录修正] 剧集父目录已修正: "
+                f"{old_parent_id} -> {season_cid} ({season_dir_name}) | {file_info.get('name')}"
             )
-        else:
-            logger.info(f"  ➜ [{log_prefix}父目录确认] 剧集视频父目录ID已实时校验: {real_parent_id} | {file_name}")
-
     except Exception as e:
-        logger.warning(f"  ➜ [{log_prefix}父目录修正] 实时查询 115 父目录异常，沿用 MP 目录ID: {file_name} -> {e}", exc_info=True)
-
-    return file_info
+        logger.warning(f"  ➜ [MP直出父目录修正] 查询季目录CID失败，沿用 MP 目录ID: {file_info.get('name')} -> {e}")
 
 def _flush_mp_batch(key):
     """缓冲结束，将收集到的同集视频和字幕打包送入核心处理"""
@@ -157,6 +111,10 @@ def _flush_mp_batch(key):
     tmdb_id, media_type, season_num, episode_num = key
     title = files[0].get('title') or ''
 
+    if media_type == 'tv':
+        for f in files:
+            _fix_mp_tv_parent_id(client, f)
+
     logger.info(
         f"  ➜ [MP合并整理] 缓冲结束，开始处理 {len(files)} 个文件 "
         f"(包含视频: {task.get('has_video', False)}) -> ID:{tmdb_id}"
@@ -167,12 +125,6 @@ def _flush_mp_batch(key):
 
         if season_num is not None and str(season_num).isdigit():
             organizer.forced_season = int(season_num)
-
-        # MP 的 target_diritem 可能是剧目录；剧集视频必须以 115 实时文件详情为准拿季目录父 ID。
-        files = [
-            _resolve_mp_episode_parent_id(client, f, log_prefix='MP合并')
-            for f in files
-        ]
 
         file_nodes = []
         for f in files:
@@ -185,11 +137,6 @@ def _flush_mp_batch(key):
                 'type': '1',
                 'pid': f.get('parent_id'),
                 'parent_id': f.get('parent_id'),
-                'sha1': f.get('sha1'),
-                'sha': f.get('sha1'),
-                '_mp_original_parent_id': f.get('_mp_original_parent_id'),
-                '_mp_parent_id_checked': f.get('_mp_parent_id_checked'),
-                '_mp_parent_id_fixed': f.get('_mp_parent_id_fixed'),
                 'pc': f.get('pickcode'),
                 'pick_code': f.get('pickcode'),
                 '115_path': f.get('115_path'), # ★ 核心新增：将 115 物理路径传递给底层
@@ -235,6 +182,8 @@ def _process_mp_passthrough_immediate(file_info):
     title = file_info.get('title') or ''
     file_name = file_info.get('name')
 
+    _fix_mp_tv_parent_id(client, file_info)
+
     logger.info(f"  ➜ [MP直出] 开始处理单文件: {file_name} -> ID:{tmdb_id}")
 
     try:
@@ -242,9 +191,6 @@ def _process_mp_passthrough_immediate(file_info):
         season_num = file_info.get('season_num')
         if season_num is not None and str(season_num).isdigit():
             organizer.forced_season = int(season_num)
-
-        # MP 的 target_diritem 可能是剧目录；直出前先查 115 文件详情获取真实季目录父 ID。
-        file_info = _resolve_mp_episode_parent_id(client, file_info, log_prefix='MP直出')
 
         file_nodes = [{
             'fid': file_info.get('file_id'),
@@ -255,11 +201,6 @@ def _process_mp_passthrough_immediate(file_info):
             'type': '1',
             'pid': file_info.get('parent_id'),
             'parent_id': file_info.get('parent_id'),
-            'sha1': file_info.get('sha1'),
-            'sha': file_info.get('sha1'),
-            '_mp_original_parent_id': file_info.get('_mp_original_parent_id'),
-            '_mp_parent_id_checked': file_info.get('_mp_parent_id_checked'),
-            '_mp_parent_id_fixed': file_info.get('_mp_parent_id_fixed'),
             'pc': file_info.get('pickcode'),
             'pick_code': file_info.get('pickcode'),
             '115_path': file_info.get('115_path'),
