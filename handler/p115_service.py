@@ -5364,7 +5364,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             # ★ 修复：使用 [-1] 提取后缀，防止文件名中包含多个点导致报错
             ext = original_name.rsplit(".", 1)[-1].lower()
             fid = file_item.get("fid") or file_item.get("file_id")
-            parent_id = file_item.get("pid") or file_item.get("parent_id")
+            parent_id = file_item.get("pid") or file_item.get("parent_id") or file_item.get("cid")
             pick_code = file_item.get("pc") or file_item.get("pick_code")
             sha1 = file_item.get("sha1") or file_item.get("sha")
             full_115_path = file_item.get("115_path")
@@ -5374,6 +5374,42 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             
             if not is_video and not is_sub:
                 continue
+
+            # ==========================================================
+            # ★ MP 剧集直出修正：MP webhook 的 parent_id 可能是“剧目录”而不是“季目录”。
+            #   剧集视频必须以 115 实时详情为准，避免 p115_filesystem_cache 把集文件挂到爷爷目录。
+            #   同一次详情查询顺手补齐 SHA1，防止后面重复请求。
+            # ==========================================================
+            if is_video and str(self.media_type or '').strip().lower() == 'tv' and fid:
+                try:
+                    info_res = self.client.fs_get_info(fid)
+                    info_data = info_res.get('data') if isinstance(info_res, dict) else None
+                    if isinstance(info_data, dict):
+                        real_parent_id = (
+                            info_data.get('parent_id')
+                            or info_data.get('pid')
+                            or info_data.get('parentId')
+                            or info_data.get('cid')
+                        )
+                        if real_parent_id and str(real_parent_id) != str(parent_id or ''):
+                            old_parent_id = parent_id or '空'
+                            parent_id = str(real_parent_id)
+                            file_item['pid'] = parent_id
+                            file_item['parent_id'] = parent_id
+                            logger.info(
+                                f"  ➜ [MP直出] 季目录实时修正: {original_name} "
+                                f"{old_parent_id} -> {parent_id}"
+                            )
+
+                        if not sha1:
+                            fetched_sha1 = info_data.get('sha1') or info_data.get('sha')
+                            if fetched_sha1:
+                                sha1 = str(fetched_sha1).upper()
+                                file_item['sha1'] = sha1
+                    elif isinstance(info_res, dict) and not info_res.get('state'):
+                        logger.warning(f"  ➜ [MP直出] 剧集文件父目录实时查询失败: {original_name} -> {info_res}")
+                except Exception as e:
+                    logger.warning(f"  ➜ [MP直出] 剧集文件父目录实时查询异常: {original_name} -> {e}")
 
             # ==========================================================
             # ★ 核心优化：直接从 Webhook 传来的 115_path 提取相对路径，0 API 消耗！
