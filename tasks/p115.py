@@ -92,18 +92,79 @@ def _is_generic_package_segment(name):
     return bool(GENERIC_PACKAGE_SEGMENT_RE.match(normalized))
 
 
+def _normalize_context_label(name):
+    if not name:
+        return ''
+    normalized = TMDB_TAG_RE.sub('', str(name))
+    normalized = re.sub(r'[\s\-\._]+', '', normalized)
+    return normalized.lower()
+
+
+def _split_rel_dir_segments(rel_dir):
+    return [seg.strip() for seg in str(rel_dir or '').split('/') if seg and seg.strip()]
+
+
 def _choose_big_package_context_name(top_name, rel_dir):
-    segments = [seg.strip() for seg in str(rel_dir or '').split('/') if seg and seg.strip()]
+    segments = _split_rel_dir_segments(rel_dir)
     for segment in reversed(segments):
         if not _name_is_season_dir(segment) and not _is_generic_package_segment(segment):
             return segment
     return top_name
 
 
+def _analyze_nested_root_structure(top_name, gathered_files):
+    valid_video_files = []
+    contexts = set()
+    nested_contexts = set()
+    top_norm = _normalize_context_label(top_name)
+
+    for item in list(gathered_files or []):
+        file_name = item.get('fn') or item.get('n') or item.get('file_name', '')
+        ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+        if ext not in KNOWN_VIDEO_EXTS:
+            continue
+        file_size = _parse_115_size(item.get('fs') or item.get('size'))
+        if file_size <= MIN_BIG_PACKAGE_VIDEO_SIZE:
+            continue
+
+        valid_video_files.append(item)
+        context_name = _choose_big_package_context_name(top_name, item.get('_etk_rel_dir', ''))
+        context_norm = _normalize_context_label(context_name)
+        if context_name and context_norm:
+            contexts.add(context_name)
+            if top_norm and context_norm != top_norm:
+                nested_contexts.add(context_name)
+            elif not top_norm and item.get('_etk_rel_dir'):
+                nested_contexts.add(context_name)
+
+    has_multiple_contexts = len({_normalize_context_label(name) for name in contexts if name}) > 1
+    has_nested_specific_context = len(nested_contexts) > 0
+    should_force_filewise = len(valid_video_files) > 1 and (has_multiple_contexts or has_nested_specific_context)
+
+    return {
+        "valid_video_files": valid_video_files,
+        "contexts": sorted(contexts),
+        "nested_contexts": sorted(nested_contexts),
+        "has_multiple_contexts": has_multiple_contexts,
+        "has_nested_specific_context": has_nested_specific_context,
+        "should_force_filewise": should_force_filewise,
+    }
+
+
 def _should_use_filewise_big_package(top_name, is_tv_group, has_season_dir, has_tmdb, valid_video_files):
     if is_tv_group or has_season_dir or has_tmdb:
         return False
     return len(valid_video_files) > 1
+
+
+def _should_force_nested_package_scan(top_name):
+    if not _is_generic_package_segment(top_name):
+        return False
+    if _name_has_tmdb_tag(top_name):
+        return False
+    if _name_has_tv_hint(top_name) or _name_is_season_dir(top_name):
+        return False
+    return True
 
 
 def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=None, use_ai=False):
@@ -324,6 +385,7 @@ def task_scan_and_organize_115(processor=None):
             top_id = root_item.get('fid') or root_item.get('file_id')
             fc_val = str(root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type'))
             is_folder = (fc_val == '0')
+            force_nested_package_scan = bool(is_folder and _should_force_nested_package_scan(top_name))
 
             local_processed = 0
             local_unidentified = []
@@ -381,14 +443,14 @@ def task_scan_and_organize_115(processor=None):
                             c_is_season_dir = c_is_folder and _name_is_season_dir(c_name)
                             
                             if c_is_folder:
-                                if c_is_season_dir or c_is_tv_hint:
+                                if not force_nested_package_scan and (c_is_season_dir or c_is_tv_hint):
                                     is_tv_group = True
                                     if c_is_season_dir: has_season_dir = True
                                 
                                 has_tmdb = _name_has_tmdb_tag(top_name)
                                 
                                 # ★ 核心提速：如果是剧集或已标记TMDB，绝不可能是大杂烩，直接把文件夹当做 item 塞进去，不再深入！
-                                if depth > 0 and (is_tv_group or has_tmdb):
+                                if depth > 0 and not force_nested_package_scan and (is_tv_group or has_tmdb):
                                     child['_etk_rel_dir'] = rel_dir
                                     gathered_files.append(child)
                                 else:
@@ -400,7 +462,8 @@ def task_scan_and_organize_115(processor=None):
                                 c_ext = c_name.split('.')[-1].lower() if '.' in c_name else ''
                                 if c_ext in allowed_exts:
                                     gathered_files.append(child)
-                                    if c_is_tv_hint: is_tv_group = True
+                                    if c_is_tv_hint and not force_nested_package_scan:
+                                        is_tv_group = True
                                 else:
                                     if c_ext not in KNOWN_SKIP_EXTS:
                                         local_unidentified.append(child)
@@ -413,16 +476,15 @@ def task_scan_and_organize_115(processor=None):
                 
                 # ★ 大包逐文件识别逻辑
                 has_tmdb = _name_has_tmdb_tag(top_name)
-                valid_video_files = []
-                for f in gathered_files:
-                    f_name = f.get('fn', '')
-                    ext = f_name.split('.')[-1].lower() if '.' in f_name else ''
-                    if ext in KNOWN_VIDEO_EXTS:
-                        file_size = _parse_115_size(f.get('fs') or f.get('size'))
-                        if file_size > MIN_BIG_PACKAGE_VIDEO_SIZE:
-                            valid_video_files.append(f)
-                
-                if _should_use_filewise_big_package(top_name, is_tv_group, has_season_dir, has_tmdb, valid_video_files):
+                structure_info = _analyze_nested_root_structure(top_name, gathered_files)
+                valid_video_files = structure_info["valid_video_files"]
+                should_use_filewise = (
+                    structure_info["should_force_filewise"]
+                    or force_nested_package_scan
+                    or _should_use_filewise_big_package(top_name, is_tv_group, has_season_dir, has_tmdb, valid_video_files)
+                )
+
+                if should_use_filewise:
                     logger.info(f"  ➜ [大包模式] 检测到深层嵌套资源目录 '{top_name}'，执行逐文件识别...")
                     filewise_groups, filewise_unresolved = _build_filewise_big_package_groups(
                         gathered_files,
