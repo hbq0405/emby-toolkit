@@ -1915,15 +1915,18 @@ def _execute_task_from_tg(chat_id: str, task_key: str):
     target_version = ""
     update_container_name = ""
     update_image_name = ""
+    update_strategy = ""
     if task_key == 'system-auto-update':
         try:
-            from tasks.system_update import get_system_update_version_info, resolve_update_target
+            from tasks.system_update import get_system_update_version_info, resolve_update_target, resolve_update_strategy
             version_info = get_system_update_version_info() or {}
             current_version = str(version_info.get('current_version') or '').strip()
             target_version = str(version_info.get('target_version') or '').strip()
             update_target = resolve_update_target(getattr(target_processor, 'config', {}) or {})
             update_container_name = str(update_target.get('container_name') or '').strip()
             update_image_name = str(update_target.get('docker_image_name') or '').strip()
+            strategy_info = resolve_update_strategy(getattr(target_processor, 'config', {}) or {})
+            update_strategy = str(strategy_info.get('strategy') or '').strip()
         except Exception as e:
             logger.debug(f"  ➜ [TG交互] 获取系统更新版本信息失败: {e}")
 
@@ -1937,6 +1940,8 @@ def _execute_task_from_tg(chat_id: str, task_key: str):
             start_lines.append(f"目标容器: `{update_container_name}`")
         if update_image_name:
             start_lines.append(f"目标镜像: `{update_image_name}`")
+        if update_strategy:
+            start_lines.append(f"更新策略: `{update_strategy}`")
     start_lines.append("请在系统日志或任务中心查看进度。")
     send_telegram_message(chat_id, escape_markdown("\n".join(start_lines)))
     logger.info(f"  ➜ [TG交互] 管理员 {chat_id} 触发了任务: {task_description}")

@@ -145,6 +145,8 @@ CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE = "tmdb_image_language_preference"
 # --- GitHub (用于版本检查) ---
 CONFIG_SECTION_GITHUB = "GitHub"
 CONFIG_OPTION_GITHUB_TOKEN = "github_token" # 用于提高API速率限制的个人访问令牌
+CONFIG_OPTION_SYSTEM_UPDATE_STRATEGY = "system_update_strategy"
+CONFIG_OPTION_SYSTEM_UPDATE_HELPER_IMAGE = "system_update_helper_image"
 
 # --- 豆瓣 API ---
 CONFIG_SECTION_API_DOUBAN = "DoubanAPI"

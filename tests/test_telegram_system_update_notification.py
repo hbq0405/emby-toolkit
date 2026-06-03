@@ -8,6 +8,7 @@ from unittest import mock
 def _install_test_stubs():
     config_manager_mod = sys.modules.get("config_manager") or types.ModuleType("config_manager")
     config_manager_mod.APP_CONFIG = {}
+    config_manager_mod.PERSISTENT_DATA_PATH = "/tmp"
     config_manager_mod.get_proxies_for_requests = lambda: None
     sys.modules["config_manager"] = config_manager_mod
 
@@ -21,6 +22,8 @@ def _install_test_stubs():
     constants_mod.CONFIG_OPTION_EMBY_API_KEY = "emby_api_key"
     constants_mod.CONFIG_OPTION_EMBY_USER_ID = "emby_user_id"
     constants_mod.CONFIG_OPTION_GITHUB_TOKEN = "github_token"
+    constants_mod.CONFIG_OPTION_SYSTEM_UPDATE_STRATEGY = "system_update_strategy"
+    constants_mod.CONFIG_OPTION_SYSTEM_UPDATE_HELPER_IMAGE = "system_update_helper_image"
     constants_mod.GITHUB_REPO_OWNER = "hbq0405"
     constants_mod.GITHUB_REPO_NAME = "emby-toolkit"
     sys.modules["constants"] = constants_mod
@@ -85,6 +88,11 @@ system_update = importlib.import_module("tasks.system_update")
 
 
 class TelegramSystemUpdateNotificationTests(unittest.TestCase):
+    def test_resolve_update_strategy_defaults_to_docker_helper(self):
+        resolved = system_update.resolve_update_strategy({})
+        self.assertEqual(resolved["strategy"], "docker_helper")
+        self.assertEqual(resolved["helper_image"], "hbq0405/emby-toolkit:latest")
+
     def test_resolve_update_target_falls_back_to_env(self):
         with mock.patch.dict("os.environ", {"CONTAINER_NAME": "etk-prod", "DOCKER_IMAGE_NAME": "hbq0405/emby-toolkit:v10.2.4"}, clear=False):
             resolved = system_update.resolve_update_target({}, docker_client=object())
@@ -103,27 +111,31 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
 
         with mock.patch.object(system_update, "get_system_update_version_info", return_value={"current_version": "10.2.3", "target_version": "v10.2.4"}):
             with mock.patch.object(system_update, "resolve_update_target", return_value={"container_name": "etk-prod", "docker_image_name": "hbq0405/emby-toolkit:v10.2.4"}):
-                with mock.patch.object(telegram, "send_telegram_message") as send_mock:
-                    with mock.patch("handler.telegram.threading.Thread") as thread_mock:
-                        thread_mock.return_value.start.side_effect = lambda: thread_mock.call_args.kwargs["target"]()
+                with mock.patch.object(system_update, "resolve_update_strategy", return_value={"strategy": "docker_helper", "helper_image": "hbq0405/emby-toolkit:latest"}):
+                    with mock.patch.object(telegram, "send_telegram_message") as send_mock:
+                        with mock.patch("handler.telegram.threading.Thread") as thread_mock:
+                            thread_mock.return_value.start.side_effect = lambda: thread_mock.call_args.kwargs["target"]()
 
-                        registry = {
-                            "system-auto-update": (fake_update_task, "系统自动更新", "media")
-                        }
-                        with mock.patch("tasks.core.get_task_registry", return_value=registry):
-                            telegram._execute_task_from_tg("10001", "system-auto-update")
+                            registry = {
+                                "system-auto-update": (fake_update_task, "系统自动更新", "media")
+                            }
+                            with mock.patch("tasks.core.get_task_registry", return_value=registry):
+                                telegram._execute_task_from_tg("10001", "system-auto-update")
 
         self.assertEqual(send_mock.call_count, 2)
         start_message = send_mock.call_args_list[0].args[1]
         finish_message = send_mock.call_args_list[1].args[1]
-        self.assertIn("当前版本: \\`10\\.2\\.3\\`", start_message)
-        self.assertIn("目标版本: \\`v10\\.2\\.4\\`", start_message)
-        self.assertIn("目标容器: \\`etk\\-prod\\`", start_message)
-        self.assertIn("目标镜像: \\`hbq0405/emby\\-toolkit:v10\\.2\\.4\\`", start_message)
+        normalized_start = start_message.replace("\\", "")
+        normalized_finish = finish_message.replace("\\", "")
+        self.assertIn("当前版本: `10.2.3`", normalized_start)
+        self.assertIn("目标版本: `v10.2.4`", normalized_start)
+        self.assertIn("目标容器: `etk-prod`", normalized_start)
+        self.assertIn("目标镜像: `hbq0405/emby-toolkit:v10.2.4`", normalized_start)
+        self.assertIn("更新策略: `docker_helper`", normalized_start)
         self.assertIn("❌ 任务执行失败", finish_message)
-        self.assertIn("当前版本: \\`10\\.2\\.3\\`", finish_message)
-        self.assertIn("目标版本: \\`v10\\.2\\.4\\`", finish_message)
-        self.assertIn("错误信息: 无法连接 Docker 守护进程", finish_message)
+        self.assertIn("当前版本: `10.2.3`", normalized_finish)
+        self.assertIn("目标版本: `v10.2.4`", normalized_finish)
+        self.assertIn("错误信息: 无法连接 Docker 守护进程", normalized_finish)
 
 
 if __name__ == "__main__":
