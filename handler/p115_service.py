@@ -79,6 +79,83 @@ _DIRECT_URL_CACHE = LimitedCache(maxsize=2000)
 _GLOBAL_DIR_CACHE = LimitedCache(maxsize=5000)
 _GLOBAL_DIR_LOCK = threading.Lock()
 
+
+def _extract_sidecar_episode_number(*texts):
+    for text in texts:
+        if not text:
+            continue
+        value = str(text)
+        match = re.search(
+            r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b'
+            r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
+            r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
+            r'|第(\d{1,4})[集话話回]',
+            value,
+            re.IGNORECASE,
+        )
+        if match:
+            episode = match.group(2) or match.group(3) or match.group(4) or match.group(5)
+            if episode is not None:
+                return int(episode)
+    return None
+
+
+def _extract_sidecar_part_number(*texts):
+    for text in texts:
+        if not text:
+            continue
+        value = str(text)
+        match = re.search(r'(?i)[ \.\-\_\[\(]*(part|pt|cd)[ \.\-\_]*(\d{1,2})\b', value)
+        if match:
+            return int(match.group(2))
+    return None
+
+
+def _extract_sidecar_season_number(*texts):
+    for text in texts:
+        if not text:
+            continue
+        value = str(text)
+        match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', value, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        match = re.search(r'Season\s*(\d{1,4})\b', value, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        match = re.search(r'第(\d{1,4})季', value)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _is_related_sidecar_name(video_name, other_name):
+    video_name = str(video_name or '')
+    other_name = str(other_name or '')
+    if not video_name or not other_name:
+        return False
+
+    video_base = video_name.rsplit('.', 1)[0] if '.' in video_name else video_name
+    if other_name.startswith(video_base):
+        return True
+
+    video_season = _extract_sidecar_season_number(video_name)
+    other_season = _extract_sidecar_season_number(other_name)
+    video_episode = _extract_sidecar_episode_number(video_name)
+    other_episode = _extract_sidecar_episode_number(other_name)
+    video_part = _extract_sidecar_part_number(video_name)
+    other_part = _extract_sidecar_part_number(other_name)
+
+    if video_episode is None or other_episode is None:
+        return False
+
+    if video_season is not None and other_season is not None and video_season != other_season:
+        return False
+
+    if video_part is not None and other_part is not None and video_part != other_part:
+        return False
+
+    return video_episode == other_episode
+
 _NOISE_TOKEN_PATTERNS = [
     r'(?i)\b(?:WEB[-_. ]?DL|WEB[-_. ]?RIP|BLU[-_. ]?RAY|BDRIP|BRRIP|REMUX|DVDRIP|HDTV|UHD)\b',
     r'(?i)\b(?:HDR10\+?|HDR|DV|DOVI|DOLBY[.\s_-]*VISION|HLG)\b',
@@ -6809,8 +6886,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                         # 检查是否匹配任何一个视频的基础名
                         for r_item in root_items:
                             v_name = r_item['_info_data'].get('file_name') or r_item['fn']
-                            v_base = v_name.rsplit('.', 1)[0] if '.' in v_name else v_name
-                            if sub_name.startswith(v_base):
+                            if _is_related_sidecar_name(v_name, sub_name):
                                 sub_items.append(item)
                                 break
         except Exception as e:
@@ -6829,57 +6905,27 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                 )
                 if not info_name:
                     continue
-                season_key = _extract_season_number(info_name)
-                episode_key = None
-                match = re.search(
-                    r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b'
-                    r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
-                    r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
-                    r'|第(\d{1,4})[集话話回]',
-                    info_name,
-                    re.IGNORECASE,
-                )
-                if match:
-                    season_from_name = match.group(1)
-                    episode_key = match.group(2) or match.group(3) or match.group(4) or match.group(5)
-                    if season_key is None and season_from_name:
-                        season_key = int(season_from_name)
+                season_key = _extract_sidecar_season_number(info_name)
+                episode_key = _extract_sidecar_episode_number(info_name)
+                part_key = _extract_sidecar_part_number(info_name)
                 if episode_key is None:
-                    continue
-                try:
-                    episode_key = int(episode_key)
-                except Exception:
                     continue
                 if season_key is None:
                     season_key = organizer.forced_season or 1
-                subtitle_video_names[(int(season_key), int(episode_key))] = info_name.rsplit('.', 1)[0]
+                subtitle_video_names[(int(season_key), int(episode_key), part_key)] = info_name.rsplit('.', 1)[0]
 
             for sub_item in sub_items:
                 sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
-                season_key = organizer.forced_season
-                episode_key = None
-                match = re.search(
-                    r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b'
-                    r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
-                    r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
-                    r'|第(\d{1,4})[集话話回]',
-                    sub_name,
-                    re.IGNORECASE,
-                )
-                if match:
-                    season_from_name = match.group(1)
-                    episode_key = match.group(2) or match.group(3) or match.group(4) or match.group(5)
-                    if season_key is None and season_from_name:
-                        season_key = int(season_from_name)
+                season_key = _extract_sidecar_season_number(sub_name)
+                episode_key = _extract_sidecar_episode_number(sub_name)
+                part_key = _extract_sidecar_part_number(sub_name)
                 if episode_key is None:
                     continue
-                try:
-                    episode_key = int(episode_key)
-                except Exception:
-                    continue
                 if season_key is None:
-                    season_key = 1
-                forced_base_name = subtitle_video_names.get((int(season_key), int(episode_key)))
+                    season_key = organizer.forced_season or 1
+                forced_base_name = subtitle_video_names.get((int(season_key), int(episode_key), part_key))
+                if not forced_base_name:
+                    forced_base_name = subtitle_video_names.get((int(season_key), int(episode_key), None))
                 if forced_base_name:
                     sub_item['_forced_base_name'] = forced_base_name
                     sub_item['_forced_season'] = int(season_key)

@@ -257,6 +257,38 @@ class P115RecognitionRuleTests(unittest.TestCase):
             rename_pairs,
         )
 
+    def test_tasks_related_sidecar_name_matches_same_episode_without_full_prefix(self):
+        self.assertTrue(
+            task_p115._is_related_sidecar_name(
+                "Predators.(2019).S01E01.WEB-DL.HDR10.DoVi.P8.2160p.HEVC.10bit.DDP.5.1.NF-Sic.mkv",
+                "Predators.(2019).S01E01.WEB-DL.HDR.DV.2160p.HEVC.Atmos.5.1.NF.ass",
+            )
+        )
+
+    def test_tasks_related_sidecar_name_rejects_different_episode(self):
+        self.assertFalse(
+            task_p115._is_related_sidecar_name(
+                "Predators.(2019).S01E01.WEB-DL.HDR10.DoVi.P8.2160p.HEVC.10bit.DDP.5.1.NF-Sic.mkv",
+                "Predators.(2019).S01E02.WEB-DL.HDR.DV.2160p.HEVC.Atmos.5.1.NF.ass",
+            )
+        )
+
+    def test_handler_related_sidecar_name_matches_same_episode_without_full_prefix(self):
+        self.assertTrue(
+            p115_service._is_related_sidecar_name(
+                "Predators.(2019).S01E01.WEB-DL.HDR10.DoVi.P8.2160p.HEVC.10bit.DDP.5.1.NF-Sic.mkv",
+                "Predators.(2019).S01E01.WEB-DL.HDR.DV.2160p.HEVC.Atmos.5.1.NF.ass",
+            )
+        )
+
+    def test_handler_related_sidecar_name_rejects_different_episode(self):
+        self.assertFalse(
+            p115_service._is_related_sidecar_name(
+                "Predators.(2019).S01E01.WEB-DL.HDR10.DoVi.P8.2160p.HEVC.10bit.DDP.5.1.NF-Sic.mkv",
+                "Predators.(2019).S01E02.WEB-DL.HDR.DV.2160p.HEVC.Atmos.5.1.NF.ass",
+            )
+        )
+
     def test_identify_media_enhanced_prefers_raw_ffprobe_identity_over_rule_tmdbid(self):
         raw_ffprobe_json = {
             "_etk": {
