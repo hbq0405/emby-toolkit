@@ -1,9 +1,8 @@
 import json
 import logging
 import os
-import tempfile
 import time
-from pathlib import Path
+import posixpath
 
 import docker
 
@@ -298,6 +297,14 @@ def _clean_version_text(value, default=None):
     return text or default
 
 
+def _log_trace(message):
+    trace_logger = getattr(logger, 'trace', None)
+    if callable(trace_logger):
+        trace_logger(message)
+        return
+    logger.debug(message)
+
+
 def _read_json_file(path):
     try:
         with open(path, 'r', encoding='utf-8') as fh:
@@ -338,6 +345,73 @@ def consume_post_update_status():
     except Exception as e:
         logger.warning(f"删除更新状态文件失败: {status_path}, err={e}")
     return payload
+
+
+def _normalize_container_path(path_value):
+    path_text = _clean_version_text(path_value)
+    if not path_text:
+        return None
+    normalized = posixpath.normpath(path_text)
+    if not normalized.startswith('/'):
+        normalized = f"/{normalized.lstrip('/')}"
+    return normalized
+
+
+def _is_container_subpath(path_value, parent_path):
+    if path_value == parent_path:
+        return True
+    return path_value.startswith(parent_path.rstrip('/') + '/')
+
+
+def _resolve_helper_status_volume(container, status_path):
+    normalized_status_path = _normalize_container_path(status_path)
+    if not normalized_status_path:
+        return None, "系统更新状态文件路径无效。"
+
+    container_attrs = getattr(container, 'attrs', {}) or {}
+    mounts = container_attrs.get('Mounts') or []
+    matched_mount = None
+    matched_destination = None
+
+    for mount in mounts:
+        destination = _normalize_container_path(mount.get('Destination') or mount.get('Target'))
+        if not destination or not _is_container_subpath(normalized_status_path, destination):
+            continue
+        if matched_destination and len(destination) <= len(matched_destination):
+            continue
+        matched_mount = mount
+        matched_destination = destination
+
+    if not matched_mount or not matched_destination:
+        return None, f"无法为状态文件 '{normalized_status_path}' 定位目标容器的持久化挂载。"
+
+    mount_type = _clean_version_text(matched_mount.get('Type')).lower()
+    if mount_type == 'tmpfs':
+        return None, f"状态文件所在挂载 '{matched_destination}' 是 tmpfs，容器重启后无法保留更新结果。"
+
+    source = None
+    if mount_type == 'volume':
+        source = _clean_version_text(matched_mount.get('Name') or matched_mount.get('Source'))
+    else:
+        source = _clean_version_text(matched_mount.get('Source') or matched_mount.get('Name'))
+
+    if not source:
+        return None, f"状态文件所在挂载 '{matched_destination}' 缺少可复用的挂载源。"
+
+    mode = _clean_version_text(matched_mount.get('Mode'))
+    if not mode:
+        mode = 'rw' if matched_mount.get('RW', True) else 'ro'
+    mode_tokens = [token.strip() for token in mode.split(',') if token.strip()]
+    access_mode = 'rw'
+    if 'ro' in mode_tokens or matched_mount.get('RW') is False:
+        access_mode = 'ro'
+
+    if access_mode != 'rw':
+        return None, f"状态文件所在挂载 '{matched_destination}' 为只读，无法写入更新结果。"
+
+    return {
+        source: {'bind': matched_destination, 'mode': 'rw'},
+    }, None
 
 
 def _resolve_self_container_target(client):
@@ -495,16 +569,32 @@ def _run_docker_helper(client, helper_image, container_name, image_name_tag, ver
     for event in _ensure_helper_image(client, helper_image, version_info):
         yield event
 
-    env = _build_helper_environment(status_path, container_name, image_name_tag, version_info)
-    with tempfile.NamedTemporaryFile('w', encoding='utf-8', suffix='.py', delete=False) as tmp_script:
-        tmp_script.write(DOCKER_HELPER_SCRIPT)
-        helper_script_path = tmp_script.name
+    try:
+        target_container = client.containers.get(container_name)
+    except Exception as e:
+        yield {
+            "status": f"启动 Docker Helper 失败: 无法定位目标容器 '{container_name}': {e}",
+            "event": "ERROR",
+            "current_version": version_info.get('current_version'),
+            "target_version": version_info.get('target_version'),
+        }
+        return
 
+    helper_status_volume, volume_error = _resolve_helper_status_volume(target_container, status_path)
+    if volume_error:
+        yield {
+            "status": f"启动 Docker Helper 失败: {volume_error}",
+            "event": "ERROR",
+            "current_version": version_info.get('current_version'),
+            "target_version": version_info.get('target_version'),
+        }
+        return
+
+    env = _build_helper_environment(status_path, container_name, image_name_tag, version_info)
     volumes = {
         '/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'},
-        persistent_root: {'bind': persistent_root, 'mode': 'rw'},
-        helper_script_path: {'bind': '/tmp/etk_update_helper.py', 'mode': 'ro'},
     }
+    volumes.update(helper_status_volume)
 
     yield {
         "status": f"正在启动 Docker Helper 更新容器 '{container_name}'...",
@@ -515,8 +605,7 @@ def _run_docker_helper(client, helper_image, container_name, image_name_tag, ver
     try:
         output = client.containers.run(
             image=helper_image,
-            entrypoint=["python"],
-            command=["/tmp/etk_update_helper.py"],
+            entrypoint=["python", "-c", DOCKER_HELPER_SCRIPT],
             remove=True,
             detach=False,
             environment=env,
@@ -531,11 +620,6 @@ def _run_docker_helper(client, helper_image, container_name, image_name_tag, ver
             "target_version": version_info.get('target_version'),
         }
         return
-    finally:
-        try:
-            os.remove(helper_script_path)
-        except FileNotFoundError:
-            pass
 
     status_payload = _read_json_file(status_path)
     if not status_payload:
@@ -727,7 +811,7 @@ def task_check_and_update_container(processor):
     image_name_tag = update_target['docker_image_name']
     strategy_name = strategy_info['strategy']
     helper_image = strategy_info['helper_image']
-    logger.trace(f"--- 开始执行系统更新检查 (容器: {container_name}, 策略: {strategy_name}) ---")
+    _log_trace(f"--- 开始执行系统更新检查 (容器: {container_name}, 策略: {strategy_name}) ---")
     task_manager.update_status_from_thread(0, "准备检查更新...")
     result = {
         "ok": False,
