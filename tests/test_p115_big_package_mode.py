@@ -94,6 +94,14 @@ class P115BigPackageModeTests(unittest.TestCase):
             )
         )
 
+    def test_should_force_nested_package_scan_for_generic_root_even_if_children_are_tv(self):
+        self.assertTrue(task_p115._should_force_nested_package_scan("2026"))
+        self.assertTrue(task_p115._should_force_nested_package_scan("电视剧"))
+        self.assertTrue(task_p115._should_force_nested_package_scan("合集"))
+        self.assertFalse(task_p115._should_force_nested_package_scan("罪无可逃 (2026)"))
+        self.assertFalse(task_p115._should_force_nested_package_scan("罪无可逃 (2026) {tmdb=123}"))
+        self.assertFalse(task_p115._should_force_nested_package_scan("Season 1"))
+
     def test_choose_big_package_context_name_prefers_last_non_generic_parent(self):
         self.assertEqual(
             task_p115._choose_big_package_context_name("外层合集", "xxx合集/2026/真爱下一位"),
@@ -103,6 +111,47 @@ class P115BigPackageModeTests(unittest.TestCase):
             task_p115._choose_big_package_context_name("外层合集", "合集/2026/电影"),
             "外层合集",
         )
+
+    def test_analyze_nested_root_structure_detects_specific_nested_series_context(self):
+        gathered_files = [
+            {
+                "fid": "v1",
+                "fn": "罪无可逃.2026.S01E24.mkv",
+                "size": str(300 * 1024 * 1024),
+                "_etk_rel_dir": "罪无可逃 (2026) {tmdb-321749}/Season 1",
+            },
+            {
+                "fid": "v2",
+                "fn": "罪无可逃.2026.S01E23.mkv",
+                "size": str(300 * 1024 * 1024),
+                "_etk_rel_dir": "罪无可逃 (2026) {tmdb-321749}/Season 1",
+            },
+        ]
+
+        result = task_p115._analyze_nested_root_structure("2026", gathered_files)
+        self.assertTrue(result["has_nested_specific_context"])
+        self.assertIn("罪无可逃 (2026) {tmdb-321749}", result["contexts"])
+        self.assertTrue(result["should_force_filewise"])
+
+    def test_analyze_nested_root_structure_detects_multiple_media_contexts(self):
+        gathered_files = [
+            {
+                "fid": "v1",
+                "fn": "A.Show.S01E01.mkv",
+                "size": str(300 * 1024 * 1024),
+                "_etk_rel_dir": "A Show (2026)/Season 1",
+            },
+            {
+                "fid": "v2",
+                "fn": "B.Show.S01E01.mkv",
+                "size": str(300 * 1024 * 1024),
+                "_etk_rel_dir": "B Show (2026)/Season 1",
+            },
+        ]
+
+        result = task_p115._analyze_nested_root_structure("国产剧集", gathered_files)
+        self.assertTrue(result["has_multiple_contexts"])
+        self.assertTrue(result["should_force_filewise"])
 
     def test_build_filewise_big_package_groups_keeps_tv_files_together(self):
         gathered_files = [
