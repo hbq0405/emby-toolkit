@@ -88,6 +88,33 @@ system_update = importlib.import_module("tasks.system_update")
 
 
 class TelegramSystemUpdateNotificationTests(unittest.TestCase):
+    def test_task_check_and_update_container_falls_back_when_logger_has_no_trace(self):
+        fake_processor = types.SimpleNamespace(config={})
+        fake_logger = mock.Mock(spec=["debug", "info", "error", "warning"])
+
+        with mock.patch.object(system_update, "resolve_update_target", return_value={
+            "container_name": "etk-prod",
+            "docker_image_name": "hbq0405/emby-toolkit:latest",
+        }):
+            with mock.patch.object(system_update, "resolve_update_strategy", return_value={
+                "strategy": "docker_helper",
+                "helper_image": "hbq0405/emby-toolkit:latest",
+            }):
+                with mock.patch.object(system_update, "get_system_update_version_info", return_value={
+                    "current_version": "10.3.0",
+                    "target_version": "v10.3.1",
+                }):
+                    with mock.patch.object(system_update, "_update_process_generator", return_value=iter([
+                        {"status": "当前容器已运行最新镜像，无需更新。", "event": "NO_UPDATE", "current_version": "10.3.0", "target_version": "v10.3.1"}
+                    ])):
+                        with mock.patch.object(system_update, "logger", fake_logger):
+                            result = system_update.task_check_and_update_container(fake_processor)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["updated"])
+        self.assertEqual(result["status"], "up_to_date")
+        fake_logger.debug.assert_called()
+
     def test_resolve_update_strategy_defaults_to_docker_helper(self):
         resolved = system_update.resolve_update_strategy({})
         self.assertEqual(resolved["strategy"], "docker_helper")
@@ -137,32 +164,109 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
         self.assertIn("目标版本: `v10.2.4`", normalized_finish)
         self.assertIn("错误信息: 无法连接 Docker 守护进程", normalized_finish)
 
-    def test_run_docker_helper_overrides_entrypoint(self):
+    def test_resolve_helper_status_volume_uses_target_mount(self):
+        fake_container = mock.Mock()
+        fake_container.attrs = {
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/srv/etk-config",
+                    "Destination": "/config",
+                    "Mode": "rw",
+                    "RW": True,
+                }
+            ]
+        }
+
+        volumes, error = system_update._resolve_helper_status_volume(
+            fake_container,
+            "/config/system_update_result.json",
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(volumes, {
+            "/srv/etk-config": {"bind": "/config", "mode": "rw"}
+        })
+
+    def test_resolve_helper_status_volume_rejects_unmounted_status_path(self):
+        fake_container = mock.Mock()
+        fake_container.attrs = {
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/srv/other",
+                    "Destination": "/data",
+                    "Mode": "rw",
+                    "RW": True,
+                }
+            ]
+        }
+
+        volumes, error = system_update._resolve_helper_status_volume(
+            fake_container,
+            "/config/system_update_result.json",
+        )
+
+        self.assertIsNone(volumes)
+        self.assertIn("无法为状态文件", error)
+
+    def test_run_docker_helper_executes_inline_python_against_target_mount(self):
         fake_client = mock.Mock()
         fake_client.containers.run.return_value = b"ok"
         fake_client.images.get.return_value = object()
+        fake_target_container = mock.Mock()
+        fake_target_container.attrs = {
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/srv/etk-config",
+                    "Destination": "/config",
+                    "Mode": "rw",
+                    "RW": True,
+                }
+            ]
+        }
+        fake_client.containers.get.return_value = fake_target_container
 
-        with mock.patch.object(system_update, "_get_update_status_path", return_value="/tmp/system_update_result.json"):
+        with mock.patch.object(system_update, "_get_update_status_path", return_value="/config/system_update_result.json"):
             with mock.patch.object(system_update, "_read_json_file", return_value={"ok": True, "message": "done"}):
-                with mock.patch("tempfile.NamedTemporaryFile") as tmp_file:
-                    tmp_cm = mock.MagicMock()
-                    tmp_cm.__enter__.return_value.name = "/tmp/helper.py"
-                    tmp_cm.__enter__.return_value.write.return_value = None
-                    tmp_cm.__exit__.return_value = False
-                    tmp_file.return_value = tmp_cm
-                    with mock.patch("os.makedirs"), mock.patch("os.remove", side_effect=FileNotFoundError()):
-                        events = list(system_update._run_docker_helper(
-                            fake_client,
-                            "hbq0405/emby-toolkit:latest",
-                            "emby-toolkit",
-                            "hbq0405/emby-toolkit:latest",
-                            {"current_version": "10.2.8", "target_version": "v10.2.9"},
-                        ))
+                with mock.patch("os.makedirs"), mock.patch("os.remove", side_effect=FileNotFoundError()):
+                    events = list(system_update._run_docker_helper(
+                        fake_client,
+                        "hbq0405/emby-toolkit:latest",
+                        "emby-toolkit",
+                        "hbq0405/emby-toolkit:latest",
+                        {"current_version": "10.2.8", "target_version": "v10.2.9"},
+                    ))
 
         self.assertTrue(events)
         _, kwargs = fake_client.containers.run.call_args
-        self.assertEqual(kwargs["entrypoint"], ["python"])
-        self.assertEqual(kwargs["command"], ["/tmp/etk_update_helper.py"])
+        self.assertEqual(kwargs["entrypoint"][0:2], ["python", "-c"])
+        self.assertIn("if __name__ == \"__main__\":", kwargs["entrypoint"][2])
+        self.assertNotIn("/tmp/etk_update_helper.py", kwargs["entrypoint"][2])
+        self.assertEqual(kwargs["volumes"]["/srv/etk-config"], {"bind": "/config", "mode": "rw"})
+        self.assertEqual(kwargs["environment"]["ETK_UPDATE_STATUS_PATH"], "/config/system_update_result.json")
+
+    def test_run_docker_helper_fails_fast_when_status_path_is_not_persisted_mount(self):
+        fake_client = mock.Mock()
+        fake_client.images.get.return_value = object()
+        fake_target_container = mock.Mock()
+        fake_target_container.attrs = {"Mounts": []}
+        fake_client.containers.get.return_value = fake_target_container
+
+        with mock.patch.object(system_update, "_get_update_status_path", return_value="/tmp/system_update_result.json"):
+            with mock.patch("os.makedirs"), mock.patch("os.remove", side_effect=FileNotFoundError()):
+                events = list(system_update._run_docker_helper(
+                    fake_client,
+                    "hbq0405/emby-toolkit:latest",
+                    "emby-toolkit",
+                    "hbq0405/emby-toolkit:latest",
+                    {"current_version": "10.3.0", "target_version": "v10.3.1"},
+                ))
+
+        self.assertEqual(events[-1]["event"], "ERROR")
+        self.assertIn("无法为状态文件", events[-1]["status"])
+        fake_client.containers.run.assert_not_called()
 
 
 if __name__ == "__main__":
