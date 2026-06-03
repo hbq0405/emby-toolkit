@@ -1,15 +1,296 @@
-#tasks/system_update.py
-import docker
+import json
 import logging
 import os
+import tempfile
 import time
-import task_manager
+from pathlib import Path
+
+import docker
+
 import config_manager
 import constants
 import handler.github as github
+import task_manager
+
 logger = logging.getLogger(__name__)
+
 DEFAULT_CONTAINER_NAME = 'emby-toolkit'
 DEFAULT_IMAGE_NAME_TAG = 'hbq0405/emby-toolkit:latest'
+DEFAULT_UPDATE_STRATEGY = 'docker_helper'
+DEFAULT_HELPER_IMAGE = 'hbq0405/emby-toolkit:latest'
+UPDATE_STATUS_FILE = 'system_update_result.json'
+
+DOCKER_HELPER_SCRIPT = r"""
+import json
+import os
+import sys
+import time
+
+import docker
+
+STATUS_PATH = os.environ["ETK_UPDATE_STATUS_PATH"]
+TARGET_CONTAINER = os.environ["ETK_TARGET_CONTAINER"]
+TARGET_IMAGE = os.environ["ETK_TARGET_IMAGE"]
+REQUESTED_BY = os.environ.get("ETK_REQUESTED_BY", "")
+REQUEST_SOURCE = os.environ.get("ETK_REQUEST_SOURCE", "system-auto-update")
+CURRENT_VERSION = os.environ.get("ETK_CURRENT_VERSION", "")
+TARGET_VERSION = os.environ.get("ETK_TARGET_VERSION", "")
+
+
+def write_status(payload):
+    payload = dict(payload or {})
+    payload.setdefault("container_name", TARGET_CONTAINER)
+    payload.setdefault("image_name", TARGET_IMAGE)
+    payload.setdefault("requested_by", REQUESTED_BY)
+    payload.setdefault("request_source", REQUEST_SOURCE)
+    payload.setdefault("current_version", CURRENT_VERSION)
+    payload.setdefault("target_version", TARGET_VERSION)
+    payload.setdefault("timestamp", int(time.time()))
+    tmp_path = STATUS_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+    os.replace(tmp_path, STATUS_PATH)
+
+
+def build_binds(host_config):
+    binds = {}
+    for item in host_config.get("Binds") or []:
+        spec = str(item or "").strip()
+        if not spec:
+            continue
+        parts = spec.split(":")
+        if len(parts) >= 3:
+            source = parts[0]
+            bind = parts[1]
+            mode = ":".join(parts[2:])
+        elif len(parts) == 2:
+            source, bind = parts
+            mode = "rw"
+        else:
+            continue
+        entry = {"bind": bind, "mode": mode}
+        if "," in mode:
+            segments = mode.split(",")
+            entry["mode"] = segments[0] or "rw"
+            if len(segments) > 1 and segments[1]:
+                entry["propagation"] = segments[1]
+        binds[source] = entry
+    return binds
+
+
+def build_port_bindings(host_config):
+    bindings = host_config.get("PortBindings") or {}
+    result = {}
+    for container_port, entries in bindings.items():
+        if not entries:
+            result[container_port] = None
+            continue
+        normalized = []
+        for item in entries:
+            host_ip = item.get("HostIp") or ""
+            host_port = item.get("HostPort") or ""
+            if host_ip and host_port:
+                normalized.append((host_ip, int(host_port)))
+            elif host_ip:
+                normalized.append((host_ip,))
+            elif host_port:
+                normalized.append(int(host_port))
+            else:
+                normalized.append(None)
+        result[container_port] = normalized[0] if len(normalized) == 1 else normalized
+    return result
+
+
+def build_restart_policy(host_config):
+    policy = host_config.get("RestartPolicy") or {}
+    name = policy.get("Name")
+    if not name:
+        return None
+    return {
+        "Name": name,
+        "MaximumRetryCount": int(policy.get("MaximumRetryCount") or 0),
+    }
+
+
+def build_networking(client, container_attrs):
+    host_config = container_attrs.get("HostConfig") or {}
+    network_mode = host_config.get("NetworkMode") or "default"
+    network_settings = (container_attrs.get("NetworkSettings") or {}).get("Networks") or {}
+    networking_config = None
+
+    if network_mode not in {"host", "none", "container"} and network_settings:
+        endpoints = {}
+        for network_name, network_data in network_settings.items():
+            endpoint_kwargs = {}
+            aliases = list(network_data.get("Aliases") or [])
+            if aliases:
+                endpoint_kwargs["aliases"] = aliases
+            ipv4_address = (network_data.get("IPAMConfig") or {}).get("IPv4Address") or network_data.get("IPAddress")
+            if ipv4_address:
+                endpoint_kwargs["ipv4_address"] = ipv4_address
+            ipv6_address = (network_data.get("IPAMConfig") or {}).get("IPv6Address") or network_data.get("GlobalIPv6Address")
+            if ipv6_address:
+                endpoint_kwargs["ipv6_address"] = ipv6_address
+            endpoints[network_name] = client.api.create_endpoint_config(**endpoint_kwargs)
+        networking_config = client.api.create_networking_config(endpoints)
+
+    return network_mode, networking_config
+
+
+def collect_create_kwargs(client, container):
+    attrs = container.attrs or {}
+    config = attrs.get("Config") or {}
+    host_config = attrs.get("HostConfig") or {}
+
+    ports = list((config.get("ExposedPorts") or {}).keys()) or None
+    volumes = list((config.get("Volumes") or {}).keys()) or None
+    binds = build_binds(host_config)
+    port_bindings = build_port_bindings(host_config)
+    restart_policy = build_restart_policy(host_config)
+    network_mode, networking_config = build_networking(client, attrs)
+    healthcheck = config.get("Healthcheck")
+    host_cfg = client.api.create_host_config(
+        auto_remove=bool(host_config.get("AutoRemove")),
+        binds=binds or None,
+        cap_add=host_config.get("CapAdd"),
+        cap_drop=host_config.get("CapDrop"),
+        dns=host_config.get("Dns"),
+        dns_opt=host_config.get("DnsOptions"),
+        dns_search=host_config.get("DnsSearch"),
+        extra_hosts=host_config.get("ExtraHosts"),
+        group_add=host_config.get("GroupAdd"),
+        ipc_mode=host_config.get("IpcMode"),
+        log_config=host_config.get("LogConfig"),
+        network_mode=network_mode,
+        pid_mode=host_config.get("PidMode"),
+        pids_limit=host_config.get("PidsLimit"),
+        port_bindings=port_bindings or None,
+        privileged=bool(host_config.get("Privileged")),
+        publish_all_ports=bool(host_config.get("PublishAllPorts")),
+        read_only=bool(host_config.get("ReadonlyRootfs")),
+        restart_policy=restart_policy,
+        runtime=host_config.get("Runtime"),
+        security_opt=host_config.get("SecurityOpt"),
+        shm_size=host_config.get("ShmSize"),
+        sysctls=host_config.get("Sysctls"),
+        ulimits=host_config.get("Ulimits"),
+    )
+
+    return {
+        "image": TARGET_IMAGE,
+        "command": config.get("Cmd"),
+        "hostname": config.get("Hostname") or None,
+        "user": config.get("User") or None,
+        "detach": True,
+        "stdin_open": bool(config.get("OpenStdin")),
+        "tty": bool(config.get("Tty")),
+        "ports": ports,
+        "environment": list(config.get("Env") or []),
+        "volumes": volumes,
+        "name": container.name,
+        "entrypoint": config.get("Entrypoint"),
+        "working_dir": config.get("WorkingDir") or None,
+        "domainname": config.get("Domainname") or None,
+        "labels": dict(config.get("Labels") or {}),
+        "host_config": host_cfg,
+        "networking_config": networking_config,
+        "healthcheck": healthcheck,
+        "stop_timeout": int(config.get("StopTimeout") or 10),
+    }
+
+
+def wait_for_health(container, timeout=90):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        container.reload()
+        state = container.attrs.get("State") or {}
+        health = state.get("Health") or {}
+        status = health.get("Status")
+        if status in {None, ""}:
+            return True, "容器已启动（未配置健康检查）。"
+        if status == "healthy":
+            return True, "容器健康检查通过。"
+        if status == "unhealthy":
+            return False, "新容器健康检查失败。"
+        time.sleep(2)
+    return False, "等待新容器健康检查超时。"
+
+
+def main():
+    client = docker.from_env()
+    try:
+        container = client.containers.get(TARGET_CONTAINER)
+    except Exception as exc:
+        write_status({"ok": False, "updated": False, "message": f"helper 找不到目标容器: {exc}", "status": "error"})
+        return 1
+
+    old_container_id = container.id
+    old_image_id = (container.attrs.get("Image") or "") if container.attrs else ""
+    create_kwargs = collect_create_kwargs(client, container)
+    backup_name = f"{container.name}-backup-{int(time.time())}"
+
+    try:
+        container.stop(timeout=int((container.attrs.get("Config") or {}).get("StopTimeout") or 10))
+        container.rename(backup_name)
+        response = client.api.create_container(**create_kwargs)
+        new_container_id = response.get("Id")
+        if not new_container_id:
+            raise RuntimeError("Docker API 未返回新容器 ID。")
+        client.api.start(new_container_id)
+        new_container = client.containers.get(new_container_id)
+        healthy, message = wait_for_health(new_container)
+        if not healthy:
+            raise RuntimeError(message)
+
+        backup_container = client.containers.get(backup_name)
+        backup_container.remove(force=True)
+        new_container.reload()
+        write_status({
+            "ok": True,
+            "updated": True,
+            "message": message,
+            "status": "updated",
+            "old_container_id": old_container_id,
+            "new_container_id": new_container.id,
+            "old_image_id": old_image_id,
+            "new_image_id": new_container.attrs.get("Image") or "",
+        })
+        return 0
+    except Exception as exc:
+        try:
+            current = None
+            try:
+                current = client.containers.get(TARGET_CONTAINER)
+            except Exception:
+                current = None
+
+            if current is not None and current.id != old_container_id:
+                current.remove(force=True)
+
+            backup_container = client.containers.get(backup_name)
+            backup_container.rename(TARGET_CONTAINER)
+            backup_container.start()
+        except Exception as rollback_exc:
+            write_status({
+                "ok": False,
+                "updated": False,
+                "message": f"更新失败且回滚失败: {exc}; rollback={rollback_exc}",
+                "status": "rollback_failed",
+            })
+            return 1
+
+        write_status({
+            "ok": False,
+            "updated": False,
+            "message": f"helper 更新失败，已回滚: {exc}",
+            "status": "rolled_back",
+        })
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
 
 
 def _clean_version_text(value, default=None):
@@ -17,8 +298,49 @@ def _clean_version_text(value, default=None):
     return text or default
 
 
+def _read_json_file(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"读取 JSON 文件失败: {path}, err={e}")
+        return None
+
+
+def _write_json_file(path, payload):
+    temp_path = f"{path}.tmp"
+    with open(temp_path, 'w', encoding='utf-8') as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+    os.replace(temp_path, path)
+
+
+def _get_update_status_path():
+    persistent_root = getattr(config_manager, 'PERSISTENT_DATA_PATH', None)
+    if persistent_root:
+        return os.path.join(persistent_root, UPDATE_STATUS_FILE)
+    app_data_dir = _clean_version_text(os.environ.get('APP_DATA_DIR'))
+    if app_data_dir:
+        return os.path.join(app_data_dir, UPDATE_STATUS_FILE)
+    return os.path.join(os.getcwd(), UPDATE_STATUS_FILE)
+
+
+def consume_post_update_status():
+    status_path = _get_update_status_path()
+    payload = _read_json_file(status_path)
+    if not payload:
+        return None
+    try:
+        os.remove(status_path)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"删除更新状态文件失败: {status_path}, err={e}")
+    return payload
+
+
 def _resolve_self_container_target(client):
-    """尽量从当前运行中的容器上下文识别自身容器名和镜像名。"""
     hostname = _clean_version_text(os.environ.get('HOSTNAME'))
     if not hostname or not client:
         return {}
@@ -43,14 +365,6 @@ def _resolve_self_container_target(client):
 
 
 def resolve_update_target(config_source=None, docker_client=None):
-    """
-    解析系统更新目标。
-    优先级：
-    1. 显式配置
-    2. 环境变量 CONTAINER_NAME / DOCKER_IMAGE_NAME
-    3. 当前运行容器自动识别
-    4. 代码默认值
-    """
     config_source = config_source or {}
     app_config = getattr(config_manager, 'APP_CONFIG', {}) or {}
 
@@ -88,8 +402,28 @@ def resolve_update_target(config_source=None, docker_client=None):
     }
 
 
+def resolve_update_strategy(config_source=None):
+    config_source = config_source or {}
+    app_config = getattr(config_manager, 'APP_CONFIG', {}) or {}
+    strategy = _clean_version_text(
+        config_source.get('system_update_strategy')
+        or app_config.get('system_update_strategy')
+        or os.environ.get('SYSTEM_UPDATE_STRATEGY'),
+        DEFAULT_UPDATE_STRATEGY,
+    )
+    helper_image = _clean_version_text(
+        config_source.get('system_update_helper_image')
+        or app_config.get('system_update_helper_image')
+        or os.environ.get('SYSTEM_UPDATE_HELPER_IMAGE'),
+        DEFAULT_HELPER_IMAGE,
+    )
+    return {
+        "strategy": strategy,
+        "helper_image": helper_image,
+    }
+
+
 def get_system_update_version_info():
-    """返回当前 ETK 版本和可见的最新发布版本。"""
     current_version = _clean_version_text(getattr(constants, 'APP_VERSION', None), '0.0.0')
     target_version = None
 
@@ -112,25 +446,186 @@ def get_system_update_version_info():
     }
 
 
-def _update_process_generator(container_name, image_name_tag):
-    """
-    核心更新逻辑生成器。
-    yield 返回字典格式的状态信息: {"status": "消息内容", "event": "可选事件类型(DONE/ERROR)"}
-    """
+def _decode_container_output(output):
+    if output is None:
+        return ""
+    if isinstance(output, (bytes, bytearray)):
+        return output.decode('utf-8', errors='replace')
+    if isinstance(output, str):
+        return output
+    if isinstance(output, (list, tuple)):
+        return "\n".join(_decode_container_output(item) for item in output)
+    return str(output)
+
+
+def _read_image_label_version(image):
+    labels = ((getattr(image, 'attrs', {}) or {}).get('Config') or {}).get('Labels') or {}
+    return _clean_version_text(labels.get('org.opencontainers.image.version'))
+
+
+def _build_helper_environment(status_path, container_name, image_name_tag, version_info):
+    return {
+        "ETK_UPDATE_STATUS_PATH": status_path,
+        "ETK_TARGET_CONTAINER": container_name,
+        "ETK_TARGET_IMAGE": image_name_tag,
+        "ETK_REQUESTED_BY": "tg-or-web",
+        "ETK_REQUEST_SOURCE": "system-auto-update",
+        "ETK_CURRENT_VERSION": _clean_version_text(version_info.get('current_version')),
+        "ETK_TARGET_VERSION": _clean_version_text(version_info.get('target_version')),
+    }
+
+
+def _ensure_helper_image(client, helper_image, version_info):
+    try:
+        client.images.get(helper_image)
+    except docker.errors.ImageNotFound:
+        yield {"status": f"正在拉取更新器工具: {helper_image}...", "current_version": version_info.get('current_version'), "target_version": version_info.get('target_version')}
+        client.images.pull(helper_image)
+
+
+def _run_docker_helper(client, helper_image, container_name, image_name_tag, version_info):
+    status_path = _get_update_status_path()
+    persistent_root = os.path.dirname(status_path)
+    os.makedirs(persistent_root, exist_ok=True)
+    try:
+        os.remove(status_path)
+    except FileNotFoundError:
+        pass
+
+    for event in _ensure_helper_image(client, helper_image, version_info):
+        yield event
+
+    env = _build_helper_environment(status_path, container_name, image_name_tag, version_info)
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', suffix='.py', delete=False) as tmp_script:
+        tmp_script.write(DOCKER_HELPER_SCRIPT)
+        helper_script_path = tmp_script.name
+
+    volumes = {
+        '/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'},
+        persistent_root: {'bind': persistent_root, 'mode': 'rw'},
+        helper_script_path: {'bind': '/tmp/etk_update_helper.py', 'mode': 'ro'},
+    }
+
+    yield {
+        "status": f"正在启动 Docker Helper 更新容器 '{container_name}'...",
+        "current_version": version_info.get('current_version'),
+        "target_version": version_info.get('target_version'),
+    }
+
+    try:
+        output = client.containers.run(
+            image=helper_image,
+            command=["python", "/tmp/etk_update_helper.py"],
+            remove=True,
+            detach=False,
+            environment=env,
+            volumes=volumes,
+        )
+        logger.debug(f"Docker helper 输出: {_decode_container_output(output)}")
+    except Exception as e:
+        yield {
+            "status": f"启动 Docker Helper 失败: {e}",
+            "event": "ERROR",
+            "current_version": version_info.get('current_version'),
+            "target_version": version_info.get('target_version'),
+        }
+        return
+    finally:
+        try:
+            os.remove(helper_script_path)
+        except FileNotFoundError:
+            pass
+
+    status_payload = _read_json_file(status_path)
+    if not status_payload:
+        yield {
+            "status": "Docker Helper 已退出，但未写入更新结果。",
+            "event": "ERROR",
+            "current_version": version_info.get('current_version'),
+            "target_version": version_info.get('target_version'),
+        }
+        return
+
+    if not status_payload.get('ok'):
+        yield {
+            "status": str(status_payload.get('message') or 'Docker Helper 更新失败'),
+            "event": "ERROR",
+            "current_version": _clean_version_text(status_payload.get('current_version'), version_info.get('current_version')),
+            "target_version": _clean_version_text(status_payload.get('target_version'), version_info.get('target_version')),
+        }
+        return
+
+    yield {
+        "status": "更新任务已交接给 Docker Helper，新容器启动后将补发最终结果通知。",
+        "event": "RESTARTING",
+        "updated": True,
+        "current_version": _clean_version_text(status_payload.get('current_version'), version_info.get('current_version')),
+        "target_version": _clean_version_text(status_payload.get('target_version'), version_info.get('target_version')),
+    }
+
+
+def _run_watchtower(client, container_name, version_info):
+    updater_image = "containrrr/watchtower"
+    try:
+        client.images.get(updater_image)
+    except docker.errors.ImageNotFound:
+        yield {"status": f"正在拉取更新器工具: {updater_image}...", "current_version": version_info.get('current_version'), "target_version": version_info.get('target_version')}
+        client.images.pull(updater_image)
+
+    command = ["--cleanup", "--run-once", container_name]
+    yield {
+        "status": f"正在启动 Watchtower 更新容器 '{container_name}'...",
+        "current_version": version_info.get('current_version'),
+        "target_version": version_info.get('target_version'),
+    }
+    try:
+        client.containers.run(
+            image=updater_image,
+            command=command,
+            remove=True,
+            detach=True,
+            volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}},
+        )
+    except Exception as e:
+        yield {
+            "status": f"错误：启动 Watchtower 更新器失败: {e}",
+            "event": "ERROR",
+            "current_version": version_info.get('current_version'),
+            "target_version": version_info.get('target_version'),
+        }
+        return
+
+    yield {
+        "status": "更新指令已发送！本容器即将重启...",
+        "event": "RESTARTING",
+        "current_version": version_info.get('current_version'),
+        "target_version": version_info.get('target_version'),
+    }
+    yield {
+        "status": "更新任务已成功交接给 Watchtower。",
+        "event": "DONE",
+        "updated": True,
+        "current_version": version_info.get('current_version'),
+        "target_version": version_info.get('target_version'),
+    }
+
+
+def _update_process_generator(container_name, image_name_tag, strategy=None, helper_image=None):
     client = None
     proxies_config = config_manager.get_proxies_for_requests()
     old_env = os.environ.copy()
     version_info = get_system_update_version_info()
     current_version = version_info.get('current_version')
     target_version = version_info.get('target_version')
+    strategy_name = _clean_version_text(strategy, DEFAULT_UPDATE_STRATEGY)
+    helper_image_name = _clean_version_text(helper_image, DEFAULT_HELPER_IMAGE)
     try:
-        # 设置代理环境变量，以便 docker sdk 使用
         if proxies_config and proxies_config.get('https'):
             proxy_url = proxies_config['https']
             os.environ['HTTPS_PROXY'] = proxy_url
             os.environ['HTTP_PROXY'] = proxy_url
             yield {"status": f"检测到代理配置，将通过 {proxy_url} 拉取镜像...", "current_version": current_version, "target_version": target_version}
-        
+
         try:
             client = docker.from_env()
         except Exception as e:
@@ -149,10 +644,12 @@ def _update_process_generator(container_name, image_name_tag):
             return
 
         current_image_id = _clean_version_text(getattr(getattr(target_container, 'image', None), 'id', None))
+        if not current_version:
+            current_version = _read_image_label_version(getattr(target_container, 'image', None)) or current_version
+            version_info['current_version'] = current_version
 
         yield {"status": f"正在检查并拉取最新镜像: {image_name_tag}...", "current_version": current_version, "target_version": target_version}
-        
-        # 使用流式 API 拉取镜像
+
         try:
             stream = client.api.pull(image_name_tag, stream=True, decode=True)
             last_status = ''
@@ -179,85 +676,68 @@ def _update_process_generator(container_name, image_name_tag):
                 }
                 return
 
+            version_info['target_version'] = _read_image_label_version(latest_image) or target_version
+
             if current_image_id and current_image_id == latest_image_id:
                 final_msg = "当前容器已运行最新镜像，无需更新。"
                 if last_status:
                     final_msg = f"{final_msg} Docker 返回: {last_status}"
-                yield {"status": final_msg, "event": "NO_UPDATE", "current_version": current_version, "target_version": target_version}
+                yield {"status": final_msg, "event": "NO_UPDATE", "current_version": current_version, "target_version": version_info.get('target_version')}
                 return
 
         except Exception as e:
             yield {"status": f"拉取镜像过程中发生异常: {e}", "event": "ERROR", "current_version": current_version, "target_version": target_version}
             return
 
-        # --- 核心：召唤并启动“更新器容器” ---
-        yield {"status": "镜像拉取完成，准备应用更新...", "current_version": current_version, "target_version": target_version}
+        yield {
+            "status": f"镜像拉取完成，准备通过 `{strategy_name}` 应用更新...",
+            "current_version": current_version,
+            "target_version": version_info.get('target_version'),
+        }
 
-        try:
-            updater_image = "containrrr/watchtower"
-            
-            # 确保 watchtower 镜像存在
-            try:
-                client.images.get(updater_image)
-            except docker.errors.ImageNotFound:
-                yield {"status": f"正在拉取更新器工具: {updater_image}...", "current_version": current_version, "target_version": target_version}
-                client.images.pull(updater_image)
+        if strategy_name == 'watchtower':
+            for event in _run_watchtower(client, container_name, version_info):
+                yield event
+            return
 
-            # Watchtower 命令：清理旧镜像，只运行一次，指定容器名
-            command = ["--cleanup", "--run-once", container_name]
-
-            yield {"status": f"正在启动 Watchtower 更新容器 '{container_name}'...", "current_version": current_version, "target_version": target_version}
-            
-            client.containers.run(
-                image=updater_image,
-                command=command,
-                remove=True,
-                detach=True,
-                volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}}
-            )
-            
+        if strategy_name != 'docker_helper':
             yield {
-                "status": "更新指令已发送！本容器即将重启...",
-                "event": "RESTARTING",
+                "status": f"未支持的系统更新策略: {strategy_name}",
+                "event": "ERROR",
                 "current_version": current_version,
-                "target_version": target_version,
+                "target_version": version_info.get('target_version'),
             }
-            yield {
-                "status": "更新任务已成功交接给临时更新器。",
-                "event": "DONE",
-                "updated": True,
-                "current_version": current_version,
-                "target_version": target_version,
-            }
-        except Exception as e_updater:
-            yield {"status": f"错误：启动临时更新器时失败: {e_updater}", "event": "ERROR", "current_version": current_version, "target_version": target_version}
+            return
+
+        for event in _run_docker_helper(client, helper_image_name, container_name, image_name_tag, version_info):
+            yield event
 
     except Exception as e:
         yield {"status": f"更新过程中发生未知错误: {str(e)}", "event": "ERROR", "current_version": current_version, "target_version": target_version}
     finally:
-        # 恢复环境变量
         os.environ.clear()
         os.environ.update(old_env)
 
+
 def task_check_and_update_container(processor):
-    """
-    【后台任务版】检查并更新容器。
-    此函数适配 task_manager 的日志和进度更新方式。
-    """
     update_target = resolve_update_target(getattr(processor, 'config', {}) or {})
+    strategy_info = resolve_update_strategy(getattr(processor, 'config', {}) or {})
     container_name = update_target['container_name']
     image_name_tag = update_target['docker_image_name']
-    logger.trace(f"--- 开始执行系统更新检查 (容器: {container_name}) ---")
+    strategy_name = strategy_info['strategy']
+    helper_image = strategy_info['helper_image']
+    logger.trace(f"--- 开始执行系统更新检查 (容器: {container_name}, 策略: {strategy_name}) ---")
     task_manager.update_status_from_thread(0, "准备检查更新...")
     result = {
         "ok": False,
         "updated": False,
         "message": "",
+        "strategy": strategy_name,
+        "helper_image": helper_image,
         **get_system_update_version_info(),
     }
 
-    # 调用生成器，消费消息并转换为日志
-    generator = _update_process_generator(container_name, image_name_tag)
+    generator = _update_process_generator(container_name, image_name_tag, strategy=strategy_name, helper_image=helper_image)
 
     try:
         for event in generator:
@@ -267,30 +747,28 @@ def task_check_and_update_container(processor):
                 result['current_version'] = event.get('current_version')
             if event.get('target_version'):
                 result['target_version'] = event.get('target_version')
-            
+
             if evt_type == 'ERROR':
                 logger.error(f"  ➜ {msg}")
                 task_manager.update_status_from_thread(-1, f"更新失败: {msg}")
                 result.update({"ok": False, "updated": False, "message": msg, "status": "error"})
                 return result
-            
+
             logger.info(f"  ➜ {msg}")
-            
-            # 简单的进度模拟
+
             if "拉取" in msg:
                 task_manager.update_status_from_thread(30, msg)
-            elif "应用更新" in msg:
+            elif "应用更新" in msg or "Docker Helper" in msg or "Watchtower" in msg:
                 task_manager.update_status_from_thread(80, msg)
             elif evt_type == 'NO_UPDATE':
                 task_manager.update_status_from_thread(100, "已是最新版本")
                 result.update({"ok": True, "updated": False, "message": msg, "status": "up_to_date"})
-            
+
             if evt_type == 'RESTARTING':
                 logger.warning("  ➜ 系统即将重启以应用更新...")
                 task_manager.update_status_from_thread(100, "系统正在重启...")
                 result.update({"ok": True, "updated": True, "message": msg, "status": "restarting"})
-                # 给一点时间让日志写完
-                time.sleep(3)
+                time.sleep(1)
             elif evt_type == 'DONE':
                 result.update({
                     "ok": True,
@@ -298,7 +776,7 @@ def task_check_and_update_container(processor):
                     "message": msg,
                     "status": "done",
                 })
-                
+
     except Exception as e:
         logger.error(f"更新任务异常: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务异常")
