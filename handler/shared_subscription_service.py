@@ -1100,47 +1100,29 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         'action_type': '共享永久转存',
         'errors': errors,
     }
-def try_consume_shared_resource(
+
+def _subscription_probe_request_key(query: Dict[str, Any]) -> str:
+    return '|'.join([
+        str((query or {}).get('item_type') or '').strip(),
+        str((query or {}).get('tmdb_id') or '').strip(),
+        str((query or {}).get('season_number') if (query or {}).get('season_number') is not None else ''),
+        str((query or {}).get('episode_number') if (query or {}).get('episode_number') is not None else ''),
+    ])
+
+
+def _filter_sources_for_request(
+    sources: List[Dict[str, Any]],
     item: Dict[str, Any],
-    title: str,
-    tmdb_id,
     item_type: str,
-    parent_tmdb_id=None,
     season_number=None,
-    year='',
     exclude_share_codes: List[str] | None = None,
-    force_mode: str | None = None,
-) -> Dict[str, Any]:
-    '''尝试查询并消费中心共享资源。返回结果包含是否启用共享池、是否成功消费、是否命中缺口、以及其他相关信息。'''
-    if not shared_center_enabled():
-        return {'enabled': False, 'success': False, 'reported_gap': False}
+) -> tuple[List[Dict[str, Any]], int, List[int]]:
+    """统一订阅消费前的本地精确过滤。中心按季返回，客户端按缺集/单集再裁剪。"""
+    sources = list(sources or [])
+    req_s_num = season_number if season_number not in (None, '') else (item or {}).get('season_number')
+    req_e_num = (item or {}).get('episode_number')
+    req_missing_eps = _normalize_episode_number_list((item or {}).get('missing_episode_numbers'))
 
-    client = SharedCenterClient()
-    if not client.ready:
-        logger.warning('  ➜ [共享资源] 已启用但中心地址/token 未配置，跳过共享池。')
-        return {'enabled': True, 'success': False, 'reported_gap': False}
-
-    queries = _build_center_queries(item, title, tmdb_id, item_type, parent_tmdb_id, season_number, year)
-    if not queries:
-        return {'enabled': True, 'success': False, 'reported_gap': False}
-
-    sources = []
-    try:
-        data = client.search_sources(queries, limit_per_item=200)
-        sources = _flatten_search_results(data)
-        sources = _filter_sources_by_episode_transfer_policy(sources)
-    except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
-
-    # =================================================================
-    # 中心查询按季返回后，本地仍然必须精确过滤到当前缺失集。
-    # - 单集源：必须同季同集；
-    # - SUBSCRIBED Season 会带 missing_episode_numbers，只消费缺失单集；
-    # - 季包/旧数据没有 episode_number：保留，后续按 SHA1/包内文件消费。
-    # =================================================================
-    req_s_num = season_number if season_number not in (None, '') else item.get('season_number')
-    req_e_num = item.get('episode_number')
-    req_missing_eps = _normalize_episode_number_list(item.get('missing_episode_numbers'))
     if req_e_num is not None and str(req_e_num).strip() != '':
         filtered_sources = []
         for src in sources:
@@ -1162,7 +1144,7 @@ def try_consume_shared_resource(
             if src_s_num is not None and str(src_s_num).strip() != '' and req_s_num not in (None, ''):
                 if int(src_s_num) != int(req_s_num):
                     continue
-            # 单集源必须在缺失列表内；季包/旧数据没有集号，保留。
+            # 单集源必须在缺失列表内；季包没有集号，保留，因为它可能覆盖整季。
             if src_e_num is not None and str(src_e_num).strip() != '':
                 if int(src_e_num) not in req_missing_eps:
                     continue
@@ -1192,6 +1174,32 @@ def try_consume_shared_resource(
             logger.info(f"  ➜ [共享资源] 已过滤 {excluded_hits} 个本轮已消费的 share_code，避免重复转存同一季包。")
         sources = filtered_sources
 
+    return sources, excluded_hits, req_missing_eps
+
+
+def _consume_sources_for_subscription(
+    client: SharedCenterClient,
+    sources: List[Dict[str, Any]],
+    item: Dict[str, Any],
+    title: str,
+    tmdb_id,
+    item_type: str,
+    parent_tmdb_id=None,
+    season_number=None,
+    year='',
+    exclude_share_codes: List[str] | None = None,
+    force_mode: str | None = None,
+    reported_gap: bool = False,
+) -> Dict[str, Any]:
+    sources = _filter_sources_by_episode_transfer_policy(sources or [])
+    sources, excluded_hits, req_missing_eps = _filter_sources_for_request(
+        sources,
+        item,
+        item_type,
+        season_number=season_number,
+        exclude_share_codes=exclude_share_codes,
+    )
+
     if not sources:
         if excluded_hits:
             return {
@@ -1202,23 +1210,16 @@ def try_consume_shared_resource(
                 'matched_share_codes': [],
                 'covered_episode_keys': [],
             }
-        reported = False
-        try:
-            client.report_gaps(queries)
-            reported = True
-        except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 中心未命中，登记缺口失败: {e}")
-        return {'enabled': True, 'success': False, 'reported_gap': reported}
+        return {'enabled': True, 'success': False, 'reported_gap': bool(reported_gap)}
 
     context = {
         'title': title,
         'tmdb_id': str(tmdb_id or ''),
         'item_type': item_type,
-        # parent_tmdb_id 保留给旧调用方；parent_series_tmdb_id 是新链路唯一推荐字段。
         'parent_tmdb_id': str(parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or ''),
         'parent_series_tmdb_id': str(parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or ''),
         'season_number': season_number,
-        'episode_number': item.get('episode_number'), # ★ 确保 context 里有 episode_number
+        'episode_number': item.get('episode_number'),
         'missing_episode_numbers': req_missing_eps,
         'year': year,
     }
@@ -1234,6 +1235,173 @@ def try_consume_shared_resource(
     result['matched_share_codes'] = matched_share_codes
     result['covered_episode_keys'] = covered_episode_keys
     return result
+
+
+def batch_probe_shared_resources(prepared_items: List[Dict[str, Any]], limit_per_item: int = 200) -> Dict[str, Any]:
+    """统一订阅批量探测中心共享池。
+
+    prepared_items 由 subscriptions.py 提前整理，包含原始 item 与父剧/季号/年份等上下文。
+    返回 by_key，后续逐条处理时直接取中心本轮批量结果，避免 N 次中心查询/登记缺口。
+    """
+    if not shared_center_enabled():
+        return {'enabled': False, 'supported': False, 'by_key': {}}
+
+    client = SharedCenterClient()
+    if not client.ready:
+        logger.warning('  ➜ [共享资源] 已启用但中心地址/token 未配置，跳过共享池批量探测。')
+        return {'enabled': True, 'supported': False, 'by_key': {}}
+
+    request_items = []
+    context_by_key: Dict[str, Dict[str, Any]] = {}
+    for prepared in prepared_items or []:
+        if not isinstance(prepared, dict):
+            continue
+        item = prepared.get('item') if isinstance(prepared.get('item'), dict) else {}
+        queries = _build_center_queries(
+            item,
+            prepared.get('title') or item.get('title'),
+            prepared.get('tmdb_id') or item.get('tmdb_id'),
+            prepared.get('item_type') or item.get('item_type'),
+            prepared.get('parent_tmdb_id'),
+            prepared.get('season_number'),
+            prepared.get('year'),
+        )
+        for query in queries:
+            key = _subscription_probe_request_key(query)
+            if not key or key in context_by_key:
+                continue
+            query = dict(query)
+            query['request_key'] = key
+            missing_eps = _normalize_episode_number_list(item.get('missing_episode_numbers'))
+            if missing_eps:
+                query['missing_episode_numbers'] = missing_eps
+            request_items.append(query)
+            context_by_key[key] = prepared
+
+    if not request_items:
+        return {'enabled': True, 'supported': True, 'by_key': {}}
+
+    try:
+        if hasattr(client, 'probe_subscriptions_batch'):
+            data = client.probe_subscriptions_batch(request_items, limit_per_item=limit_per_item)
+        else:
+            data = {'supported': False, 'items': [], 'message': 'client_missing_probe_subscriptions_batch'}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 统一订阅批量探测失败，将回退逐条查询: {e}")
+        return {'enabled': True, 'supported': False, 'by_key': {}, 'message': str(e)}
+
+    if data.get('supported') is False:
+        logger.info('  ➜ [共享资源] 中心暂不支持统一订阅批量探测，将回退逐条查询。')
+        return {'enabled': True, 'supported': False, 'by_key': {}, 'message': data.get('message')}
+
+    by_key: Dict[str, Dict[str, Any]] = {}
+    hit_count = gap_count = 0
+    for row in data.get('items') or []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get('request_key') or _subscription_probe_request_key(row.get('query') or {})).strip()
+        if not key:
+            continue
+        row['prepared'] = context_by_key.get(key) or {}
+        by_key[key] = row
+        if row.get('sources'):
+            hit_count += 1
+        if row.get('reported_gap') or row.get('status') == 'gap_registered':
+            gap_count += 1
+
+    logger.info(
+        f"  ➜ [共享资源] 统一订阅批量探测完成：提交 {len(request_items)} 个，"
+        f"命中 {hit_count} 个，登记缺口 {gap_count} 个。"
+    )
+    return {'enabled': True, 'supported': True, 'by_key': by_key, 'raw': data}
+
+
+def try_consume_preprobed_shared_resource(
+    probe_row: Dict[str, Any],
+    item: Dict[str, Any],
+    title: str,
+    tmdb_id,
+    item_type: str,
+    parent_tmdb_id=None,
+    season_number=None,
+    year='',
+    exclude_share_codes: List[str] | None = None,
+    force_mode: str | None = None,
+) -> Dict[str, Any]:
+    if not shared_center_enabled():
+        return {'enabled': False, 'success': False, 'reported_gap': False}
+    client = SharedCenterClient()
+    if not client.ready:
+        return {'enabled': True, 'success': False, 'reported_gap': False}
+    probe_row = dict(probe_row or {})
+    sources = [x for x in (probe_row.get('sources') or []) if isinstance(x, dict)]
+    return _consume_sources_for_subscription(
+        client,
+        sources,
+        item,
+        title,
+        tmdb_id,
+        item_type,
+        parent_tmdb_id=parent_tmdb_id,
+        season_number=season_number,
+        year=year,
+        exclude_share_codes=exclude_share_codes,
+        force_mode=force_mode,
+        reported_gap=bool(probe_row.get('reported_gap') or probe_row.get('status') == 'gap_registered'),
+    )
+def try_consume_shared_resource(
+    item: Dict[str, Any],
+    title: str,
+    tmdb_id,
+    item_type: str,
+    parent_tmdb_id=None,
+    season_number=None,
+    year='',
+    exclude_share_codes: List[str] | None = None,
+    force_mode: str | None = None,
+) -> Dict[str, Any]:
+    '''尝试查询并消费中心共享资源。返回结果包含是否启用共享池、是否成功消费、是否命中缺口、以及其他相关信息。'''
+    if not shared_center_enabled():
+        return {'enabled': False, 'success': False, 'reported_gap': False}
+
+    client = SharedCenterClient()
+    if not client.ready:
+        logger.warning('  ➜ [共享资源] 已启用但中心地址/token 未配置，跳过共享池。')
+        return {'enabled': True, 'success': False, 'reported_gap': False}
+
+    queries = _build_center_queries(item, title, tmdb_id, item_type, parent_tmdb_id, season_number, year)
+    if not queries:
+        return {'enabled': True, 'success': False, 'reported_gap': False}
+
+    sources = []
+    reported = False
+    try:
+        data = client.search_sources(queries, limit_per_item=200)
+        sources = _flatten_search_results(data)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
+
+    if not sources:
+        try:
+            client.report_gaps(queries)
+            reported = True
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 中心未命中，登记缺口失败: {e}")
+
+    return _consume_sources_for_subscription(
+        client,
+        sources,
+        item,
+        title,
+        tmdb_id,
+        item_type,
+        parent_tmdb_id=parent_tmdb_id,
+        season_number=season_number,
+        year=year,
+        exclude_share_codes=exclude_share_codes,
+        force_mode=force_mode,
+        reported_gap=reported,
+    )
 def consume_center_sources(source_ids: List[str], mode: str = 'permanent', context: Dict[str, Any] = None) -> Dict[str, Any]:
     """按中心 source_id 手动消费共享资源。
 

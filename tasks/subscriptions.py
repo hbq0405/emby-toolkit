@@ -27,9 +27,16 @@ except Exception:
 from handler.tg_media_candidate import build_channel_task_payload
 
 try:
-    from handler.shared_subscription_service import try_consume_shared_resource, report_shared_gap
+    from handler.shared_subscription_service import (
+        try_consume_shared_resource,
+        try_consume_preprobed_shared_resource,
+        batch_probe_shared_resources,
+        report_shared_gap,
+    )
 except Exception:
     try_consume_shared_resource = None
+    try_consume_preprobed_shared_resource = None
+    batch_probe_shared_resources = None
     report_shared_gap = None
 
 
@@ -755,6 +762,86 @@ def _apply_watchlist_mp_wash_flags(
         return '分集洗版'
 
     return '补缺模式'
+
+
+
+def _extract_item_year_for_subscription(item: Dict[str, Any]) -> str:
+    item = item or {}
+    for _year_key in ('release_date', 'first_air_date', 'air_date', 'year'):
+        _year_value = item.get(_year_key)
+        if _year_value:
+            _match = re.search(r'((?:19|20)\d{2})', str(_year_value))
+            if _match:
+                return _match.group(1)
+    _match = re.search(r'\(((?:19|20)\d{2})\)', str(item.get('title') or ''))
+    return _match.group(1) if _match else ''
+
+
+def _prepare_shared_subscription_context(item: Dict[str, Any], tmdb_api_key=None) -> Dict[str, Any]:
+    """把统一订阅 item 整理成共享中心批量探测/消费上下文。"""
+    item = item or {}
+    tmdb_id = item.get('tmdb_id')
+    item_type = item.get('item_type')
+    title = item.get('title')
+    season_number = item.get('season_number')
+    parent_tmdb_id = None
+
+    if item_type in ['Series', 'Season', 'Episode']:
+        if item_type == 'Season':
+            parent_tmdb_id = item.get('parent_series_tmdb_id') or item.get('series_tmdb_id')
+            if not parent_tmdb_id and '_' in str(tmdb_id):
+                parent_tmdb_id = str(tmdb_id).split('_')[0]
+            if not parent_tmdb_id:
+                parent_tmdb_id = tmdb_id
+        elif item_type == 'Episode':
+            parent_tmdb_id = item.get('parent_series_tmdb_id') or item.get('series_tmdb_id')
+            if not parent_tmdb_id and '_' in str(tmdb_id):
+                parent_tmdb_id = str(tmdb_id).split('_')[0]
+        else:
+            parent_tmdb_id = tmdb_id
+
+        series_name = media_db.get_series_title_by_tmdb_id(parent_tmdb_id) if parent_tmdb_id else None
+        if not series_name:
+            raw_title = item.get('title', '')
+            parsed_name, _ = parse_series_title_and_season(raw_title, tmdb_api_key)
+            series_name = parsed_name if parsed_name else raw_title
+        if series_name:
+            if item_type == 'Episode' and item.get('episode_number') is not None:
+                try:
+                    title = f"{series_name} S{int(season_number or item.get('season_number') or 0):02d}E{int(item.get('episode_number')):02d}"
+                except Exception:
+                    title = series_name
+            else:
+                title = series_name
+
+    return {
+        'item': item,
+        'tmdb_id': tmdb_id,
+        'item_type': item_type,
+        'title': title,
+        'season_number': season_number,
+        'parent_tmdb_id': parent_tmdb_id,
+        'year': _extract_item_year_for_subscription(item),
+    }
+
+
+def _shared_subscription_probe_key(prepared: Dict[str, Any]) -> str:
+    item = prepared.get('item') if isinstance(prepared.get('item'), dict) else {}
+    item_type = str(prepared.get('item_type') or item.get('item_type') or '').strip()
+    tmdb_id = str(prepared.get('tmdb_id') or item.get('tmdb_id') or '').strip()
+    season = prepared.get('season_number') if prepared.get('season_number') not in (None, '') else item.get('season_number')
+    episode = item.get('episode_number')
+    if item_type == 'Movie':
+        return f'Movie|{tmdb_id}||'
+    if item_type == 'Season':
+        sid = str(prepared.get('parent_tmdb_id') or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or tmdb_id or '').strip()
+        return f'Season|{sid}|{season if season is not None else ""}|'
+    if item_type == 'Series':
+        return f'Series|{tmdb_id}||'
+    if item_type == 'Episode':
+        sid = str(prepared.get('parent_tmdb_id') or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or tmdb_id or '').strip()
+        return f'Season|{sid}|{season if season is not None else ""}|'
+    return ''
 
 # ★★★ 内部辅助函数：处理整部剧集的精细化订阅 ★★★
 # ==============================================================================
@@ -1522,6 +1609,30 @@ def task_auto_subscribe(processor):
         failed_notifications_to_send = {}
         quota_exhausted = False
 
+        shared_probe_by_key = {}
+        if batch_probe_shared_resources and try_consume_preprobed_shared_resource:
+            shared_probe_contexts = []
+            quota_for_shared_probe = settings_db.get_subscription_quota()
+            for _item in wanted_items:
+                try:
+                    _item_type = _item.get('item_type')
+                    if _item_type == 'Episode':
+                        continue
+                    if _item_type == 'Movie' and not is_movie_subscribable(int(_item.get('tmdb_id')), tmdb_api_key, config):
+                        continue
+                    _status = str(_item.get('subscription_status') or 'WANTED').strip().upper()
+                    if _status != 'SUBSCRIBED' and quota_for_shared_probe <= 0:
+                        continue
+                    if _item_type in ['Movie', 'Series', 'Season']:
+                        shared_probe_contexts.append(_prepare_shared_subscription_context(_item, tmdb_api_key))
+                except Exception as e:
+                    logger.debug(f"  ➜ [共享资源] 准备批量探测项失败，已跳过: {_item.get('title')} -> {e}")
+            if shared_probe_contexts:
+                task_manager.update_status_from_thread(10, f"正在批量查询共享中心：{len(shared_probe_contexts)} 个订阅...")
+                probe_batch = batch_probe_shared_resources(shared_probe_contexts, limit_per_item=200) or {}
+                if probe_batch.get('supported'):
+                    shared_probe_by_key = probe_batch.get('by_key') or {}
+
         # 2. 遍历待办列表，逐一处理
         for i, item in enumerate(wanted_items):
             if processor.is_stop_requested(): break
@@ -1635,20 +1746,47 @@ def task_auto_subscribe(processor):
             tg_channel_tracking = watchlist_config.get('tg_channel_tracking', False)
 
             # ==========================================
-            # 共享资源优先：启用共享资源后，先查中心共享池；命中后按配置执行永久转存/虚拟入库。
-            # 未命中才登记缺口，并继续走影巢 / TG / MP 原有兜底链路。
+            # 共享资源优先：本轮统一订阅已提前批量向中心 probe；这里只消费批量结果。
+            # 旧中心不支持批量接口时，自动回退原逐条查询。
             # ==========================================
-            if try_consume_shared_resource and item_type in ['Movie', 'Series', 'Season', 'Episode']:
+            if item_type in ['Movie', 'Series', 'Season', 'Episode']:
                 try:
-                    shared_result = try_consume_shared_resource(
-                        item=item,
-                        title=title,
-                        tmdb_id=tmdb_id,
-                        item_type=item_type,
-                        parent_tmdb_id=parent_tmdb_id,
-                        season_number=season_number,
-                        year=item_year,
-                    )
+                    shared_result = None
+                    prepared_ctx = {
+                        'item': item,
+                        'tmdb_id': tmdb_id,
+                        'item_type': item_type,
+                        'title': title,
+                        'season_number': season_number,
+                        'parent_tmdb_id': parent_tmdb_id,
+                        'year': item_year,
+                    }
+                    probe_key = _shared_subscription_probe_key(prepared_ctx)
+                    probe_row = shared_probe_by_key.get(probe_key) if probe_key else None
+                    if probe_row and try_consume_preprobed_shared_resource:
+                        shared_result = try_consume_preprobed_shared_resource(
+                            probe_row=probe_row,
+                            item=item,
+                            title=title,
+                            tmdb_id=tmdb_id,
+                            item_type=item_type,
+                            parent_tmdb_id=parent_tmdb_id,
+                            season_number=season_number,
+                            year=item_year,
+                        )
+                    elif try_consume_shared_resource:
+                        shared_result = try_consume_shared_resource(
+                            item=item,
+                            title=title,
+                            tmdb_id=tmdb_id,
+                            item_type=item_type,
+                            parent_tmdb_id=parent_tmdb_id,
+                            season_number=season_number,
+                            year=item_year,
+                        )
+                    else:
+                        shared_result = {}
+
                     if shared_result.get('success'):
                         success = True
                         action_type = shared_result.get('action_type') or '共享资源'

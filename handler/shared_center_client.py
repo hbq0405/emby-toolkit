@@ -209,6 +209,22 @@ class SharedCenterClient:
             return {'results': []}
         return self._post('/api/v1/sources/search', {'items': items, 'limit_per_item': limit_per_item}, timeout=25)
 
+    def probe_subscriptions_batch(self, items: List[Dict[str, Any]], limit_per_item: int = 200) -> Dict[str, Any]:
+        """统一订阅批量探测：一次请求完成共享源查询与未命中缺口登记。"""
+        items = _dedupe_gap_items_for_center(items)
+        if not items:
+            return {'supported': True, 'items': [], 'hit_count': 0, 'gap_count': 0}
+        payload = {'items': items, 'limit_per_item': max(1, min(int(limit_per_item or 200), 200))}
+        try:
+            resp = self._post('/api/v1/subscriptions/probe-batch', payload, timeout=60)
+            resp['supported'] = True
+            return resp
+        except RuntimeError as e:
+            text = str(e)
+            if '404' in text or 'Not Found' in text:
+                return {'supported': False, 'items': [], 'message': 'center_subscription_probe_batch_not_supported'}
+            raise
+
     def probe_share_needed(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """询问中心端本机刚入库的资源是否需要创建共享。
 
