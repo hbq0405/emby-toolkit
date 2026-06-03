@@ -1305,29 +1305,34 @@ class WatchlistProcessor:
             series_name or parent_series_tmdb_id, season_no,
         )
 
-    def _season_has_active_washing(self, tmdb_id: str, season_number: int) -> bool:
-        """检查指定季是否已经处于完结洗版等待入库状态，避免重复提交洗版订阅。"""
+    def _set_season_active_washing(self, tmdb_id: str, season_number: int, enabled: bool, reason: str = '') -> bool:
+        """按季设置/清理分集 active_washing 洗版特权标记。"""
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT COUNT(1) AS cnt
-                        FROM media_metadata
+                        UPDATE media_metadata
+                        SET active_washing = %s
                         WHERE parent_series_tmdb_id = %s
                           AND season_number = %s
                           AND item_type = 'Episode'
-                          AND COALESCE(active_washing, FALSE) = TRUE
                         """,
-                        (str(tmdb_id), season_number),
+                        (bool(enabled), str(tmdb_id), season_number),
                     )
-                    row = cursor.fetchone() or {}
-                    return int(row.get('cnt') or 0) > 0
-        except Exception as e:
-            logger.debug(
-                "  ➜ [完结洗版] 查询 active_washing 状态失败，按未洗版处理：tmdb=%s S%s -> %s",
-                tmdb_id, season_number, e,
+                    affected = cursor.rowcount
+                    conn.commit()
+
+            action = "开启" if enabled else "清理"
+            reason_msg = f"，原因：{reason}" if reason else ""
+            logger.info(
+                f"  ➜ [完结洗版] 已为《{tmdb_id}》S{season_number} {action} active_washing 洗版特权标记 "
+                f"(影响 {affected} 集){reason_msg}。"
             )
+            return True
+        except Exception as e:
+            action = "开启" if enabled else "清理"
+            logger.error(f"  ➜ [完结洗版] {action} S{season_number} active_washing 标记失败: {e}", exc_info=True)
             return False
 
     def _handle_completed_season_quality_gate(
@@ -1339,21 +1344,9 @@ class WatchlistProcessor:
         old_status: str = None,
         is_force_ended: bool = False,
     ) -> Optional[bool]:
-        """
-        已完结状态下统一执行“季一致性门禁”。
-
-        不再只依赖 Watching/Paused/Pending -> Completed 的自然状态流转；
-        只要当前最终状态已经是 Completed，就会对最新本地季做一次一致性校验：
-        - 通过：触发季包分享/备份探测，并清理等待完结包标志；
-        - 不通过：TG 追更模式继续等待完结包，普通模式提交 MP 完结洗版。
-
-        返回值用于控制 waiting_for_completed_pack：
-        - True：开启等待完结包；
-        - False：清理等待完结包；
-        - None：不改动该标志。
-        """
+        """已完结状态下统一执行最终季一致性门禁。"""
         if is_force_ended:
-            logger.debug(f"  ➜ [完结质检] 《{series_name}》为手动强制完结，跳过自动一致性校验/洗版。")
+            logger.debug(f"  ➜ [完结校验] 《{series_name}》为手动强制完结，跳过自动一致性校验/洗版。")
             return None
 
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
@@ -1366,48 +1359,56 @@ class WatchlistProcessor:
             key=lambda x: x['season_number'],
         )
         if not valid_seasons:
-            logger.debug(f"  ➜ [完结质检] 《{series_name}》未找到有效季信息，跳过一致性校验。")
+            logger.debug(f"  ➜ [完结校验] 《{series_name}》未找到有效季信息，跳过一致性校验。")
             return None
 
         target_season = valid_seasons[-1]
         last_s_num = target_season.get('season_number')
         last_ep_count = target_season.get('episode_count', 0) or 0
         if not last_s_num:
-            logger.debug(f"  ➜ [完结质检] 《{series_name}》最终季号无效，跳过一致性校验。")
+            logger.debug(f"  ➜ [完结校验] 《{series_name}》最终季号无效，跳过一致性校验。")
             return None
 
         local_target_count = len(emby_seasons.get(last_s_num, set()))
         if local_target_count <= 0:
-            logger.info(f"  ➜ [完结质检跳过] 《{series_name}》S{last_s_num} 本地 0 集，视为未追本季，不触发洗版/等待完结包。")
-            return None
+            logger.info(f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 本地 0 集，视为未追本季，不触发洗版/等待完结包。")
+            return False
 
         if last_ep_count <= 0:
-            logger.info(f"  ➜ [完结质检跳过] 《{series_name}》S{last_s_num} 总集数未知，暂不触发洗版/季包分享。")
+            logger.info(f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 总集数未知，暂不触发洗版/季包分享。")
             return None
 
         if old_status == STATUS_COMPLETED:
-            logger.info(f"  ➜ [完结质检] 《{series_name}》已处于完结状态，继续校验 S{last_s_num} 本地一致性。")
+            logger.info(f"  ➜ [完结校验] 《{series_name}》已处于完结状态，继续校验 S{last_s_num} 本地一致性。")
         else:
             logger.info(
-                f"  ➜ [完结质检] 《{series_name}》状态 {translate_internal_status(old_status)} -> 已完结，"
+                f"  ➜ [完结校验] 《{series_name}》状态 {translate_internal_status(old_status)} -> 已完结，"
                 f"校验 S{last_s_num} 本地一致性。"
             )
 
         if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
-            logger.info(f"  ➜ [完结质检] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包分享探测。")
+            self._set_season_active_washing(
+                tmdb_id,
+                last_s_num,
+                False,
+                reason="一致性已通过，不需要洗版替换特权",
+            )
+            logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包分享探测。")
             self._trigger_completed_season_pack_share_detached(tmdb_id, last_s_num, series_name)
             return False
 
-        tg_channel_tracking = watchlist_cfg.get('tg_channel_tracking', False)
-        if tg_channel_tracking:
+        self._set_season_active_washing(
+            tmdb_id,
+            last_s_num,
+            True,
+            reason="一致性不通过，需要洗版替换",
+        )
+
+        if watchlist_cfg.get('tg_channel_tracking', False):
             logger.info(f"  ➜ [TG洗版拦截] 《{series_name}》S{last_s_num} 已完结但文件不一致。已开启 '等待完结包' 标志，静候 TG 频道发布。")
             return True
 
-        if self._season_has_active_washing(tmdb_id, last_s_num):
-            logger.info(f"  ➜ [完结质检跳过] 《{series_name}》S{last_s_num} 已存在 active_washing 标志，跳过重复提交洗版订阅。")
-            return None
-
-        logger.info(f"  ➜ [完结质检] 《{series_name}》S{last_s_num} 一致性不通过，提交 MP 完结洗版。")
+        logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 一致性不通过，提交 MP 完结洗版。")
         self._handle_auto_resub_ended(
             tmdb_id,
             series_name,
@@ -1415,7 +1416,7 @@ class WatchlistProcessor:
             last_ep_count,
             skip_consistency_check=True,
         )
-        return None
+        return False
 
     def _handle_auto_resub_ended(
         self,
@@ -1432,19 +1433,32 @@ class WatchlistProcessor:
         try:
             logger.info(f"  🎉 剧集《{series_name}》已完结，正在对目标季 (S{season_number}) 执行洗版流程...")
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
-            # 1.检查配额
+            # 1. 先做一致性判断：通过就分享季包，不通过才洗版。
+            if not skip_consistency_check and self._check_season_consistency(tmdb_id, season_number, episode_count):
+                self._set_season_active_washing(
+                    tmdb_id,
+                    season_number,
+                    False,
+                    reason="一致性已通过，不需要洗版替换特权",
+                )
+                logger.info(f"  ➜ [完结校验] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包分享探测。")
+                self._trigger_completed_season_pack_share_detached(tmdb_id, season_number, series_name)
+                return
+
+            # 2. 一致性不通过：每次都重新提交洗版订阅，不用 active_washing 做防重复。
+            self._set_season_active_washing(
+                tmdb_id,
+                season_number,
+                True,
+                reason="一致性不通过，需要洗版替换",
+            )
+
+            # 3. 检查配额
             if settings_db.get_subscription_quota() <= 0:
                 logger.warning(f"  ➜ 每日订阅配额已用尽，跳过《{series_name}》S{season_number} 的完结洗版。")
                 return
-            # 2. 直接使用传入的集数进行一致性检查
-            if not skip_consistency_check and self._check_season_consistency(tmdb_id, season_number, episode_count):
-                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包分享探测。")
-                self._trigger_completed_season_pack_share_detached(tmdb_id, season_number, series_name)
-                return
-            if skip_consistency_check:
-                logger.debug(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 外层已确认一致性不通过，跳过重复一致性检查。")
             
-            # 3. 检查是否需要删除旧文件 (Emby)
+            # 4. 检查是否需要删除旧文件 (Emby)
             if watchlist_cfg.get('auto_delete_old_files', False):
                 logger.info(f"  ➜ [自动清理] 检测到“删除 Emby 旧文件”已开启，正在评估删除范围...")
                 try:
@@ -1523,21 +1537,13 @@ class WatchlistProcessor:
                 settings_db.decrement_subscription_quota()
                 logger.info(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 已提交洗版订阅。")
                 
-                # ★★★ 核心修改：将 active_washing 标记下放到该季的每一集 ★★★
-                try:
-                    with connection.get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.execute("""
-                                UPDATE media_metadata 
-                                SET active_washing = TRUE 
-                                WHERE parent_series_tmdb_id = %s 
-                                  AND season_number = %s 
-                                  AND item_type = 'Episode'
-                            """, (tmdb_id, season_number))
-                            conn.commit()
-                    logger.info(f"  ➜ [完结洗版] 已为 第 {season_number} 季的所有分集开启 'active_washing' 特权标志，等待入库替换。")
-                except Exception as e:
-                    logger.error(f"  ➜ 开启洗版状态失败: {e}")
+                # 一致性不通过且洗版订阅已提交：保持整理洗版特权。
+                self._set_season_active_washing(
+                    tmdb_id,
+                    season_number,
+                    True,
+                    reason="MP 完结洗版订阅已提交",
+                )
             else:
                 logger.error(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 提交失败。")
 
@@ -2066,7 +2072,7 @@ class WatchlistProcessor:
         set_waiting_flag = None
 
         if final_status == STATUS_COMPLETED:
-            completed_waiting_flag = self._handle_completed_season_quality_gate(
+            gate_waiting_flag = self._handle_completed_season_quality_gate(
                 tmdb_id=tmdb_id,
                 series_name=item_name,
                 latest_series_data=latest_series_data,
@@ -2074,8 +2080,8 @@ class WatchlistProcessor:
                 old_status=old_status,
                 is_force_ended=is_force_ended,
             )
-            if completed_waiting_flag is not None:
-                set_waiting_flag = completed_waiting_flag
+            if gate_waiting_flag is not None:
+                set_waiting_flag = gate_waiting_flag
 
         # 如果剧集恢复连载（出新季了），必须清除等待标志，防止误判
         if final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:
