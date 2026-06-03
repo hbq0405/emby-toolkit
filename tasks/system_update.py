@@ -515,7 +515,8 @@ def _run_docker_helper(client, helper_image, container_name, image_name_tag, ver
     try:
         output = client.containers.run(
             image=helper_image,
-            command=["python", "/tmp/etk_update_helper.py"],
+            entrypoint=["python"],
+            command=["/tmp/etk_update_helper.py"],
             remove=True,
             detach=False,
             environment=env,
