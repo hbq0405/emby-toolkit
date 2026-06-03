@@ -1678,13 +1678,6 @@ def task_auto_subscribe(processor):
                 )
                 continue
 
-            if (not is_wanted_subscription) and item_type == 'Season':
-                logger.info(
-                    f"  ➜ [补库模式] 《{title}》S{int(season_number or 0):02d} "
-                    f"subscription_status={subscription_status or 'NONE'}，"
-                    f"本轮只走共享池/影巢/频道补库，不提交 MP；"
-                    f"缺失集: {missing_episode_numbers or '未知/按季处理'}"
-                )
             item_year = ''
             for _year_key in ('release_date', 'first_air_date', 'air_date', 'year'):
                 _year_value = item.get(_year_key)
@@ -1736,13 +1729,21 @@ def task_auto_subscribe(processor):
                     else:
                         title = series_name
 
+            if (not is_wanted_subscription) and item_type == 'Season':
+                logger.info(
+                    f"  ➜ [补库模式] 《{title}》S{int(season_number or 0):02d} "
+                    f"subscription_status={subscription_status or 'NONE'}，"
+                    f"本轮只走共享池/影巢/频道补库，不提交 MP；"
+                    f"缺失集: {missing_episode_numbers or '未知/按季处理'}"
+                )
+
             # --- MoviePilot 订阅保护 ---
             # 只有 subscription_status=WANTED 的新请求才允许进入 MP 订阅链路。
             # SUBSCRIBED / NONE / PAUSED 等由追更或补库带进队列的项目，只能走共享池/云资源补库，
             # 不能因为不等于 SUBSCRIBED 就被误判为新订阅。
             if is_wanted_subscription and settings_db.get_subscription_quota() <= 0:
                 quota_exhausted = True
-                logger.warning(f"  ➜ 每日订阅配额已用尽，跳过待订阅项目《{item['title']}》，继续处理非 MP 补库项。")
+                logger.warning(f"  ➜ 每日订阅配额已用尽，跳过待订阅项目《{title}》，继续处理非 MP 补库项。")
                 continue
 
             # 提交 MP 订阅
@@ -1953,9 +1954,9 @@ def task_auto_subscribe(processor):
             # 处理订阅结果
             if success:
                 if is_wanted_subscription:
-                    logger.info(f"  ➜ 《{item['title']}》订阅成功！")
+                    logger.info(f"  ➜ 《{title}》订阅成功！")
                 else:
-                    logger.info(f"  ➜ 《{item['title']}》补库处理成功！")
+                    logger.info(f"  ➜ 《{title}》补库处理成功！")
 
                 # WANTED 成功后更新为 SUBSCRIBED；SUBSCRIBED 补库成功只保持原状态，不能重复消耗订阅配额。
                 # Series 走 MP 整剧逻辑时仍由 _subscribe_full_series_with_logic 内部逐季处理；
@@ -2025,9 +2026,9 @@ def task_auto_subscribe(processor):
 
             else:
                 if is_wanted_subscription:
-                    logger.error(f"  ➜ 订阅《{item['title']}》失败，请检查 MoviePilot 连接或日志。")
+                    logger.error(f"  ➜ 订阅《{title}》失败，请检查 MoviePilot 连接或日志。")
                 else:
-                    logger.info(f"  ➜ [补库模式] 《{item['title']}》本轮未补到资源。")
+                    logger.info(f"  ➜ [补库模式] 《{title}》本轮未补到资源。")
 
             # 如果配置了延时，且不是列表中的最后一个项目，则进行休眠
             if request_delay > 0 and i < len(wanted_items) - 1:
