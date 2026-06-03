@@ -95,7 +95,7 @@ def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, An
         logger.error(f"根据TMDb ID列表批量获取媒体详情时出错: {e}", exc_info=True)
         return {}
 
-# 获取用于自动订阅的媒体项 (包含 WANTED、SUBSCRIBED 以及追剧中的季)
+# 获取统一订阅处理队列 (包含 WANTED 新订阅，以及 SUBSCRIBED/Watching 补库项；MP 只处理 WANTED)
 def get_all_wanted_media() -> List[Dict[str, Any]]:
     """
     获取统一订阅处理队列 (极致精简版)。
@@ -103,9 +103,11 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
     口径说明：
     - 订阅粒度严格限制为 Movie 和 Season，彻底抛弃 Series 和 Episode 的独立处理。
     - 电影 (Movie)：依赖 subscription_status IN ('WANTED', 'SUBSCRIBED')。
+      WANTED 是新订阅入口；SUBSCRIBED 只用于共享池/云资源补库，不能交由 MP。
     - 剧集季 (Season)：双擎驱动。
       1. 破冰期：依赖 subscription_status IN ('WANTED', 'SUBSCRIBED') 获取首集。
       2. 追更期：依赖 watching_status IN ('Watching', 'Paused') 持续补缺。
+      非 WANTED 状态只进入补库链路，MP 订阅侧会再次硬拦截。
     """
     sql = """
         WITH target_media AS (

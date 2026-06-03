@@ -1620,8 +1620,10 @@ def task_auto_subscribe(processor):
                         continue
                     if _item_type == 'Movie' and not is_movie_subscribable(int(_item.get('tmdb_id')), tmdb_api_key, config):
                         continue
-                    _status = str(_item.get('subscription_status') or 'WANTED').strip().upper()
-                    if _status != 'SUBSCRIBED' and quota_for_shared_probe <= 0:
+                    _status = str(_item.get('subscription_status') or 'NONE').strip().upper()
+                    # 只有真正待订阅(WANTED)的新请求才受订阅配额限制；
+                    # SUBSCRIBED / NONE 等追更补库项仍允许查询共享中心，但绝不应因此流入 MP。
+                    if _status == 'WANTED' and quota_for_shared_probe <= 0:
                         continue
                     if _item_type in ['Movie', 'Series', 'Season']:
                         shared_probe_contexts.append(_prepare_shared_subscription_context(_item, tmdb_api_key))
@@ -1656,7 +1658,8 @@ def task_auto_subscribe(processor):
                 continue
 
             # ★★★ 1. 准备基础信息 (提前获取剧集标题，用于日志和搜索) ★★★
-            subscription_status = str(item.get('subscription_status') or 'WANTED').strip().upper()
+            subscription_status = str(item.get('subscription_status') or 'NONE').strip().upper()
+            is_wanted_subscription = subscription_status == 'WANTED'
             is_subscribed_recheck = subscription_status == 'SUBSCRIBED'
             missing_episode_numbers = _normalize_missing_episode_numbers(item.get('missing_episode_numbers'))
 
@@ -1675,10 +1678,11 @@ def task_auto_subscribe(processor):
                 )
                 continue
 
-            if is_subscribed_recheck and item_type == 'Season':
+            if (not is_wanted_subscription) and item_type == 'Season':
                 logger.info(
-                    f"  ➜ [追更模式] 《{title}》S{int(season_number or 0):02d} 已是 追更状态，"
-                    f"本轮只走共享池/影巢/频道补库；"
+                    f"  ➜ [补库模式] 《{title}》S{int(season_number or 0):02d} "
+                    f"subscription_status={subscription_status or 'NONE'}，"
+                    f"本轮只走共享池/影巢/频道补库，不提交 MP；"
                     f"缺失集: {missing_episode_numbers or '未知/按季处理'}"
                 )
             item_year = ''
@@ -1732,11 +1736,13 @@ def task_auto_subscribe(processor):
                     else:
                         title = series_name
 
-            # --- MoviePilot 订阅 ---
-            # SUBSCRIBED 是追更模式，不消耗 MP 订阅配额，也不能因为配额耗尽而跳过共享池/云资源补库。
-            if (not is_subscribed_recheck) and settings_db.get_subscription_quota() <= 0:
+            # --- MoviePilot 订阅保护 ---
+            # 只有 subscription_status=WANTED 的新请求才允许进入 MP 订阅链路。
+            # SUBSCRIBED / NONE / PAUSED 等由追更或补库带进队列的项目，只能走共享池/云资源补库，
+            # 不能因为不等于 SUBSCRIBED 就被误判为新订阅。
+            if is_wanted_subscription and settings_db.get_subscription_quota() <= 0:
                 quota_exhausted = True
-                logger.warning(f"  ➜ 每日订阅配额已用尽，跳过待订阅项目《{item['title']}》，继续处理已订阅补库项。")
+                logger.warning(f"  ➜ 每日订阅配额已用尽，跳过待订阅项目《{item['title']}》，继续处理非 MP 补库项。")
                 continue
 
             # 提交 MP 订阅
@@ -1817,10 +1823,14 @@ def task_auto_subscribe(processor):
                 # 必须 copy 一份，防止后续 remove 操作污染全局配置缓存
                 subscription_sources = list(raw_sources)
 
-            if is_subscribed_recheck:
-                # 追更模式下，绝对不能再投递给 MP，直接移除
+            if not is_wanted_subscription:
+                # 只有 WANTED 能进入 MP；其他任何状态都只允许共享池/云资源补库，避免追更季/已订阅项重复投递 MP。
                 if 'mp' in subscription_sources:
                     subscription_sources.remove('mp')
+                    logger.info(
+                        f"  ➜ [MP保护] 《{title}》当前 subscription_status={subscription_status or 'NONE'}，"
+                        f"不是 WANTED，本轮不提交 MoviePilot，仅尝试非 MP 来源。"
+                    )
                 # 移除强制添加 hdhive 的逻辑，完全尊重前端用户的勾选；如果用户勾选了 hdhive 就走，没勾选就算追更也不走。
 
             for source_type in subscription_sources:
@@ -1891,6 +1901,14 @@ def task_auto_subscribe(processor):
                                 action_type = cloud_source
 
                 elif source_type == 'mp':
+                    # 双保险：即使上面的订阅源列表未来被改坏，这里也只允许 WANTED 进入 MP。
+                    if not is_wanted_subscription:
+                        logger.info(
+                            f"  ➜ [MP保护] 跳过《{title}》的 MoviePilot 订阅："
+                            f"subscription_status={subscription_status or 'NONE'}。"
+                        )
+                        continue
+
                     if item_type == 'Movie':
                         logger.info(f"  ➜ 正在向 MoviePilot 提交电影《{title}》的订阅...")
                         mp_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
@@ -1934,22 +1952,22 @@ def task_auto_subscribe(processor):
 
             # 处理订阅结果
             if success:
-                if is_subscribed_recheck:
-                    logger.info(f"  ➜ 《{item['title']}》补库处理成功！")
-                else:
+                if is_wanted_subscription:
                     logger.info(f"  ➜ 《{item['title']}》订阅成功！")
+                else:
+                    logger.info(f"  ➜ 《{item['title']}》补库处理成功！")
 
                 # WANTED 成功后更新为 SUBSCRIBED；SUBSCRIBED 补库成功只保持原状态，不能重复消耗订阅配额。
                 # Series 走 MP 整剧逻辑时仍由 _subscribe_full_series_with_logic 内部逐季处理；
                 # Series 走云资源时没有逐季订阅流程，需要直接更新当前 Series，避免下次任务重复处理。
-                if (not is_subscribed_recheck) and (item_type != 'Series' or action_type in ["影巢", "频道", "云资源", "共享资源", "共享虚拟", "共享永久转存"]):
+                if is_wanted_subscription and (item_type != 'Series' or action_type in ["影巢", "频道", "云资源", "共享资源", "共享虚拟", "共享永久转存"]):
                     request_db.set_media_status_subscribed(
                         tmdb_ids=item['tmdb_id'],
                         item_type=item_type,
                     )
 
                 # 只有真正从 WANTED 发起的新订阅才扣除配额；SUBSCRIBED 补库不扣。
-                if not is_subscribed_recheck:
+                if is_wanted_subscription:
                     settings_db.decrement_subscription_quota()
 
                 # 准备通知 (智能拼接通知标题)
@@ -2006,10 +2024,10 @@ def task_auto_subscribe(processor):
                 subscription_details.append({'source': source_display, 'item': item_display_name, 'action': action_type})
 
             else:
-                if is_subscribed_recheck:
-                    logger.info(f"  ➜ [追更模式] 《{item['title']}》本轮未补到资源。")
-                else:
+                if is_wanted_subscription:
                     logger.error(f"  ➜ 订阅《{item['title']}》失败，请检查 MoviePilot 连接或日志。")
+                else:
+                    logger.info(f"  ➜ [补库模式] 《{item['title']}》本轮未补到资源。")
 
             # 如果配置了延时，且不是列表中的最后一个项目，则进行休眠
             if request_delay > 0 and i < len(wanted_items) - 1:
