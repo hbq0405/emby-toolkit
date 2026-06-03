@@ -2708,6 +2708,64 @@ def _ack_shared_device_event(client: SharedCenterClient, event: Dict[str, Any], 
         logger.debug(f"  ➜ [共享事件监听] 旧求分享事件回执失败: event={event_id}, err={e}")
 
 
+
+def _shared_event_library_hit(event: Dict[str, Any]) -> Dict[str, Any]:
+    """事件消费前按中心事件自带的媒体身份做一次本地入库门禁。"""
+    event = dict(event or {})
+    payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+    item_type = str(event.get('item_type') or payload.get('item_type') or payload.get('target_type') or '').strip()
+    item_type_l = item_type.lower()
+    tmdb_id = str(event.get('tmdb_id') or payload.get('tmdb_id') or '').strip()
+    parent_id = str(event.get('parent_series_tmdb_id') or payload.get('parent_series_tmdb_id') or payload.get('series_tmdb_id') or tmdb_id).strip()
+    season = _safe_int(event.get('season_number') if event.get('season_number') is not None else payload.get('season_number'), None)
+    episode = _safe_int(event.get('episode_number') if event.get('episode_number') is not None else payload.get('episode_number'), None)
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if item_type_l in ('movie', 'movie_file', 'movie_folder') and tmdb_id:
+                    cur.execute("""
+                        SELECT tmdb_id, item_type, title
+                        FROM media_metadata
+                        WHERE item_type='Movie' AND tmdb_id=%s AND COALESCE(in_library, FALSE)=TRUE
+                        LIMIT 1
+                    """, (tmdb_id,))
+                    row = cur.fetchone()
+                    if row:
+                        return {'hit': True, 'reason': 'movie_in_library', 'row': dict(row)}
+
+                if item_type_l in ('episode', 'episode_file', 'single') and parent_id and season is not None and episode is not None:
+                    cur.execute("""
+                        SELECT tmdb_id, item_type, title, parent_series_tmdb_id, season_number, episode_number
+                        FROM media_metadata
+                        WHERE item_type='Episode'
+                          AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
+                          AND season_number=%s AND episode_number=%s
+                          AND COALESCE(in_library, FALSE)=TRUE
+                        LIMIT 1
+                    """, (parent_id, parent_id, season, episode))
+                    row = cur.fetchone()
+                    if row:
+                        return {'hit': True, 'reason': 'episode_in_library', 'row': dict(row)}
+
+                if item_type_l in ('season', 'season_pack', 'tv_pack') and parent_id and season is not None:
+                    # 季包事件没有具体集号时，只以 Season 行已入库作为跳过依据；不能拿代表 SHA1 误判整包。
+                    cur.execute("""
+                        SELECT tmdb_id, item_type, title, parent_series_tmdb_id, season_number
+                        FROM media_metadata
+                        WHERE item_type='Season'
+                          AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
+                          AND season_number=%s
+                          AND COALESCE(in_library, FALSE)=TRUE
+                        LIMIT 1
+                    """, (parent_id, parent_id, season))
+                    row = cur.fetchone()
+                    if row:
+                        return {'hit': True, 'reason': 'season_in_library', 'row': dict(row)}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享事件监听] 本地入库门禁查询失败，继续转存: {e}")
+    return {'hit': False, 'reason': 'not_in_library'}
+
 def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
     event = dict(event or {})
     payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
@@ -2729,6 +2787,24 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
         msg = '事件缺少 source_id'
         _ack_shared_device_event(client, event, 'failed', msg)
         return {'success': False, 'message': msg}
+
+    local_hit = _shared_event_library_hit(event)
+    if local_hit.get('hit'):
+        msg = f'本地已入库，跳过中心推送事件：{title}'
+        _ack_shared_device_event(client, event, 'skipped', msg)
+        logger.info("  ➜ [共享事件监听] %s event=%s source=%s reason=%s", msg, event_id, source_id, local_hit.get('reason'))
+        result = {'success': False, 'skipped': True, 'message': msg, 'local_hit': local_hit}
+        try:
+            shared_credit_db.add_credit_ledger(
+                'shared_device_event_skipped_existing', 0, msg,
+                ref_id=str(event.get('gap_key') or payload.get('gap_key') or event.get('group_id') or payload.get('group_id') or event_id),
+                title=title,
+                raw_json={'event': event, 'local_hit': local_hit},
+            )
+        except Exception:
+            pass
+        _notify_shared_device_event(event, result, True)
+        return result
 
     try:
         from handler.shared_subscription_service import consume_center_sources
