@@ -1353,7 +1353,7 @@ class WatchlistProcessor:
         - None：不改动该标志。
         """
         if is_force_ended:
-            logger.debug(f"  ➜ [完结门禁] 《{series_name}》为手动强制完结，跳过自动一致性校验/洗版。")
+            logger.debug(f"  ➜ [完结质检] 《{series_name}》为手动强制完结，跳过自动一致性校验/洗版。")
             return None
 
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
@@ -1366,35 +1366,35 @@ class WatchlistProcessor:
             key=lambda x: x['season_number'],
         )
         if not valid_seasons:
-            logger.debug(f"  ➜ [完结门禁] 《{series_name}》未找到有效季信息，跳过一致性校验。")
+            logger.debug(f"  ➜ [完结质检] 《{series_name}》未找到有效季信息，跳过一致性校验。")
             return None
 
         target_season = valid_seasons[-1]
         last_s_num = target_season.get('season_number')
         last_ep_count = target_season.get('episode_count', 0) or 0
         if not last_s_num:
-            logger.debug(f"  ➜ [完结门禁] 《{series_name}》最终季号无效，跳过一致性校验。")
+            logger.debug(f"  ➜ [完结质检] 《{series_name}》最终季号无效，跳过一致性校验。")
             return None
 
         local_target_count = len(emby_seasons.get(last_s_num, set()))
         if local_target_count <= 0:
-            logger.info(f"  ➜ [完结洗版跳过] 《{series_name}》S{last_s_num} 本地 0 集，视为未追本季，不触发洗版/等待完结包。")
+            logger.info(f"  ➜ [完结质检跳过] 《{series_name}》S{last_s_num} 本地 0 集，视为未追本季，不触发洗版/等待完结包。")
             return None
 
         if last_ep_count <= 0:
-            logger.info(f"  ➜ [完结门禁跳过] 《{series_name}》S{last_s_num} 总集数未知，暂不触发洗版/季包分享。")
+            logger.info(f"  ➜ [完结质检跳过] 《{series_name}》S{last_s_num} 总集数未知，暂不触发洗版/季包分享。")
             return None
 
         if old_status == STATUS_COMPLETED:
-            logger.info(f"  ➜ [完结复检] 《{series_name}》已处于完结状态，继续校验 S{last_s_num} 本地一致性。")
+            logger.info(f"  ➜ [完结质检] 《{series_name}》已处于完结状态，继续校验 S{last_s_num} 本地一致性。")
         else:
             logger.info(
-                f"  ➜ [完结门禁] 《{series_name}》状态 {translate_internal_status(old_status)} -> 已完结，"
+                f"  ➜ [完结质检] 《{series_name}》状态 {translate_internal_status(old_status)} -> 已完结，"
                 f"校验 S{last_s_num} 本地一致性。"
             )
 
         if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
-            logger.info(f"  ➜ [完结门禁] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包分享探测。")
+            logger.info(f"  ➜ [完结质检] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包分享探测。")
             self._trigger_completed_season_pack_share_detached(tmdb_id, last_s_num, series_name)
             return False
 
@@ -1404,10 +1404,10 @@ class WatchlistProcessor:
             return True
 
         if self._season_has_active_washing(tmdb_id, last_s_num):
-            logger.info(f"  ➜ [完结洗版跳过] 《{series_name}》S{last_s_num} 已存在 active_washing 标志，跳过重复提交洗版订阅。")
+            logger.info(f"  ➜ [完结质检跳过] 《{series_name}》S{last_s_num} 已存在 active_washing 标志，跳过重复提交洗版订阅。")
             return None
 
-        logger.info(f"  ➜ [完结洗版] 《{series_name}》S{last_s_num} 一致性不通过，提交 MP 完结洗版。")
+        logger.info(f"  ➜ [完结质检] 《{series_name}》S{last_s_num} 一致性不通过，提交 MP 完结洗版。")
         self._handle_auto_resub_ended(
             tmdb_id,
             series_name,
