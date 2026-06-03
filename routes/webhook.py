@@ -47,8 +47,10 @@ WEBHOOK_BATCH_QUEUE = collections.deque()
 WEBHOOK_BATCH_LOCK = threading.Lock()
 WEBHOOK_BATCH_DEBOUNCE_TIME = 30
 WEBHOOK_BATCH_DEBOUNCER = None
-WEBHOOK_TASK_RETRY_DELAY = 8
-WEBHOOK_TASK_MAX_RETRIES = 3
+WEBHOOK_REQUEUE_DELAY = 5
+WEBHOOK_PENDING_TASKS = collections.deque()
+WEBHOOK_PENDING_TASKS_LOCK = threading.Lock()
+WEBHOOK_PENDING_TASKS_DRAINER = None
 
 UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
@@ -69,12 +71,18 @@ MP_BATCH_LOCK = threading.Lock()
 def _submit_webhook_media_task(
     task_name,
     *,
-    retry_count=0,
     task_function=None,
     processor_type='media',
+    from_pending_queue=False,
     **kwargs,
 ):
     task_function = task_function or _handle_full_processing_flow
+    task_payload = {
+        "task_name": task_name,
+        "task_function": task_function,
+        "processor_type": processor_type,
+        "kwargs": dict(kwargs),
+    }
     submitted = task_manager.submit_task(
         task_function,
         task_name=task_name,
@@ -82,29 +90,80 @@ def _submit_webhook_media_task(
         **kwargs,
     )
     if submitted:
-        if retry_count > 0:
-            logger.info(f"  ➜ [Webhook重试] 任务 '{task_name}' 第 {retry_count} 次延迟重试后提交成功。")
+        if from_pending_queue:
+            logger.info(f"  ➜ [Webhook队列] 任务 '{task_name}' 已从待提交队列成功分派。")
         return True
 
-    if retry_count >= WEBHOOK_TASK_MAX_RETRIES:
-        logger.warning(f"  ➜ [Webhook重试] 任务 '{task_name}' 多次重试后仍提交失败，放弃。")
+    if from_pending_queue:
+        logger.debug(f"  ➜ [Webhook队列] 任务 '{task_name}' 分派时媒体任务仍繁忙，稍后继续尝试。")
         return False
 
-    next_retry = retry_count + 1
-    logger.info(
-        f"  ➜ [Webhook重试] 任务 '{task_name}' 因媒体任务繁忙延迟 {WEBHOOK_TASK_RETRY_DELAY} 秒后重试 "
-        f"(第 {next_retry}/{WEBHOOK_TASK_MAX_RETRIES} 次)。"
-    )
-    spawn_later(
-        WEBHOOK_TASK_RETRY_DELAY,
-        _submit_webhook_media_task,
-        task_name,
-        retry_count=next_retry,
-        task_function=task_function,
-        processor_type=processor_type,
-        **kwargs,
-    )
+    logger.info(f"  ➜ [Webhook队列] 任务 '{task_name}' 因媒体任务繁忙，已加入待提交队列。")
+    _enqueue_pending_webhook_task(task_payload)
     return False
+
+
+def _is_same_pending_webhook_task(existing_task, new_task):
+    return (
+        existing_task.get("task_name") == new_task.get("task_name")
+        and existing_task.get("processor_type") == new_task.get("processor_type")
+        and existing_task.get("task_function") == new_task.get("task_function")
+        and existing_task.get("kwargs") == new_task.get("kwargs")
+    )
+
+
+def _schedule_pending_webhook_drain(delay=WEBHOOK_REQUEUE_DELAY):
+    global WEBHOOK_PENDING_TASKS_DRAINER
+    with WEBHOOK_PENDING_TASKS_LOCK:
+        if WEBHOOK_PENDING_TASKS_DRAINER is not None:
+            return
+        WEBHOOK_PENDING_TASKS_DRAINER = spawn_later(delay, _drain_pending_webhook_tasks)
+
+
+def _enqueue_pending_webhook_task(task_payload):
+    with WEBHOOK_PENDING_TASKS_LOCK:
+        for pending_task in WEBHOOK_PENDING_TASKS:
+            if _is_same_pending_webhook_task(pending_task, task_payload):
+                logger.debug(f"  ➜ [Webhook队列] 任务 '{task_payload['task_name']}' 已在待提交队列中，跳过重复入队。")
+                break
+        else:
+            WEBHOOK_PENDING_TASKS.append(task_payload)
+            logger.info(
+                f"  ➜ [Webhook队列] 当前待提交任务数: {len(WEBHOOK_PENDING_TASKS)} "
+                f"(最新: {task_payload['task_name']})"
+            )
+
+    _schedule_pending_webhook_drain()
+
+
+def _drain_pending_webhook_tasks():
+    global WEBHOOK_PENDING_TASKS_DRAINER
+    try:
+        while True:
+            with WEBHOOK_PENDING_TASKS_LOCK:
+                if not WEBHOOK_PENDING_TASKS:
+                    return
+                task_payload = WEBHOOK_PENDING_TASKS[0]
+
+            submitted = _submit_webhook_media_task(
+                task_payload["task_name"],
+                task_function=task_payload["task_function"],
+                processor_type=task_payload["processor_type"],
+                from_pending_queue=True,
+                **task_payload["kwargs"],
+            )
+            if not submitted:
+                return
+
+            with WEBHOOK_PENDING_TASKS_LOCK:
+                if WEBHOOK_PENDING_TASKS and _is_same_pending_webhook_task(WEBHOOK_PENDING_TASKS[0], task_payload):
+                    WEBHOOK_PENDING_TASKS.popleft()
+    finally:
+        with WEBHOOK_PENDING_TASKS_LOCK:
+            WEBHOOK_PENDING_TASKS_DRAINER = None
+            has_pending_tasks = bool(WEBHOOK_PENDING_TASKS)
+        if has_pending_tasks:
+            _schedule_pending_webhook_drain()
 
 
 def _mp_rel_dir_from_115_path(path):
@@ -774,7 +833,7 @@ def _process_batch_webhook_events():
             is_new_item=not is_already_processed
         )
 
-    logger.info("  ➜ 所有 Webhook 批量任务已成功分派。")
+    logger.info("  ➜ 所有 Webhook 批量任务已完成分派或进入待提交队列。")
 
 def _trigger_metadata_update_task(item_id, item_name):
     """触发元数据同步任务"""

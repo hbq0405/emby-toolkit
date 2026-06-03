@@ -174,7 +174,11 @@ webhook = importlib.import_module("routes.webhook")
 
 
 class WebhookTaskRetryTests(unittest.TestCase):
-    def test_busy_worker_schedules_retry(self):
+    def setUp(self):
+        webhook.WEBHOOK_PENDING_TASKS.clear()
+        webhook.WEBHOOK_PENDING_TASKS_DRAINER = None
+
+    def test_busy_worker_enqueues_pending_task(self):
         with mock.patch.object(webhook.task_manager, "submit_task", return_value=False) as submit_mock:
             with mock.patch.object(webhook, "spawn_later") as spawn_later_mock:
                 result = webhook._submit_webhook_media_task(
@@ -185,35 +189,62 @@ class WebhookTaskRetryTests(unittest.TestCase):
         self.assertFalse(result)
         submit_mock.assert_called_once()
         spawn_later_mock.assert_called_once()
-        self.assertEqual(spawn_later_mock.call_args.args[0], webhook.WEBHOOK_TASK_RETRY_DELAY)
-        self.assertIs(spawn_later_mock.call_args.args[1], webhook._submit_webhook_media_task)
-        self.assertEqual(spawn_later_mock.call_args.args[2], "Webhook入库: Test")
-        self.assertEqual(spawn_later_mock.call_args.kwargs["retry_count"], 1)
+        self.assertEqual(spawn_later_mock.call_args.args[0], webhook.WEBHOOK_REQUEUE_DELAY)
+        self.assertIs(spawn_later_mock.call_args.args[1], webhook._drain_pending_webhook_tasks)
+        self.assertEqual(len(webhook.WEBHOOK_PENDING_TASKS), 1)
+        self.assertEqual(webhook.WEBHOOK_PENDING_TASKS[0]["task_name"], "Webhook入库: Test")
 
-    def test_retry_stops_after_max_attempts(self):
+    def test_duplicate_pending_task_is_not_enqueued_twice(self):
+        task_fn = lambda **kwargs: None
         with mock.patch.object(webhook.task_manager, "submit_task", return_value=False):
             with mock.patch.object(webhook, "spawn_later") as spawn_later_mock:
-                result = webhook._submit_webhook_media_task(
+                first = webhook._submit_webhook_media_task(
                     "Webhook入库: Test",
-                    retry_count=webhook.WEBHOOK_TASK_MAX_RETRIES,
-                    task_function=lambda **kwargs: None,
+                    task_function=task_fn,
                     item_id="123",
                 )
-        self.assertFalse(result)
-        spawn_later_mock.assert_not_called()
+                second = webhook._submit_webhook_media_task(
+                    "Webhook入库: Test",
+                    task_function=task_fn,
+                    item_id="123",
+                )
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(len(webhook.WEBHOOK_PENDING_TASKS), 1)
+        spawn_later_mock.assert_called_once()
 
-    def test_retry_success_logs_and_returns_true(self):
+    def test_pending_queue_submission_success_drains_head(self):
+        task_fn = lambda **kwargs: None
+        webhook.WEBHOOK_PENDING_TASKS.append(
+            {
+                "task_name": "Webhook入库: Test",
+                "task_function": task_fn,
+                "processor_type": "media",
+                "kwargs": {"item_id": "123"},
+            }
+        )
         with mock.patch.object(webhook.task_manager, "submit_task", return_value=True) as submit_mock:
             with mock.patch.object(webhook.logger, "info") as logger_mock:
-                result = webhook._submit_webhook_media_task(
-                    "Webhook入库: Test",
-                    retry_count=1,
-                    task_function=lambda **kwargs: None,
-                    item_id="123",
-                )
-        self.assertTrue(result)
+                webhook._drain_pending_webhook_tasks()
         submit_mock.assert_called_once()
         logger_mock.assert_called()
+        self.assertEqual(len(webhook.WEBHOOK_PENDING_TASKS), 0)
+
+    def test_pending_queue_failure_keeps_task_and_reschedules(self):
+        task_fn = lambda **kwargs: None
+        webhook.WEBHOOK_PENDING_TASKS.append(
+            {
+                "task_name": "Webhook入库: Test",
+                "task_function": task_fn,
+                "processor_type": "media",
+                "kwargs": {"item_id": "123"},
+            }
+        )
+        with mock.patch.object(webhook.task_manager, "submit_task", return_value=False):
+            with mock.patch.object(webhook, "spawn_later") as spawn_later_mock:
+                webhook._drain_pending_webhook_tasks()
+        self.assertEqual(len(webhook.WEBHOOK_PENDING_TASKS), 1)
+        spawn_later_mock.assert_called_once()
 
 
 if __name__ == "__main__":
