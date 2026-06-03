@@ -137,6 +137,33 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
         self.assertIn("目标版本: `v10.2.4`", normalized_finish)
         self.assertIn("错误信息: 无法连接 Docker 守护进程", normalized_finish)
 
+    def test_run_docker_helper_overrides_entrypoint(self):
+        fake_client = mock.Mock()
+        fake_client.containers.run.return_value = b"ok"
+        fake_client.images.get.return_value = object()
+
+        with mock.patch.object(system_update, "_get_update_status_path", return_value="/tmp/system_update_result.json"):
+            with mock.patch.object(system_update, "_read_json_file", return_value={"ok": True, "message": "done"}):
+                with mock.patch("tempfile.NamedTemporaryFile") as tmp_file:
+                    tmp_cm = mock.MagicMock()
+                    tmp_cm.__enter__.return_value.name = "/tmp/helper.py"
+                    tmp_cm.__enter__.return_value.write.return_value = None
+                    tmp_cm.__exit__.return_value = False
+                    tmp_file.return_value = tmp_cm
+                    with mock.patch("os.makedirs"), mock.patch("os.remove", side_effect=FileNotFoundError()):
+                        events = list(system_update._run_docker_helper(
+                            fake_client,
+                            "hbq0405/emby-toolkit:latest",
+                            "emby-toolkit",
+                            "hbq0405/emby-toolkit:latest",
+                            {"current_version": "10.2.8", "target_version": "v10.2.9"},
+                        ))
+
+        self.assertTrue(events)
+        _, kwargs = fake_client.containers.run.call_args
+        self.assertEqual(kwargs["entrypoint"], ["python"])
+        self.assertEqual(kwargs["command"], ["/tmp/etk_update_helper.py"])
+
 
 if __name__ == "__main__":
     unittest.main()
