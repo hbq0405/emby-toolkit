@@ -2231,22 +2231,6 @@ def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_ide
                 return [], sr._raw_missing_message(missing_raw), {'reason': 'missing_raw_ffprobe', 'missing_raw': missing_raw}
             return [], f'缺少 raw_ffprobe_json：{missing_raw}', {'reason': 'missing_raw_ffprobe', 'missing_raw': missing_raw}
 
-    if hasattr(sr, '_validate_season_pack_consistency'):
-        consistency = sr._validate_season_pack_consistency(files, {
-            **candidate,
-            **standard_identity,
-            'tmdb_id': parent_series_id,
-            'parent_series_tmdb_id': parent_series_id,
-            'season_number': target_season,
-            'item_type': 'Season',
-            'share_type': 'season_pack',
-        })
-        if not consistency.get('ok'):
-            return [], consistency.get('message') or '季包媒体参数不一致，跳过完结季汇总', {
-                'reason': 'season_pack_consistency_failed',
-                'consistency': consistency,
-            }
-
     return files, '', {
         'reason': 'season_directory_from_remote_115_fallback' if remote_season_dir else 'season_directory_from_db_parent_id',
         'root_fid': parent_id,
