@@ -2007,7 +2007,7 @@ def task_auto_subscribe(processor):
 
             else:
                 if is_subscribed_recheck:
-                    logger.info(f"  ➜ [追更模式] 《{item['title']}》本轮未补到资源，不视为订阅失败。")
+                    logger.info(f"  ➜ [追更模式] 《{item['title']}》本轮未补到资源。")
                 else:
                     logger.error(f"  ➜ 订阅《{item['title']}》失败，请检查 MoviePilot 连接或日志。")
 
