@@ -2,7 +2,7 @@
 # 智能追剧列表任务模块
 import time
 import logging
-from typing import Optional
+from typing import Optional, List
 import concurrent.futures
 
 # 导入需要的底层模块和共享实例
@@ -16,7 +16,7 @@ from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
 logger = logging.getLogger(__name__)
 
 # --- 追剧 ---    
-def task_process_watchlist(processor, tmdb_id: Optional[str] = None, new_episode_ids: Optional[list] = None):
+def task_process_watchlist(processor, tmdb_id: Optional[str] = None, new_episode_ids: Optional[List[str]] = None):
     """
     只负责刷新“活跃”剧集（追剧中、待定中、暂停到期）。
     """

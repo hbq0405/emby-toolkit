@@ -676,13 +676,18 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
                 # =======================================================
 
-                logger.info(f"  ➜ [智能追剧] 触发单项刷新...")
+                precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
+
+                logger.info(
+                    f"  ➜ [智能追剧] 触发单项刷新..."
+                    f"{' (透传新增分集: ' + str(len(precise_new_episode_ids)) + ' 个)' if precise_new_episode_ids else ''}"
+                )
                 task_manager.submit_task(
                     task_process_watchlist,
                     task_name=f"刷新智能追剧: 《{item_name_for_log}》",
                     processor_type='watchlist', 
                     tmdb_id=str(tmdb_id),
-                    new_episode_ids=new_episode_ids
+                    new_episode_ids=precise_new_episode_ids or None
                 )
             except Exception as e:
                 logger.error(f"  ➜ 触发智能追剧任务失败: {e}")
