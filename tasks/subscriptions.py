@@ -1618,9 +1618,11 @@ def task_auto_subscribe(processor):
                     _item_type = _item.get('item_type')
                     if _item_type == 'Episode':
                         continue
-                    if _item_type == 'Movie' and not is_movie_subscribable(int(_item.get('tmdb_id')), tmdb_api_key, config):
-                        continue
                     _status = str(_item.get('subscription_status') or 'NONE').strip().upper()
+                    # 只有真正待订阅(WANTED)的新请求才需要做发行日期保护；
+                    # SUBSCRIBED / NONE 等补库项只查询共享中心/云资源，不再触发电影发行日期检查日志。
+                    if _status == 'WANTED' and _item_type == 'Movie' and not is_movie_subscribable(int(_item.get('tmdb_id')), tmdb_api_key, config):
+                        continue
                     # 只有真正待订阅(WANTED)的新请求才受订阅配额限制；
                     # SUBSCRIBED / NONE 等追更补库项仍允许查询共享中心，但绝不应因此流入 MP。
                     if _status == 'WANTED' and quota_for_shared_probe <= 0:
@@ -1644,19 +1646,6 @@ def task_auto_subscribe(processor):
                 f"({i+1}/{len(wanted_items)}) 正在处理: {item['title']}"
             )
 
-            # 2.1 检查发行日期 (只对电影检查，剧集由 smart_subscribe 处理)
-            if item['item_type'] == 'Movie' and not is_movie_subscribable(int(item['tmdb_id']), tmdb_api_key, config):
-                logger.info(f"  ➜ 电影《{item['title']}》未到发行日期，本次跳过。")
-                rejected_details.append({'item': f"电影《{item['title']}》", 'reason': '未发行'})
-                # ★★★ 新增：解析来源并记录失败通知 ★★★
-                sources = item.get('subscription_sources_json', [])
-                for source in sources:
-                    if source.get('type') == 'user_request' and (user_id := source.get('user_id')):
-                        if user_id not in failed_notifications_to_send:
-                            failed_notifications_to_send[user_id] = []
-                        failed_notifications_to_send[user_id].append(f"《{item['title']}》(原因: 不满足发行日期延迟订阅)")
-                continue
-
             # ★★★ 1. 准备基础信息 (提前获取剧集标题，用于日志和搜索) ★★★
             subscription_status = str(item.get('subscription_status') or 'NONE').strip().upper()
             is_wanted_subscription = subscription_status == 'WANTED'
@@ -1667,6 +1656,20 @@ def task_auto_subscribe(processor):
             item_type = item['item_type']
             title = item['title'] # 默认为 item 标题
             season_number = item.get('season_number')
+
+            # 2.1 发行日期保护只属于 WANTED 新订阅。
+            # 非 WANTED 的电影/追更补库项不再做发行日期检查，避免统一订阅日志被补库项刷屏。
+            if is_wanted_subscription and item_type == 'Movie' and not is_movie_subscribable(int(tmdb_id), tmdb_api_key, config):
+                logger.info(f"  ➜ 电影《{title}》未到发行日期，本次跳过。")
+                rejected_details.append({'item': f"电影《{title}》", 'reason': '未发行'})
+                # ★★★ 新增：解析来源并记录失败通知 ★★★
+                sources = item.get('subscription_sources_json', [])
+                for source in sources:
+                    if source.get('type') == 'user_request' and (user_id := source.get('user_id')):
+                        if user_id not in failed_notifications_to_send:
+                            failed_notifications_to_send[user_id] = []
+                        failed_notifications_to_send[user_id].append(f"《{title}》(原因: 不满足发行日期延迟订阅)")
+                continue
 
             # 统一订阅任务不再处理 Episode 队列项。
             # 单集只作为 Season.missing_episode_numbers 参与本地精确过滤；
@@ -1731,9 +1734,7 @@ def task_auto_subscribe(processor):
 
             if (not is_wanted_subscription) and item_type == 'Season':
                 logger.info(
-                    f"  ➜ [补库模式] 《{title}》S{int(season_number or 0):02d} "
-                    f"subscription_status={subscription_status or 'NONE'}，"
-                    f"本轮只走共享池/影巢/频道补库，不提交 MP；"
+                    f"  ➜ [追更模式] 《{title}》 第 {int(season_number or 0):02d} 季 "
                     f"缺失集: {missing_episode_numbers or '未知/按季处理'}"
                 )
 
@@ -1858,16 +1859,23 @@ def task_auto_subscribe(processor):
                                     f"仅使用父剧集 TMDb ID {hdhive_tmdb_id} 检索；返回后本地按季号排序。"
                                 )
 
-                            try:
-                                hdhive_require_complete = check_series_completion(
-                                    int(hdhive_tmdb_id),
-                                    tmdb_api_key,
-                                    season_number=hdhive_target_season,
-                                    series_name=title
-                                )
-                            except Exception as e:
+                            if is_wanted_subscription:
+                                try:
+                                    hdhive_require_complete = check_series_completion(
+                                        int(hdhive_tmdb_id),
+                                        tmdb_api_key,
+                                        season_number=hdhive_target_season,
+                                        series_name=title
+                                    )
+                                except Exception as e:
+                                    hdhive_require_complete = False
+                                    logger.warning(f"  ➜ [策略] 检查剧集《{title}》完结状态失败，影巢不强制完结包: {e}")
+                            else:
                                 hdhive_require_complete = False
-                                logger.warning(f"  ➜ [策略] 检查剧集《{title}》完结状态失败，影巢不强制完结包: {e}")
+                                logger.info(
+                                    f"  ➜ [追更模式] 剧集《{title}》{f'第 {int(hdhive_target_season):02d} 季' if hdhive_target_season is not None else ''} "
+                                    f"subscription_status={subscription_status or 'NONE'}，跳过完结状态检查。"
+                                )
 
                             if hdhive_require_complete:
                                 first_season_note = ""
@@ -1878,7 +1886,7 @@ def task_auto_subscribe(processor):
                                     first_season_note = ""
 
                                 logger.info(
-                                    f"  ➜ [策略] 剧集《{title}》{f'S{int(hdhive_target_season):02d}' if hdhive_target_season is not None else ''} 已判定完结，"
+                                    f"  ➜ [策略] 剧集《{title}》{f'第 {int(hdhive_target_season):02d} 季' if hdhive_target_season is not None else ''} 已判定完结，"
                                     f"影巢仅允许转存全集/全结/完结包，分段资源不转存；{first_season_note}明确错季仍排除。"
                                 )
                             else:
@@ -1904,9 +1912,8 @@ def task_auto_subscribe(processor):
                 elif source_type == 'mp':
                     # 双保险：即使上面的订阅源列表未来被改坏，这里也只允许 WANTED 进入 MP。
                     if not is_wanted_subscription:
-                        logger.info(
+                        logger.debug(
                             f"  ➜ [MP保护] 跳过《{title}》的 MoviePilot 订阅："
-                            f"subscription_status={subscription_status or 'NONE'}。"
                         )
                         continue
 
@@ -2028,7 +2035,7 @@ def task_auto_subscribe(processor):
                 if is_wanted_subscription:
                     logger.error(f"  ➜ 订阅《{title}》失败，请检查 MoviePilot 连接或日志。")
                 else:
-                    logger.info(f"  ➜ [补库模式] 《{title}》本轮未补到资源。")
+                    logger.info(f"  ➜ [补库模式] 《{title}》 本轮未补到资源。")
 
             # 如果配置了延时，且不是列表中的最后一个项目，则进行休眠
             if request_delay > 0 and i < len(wanted_items) - 1:
