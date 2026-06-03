@@ -202,7 +202,7 @@ class WatchlistProcessor:
                     'emby_item_ids_json': db_row['emby_item_ids_json']
                 }
                 # 3. 立即触发一次判定流
-                self._process_one_series(series_data)
+                self._process_one_series(series_data, allow_airing_episode_share=True)
                 
         except Exception as e:
             logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}")
@@ -270,7 +270,7 @@ class WatchlistProcessor:
                     series_name = self._get_safe_series_name(series)
 
                     try:
-                        self._process_one_series(series)
+                        self._process_one_series(series, allow_airing_episode_share=bool(tmdb_id))
                         return "处理成功"
                     except Exception as e:
                         logger.error(f"处理剧集 {series_name} 时发生错误: {e}", exc_info=False)
@@ -1124,6 +1124,130 @@ class WatchlistProcessor:
         )
         return bool(result.get('ok'))
 
+    def _trigger_airing_episode_share_detached(self, tmdb_id: str, season_numbers: List[int], series_name: str = '', year: str = ''):
+        """追更状态确认后，按季异步触发单集分享探测。
+
+        与 webhook 的 new_episode_ids 解耦：这里已经拿到了最终 watching_status，
+        只有仍处于 Watching/Paused/Pending 的剧集才会走单集分享。
+        如果同一批入库实际已经让本季完结，就不会在这里拆成单集，
+        完结季包会交给 _trigger_completed_season_pack_share_detached。
+        """
+        parent_series_tmdb_id = str(tmdb_id or '').strip()
+        if not parent_series_tmdb_id:
+            return
+
+        clean_seasons = []
+        for season in season_numbers or []:
+            try:
+                season_no = int(season)
+            except Exception:
+                continue
+            if season_no > 0 and season_no not in clean_seasons:
+                clean_seasons.append(season_no)
+
+        if not clean_seasons:
+            logger.debug(
+                "  ➜ [共享资源] 追更单集分享跳过：没有有效季号 tmdb=%s",
+                parent_series_tmdb_id,
+            )
+            return
+
+        if not _shared_resource_auto_share_enabled():
+            logger.debug(
+                "  ➜ [共享资源] 共享资源未启用，跳过追更单集分享探测：%s seasons=%s",
+                series_name or parent_series_tmdb_id, clean_seasons,
+            )
+            return
+
+        def _runner():
+            try:
+                episode_rows = []
+                with connection.get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            SELECT season_number, episode_number, title, release_year, emby_item_ids_json
+                            FROM media_metadata
+                            WHERE parent_series_tmdb_id = %s
+                              AND item_type = 'Episode'
+                              AND season_number = ANY(%s)
+                              AND emby_item_ids_json IS NOT NULL
+                              AND emby_item_ids_json::text NOT IN ('[]', 'null', '')
+                            ORDER BY season_number, episode_number
+                            """,
+                            (parent_series_tmdb_id, clean_seasons),
+                        )
+                        episode_rows = cursor.fetchall() or []
+
+                episode_items = []
+                for row in episode_rows:
+                    ids = row.get('emby_item_ids_json')
+                    if isinstance(ids, str):
+                        try:
+                            ids = json.loads(ids)
+                        except Exception:
+                            ids = []
+                    if not isinstance(ids, list):
+                        ids = [ids] if ids else []
+
+                    emby_item_id = next((str(x).strip() for x in ids if str(x or '').strip()), None)
+                    if not emby_item_id:
+                        continue
+
+                    episode_items.append({
+                        'emby_item_id': emby_item_id,
+                        'season_number': row.get('season_number'),
+                        'episode_number': row.get('episode_number'),
+                        'title': row.get('title') or series_name or '',
+                        'year': row.get('release_year') or year or '',
+                    })
+
+                if not episode_items:
+                    logger.debug(
+                        "  ➜ [共享资源] 追更单集分享探测无本地分集可处理：%s seasons=%s",
+                        series_name or parent_series_tmdb_id, clean_seasons,
+                    )
+                    return
+
+                from tasks.shared_resource_tasks import trigger_shared_auto_share_for_library_item
+
+                created_total = 0
+                checked_total = 0
+                for ep in episode_items:
+                    checked_total += 1
+                    result = trigger_shared_auto_share_for_library_item(
+                        None,
+                        item_type='Episode',
+                        emby_item_id=ep['emby_item_id'],
+                        parent_series_tmdb_id=parent_series_tmdb_id,
+                        title=series_name or ep['title'] or '',
+                        year=ep['year'] or '',
+                    ) or {}
+                    try:
+                        created_total += int(result.get('created', 0) or 0)
+                    except Exception:
+                        pass
+
+                logger.debug(
+                    "  ➜ [共享资源] 追更单集分享探测完成：%s seasons=%s checked=%s created=%s",
+                    series_name or parent_series_tmdb_id, clean_seasons, checked_total, created_total,
+                )
+            except Exception as e:
+                logger.warning(
+                    "  ➜ [共享资源] 追更单集分享探测异步任务失败：%s seasons=%s -> %s",
+                    series_name or parent_series_tmdb_id, clean_seasons, e, exc_info=True,
+                )
+
+        threading.Thread(
+            target=_runner,
+            name=f"shared-airing-episode-share-{parent_series_tmdb_id}",
+            daemon=True,
+        ).start()
+        logger.info(
+            "  ➜ [共享资源] 检查追更单集是否需要分享：%s seasons=%s",
+            series_name or parent_series_tmdb_id, clean_seasons,
+        )
+
     def _trigger_completed_season_pack_share_detached(self, tmdb_id: str, season_number: int, series_name: str = ''):
         """完结一致性通过后异步触发季包分享探测（命中缺口正常分享，count=1 补备份），避免阻塞单线程任务队列。
 
@@ -1359,7 +1483,7 @@ class WatchlistProcessor:
             return None
     
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
-    def _process_one_series(self, series_data: Dict[str, Any]):
+    def _process_one_series(self, series_data: Dict[str, Any], allow_airing_episode_share: bool = False):
         tmdb_id = series_data.get('tmdb_id')
         if not tmdb_id:
             logger.warning(f"  ➜ 追剧记录缺少 tmdb_id，跳过。数据: {series_data}")
@@ -2034,6 +2158,19 @@ class WatchlistProcessor:
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
 
         # ======================================================================
+        # ★★★ 共享资源单集追更分享 ★★★
+        # ======================================================================
+        if allow_airing_episode_share and final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:
+            release_date = latest_series_data.get('first_air_date') or ''
+            release_year = release_date[:4] if release_date else ''
+            self._trigger_airing_episode_share_detached(
+                tmdb_id=tmdb_id,
+                season_numbers=list(active_seasons),
+                series_name=item_name,
+                year=release_year,
+            )
+
+        # ======================================================================
         # ★★★ MP 状态接管与同步 (自动待定 & 自动暂停) ★★★
         # ======================================================================
         self._sync_status_to_moviepilot(
@@ -2072,7 +2209,7 @@ class WatchlistProcessor:
                 progress = 10 + int(((i + 1) / total) * 90)
                 self.progress_callback(progress, f"正在处理: {series['item_name'][:20]}... ({i+1}/{total})")
 
-            self._process_one_series(series)
+            self._process_one_series(series, allow_airing_episode_share=bool(item_id))
             time.sleep(1)
 
         logger.info("--- 追剧列表更新任务结束 ---")

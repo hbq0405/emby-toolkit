@@ -391,37 +391,28 @@ def _run_shared_auto_share_detached(task_name: str, **kwargs):
     ).start()
 
 
-def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: str, item_type: str, tmdb_id: str, new_episode_ids: Optional[List[str]] = None):
-    """Movie/Episode 入库完成后，异步询问共享中心是否需要本机创建分享。
+def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: str, item_type: str, tmdb_id: str):
+    """Movie 入库完成后，异步询问共享中心是否需要本机创建分享。
 
-    这里保持原有正常分享链路：Movie 命中缺口分享、Episode 追更命中缺口分享。
-    Movie 的备份分享由任务内部在“正常分享不需要创建且中心可用分享数=1”时额外补充；
-    Episode 仍不创建备份分享。
+    Webhook 只保留电影分享入口。剧集不管是单集追更还是完结季包，
+    都交给 watchlist_processor 在完成最终追更/完结判定后处理，避免整季入库时
+    webhook 只看到 new_episode_ids 就误把整季拆成单集分享。
+    Movie 的备份分享由任务内部在“正常分享不需要创建且中心可用分享数=1”时额外补充。
     """
     try:
-        if item_type == 'Movie' and tmdb_id:
-            _run_shared_auto_share_detached(
-                f"共享电影入库探测: {item_details.get('Name') or tmdb_id}",
-                item_type='Movie',
-                tmdb_id=str(tmdb_id),
-                emby_item_id=str(item_id),
-                title=item_details.get('Name') or '',
-                year=item_details.get('ProductionYear') or '',
-            )
+        if item_type != 'Movie' or not tmdb_id:
             return
 
-        if item_type == 'Series' and new_episode_ids:
-            for ep_id in list(dict.fromkeys([str(x) for x in new_episode_ids if str(x or '').strip()])):
-                _run_shared_auto_share_detached(
-                    f"共享追更新集探测: {item_details.get('Name') or tmdb_id} / {ep_id}",
-                    item_type='Episode',
-                    emby_item_id=ep_id,
-                    parent_series_tmdb_id=str(tmdb_id or ''),
-                    title=item_details.get('Name') or '',
-                    year=item_details.get('ProductionYear') or '',
-                )
+        _run_shared_auto_share_detached(
+            f"共享电影入库探测: {item_details.get('Name') or tmdb_id}",
+            item_type='Movie',
+            tmdb_id=str(tmdb_id),
+            emby_item_id=str(item_id),
+            title=item_details.get('Name') or '',
+            year=item_details.get('ProductionYear') or '',
+        )
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 提交 webhook 自动分享探测失败: {e}", exc_info=True)
+        logger.warning(f"  ➜ [共享资源] 提交 webhook 电影自动分享探测失败: {e}", exc_info=True)
 
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
@@ -453,8 +444,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
-    # 2. 共享资源供给侧实时触发：保留 Movie/追更新集命中缺口分享，Movie 额外按 count=1 补备份；季包交给智能追剧完结流程。
-    _submit_shared_auto_share_after_library_ready(item_details, item_id, item_type, tmdb_id, new_episode_ids)
+    # 2. 共享资源供给侧实时触发：Webhook 只负责 Movie；剧集单集/季包由智能追剧最终判定后触发。
+    _submit_shared_auto_share_after_library_ready(item_details, item_id, item_type, tmdb_id)
 
     # 3. 智能追剧判断 - 初始入库
     if is_new_item and item_type == "Series":
