@@ -30,6 +30,180 @@ from handler.tg_media_candidate import lookup_candidate_hint_for_name
 
 logger = logging.getLogger(__name__)
 
+TV_HINT_RE = re.compile(
+    r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|'
+    r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|'
+    r'(?:^|[ \.\-\_\[\(])e\d{1,4}\b|'
+    r'第[一二三四五六七八九十\d]+季',
+    re.IGNORECASE,
+)
+SEASON_DIR_RE = re.compile(r'^(Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)$', re.IGNORECASE)
+SEASON_NUM_RE = re.compile(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?')
+SEASON_TEXT_RE = re.compile(r'Season\s*(\d{1,4})\b', re.IGNORECASE)
+SEASON_ZH_RE = re.compile(r'第(\d{1,4})季')
+TMDB_TAG_RE = re.compile(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', re.IGNORECASE)
+GENERIC_PACKAGE_SEGMENT_RE = re.compile(
+    r'^(?:19\d{2}|20\d{2}|'
+    r'电影|电视剧|剧集|动漫|动画|综艺|纪录片|纪录|'
+    r'合集|系列|全套|打包|大包|资源|待整理|转存|新片|影视|网盘|'
+    r'collection|collections|series|pack|package|movie|movies|tv|shows?|anime|misc|unknown)$',
+    re.IGNORECASE,
+)
+KNOWN_VIDEO_EXTS = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
+KNOWN_SKIP_EXTS = {'clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo'}
+MIN_BIG_PACKAGE_VIDEO_SIZE = 50 * 1024 * 1024
+
+
+def _name_has_tv_hint(name):
+    return bool(name and TV_HINT_RE.search(str(name)))
+
+
+def _name_is_season_dir(name):
+    return bool(name and SEASON_DIR_RE.search(str(name).strip()))
+
+
+def _name_has_tmdb_tag(name):
+    return bool(name and TMDB_TAG_RE.search(str(name)))
+
+
+def _extract_season_number(*texts):
+    for text in texts:
+        if not text:
+            continue
+        value = str(text)
+        m1 = SEASON_NUM_RE.search(value)
+        m2 = SEASON_TEXT_RE.search(value)
+        m3 = SEASON_ZH_RE.search(value)
+        if m1:
+            return int(m1.group(1))
+        if m2:
+            return int(m2.group(1))
+        if m3:
+            return int(m3.group(1))
+    return None
+
+
+def _is_generic_package_segment(name):
+    if not name:
+        return True
+    normalized = str(name).strip().strip('/').strip()
+    if not normalized:
+        return True
+    return bool(GENERIC_PACKAGE_SEGMENT_RE.match(normalized))
+
+
+def _choose_big_package_context_name(top_name, rel_dir):
+    segments = [seg.strip() for seg in str(rel_dir or '').split('/') if seg and seg.strip()]
+    for segment in reversed(segments):
+        if not _name_is_season_dir(segment) and not _is_generic_package_segment(segment):
+            return segment
+    return top_name
+
+
+def _should_use_filewise_big_package(top_name, is_tv_group, has_season_dir, has_tmdb, valid_video_files):
+    if is_tv_group or has_season_dir or has_tmdb:
+        return False
+    return len(valid_video_files) > 1
+
+
+def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=None, use_ai=False):
+    grouped = {}
+    unresolved = []
+    assigned_ids = set()
+    all_items = list(gathered_files or [])
+
+    valid_video_files = []
+    for item in all_items:
+        file_name = item.get('fn') or item.get('n') or item.get('file_name', '')
+        ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+        if ext in KNOWN_VIDEO_EXTS:
+            file_size = _parse_115_size(item.get('fs') or item.get('size'))
+            if file_size > MIN_BIG_PACKAGE_VIDEO_SIZE:
+                valid_video_files.append(item)
+
+    for video_item in valid_video_files:
+        video_fid = video_item.get('fid') or video_item.get('file_id')
+        if video_fid in assigned_ids:
+            continue
+
+        file_name = video_item.get('fn') or video_item.get('n') or video_item.get('file_name', '')
+        rel_dir = video_item.get('_etk_rel_dir', '')
+        context_name = _choose_big_package_context_name(top_name, rel_dir)
+        forced_type = 'tv' if (_name_has_tv_hint(file_name) or _name_has_tv_hint(rel_dir)) else None
+        season_num = _extract_season_number(file_name, rel_dir, context_name)
+        recognition_hints = lookup_candidate_hint_for_name(
+            file_name,
+            alt_texts=[context_name, top_name],
+            media_type=forced_type,
+            season_number=season_num,
+        )
+        file_sha1 = video_item.get('sha1') or video_item.get('sha')
+        tmdb_id, media_type, title = _identify_media_enhanced(
+            file_name,
+            main_dir_name=context_name,
+            has_season_subdirs=False,
+            forced_media_type=forced_type,
+            ai_translator=ai_translator,
+            use_ai=use_ai,
+            is_folder=False,
+            sha1=file_sha1,
+            recognition_hints=recognition_hints,
+        )
+
+        video_base = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
+        related_items = [video_item]
+        assigned_ids.add(video_fid)
+
+        for other_item in all_items:
+            other_fid = other_item.get('fid') or other_item.get('file_id')
+            if other_fid in assigned_ids:
+                continue
+            other_name = other_item.get('fn') or other_item.get('n') or other_item.get('file_name', '')
+            other_dir = other_item.get('_etk_rel_dir', '')
+            if other_dir != rel_dir:
+                continue
+            if other_name.startswith(video_base):
+                related_items.append(other_item)
+                assigned_ids.add(other_fid)
+
+        if not tmdb_id:
+            unresolved.extend(related_items)
+            continue
+
+        if media_type == 'tv' and season_num is None:
+            season_num = _extract_season_number(context_name, rel_dir)
+
+        group_key = (
+            tmdb_id,
+            media_type,
+            title,
+            season_num if media_type == 'tv' else None,
+        )
+        if group_key not in grouped:
+            grouped[group_key] = {
+                "top_name": context_name or file_name,
+                "files": [],
+                "is_tv": media_type == 'tv',
+                "has_season_dir": False,
+                "identified_tmdb_id": tmdb_id,
+                "identified_media_type": media_type,
+                "identified_title": title,
+                "recognition_hints": recognition_hints or {},
+                "forced_season": season_num,
+            }
+        grouped[group_key]["files"].extend(related_items)
+        if grouped[group_key]["forced_season"] is None and season_num is not None:
+            grouped[group_key]["forced_season"] = season_num
+
+    for item in all_items:
+        item_id = item.get('fid') or item.get('file_id')
+        if item_id in assigned_ids:
+            continue
+        unresolved.append(item)
+
+    return list(grouped.values()), unresolved
+
+
 # ★ 构建一个轻量级的独立探测器，供增量/全量同步任务生成 mediainfo 使用
 class _StandaloneProber(P115MediaAnalyzerMixin):
     def __init__(self, client):
@@ -164,7 +338,7 @@ def task_scan_and_organize_115(processor=None):
                 # 单个文件直接成组
                 ext = top_name.split('.')[-1].lower() if '.' in top_name else ''
                 if ext in allowed_exts:
-                    is_tv_hint = bool(re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第[一二三四五六七八九十\d]+季', top_name, re.IGNORECASE))
+                    is_tv_hint = _name_has_tv_hint(top_name)
                     groups_to_process.append({
                         "top_name": top_name,
                         "files": [root_item],
@@ -180,7 +354,7 @@ def task_scan_and_organize_115(processor=None):
                 is_tv_group = False
                 has_season_dir = False
                 
-                def sync_scan(current_cid, depth=0):
+                def sync_scan(current_cid, depth=0, rel_dir=""):
                     nonlocal is_tv_group, has_season_dir
                     if depth > 5: return
                     
@@ -200,22 +374,25 @@ def task_scan_and_organize_115(processor=None):
                             c_id = child.get('fid') or child.get('file_id')
                             c_fc = str(child.get('fc') if child.get('fc') is not None else child.get('type'))
                             c_is_folder = (c_fc == '0')
+                            child_rel_dir = f"{rel_dir}/{c_name}".strip('/') if c_is_folder else rel_dir
+                            child['_etk_rel_dir'] = rel_dir
                             
-                            c_is_tv_hint = bool(re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第[一二三四五六七八九十\d]+季', c_name, re.IGNORECASE))
-                            c_is_season_dir = c_is_folder and bool(re.search(r'^(Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)$', c_name, re.IGNORECASE))
+                            c_is_tv_hint = _name_has_tv_hint(c_name)
+                            c_is_season_dir = c_is_folder and _name_is_season_dir(c_name)
                             
                             if c_is_folder:
                                 if c_is_season_dir or c_is_tv_hint:
                                     is_tv_group = True
                                     if c_is_season_dir: has_season_dir = True
                                 
-                                has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', top_name, re.IGNORECASE))
+                                has_tmdb = _name_has_tmdb_tag(top_name)
                                 
                                 # ★ 核心提速：如果是剧集或已标记TMDB，绝不可能是大杂烩，直接把文件夹当做 item 塞进去，不再深入！
                                 if depth > 0 and (is_tv_group or has_tmdb):
+                                    child['_etk_rel_dir'] = rel_dir
                                     gathered_files.append(child)
                                 else:
-                                    sync_scan(c_id, depth + 1)
+                                    sync_scan(c_id, depth + 1, child_rel_dir)
                                 
                                 # 将目录加入垃圾回收器
                                 P115DeleteBuffer.add(fids=[], base_cids=[c_id])
@@ -225,49 +402,36 @@ def task_scan_and_organize_115(processor=None):
                                     gathered_files.append(child)
                                     if c_is_tv_hint: is_tv_group = True
                                 else:
-                                    if c_ext not in ['clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo']:
+                                    if c_ext not in KNOWN_SKIP_EXTS:
                                         local_unidentified.append(child)
                                         
                         if len(c_data) < 1000: break
                         c_offset += 1000
 
                 # 执行同步扫盘
-                sync_scan(top_id, 0)
+                sync_scan(top_id, 0, "")
                 
-                # ★ 智能打散逻辑
-                has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', top_name, re.IGNORECASE))
+                # ★ 大包逐文件识别逻辑
+                has_tmdb = _name_has_tmdb_tag(top_name)
                 valid_video_files = []
                 for f in gathered_files:
                     f_name = f.get('fn', '')
                     ext = f_name.split('.')[-1].lower() if '.' in f_name else ''
-                    if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                    if ext in KNOWN_VIDEO_EXTS:
                         file_size = _parse_115_size(f.get('fs') or f.get('size'))
-                        if file_size > 50 * 1024 * 1024:
+                        if file_size > MIN_BIG_PACKAGE_VIDEO_SIZE:
                             valid_video_files.append(f)
                 
-                if not is_tv_group and not has_tmdb and len(valid_video_files) > 1:
-                    logger.info(f"  ➜ [智能打散] 检测到疑似混合大目录 '{top_name}'，执行打散处理...")
-                    assigned_fids = set()
-                    for v_file in valid_video_files:
-                        v_name = v_file.get('fn') or v_file.get('n') or v_file.get('file_name', '')
-                        v_base = v_name.rsplit('.', 1)[0] if '.' in v_name else v_name
-                        new_group = {"top_name": v_name, "files": [v_file], "is_tv": False, "has_season_dir": False}
-                        assigned_fids.add(v_file.get('fid') or v_file.get('file_id'))
-                        
-                        for other_file in gathered_files:
-                            o_fid = other_file.get('fid') or other_file.get('file_id')
-                            if o_fid in assigned_fids: continue
-                            o_name = other_file.get('fn') or other_file.get('n') or other_file.get('file_name', '')
-                            if o_name.startswith(v_base):
-                                new_group["files"].append(other_file)
-                                assigned_fids.add(o_fid)
-                        groups_to_process.append(new_group)
-                    
-                    for f in gathered_files:
-                        f_id = f.get('fid') or f.get('file_id')
-                        if f_id not in assigned_fids:
-                            o_name = f.get('fn') or f.get('n') or f.get('file_name', '')
-                            groups_to_process.append({"top_name": o_name, "files": [f], "is_tv": False, "has_season_dir": False})
+                if _should_use_filewise_big_package(top_name, is_tv_group, has_season_dir, has_tmdb, valid_video_files):
+                    logger.info(f"  ➜ [大包模式] 检测到深层嵌套资源目录 '{top_name}'，执行逐文件识别...")
+                    filewise_groups, filewise_unresolved = _build_filewise_big_package_groups(
+                        gathered_files,
+                        top_name,
+                        ai_translator=ai_translator,
+                        use_ai=use_ai,
+                    )
+                    groups_to_process.extend(filewise_groups)
+                    local_unidentified.extend(filewise_unresolved)
                 else:
                     groups_to_process.append({
                         "top_name": top_name,
@@ -283,32 +447,33 @@ def task_scan_and_organize_115(processor=None):
                 if not g_files: continue
                 
                 forced_type = 'tv' if group["is_tv"] else None
-                season_num = None
-                if forced_type == 'tv':
-                    m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', g_top_name)
-                    m2 = re.search(r'Season\s*(\d{1,4})\b', g_top_name, re.IGNORECASE)
-                    m3 = re.search(r'第(\d{1,4})季', g_top_name)
-                    if m1: season_num = int(m1.group(1))
-                    elif m2: season_num = int(m2.group(1))
-                    elif m3: season_num = int(m3.group(1))
+                season_num = group.get("forced_season")
+                recognition_hints = group.get("recognition_hints")
+                tmdb_id = group.get("identified_tmdb_id")
+                media_type = group.get("identified_media_type")
+                title = group.get("identified_title")
 
-                # 👇 核心修改：提取组内第一个视频的 SHA1，传给识别函数，直接从 RAW 提取 TMDb ID！
-                group_sha1 = None
-                for f in g_files:
-                    f_name = f.get('fn', '')
-                    ext = f_name.split('.')[-1].lower() if '.' in f_name else ''
-                    if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                        group_sha1 = f.get('sha1') or f.get('sha')
-                        if group_sha1:
-                            break
+                if forced_type == 'tv' and season_num is None:
+                    season_num = _extract_season_number(g_top_name)
 
-                recognition_hints = lookup_candidate_hint_for_name(g_top_name, alt_texts=[top_name], media_type=forced_type)
-                tmdb_id, media_type, title = _identify_media_enhanced(
-                    g_top_name, main_dir_name=g_top_name, has_season_subdirs=group["has_season_dir"],
-                    forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai, is_folder=False,
-                    sha1=group_sha1,  # 👈 关键：传入 SHA1
-                    recognition_hints=recognition_hints
-                )
+                if not tmdb_id:
+                    # 👇 核心修改：提取组内第一个视频的 SHA1，传给识别函数，直接从 RAW 提取 TMDb ID！
+                    group_sha1 = None
+                    for f in g_files:
+                        f_name = f.get('fn', '')
+                        ext = f_name.split('.')[-1].lower() if '.' in f_name else ''
+                        if ext in KNOWN_VIDEO_EXTS:
+                            group_sha1 = f.get('sha1') or f.get('sha')
+                            if group_sha1:
+                                break
+
+                    recognition_hints = lookup_candidate_hint_for_name(g_top_name, alt_texts=[top_name], media_type=forced_type)
+                    tmdb_id, media_type, title = _identify_media_enhanced(
+                        g_top_name, main_dir_name=g_top_name, has_season_subdirs=group["has_season_dir"],
+                        forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai, is_folder=False,
+                        sha1=group_sha1,
+                        recognition_hints=recognition_hints
+                    )
                 
                 if not tmdb_id:
                     logger.warning(f"  ➜ 无法识别媒体组: {g_top_name}，打入未识别。")
@@ -340,7 +505,7 @@ def task_scan_and_organize_115(processor=None):
                         item_id = item.get('fid') or item.get('file_id')
                         ext = name.split('.')[-1].lower() if '.' in name else ''
                         
-                        if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                        if ext in KNOWN_VIDEO_EXTS:
                             send_unrecognized_notification(name, reason="正则、MP辅助与AI均无法匹配到有效的 TMDb 数据")
                             pc = item.get('pc') or item.get('pick_code') 
                             P115RecordManager.add_or_update_record(
