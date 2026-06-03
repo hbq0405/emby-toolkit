@@ -25,6 +25,12 @@ QUEUE_LOCK = threading.Lock()
 DEBOUNCE_TIMER = None
 DEBOUNCE_DELAY = 3 # 防抖延迟秒数
 
+# --- 实时监控 worker 状态 ---
+# 监控预处理是重型链路（TMDb/豆瓣/AI/NFO/Emby 通知）。
+# 这里必须保证同一时刻只有一个批次在跑，否则后来的批次会并发抢跑，
+# 表现为“前一个媒体没处理完，后一个媒体先处理完成”。
+MONITOR_WORKER_RUNNING = False
+
 # --- 全局队列抑制标志 ---
 IS_PROCESSING_PAUSED = False
 
@@ -93,13 +99,18 @@ def enqueue_file_actively(file_path: str):
         DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_batch_queue)
 
 def process_batch_queue():
-    """处理新增/修改队列"""
+    """处理新增/修改队列。
+
+    注意：实时监控预处理必须串行执行。
+    如果当前已有批次正在处理，本轮只保留队列，不再启动第二个 worker；
+    当前 worker 结束时会自动补跑积压队列。
+    """
     if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
         with QUEUE_LOCK:
             FILE_EVENT_QUEUE.clear()
         return
         
-    global DEBOUNCE_TIMER, IS_PROCESSING_PAUSED
+    global DEBOUNCE_TIMER, IS_PROCESSING_PAUSED, MONITOR_WORKER_RUNNING
     
     if IS_PROCESSING_PAUSED:
         with QUEUE_LOCK:
@@ -108,14 +119,27 @@ def process_batch_queue():
         return
 
     with QUEUE_LOCK:
+        # 当前批次还没收尾时，不允许再启动新的刮削线程。
+        # 这里不清空 FILE_EVENT_QUEUE，交给当前 worker 结束后自动 drain。
+        if MONITOR_WORKER_RUNNING:
+            logger.debug("  ➜ [实时监控] 当前批次仍在处理，新文件保留在队列中，等待当前批次结束后继续。")
+            DEBOUNCE_TIMER = None
+            return
+
         files_to_process = list(FILE_EVENT_QUEUE)
         FILE_EVENT_QUEUE.clear()
         DEBOUNCE_TIMER = None
-    
-    if not files_to_process: return
+
+        if not files_to_process:
+            return
+
+        # 从取出队列这一刻开始占用 worker，避免释放锁到真正启动线程之间的竞态。
+        MONITOR_WORKER_RUNNING = True
     
     processor = MonitorService.processor_instance
-    if not processor: return
+    if not processor:
+        _finish_monitor_batch_worker()
+        return
 
     exclude_paths = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_DIRS, [])
 
@@ -128,6 +152,8 @@ def process_batch_queue():
         else:
             files_to_scrape.append(file_path)
 
+    representative_files = []
+
     if files_to_scrape:
         grouped_files = {}
         for file_path in files_to_scrape:
@@ -136,7 +162,6 @@ def process_batch_queue():
                 grouped_files[parent_dir] = []
             grouped_files[parent_dir].append(file_path)
 
-        representative_files = []
         logger.info(f"  ➜ [实时监控] 准备刮削 {len(files_to_scrape)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
 
         for parent_dir, files in grouped_files.items():
@@ -148,11 +173,52 @@ def process_batch_queue():
             else:
                 logger.info(f"    ├─ [刮削] 目录 '{folder_name}' 单文件: {os.path.basename(rep_file)}")
 
-        threading.Thread(target=_handle_batch_file_task, args=(processor, representative_files)).start()
-
     if files_to_refresh_only:
         logger.info(f"  ➜ [实时监控] 发现 {len(files_to_refresh_only)} 个文件命中排除路径，将跳过刮削直接刷新 Emby。")
-        threading.Thread(target=_handle_batch_refresh_only_task, args=(files_to_refresh_only,)).start()
+
+    threading.Thread(
+        target=_handle_monitor_batch_task,
+        args=(processor, representative_files, files_to_refresh_only),
+        name="MonitorBatchWorker",
+        daemon=True
+    ).start()
+
+def _finish_monitor_batch_worker():
+    """释放监控 worker，并在有积压队列时自动补跑下一批。"""
+    global DEBOUNCE_TIMER, MONITOR_WORKER_RUNNING
+
+    with QUEUE_LOCK:
+        MONITOR_WORKER_RUNNING = False
+
+        if not FILE_EVENT_QUEUE:
+            return
+
+        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+            FILE_EVENT_QUEUE.clear()
+            return
+
+        if IS_PROCESSING_PAUSED:
+            logger.debug("  ➜ [实时监控] 当前批次结束，但队列处于暂停状态，积压文件等待恢复后处理。")
+            return
+
+        if DEBOUNCE_TIMER:
+            DEBOUNCE_TIMER.kill()
+
+        logger.info(f"  ➜ [实时监控] 当前批次结束，检测到 {len(FILE_EVENT_QUEUE)} 个积压文件，准备继续处理下一批。")
+        DEBOUNCE_TIMER = spawn_later(1.0, process_batch_queue)
+
+def _handle_monitor_batch_task(processor, file_paths: List[str], refresh_only_paths: List[str]):
+    """串行处理一个监控批次，并确保无论成功失败都释放 worker。"""
+    try:
+        if file_paths:
+            _handle_batch_file_task(processor, file_paths)
+
+        if refresh_only_paths:
+            _handle_batch_refresh_only_task(refresh_only_paths)
+    except Exception as e:
+        logger.error(f"  ➜ [实时监控] 批次处理异常: {e}", exc_info=True)
+    finally:
+        _finish_monitor_batch_worker()
 
 def _handle_batch_file_task(processor, file_paths: List[str]):
     valid_files = _wait_for_files_stability(file_paths)
