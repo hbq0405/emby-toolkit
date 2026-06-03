@@ -35,6 +35,7 @@ def _install_test_stubs():
     sys.modules.setdefault("tasks.helpers", helpers_mod)
 
     tasks_pkg = types.ModuleType("tasks")
+    tasks_pkg.__path__ = [str(ROOT / "tasks")]
     tasks_pkg.helpers = helpers_mod
     sys.modules.setdefault("tasks", tasks_pkg)
 
@@ -47,6 +48,7 @@ def _install_test_stubs():
 
 _install_test_stubs()
 p115_service = importlib.import_module("handler.p115_service")
+task_p115 = importlib.import_module("tasks.p115")
 
 
 class P115RecognitionRuleTests(unittest.TestCase):
@@ -213,6 +215,179 @@ class P115RecognitionRuleTests(unittest.TestCase):
 
         self.assertEqual(season_num, 1)
         self.assertEqual(episode_num, 7)
+
+    def test_rename_file_node_prefers_file_episode_over_group_hint_episode(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.rename_config = {
+            "season_dir_format": ["season_name_en"],
+            "file_format": ["title_zh", "sep_space", "s_e"],
+        }
+        organizer.details = {"seasons": [], "last_episode_to_air": {}}
+        organizer.forced_season = None
+        organizer._fetch_and_parse_mediainfo = lambda *args, **kwargs: {
+            "season_number": 1,
+            "episode_number": 7,
+        }
+        organizer._extract_video_info = lambda *args, **kwargs: {}
+        organizer._parse_season_episode_by_custom_regex = lambda *args, **kwargs: (None, None, None)
+        organizer._build_name_from_format = lambda format_array, **kwargs: (
+            f"S{int(kwargs.get('season_num') or 0):02d}E{int(kwargs.get('episode_num') or 0):02d}"
+            if "s_e" in format_array else f"Season {int(kwargs.get('season_num') or 0):02d}"
+        )
+
+        _, season_num, episode_num, _, _, _, _ = organizer._rename_file_node(
+            {"fn": "Show.S01E07.mkv", "rel_path": "Show", "sha1": "abc123"},
+            new_base_name="Show",
+            is_tv=True,
+            original_title="Show",
+            silent_log=True,
+            recognition_hints={
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_number": 8,
+                "confidence": "high",
+            },
+        )
+
+        self.assertEqual(season_num, 1)
+        self.assertEqual(episode_num, 7)
+
+    def test_rename_file_node_uses_group_hint_episode_when_local_evidence_missing(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.rename_config = {
+            "season_dir_format": ["season_name_en"],
+            "file_format": ["title_zh", "sep_space", "s_e"],
+        }
+        organizer.details = {"seasons": [], "last_episode_to_air": {}}
+        organizer.forced_season = None
+        organizer._fetch_and_parse_mediainfo = lambda *args, **kwargs: None
+        organizer._extract_video_info = lambda *args, **kwargs: {}
+        organizer._parse_season_episode_by_custom_regex = lambda *args, **kwargs: (None, None, None)
+        organizer._build_name_from_format = lambda format_array, **kwargs: (
+            f"S{int(kwargs.get('season_num') or 0):02d}E{int(kwargs.get('episode_num') or 0):02d}"
+            if "s_e" in format_array else f"Season {int(kwargs.get('season_num') or 0):02d}"
+        )
+
+        _, season_num, episode_num, _, _, _, _ = organizer._rename_file_node(
+            {"fn": "暗影蜘蛛侠.2026.WEB-DL.mkv", "rel_path": "暗影蜘蛛侠"},
+            new_base_name="暗影蜘蛛侠",
+            is_tv=True,
+            original_title="暗影蜘蛛侠",
+            silent_log=True,
+            recognition_hints={
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_number": 8,
+                "confidence": "high",
+            },
+        )
+
+        self.assertEqual(season_num, 1)
+        self.assertEqual(episode_num, 8)
+
+    def test_rename_file_node_does_not_patch_raw_ffprobe_from_hint_only_episode(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.rename_config = {
+            "season_dir_format": ["season_name_en"],
+            "file_format": ["title_zh", "sep_space", "s_e"],
+        }
+        organizer.details = {"seasons": [], "last_episode_to_air": {}}
+        organizer.forced_season = None
+        organizer._fetch_and_parse_mediainfo = lambda *args, **kwargs: None
+        organizer._extract_video_info = lambda *args, **kwargs: {}
+        organizer._parse_season_episode_by_custom_regex = lambda *args, **kwargs: (None, None, None)
+        organizer._build_name_from_format = lambda format_array, **kwargs: (
+            f"S{int(kwargs.get('season_num') or 0):02d}E{int(kwargs.get('episode_num') or 0):02d}"
+            if "s_e" in format_array else f"Season {int(kwargs.get('season_num') or 0):02d}"
+        )
+
+        with mock.patch.object(p115_service.P115CacheManager, "patch_raw_ffprobe_etk_context") as patch_mock:
+            _, season_num, episode_num, _, _, _, _ = organizer._rename_file_node(
+                {"fn": "暗影蜘蛛侠.2026.WEB-DL.mkv", "rel_path": "暗影蜘蛛侠", "sha1": "abc123"},
+                new_base_name="暗影蜘蛛侠",
+                is_tv=True,
+                original_title="暗影蜘蛛侠",
+                silent_log=True,
+                recognition_hints={
+                    "media_type": "tv",
+                    "season_number": 1,
+                    "episode_number": 8,
+                    "confidence": "high",
+                },
+            )
+
+        self.assertEqual(season_num, 1)
+        self.assertEqual(episode_num, 8)
+        patch_mock.assert_not_called()
+
+    def test_rename_file_node_patches_raw_ffprobe_when_episode_comes_from_local_evidence(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.rename_config = {
+            "season_dir_format": ["season_name_en"],
+            "file_format": ["title_zh", "sep_space", "s_e"],
+        }
+        organizer.details = {"seasons": [], "last_episode_to_air": {}}
+        organizer.forced_season = None
+        organizer._fetch_and_parse_mediainfo = lambda *args, **kwargs: None
+        organizer._extract_video_info = lambda *args, **kwargs: {}
+        organizer._parse_season_episode_by_custom_regex = lambda *args, **kwargs: (None, None, None)
+        organizer._build_name_from_format = lambda format_array, **kwargs: (
+            f"S{int(kwargs.get('season_num') or 0):02d}E{int(kwargs.get('episode_num') or 0):02d}"
+            if "s_e" in format_array else f"Season {int(kwargs.get('season_num') or 0):02d}"
+        )
+
+        with mock.patch.object(p115_service.P115CacheManager, "patch_raw_ffprobe_etk_context") as patch_mock:
+            _, season_num, episode_num, _, _, _, _ = organizer._rename_file_node(
+                {"fn": "Show.S01E07.mkv", "rel_path": "Show", "sha1": "abc123"},
+                new_base_name="Show",
+                is_tv=True,
+                original_title="Show",
+                silent_log=True,
+                recognition_hints={
+                    "media_type": "tv",
+                    "season_number": 1,
+                    "episode_number": 8,
+                    "confidence": "high",
+                },
+            )
+
+        self.assertEqual(season_num, 1)
+        self.assertEqual(episode_num, 7)
+        patch_mock.assert_called_once_with("abc123", season_number=1, episode_number=7)
+
+    def test_normalize_batch_recognition_hints_drops_group_episode_for_tv(self):
+        hints = task_p115._normalize_batch_recognition_hints(
+            {
+                "tmdb_id": "220102",
+                "media_type": "tv",
+                "identify_title": "暗影蜘蛛侠",
+                "season_number": 1,
+                "episode_number": 8,
+                "confidence": "high",
+            },
+            is_tv=True,
+        )
+
+        self.assertEqual(hints["tmdb_id"], "220102")
+        self.assertEqual(hints["season_number"], 1)
+        self.assertNotIn("episode_number", hints)
+
+    def test_normalize_batch_recognition_hints_drops_season_episode_for_movie(self):
+        hints = task_p115._normalize_batch_recognition_hints(
+            {
+                "tmdb_id": "693134",
+                "media_type": "movie",
+                "identify_title": "Dune Part Two",
+                "season_number": 1,
+                "episode_number": 8,
+                "confidence": "high",
+            },
+            is_tv=False,
+        )
+
+        self.assertEqual(hints["tmdb_id"], "693134")
+        self.assertNotIn("season_number", hints)
+        self.assertNotIn("episode_number", hints)
 
 
 if __name__ == "__main__":
