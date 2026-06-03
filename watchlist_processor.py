@@ -1354,7 +1354,7 @@ class WatchlistProcessor:
                 tmdb_id,
                 last_s_num,
                 False,
-                reason="一致性已通过，不需要洗版替换特权",
+                reason="一致性已通过，不需要洗版。",
             )
             logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包分享探测。")
             self._trigger_completed_season_pack_share_detached(tmdb_id, last_s_num, series_name)
@@ -1364,7 +1364,7 @@ class WatchlistProcessor:
             tmdb_id,
             last_s_num,
             True,
-            reason="一致性不通过，需要洗版替换",
+            reason="一致性不通过，需要洗版替换。",
         )
 
         if watchlist_cfg.get('tg_channel_tracking', False):
@@ -1402,7 +1402,7 @@ class WatchlistProcessor:
                     tmdb_id,
                     season_number,
                     False,
-                    reason="一致性已通过，不需要洗版替换特权",
+                    reason="一致性已通过，不需要洗版。",
                 )
                 logger.info(f"  ➜ [完结校验] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包分享探测。")
                 self._trigger_completed_season_pack_share_detached(tmdb_id, season_number, series_name)
