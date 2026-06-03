@@ -26,7 +26,7 @@ from handler.p115_service import (
     _identify_media_enhanced
 )
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
-from handler.tg_media_candidate import lookup_candidate_hint_for_name
+from handler.tg_media_candidate import candidate_to_recognition_hints, lookup_candidate_hint_for_name
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,31 @@ GENERIC_PACKAGE_SEGMENT_RE = re.compile(
 KNOWN_VIDEO_EXTS = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
 KNOWN_SKIP_EXTS = {'clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo'}
 MIN_BIG_PACKAGE_VIDEO_SIZE = 50 * 1024 * 1024
+
+
+def _normalize_batch_recognition_hints(hints, *, is_tv=False, preserve_episode=False):
+    """
+    批量整理时，组级 hints 只能安全复用标题/TMDb/季级信息。
+
+    单条 TG 候选携带的 episode_number 往往只代表“频道消息里展示的最新集”，
+    不能直接灌给整包中的每个文件；否则 E08 可能污染同批的 E05/E06/E07。
+    """
+    normalized = candidate_to_recognition_hints(hints or {})
+    if not normalized:
+        return {}
+
+    normalized = dict(normalized)
+
+    if not is_tv:
+        normalized.pop("season_number", None)
+        normalized.pop("episode_number", None)
+        normalized.pop("is_special", None)
+        return normalized
+
+    if not preserve_episode:
+        normalized.pop("episode_number", None)
+
+    return normalized
 
 
 def _name_has_tv_hint(name):
@@ -192,12 +217,12 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
         context_name = _choose_big_package_context_name(top_name, rel_dir)
         forced_type = 'tv' if (_name_has_tv_hint(file_name) or _name_has_tv_hint(rel_dir)) else None
         season_num = _extract_season_number(file_name, rel_dir, context_name)
-        recognition_hints = lookup_candidate_hint_for_name(
+        recognition_hints = _normalize_batch_recognition_hints(lookup_candidate_hint_for_name(
             file_name,
             alt_texts=[context_name, top_name],
             media_type=forced_type,
             season_number=season_num,
-        )
+        ), is_tv=(forced_type == 'tv'))
         file_sha1 = video_item.get('sha1') or video_item.get('sha')
         tmdb_id, media_type, title = _identify_media_enhanced(
             file_name,
@@ -529,7 +554,10 @@ def task_scan_and_organize_115(processor=None):
                             if group_sha1:
                                 break
 
-                    recognition_hints = lookup_candidate_hint_for_name(g_top_name, alt_texts=[top_name], media_type=forced_type)
+                    recognition_hints = _normalize_batch_recognition_hints(
+                        lookup_candidate_hint_for_name(g_top_name, alt_texts=[top_name], media_type=forced_type),
+                        is_tv=(forced_type == 'tv')
+                    )
                     tmdb_id, media_type, title = _identify_media_enhanced(
                         g_top_name, main_dir_name=g_top_name, has_season_subdirs=group["has_season_dir"],
                         forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai, is_folder=False,
@@ -544,7 +572,10 @@ def task_scan_and_organize_115(processor=None):
                     
                 try:
                     organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
-                    organizer.recognition_hints = recognition_hints or {}
+                    organizer.recognition_hints = _normalize_batch_recognition_hints(
+                        recognition_hints,
+                        is_tv=(media_type == 'tv')
+                    )
                     if season_num is not None: organizer.forced_season = season_num
                     
                     # 执行整理 (直接传 None，让 execute 内部统一计算最终的 target_cid)

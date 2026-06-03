@@ -3602,9 +3602,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         video_info[k] = v
                     
         # 解析季集号
-        # ★ 优先使用 Webhook 强塞进来的精准数据，其次直接吃 raw_ffprobe_json 顶层 _etk 的季集号。
+        # ★ 优先使用文件级精准数据（Webhook 强塞 / raw_ffprobe / 文件名与路径显式特征），
+        #   TG Candidate hints 仅在本地证据缺失时做兜底，避免群组级集号污染整包文件。
         season_num = file_node.get('_forced_season')
         episode_num = file_node.get('_forced_episode')
+        season_source = 'forced' if season_num is not None else None
+        episode_source = 'forced' if episode_num is not None else None
 
         def _se_int(value):
             try:
@@ -3614,31 +3617,25 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             except Exception:
                 return None
 
+        hint_season = _se_int(normalized_hints.get('season_number')) if normalized_hints else None
+        hint_episode = _se_int(normalized_hints.get('episode_number')) if normalized_hints else None
+
         if is_tv and real_info:
+            raw_probe_season = _se_int(real_info.get('season_number'))
+            raw_probe_episode = _se_int(real_info.get('episode_number'))
             if season_num is None:
-                season_num = _se_int(real_info.get('season_number'))
+                season_num = raw_probe_season
+                if raw_probe_season is not None:
+                    season_source = 'raw_ffprobe'
             if episode_num is None:
-                episode_num = _se_int(real_info.get('episode_number'))
-            if (real_info.get('season_number') not in (None, '') or real_info.get('episode_number') not in (None, '')) and not silent_log:
+                episode_num = raw_probe_episode
+                if raw_probe_episode is not None:
+                    episode_source = 'raw_ffprobe'
+            if (raw_probe_season is not None or raw_probe_episode is not None) and not silent_log:
                 logger.info(
                     f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
-                    f"S{int(season_num if season_num is not None else 1):02d}"
-                    f"E{int(episode_num if episode_num is not None else 0):02d} | {original_name}"
-                )
-
-        if is_tv and normalized_hints:
-            if season_num is None and normalized_hints.get('season_number') is not None:
-                season_num = _se_int(normalized_hints.get('season_number'))
-            if episode_num is None and normalized_hints.get('episode_number') is not None:
-                episode_num = _se_int(normalized_hints.get('episode_number'))
-            if (
-                (normalized_hints.get('season_number') not in (None, '') or normalized_hints.get('episode_number') not in (None, ''))
-                and not silent_log
-            ):
-                logger.info(
-                    f"  ➜ [TG Candidate季集] 命中 hints -> "
-                    f"S{int(season_num if season_num is not None else 1):02d}"
-                    f"E{int(episode_num if episode_num is not None else 0):02d} | {original_name}"
+                    f"S{int(raw_probe_season if raw_probe_season is not None else 1):02d}"
+                    f"E{int(raw_probe_episode if raw_probe_episode is not None else 0):02d} | {original_name}"
                 )
 
         if is_tv and (season_num is None or episode_num is None):
@@ -3651,8 +3648,10 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
             if custom_season is not None and season_num is None:
                 season_num = custom_season
+                season_source = 'custom_rule'
             if custom_episode is not None and episode_num is None:
                 episode_num = custom_episode
+                episode_source = 'custom_rule'
 
             if custom_rule_name and not silent_log:
                 logger.info(
@@ -3662,8 +3661,10 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
             if rule_result.get('season_number') is not None and season_num is None:
                 season_num = int(rule_result.get('season_number'))
+                season_source = 'rule'
             if rule_result.get('episode_number') is not None and episode_num is None:
                 episode_num = int(rule_result.get('episode_number'))
+                episode_source = 'rule'
             if (
                 (rule_result.get('season_number') is not None or rule_result.get('episode_number') is not None)
                 and not silent_log
@@ -3693,6 +3694,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
                     if season_num is None:
                         season_num = int(s) if s else None
+                        if season_num is not None:
+                            season_source = 'filename'
 
                     if episode_num is None:
                         episode_num = int(e) if e else (
@@ -3700,18 +3703,22 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 int(e_only) if e_only else int(zh_ep)
                             )
                         )
+                        if episode_num is not None:
+                            episode_source = 'filename'
 
             # 2. 从相对路径提取季号，支持 Specials / SP / OVA / 第0季
             if season_num is None and rel_path:
                 season_from_path = self._extract_season_from_path_or_text(rel_path)
                 if season_from_path is not None:
                     season_num = season_from_path
+                    season_source = 'path'
 
             # 3. ★ 纯数字 / 动漫数字兜底提取集号
             if episode_num is None:
                 name_without_ext = original_name.rsplit('.', 1)[0]
                 if name_without_ext.isdigit():
                     episode_num = int(name_without_ext)
+                    episode_source = 'filename'
                 else:
                     clean_name = re.sub(
                         r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0',
@@ -3723,30 +3730,52 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     if anime_match:
                         ep_str = anime_match.group(1) or anime_match.group(2) or anime_match.group(3)
                         episode_num = int(ep_str)
+                        episode_source = 'filename'
                     else:
                         end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
                         if end_match:
                             episode_num = int(end_match.group(1))
+                            episode_source = 'filename'
                         else:
                             mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
-                            if mid_match:
-                                episode_num = int(mid_match.group(1))
+                    if mid_match:
+                        episode_num = int(mid_match.group(1))
+                        episode_source = 'filename'
 
             # 4. 终极兜底
             if season_num is None:
                 season_num = 1
+                season_source = 'default'
+
+        if is_tv and normalized_hints:
+            if season_num is None and hint_season is not None:
+                season_num = hint_season
+                season_source = 'hint'
+            if episode_num is None and hint_episode is not None:
+                episode_num = hint_episode
+                episode_source = 'hint'
+            if (hint_season is not None or hint_episode is not None) and not silent_log:
+                logger.info(
+                    f"  ➜ [TG Candidate季集] 命中 hints -> "
+                    f"S{int(hint_season if hint_season is not None else 1):02d}"
+                    f"E{int(hint_episode if hint_episode is not None else 0):02d} | {original_name}"
+                )
 
         if is_tv and normalized_hints.get('is_special') and season_num is None:
             season_num = 0
+            season_source = 'hint'
 
         if is_tv and normalized_hints.get('is_special') and season_num == 1 and episode_num is None:
             season_num = 0
+            season_source = 'hint'
 
         if is_tv and rule_result.get('is_special') and season_num is None:
             season_num = 0
+            season_source = 'rule'
 
         if is_tv and rule_result.get('is_special') and season_num == 1 and episode_num is None:
             season_num = 0
+            season_source = 'rule'
 
         # ★★★ 动漫绝对集数转季号逻辑 (解决海贼王 S01E1158 的问题) ★★★
         if is_tv and episode_num is not None and episode_num > 30:
@@ -3767,6 +3796,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 # 捷径：如果是最新集，直接取最新季
                 if last_ep_data and last_ep_data.get('episode_number') == episode_num:
                     season_num = last_ep_data.get('season_number', 1)
+                    season_source = 'season_capacity_fix'
                     if not silent_log:
                         logger.info(f"  ➜ [分季修正] 命中最新集，自动修正为第 {season_num} 季")
                 elif seasons_data:
@@ -3777,6 +3807,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         cumulative += s.get('episode_count', 0)
                         if episode_num <= cumulative:
                             season_num = s['season_number']
+                            season_source = 'season_capacity_fix'
                             if not silent_log:
                                 logger.info(f"  ➜ [分季修正] 绝对集数 {episode_num} 超出原季容量，已自动推算并修正为第 {season_num} 季！")
                             break
@@ -3801,6 +3832,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     
                 if not has_explicit_season:
                     season_num = int(self.forced_season)
+                    season_source = 'forced'
 
         # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
@@ -3848,11 +3880,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         if is_tv and not is_sub:
             try:
                 raw_patch_sha1 = file_node.get('sha1') or file_node.get('sha')
-                if raw_patch_sha1 and (season_num is not None or episode_num is not None):
+                trusted_season = season_num if (
+                    season_source not in (None, 'hint')
+                    and episode_source not in ('hint',)
+                ) else None
+                trusted_episode = episode_num if episode_source not in (None, 'hint') else None
+                if raw_patch_sha1 and (trusted_season is not None or trusted_episode is not None):
                     P115CacheManager.patch_raw_ffprobe_etk_context(
                         raw_patch_sha1,
-                        season_number=season_num,
-                        episode_number=episode_num,
+                        season_number=trusted_season,
+                        episode_number=trusted_episode,
                     )
             except Exception:
                 pass
