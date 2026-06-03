@@ -1829,10 +1829,9 @@ def task_auto_subscribe(processor):
                 # 只有 WANTED 能进入 MP；其他任何状态都只允许共享池/云资源补库，避免追更季/已订阅项重复投递 MP。
                 if 'mp' in subscription_sources:
                     subscription_sources.remove('mp')
-                    logger.info(
-                        f"  ➜ [MP保护] 《{title}》当前 subscription_status={subscription_status or 'NONE'}，"
-                        f"不是 WANTED，本轮不提交 MoviePilot，仅尝试非 MP 来源。"
-                    )
+                    logger.debug(
+                            f"  ➜ [MP保护] 跳过《{title}》的 MoviePilot 订阅："
+                        )
                 # 移除强制添加 hdhive 的逻辑，完全尊重前端用户的勾选；如果用户勾选了 hdhive 就走，没勾选就算追更也不走。
 
             for source_type in subscription_sources:
@@ -1913,7 +1912,7 @@ def task_auto_subscribe(processor):
                     # 双保险：即使上面的订阅源列表未来被改坏，这里也只允许 WANTED 进入 MP。
                     if not is_wanted_subscription:
                         logger.debug(
-                            f"  ➜ [MP保护] 跳过《{title}》的 MoviePilot 订阅："
+                            f"  ➜ [追更模式] 跳过《{title}》的 MoviePilot 订阅："
                         )
                         continue
 
@@ -2035,7 +2034,7 @@ def task_auto_subscribe(processor):
                 if is_wanted_subscription:
                     logger.error(f"  ➜ 订阅《{title}》失败，请检查 MoviePilot 连接或日志。")
                 else:
-                    logger.info(f"  ➜ [补库模式] 《{title}》 本轮未补到资源。")
+                    logger.info(f"  ➜ [追更模式] 《{title}》 本轮未补到资源。")
 
             # 如果配置了延时，且不是列表中的最后一个项目，则进行休眠
             if request_delay > 0 and i < len(wanted_items) - 1:
