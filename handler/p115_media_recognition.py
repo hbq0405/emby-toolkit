@@ -32,6 +32,8 @@ def _install_test_stubs():
 
     helpers_mod = types.ModuleType("tasks.helpers")
     helpers_mod.check_series_completion = lambda *args, **kwargs: False
+    helpers_mod.normalize_lang_code = lambda value, *args, **kwargs: value
+    helpers_mod._get_detected_languages_from_streams = lambda *args, **kwargs: set()
     sys.modules.setdefault("tasks.helpers", helpers_mod)
 
     tasks_pkg = types.ModuleType("tasks")
@@ -44,6 +46,14 @@ def _install_test_stubs():
         pass
     analyzer_mod.P115MediaAnalyzerMixin = _Mixin
     sys.modules.setdefault("handler.p115_media_analyzer", analyzer_mod)
+
+    resubscribe_mod = types.ModuleType("handler.resubscribe_service")
+    class _WashingService:
+        @staticmethod
+        def decide_washing_action(*args, **kwargs):
+            return "ACCEPT", "stub"
+    resubscribe_mod.WashingService = _WashingService
+    sys.modules.setdefault("handler.resubscribe_service", resubscribe_mod)
 
 
 _install_test_stubs()
@@ -118,6 +128,134 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertEqual(media_type, "movie")
         self.assertEqual(title, "Some Movie")
         details_mock.assert_called_once_with("123456", "fake")
+
+    def test_rename_file_node_uses_original_video_basename_for_subtitles_when_keep_original(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.rename_config = {}
+        organizer.media_type = "tv"
+        organizer.forced_season = 1
+        organizer.details = {}
+        organizer.raw_metadata = {}
+        organizer.recognition_hints = {}
+        organizer._build_name_from_format = mock.Mock(return_value="Season 01")
+
+        subtitle = {
+            "fn": "Predators.(2019).S01E01.WEB-DL.HDR.DV.2160p.HEVC.Atmos.5.1.NF.ass",
+            "_forced_base_name": "Predators (2019) - S01E01 - WEB-DL - HDR10 DoVi P8 - 2160p - HEVC 10bit - DDP 5.1 - NF - Sic",
+            "_forced_season": 1,
+            "_forced_episode": 1,
+        }
+
+        new_name, season_num, episode_num, season_dir, _, _, _ = organizer._rename_file_node(
+            subtitle,
+            "Predators (2019)",
+            is_tv=True,
+            original_title="Predators",
+            silent_log=True,
+            recognition_hints={},
+        )
+
+        self.assertEqual(
+            new_name,
+            "Predators (2019) - S01E01 - WEB-DL - HDR10 DoVi P8 - 2160p - HEVC 10bit - DDP 5.1 - NF - Sic.ass",
+        )
+        self.assertEqual(season_num, 1)
+        self.assertEqual(episode_num, 1)
+        self.assertEqual(season_dir, "Season 01")
+
+    def test_execute_keeps_video_original_name_but_renames_sidecar_subtitle_to_video_basename(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.client = mock.Mock()
+        organizer.client.fs_move.return_value = {"state": True}
+        organizer.client.fs_rename_batch.return_value = {"state": True, "_rename_failures": {}}
+        organizer.client.fs_files.return_value = {"state": True, "data": [], "path": []}
+        organizer.tmdb_id = "1"
+        organizer.media_type = "tv"
+        organizer.original_title = "Predators"
+        organizer.ai_translator = None
+        organizer.use_ai = False
+        organizer.api_key = "fake"
+        organizer.forced_season = 1
+        organizer.recognition_hints = {}
+        organizer.raw_metadata = {"lang_code": "en"}
+        organizer.details = {"title": "Predators", "original_title": "Predators", "date": "2019-01-01", "seasons": []}
+        organizer.rules = [{"cid": "999", "dir_name": "欧美剧", "category_path": "电视剧/欧美剧"}]
+        organizer.rename_config = {
+            "keep_original_name": True,
+            "season_dir_format": ["season_name_en"],
+            "main_dir_format": ["title_zh"],
+        }
+        organizer._fetch_raw_metadata = mock.Mock(return_value={})
+        organizer.get_target_cid = mock.Mock(return_value="999")
+        organizer._fetch_and_parse_mediainfo = mock.Mock(return_value=None)
+        organizer._extract_video_info = mock.Mock(return_value={})
+        organizer._parse_season_episode_by_custom_regex = mock.Mock(return_value=(None, None, None))
+        organizer._extract_season_from_path_or_text = mock.Mock(return_value=1)
+        organizer._build_name_from_format = mock.Mock(side_effect=lambda format_array, **kwargs: (
+            "Season 01" if format_array == ["season_name_en"] else "Predators (2019)"
+        ))
+
+        def fake_rename(file_item, *_args, **_kwargs):
+            name = file_item["fn"]
+            if name.endswith(".mkv"):
+                return name, 1, 1, "Season 01", {}, False, None
+            forced_base = file_item.get("_forced_base_name")
+            return f"{forced_base}.ass", 1, 1, "Season 01", {}, False, None
+
+        organizer._rename_file_node = mock.Mock(side_effect=fake_rename)
+
+        candidates = [
+            {
+                "fid": "v1",
+                "file_id": "v1",
+                "fn": "Predators.(2019).S01E01.WEB-DL.HDR10.DoVi.P8.2160p.HEVC.10bit.DDP.5.1.NF-Sic.mkv",
+                "fc": "1",
+                "pid": "src1",
+                "pc": "pcv1",
+                "sha1": "sha-v1",
+                "fs": str(7 * 1024 * 1024 * 1024),
+            },
+            {
+                "fid": "s1",
+                "file_id": "s1",
+                "fn": "Predators.(2019).S01E01.WEB-DL.HDR.DV.2160p.HEVC.Atmos.5.1.NF.ass",
+                "fc": "1",
+                "pid": "src1",
+                "pc": "pcs1",
+                "fs": "102400",
+            },
+        ]
+
+        fake_config = {
+            p115_service.constants.CONFIG_OPTION_115_MEDIA_ROOT_CID: "1",
+            p115_service.constants.CONFIG_OPTION_115_UNRECOGNIZED_CID: "998",
+            p115_service.constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE: 10,
+            p115_service.constants.CONFIG_OPTION_115_EXTENSIONS: [],
+            p115_service.constants.CONFIG_OPTION_LOCAL_STRM_ROOT: "",
+            p115_service.constants.CONFIG_OPTION_ETK_SERVER_URL: "http://127.0.0.1:5257",
+            p115_service.constants.CONFIG_OPTION_115_DOWNLOAD_SUBS: True,
+            p115_service.constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO: False,
+        }
+
+        with mock.patch.object(p115_service, "get_config", return_value=fake_config):
+            with mock.patch.object(p115_service.P115CacheManager, "get_cid", return_value=None):
+                with mock.patch.object(p115_service.P115CacheManager, "save_cid", return_value=None):
+                    with mock.patch.object(p115_service.P115CacheManager, "update_local_path", return_value=None):
+                        with mock.patch.object(p115_service.P115CacheManager, "save_file_cache", return_value=None):
+                            with mock.patch.object(p115_service.P115RecordManager, "add_or_update_record", return_value=None):
+                                with mock.patch.object(p115_service, "get_db_connection", side_effect=RuntimeError("db not used")):
+                                    ok = organizer.execute(candidates, None, skip_gc=True)
+
+        self.assertTrue(ok)
+        organizer.client.fs_rename_batch.assert_called_once()
+        rename_pairs = organizer.client.fs_rename_batch.call_args.args[0]
+        self.assertIn(
+            (
+                "s1",
+                "Predators.(2019).S01E01.WEB-DL.HDR10.DoVi.P8.2160p.HEVC.10bit.DDP.5.1.NF-Sic.ass",
+            ),
+            rename_pairs,
+        )
 
     def test_identify_media_enhanced_prefers_raw_ffprobe_identity_over_rule_tmdbid(self):
         raw_ffprobe_json = {
