@@ -426,6 +426,27 @@ def _p115_as_list(value):
     return [value]
 
 
+def _p115_normalize_rename_pairs(rename_pairs):
+    """统一批量重命名参数，输出 [(fid, new_name), ...]。"""
+    pairs = []
+    for item in _p115_as_list(rename_pairs):
+        fid = None
+        new_name = None
+
+        if isinstance(item, dict):
+            fid = item.get('fid') or item.get('file_id') or item.get('id')
+            new_name = item.get('new_name') or item.get('file_name') or item.get('name')
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            fid, new_name = item[0], item[1]
+
+        fid = str(fid).strip() if fid is not None else ''
+        new_name = str(new_name).strip() if new_name is not None else ''
+        if fid and new_name:
+            pairs.append((fid, new_name))
+
+    return pairs
+
+
 def _p115_success(resp):
     """兼容 OpenAPI / Cookie(webapi/appapi) 的成功判断。"""
     if not isinstance(resp, dict):
@@ -813,6 +834,24 @@ class P115CookieClient:
         url = "https://webapi.115.com/files/batch_rename"
         r = self.request(url, method='POST', data={f'files_new_name[{fid}]': str(new_name)})
         return _p115_normalize_common_response(self._json_result(r))
+
+    def fs_rename_batch(self, fid_name_tuples):
+        """Cookie/webapi 批量重命名。
+
+        115 的 /files/batch_rename 支持一次提交多个 files_new_name[fid]，
+        这里只在 Cookie 优先策略下由上层调用；OpenAPI 仍保持逐条 update。
+        """
+        pairs = _p115_normalize_rename_pairs(fid_name_tuples)
+        if not pairs:
+            return {"state": True, "data": {"count": 0}, "_batch_count": 0}
+
+        payload = {f'files_new_name[{fid}]': new_name for fid, new_name in pairs}
+        url = "https://webapi.115.com/files/batch_rename"
+        r = self.request(url, method='POST', data=payload)
+        resp = _p115_normalize_common_response(self._json_result(r))
+        if resp.get('state'):
+            resp['_batch_count'] = len(pairs)
+        return resp
 
     def fs_delete(self, fids):
         ids = [str(i) for i in _p115_as_list(fids) if i is not None]
@@ -1478,6 +1517,79 @@ class P115Service:
 
             def fs_rename(self, fid_name_tuple):
                 return self._call_api('fs_rename', fid_name_tuple, normalizer=_p115_normalize_common_response)
+
+            def fs_rename_batch(self, fid_name_tuples):
+                """按用户配置选择批量/逐条重命名。
+
+                - 115 API 优先级为 cookie：优先调用 Cookie /files/batch_rename；
+                - 其他情况：保持 OpenAPI 逐条 /open/ufile/update；
+                - 批量接口失败时自动退回逐条，避免后续 STRM 使用错误文件名。
+                """
+                pairs = _p115_normalize_rename_pairs(fid_name_tuples)
+                if not pairs:
+                    return {
+                        'state': True,
+                        'data': {'total': 0, 'success_count': 0, 'failed_count': 0},
+                        '_rename_mode': 'noop',
+                        '_rename_failures': {},
+                    }
+
+                def _sequential_rename(reason=None):
+                    successes = []
+                    failures = {}
+                    for fid, new_name in pairs:
+                        resp = self.fs_rename((fid, new_name))
+                        if _p115_success(resp):
+                            successes.append(fid)
+                        else:
+                            failures[fid] = resp
+
+                    result = {
+                        'state': not failures,
+                        'data': {
+                            'total': len(pairs),
+                            'success_count': len(successes),
+                            'failed_count': len(failures),
+                        },
+                        '_rename_mode': 'sequential',
+                        '_rename_successes': successes,
+                        '_rename_failures': failures,
+                    }
+                    if reason:
+                        result['_fallback_reason'] = reason
+                    return result
+
+                if get_115_api_priority() == 'cookie' and self._cookie and hasattr(self._cookie, 'fs_rename_batch'):
+                    try:
+                        self._rate_limit()
+                        resp = self._cookie.fs_rename_batch(pairs)
+                        resp = _p115_normalize_common_response(resp)
+                        if _p115_success(resp):
+                            resp.update({
+                                '_rename_mode': 'cookie_batch',
+                                '_rename_successes': [fid for fid, _ in pairs],
+                                '_rename_failures': {},
+                            })
+                            resp.setdefault('data', {})
+                            if isinstance(resp.get('data'), dict):
+                                resp['data'].setdefault('total', len(pairs))
+                                resp['data'].setdefault('success_count', len(pairs))
+                                resp['data'].setdefault('failed_count', 0)
+                            logger.info(f"  ➜ [批量重命名] Cookie 批量接口成功处理 {len(pairs)} 个文件。")
+                            return resp
+
+                        logger.warning(
+                            f"  ➜ [批量重命名] Cookie 批量接口失败，回退逐条重命名: "
+                            f"{_p115_error_text(resp)}"
+                        )
+                        return _sequential_rename(reason=_p115_error_text(resp))
+                    except Exception as e:
+                        if _p115_is_severe_failure(e):
+                            P115Service.reset_cookie_client()
+                        logger.warning(f"  ➜ [批量重命名] Cookie 批量接口异常，回退逐条重命名: {e}")
+                        return _sequential_rename(reason=str(e))
+
+                return _sequential_rename(reason='openapi_priority_or_cookie_unavailable')
 
             def fs_delete(self, fids):
                 return self._call_api('fs_delete', fids, normalizer=_p115_normalize_common_response)
@@ -5002,18 +5114,66 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 # -----------------------------------------------------------
                 # ★ 4. 执行重命名
                 # -----------------------------------------------------------
+                rename_items = []
                 for item in valid_items:
-                    fid = str(item.get('fid') or item.get('file_id'))
+                    fid = str(item.get('fid') or item.get('file_id') or '').strip()
                     old_name = item.get('fn') or item.get('n') or item.get('file_name')
                     new_name = item['_new_filename']
-                    if old_name != new_name:
-                        ren_res = self.client.fs_rename((fid, new_name))
-                        if ren_res.get('state'):
-                            logger.info(f"  ➜ [重命名] {old_name} -> {new_name}")
+                    if fid and old_name != new_name:
+                        rename_items.append({
+                            'fid': fid,
+                            'old_name': old_name,
+                            'new_name': new_name,
+                            'item': item,
+                        })
+
+                if rename_items:
+                    rename_pairs = [(x['fid'], x['new_name']) for x in rename_items]
+                    if hasattr(self.client, 'fs_rename_batch'):
+                        ren_res = self.client.fs_rename_batch(rename_pairs)
+                    else:
+                        # 极旧客户端兜底：保持原有逐条行为。
+                        failures = {}
+                        successes = []
+                        for fid, new_name in rename_pairs:
+                            one_res = self.client.fs_rename((fid, new_name))
+                            if one_res.get('state'):
+                                successes.append(fid)
+                            else:
+                                failures[fid] = one_res
+                        ren_res = {
+                            'state': not failures,
+                            '_rename_mode': 'legacy_sequential',
+                            '_rename_successes': successes,
+                            '_rename_failures': failures,
+                            'data': {
+                                'total': len(rename_pairs),
+                                'success_count': len(successes),
+                                'failed_count': len(failures),
+                            }
+                        }
+
+                    failures = ren_res.get('_rename_failures') or {}
+                    mode = ren_res.get('_rename_mode') or 'unknown'
+                    success_count = len(rename_items) - len(failures)
+
+                    if success_count > 0:
+                        if mode == 'cookie_batch':
+                            logger.info(f"  ➜ [批量重命名] 成功批量重命名 {success_count}/{len(rename_items)} 个文件。")
                         else:
-                            logger.warning(f"  ➜ [重命名失败] {old_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
+                            logger.info(f"  ➜ [逐条重命名] 成功重命名 {success_count}/{len(rename_items)} 个文件。")
+
+                    for x in rename_items:
+                        fail_res = failures.get(x['fid'])
+                        if fail_res:
+                            logger.warning(
+                                f"  ➜ [重命名失败] {x['old_name']} -> {x['new_name']}, "
+                                f"原因: {_p115_error_text(fail_res)}"
+                            )
                             # ★ 核心修复：如果 115 API 重命名失败，强制退回原名，确保后续生成的 STRM 挂载路径 100% 准确！
-                            item['_new_filename'] = old_name
+                            x['item']['_new_filename'] = x['old_name']
+                        else:
+                            logger.debug(f"  ➜ [重命名] {x['old_name']} -> {x['new_name']}")
                 
                 # -----------------------------------------------------------
                 # ★ 5. 生成 STRM 和记录日志
