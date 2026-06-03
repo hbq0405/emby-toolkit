@@ -1677,8 +1677,8 @@ def task_auto_subscribe(processor):
 
             if is_subscribed_recheck and item_type == 'Season':
                 logger.info(
-                    f"  ➜ [补库模式] 《{title}》S{int(season_number or 0):02d} 已是 SUBSCRIBED，"
-                    f"本轮只走共享池/影巢/频道补库，禁止再次下滑 MoviePilot；"
+                    f"  ➜ [追更模式] 《{title}》S{int(season_number or 0):02d} 已是 追更状态，"
+                    f"本轮只走共享池/影巢/频道补库；"
                     f"缺失集: {missing_episode_numbers or '未知/按季处理'}"
                 )
             item_year = ''
@@ -1733,7 +1733,7 @@ def task_auto_subscribe(processor):
                         title = series_name
 
             # --- MoviePilot 订阅 ---
-            # SUBSCRIBED 是补库模式，不消耗 MP 订阅配额，也不能因为配额耗尽而跳过共享池/云资源补库。
+            # SUBSCRIBED 是追更模式，不消耗 MP 订阅配额，也不能因为配额耗尽而跳过共享池/云资源补库。
             if (not is_subscribed_recheck) and settings_db.get_subscription_quota() <= 0:
                 quota_exhausted = True
                 logger.warning(f"  ➜ 每日订阅配额已用尽，跳过待订阅项目《{item['title']}》，继续处理已订阅补库项。")
@@ -1818,10 +1818,10 @@ def task_auto_subscribe(processor):
                 subscription_sources = list(raw_sources)
 
             if is_subscribed_recheck:
-                # 补库模式下，绝对不能再投递给 MP，直接移除
+                # 追更模式下，绝对不能再投递给 MP，直接移除
                 if 'mp' in subscription_sources:
                     subscription_sources.remove('mp')
-                # 移除强制添加 hdhive 的逻辑，完全尊重前端用户的勾选；如果用户勾选了 hdhive 就走，没勾选就算补库也不走。
+                # 移除强制添加 hdhive 的逻辑，完全尊重前端用户的勾选；如果用户勾选了 hdhive 就走，没勾选就算追更也不走。
 
             for source_type in subscription_sources:
                 if success:
