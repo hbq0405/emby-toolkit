@@ -208,7 +208,7 @@ class WatchlistProcessor:
             logger.error(f"自动添加剧集 '{item_name}' 时出错: {e}")
 
     # --- 核心任务启动器  ---
-    def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None):
+    def run_regular_processing_task_concurrent(self, progress_callback: callable, tmdb_id: Optional[str] = None, new_episode_ids: Optional[list] = None):
         """核心任务启动器，只处理活跃剧集。"""
         self.progress_callback = progress_callback
         task_name = "并发追剧更新"
@@ -270,7 +270,7 @@ class WatchlistProcessor:
                     series_name = self._get_safe_series_name(series)
 
                     try:
-                        self._process_one_series(series, allow_airing_episode_share=bool(tmdb_id))
+                        self._process_one_series(series, allow_airing_episode_share=bool(tmdb_id), new_episode_ids=new_episode_ids)
                         return "处理成功"
                     except Exception as e:
                         logger.error(f"处理剧集 {series_name} 时发生错误: {e}", exc_info=False)
@@ -1124,7 +1124,7 @@ class WatchlistProcessor:
         )
         return bool(result.get('ok'))
 
-    def _trigger_airing_episode_share_detached(self, tmdb_id: str, season_numbers: List[int], series_name: str = '', year: str = ''):
+    def _trigger_airing_episode_share_detached(self, tmdb_id: str, season_numbers: List[int], series_name: str = '', year: str = '', new_episode_ids: Optional[list] = None):
         """追更状态确认后，按季异步触发单集分享探测。
 
         与 webhook 的 new_episode_ids 解耦：这里已经拿到了最终 watching_status，
@@ -1192,6 +1192,10 @@ class WatchlistProcessor:
 
                     emby_item_id = next((str(x).strip() for x in ids if str(x or '').strip()), None)
                     if not emby_item_id:
+                        continue
+
+                    # 如果传入了 new_episode_ids，且当前集不在其中，则直接跳过，不加入分享队列
+                    if new_episode_ids and emby_item_id not in new_episode_ids:
                         continue
 
                     episode_items.append({
@@ -1610,7 +1614,7 @@ class WatchlistProcessor:
             return None
     
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
-    def _process_one_series(self, series_data: Dict[str, Any], allow_airing_episode_share: bool = False):
+    def _process_one_series(self, series_data: Dict[str, Any], allow_airing_episode_share: bool = False, new_episode_ids: Optional[list] = None):
         tmdb_id = series_data.get('tmdb_id')
         if not tmdb_id:
             logger.warning(f"  ➜ 追剧记录缺少 tmdb_id，跳过。数据: {series_data}")
@@ -2277,6 +2281,7 @@ class WatchlistProcessor:
                 season_numbers=list(active_seasons),
                 series_name=item_name,
                 year=release_year,
+                new_episode_ids=new_episode_ids
             )
 
         # ======================================================================

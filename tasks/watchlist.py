@@ -16,7 +16,7 @@ from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
 logger = logging.getLogger(__name__)
 
 # --- 追剧 ---    
-def task_process_watchlist(processor, tmdb_id: Optional[str] = None):
+def task_process_watchlist(processor, tmdb_id: Optional[str] = None, new_episode_ids: Optional[list] = None):
     """
     只负责刷新“活跃”剧集（追剧中、待定中、暂停到期）。
     """
@@ -26,7 +26,8 @@ def task_process_watchlist(processor, tmdb_id: Optional[str] = None):
     try:
         processor.run_regular_processing_task_concurrent(
             progress_callback=progress_updater, 
-            tmdb_id=tmdb_id
+            tmdb_id=tmdb_id,
+            new_episode_ids=new_episode_ids
         )
 
     except Exception as e:

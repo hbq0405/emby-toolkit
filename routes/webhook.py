@@ -681,7 +681,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                     task_process_watchlist,
                     task_name=f"刷新智能追剧: 《{item_name_for_log}》",
                     processor_type='watchlist', 
-                    tmdb_id=str(tmdb_id)
+                    tmdb_id=str(tmdb_id),
+                    new_episode_ids=new_episode_ids
                 )
             except Exception as e:
                 logger.error(f"  ➜ 触发智能追剧任务失败: {e}")
