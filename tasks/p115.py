@@ -108,6 +108,66 @@ def _extract_season_number(*texts):
     return None
 
 
+def _extract_episode_number(*texts):
+    for text in texts:
+        if not text:
+            continue
+        value = str(text)
+        match = re.search(
+            r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b'
+            r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
+            r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
+            r'|第(\d{1,4})[集话話回]',
+            value,
+            re.IGNORECASE,
+        )
+        if match:
+            episode = match.group(2) or match.group(3) or match.group(4) or match.group(5)
+            if episode is not None:
+                return int(episode)
+    return None
+
+
+def _extract_part_number(*texts):
+    for text in texts:
+        if not text:
+            continue
+        value = str(text)
+        match = re.search(r'(?i)[ \.\-\_\[\(]*(part|pt|cd)[ \.\-\_]*(\d{1,2})\b', value)
+        if match:
+            return int(match.group(2))
+    return None
+
+
+def _is_related_sidecar_name(video_name, other_name):
+    video_name = str(video_name or '')
+    other_name = str(other_name or '')
+    if not video_name or not other_name:
+        return False
+
+    video_base = video_name.rsplit('.', 1)[0] if '.' in video_name else video_name
+    if other_name.startswith(video_base):
+        return True
+
+    video_season = _extract_season_number(video_name)
+    other_season = _extract_season_number(other_name)
+    video_episode = _extract_episode_number(video_name)
+    other_episode = _extract_episode_number(other_name)
+    video_part = _extract_part_number(video_name)
+    other_part = _extract_part_number(other_name)
+
+    if video_episode is None or other_episode is None:
+        return False
+
+    if video_season is not None and other_season is not None and video_season != other_season:
+        return False
+
+    if video_part is not None and other_part is not None and video_part != other_part:
+        return False
+
+    return video_episode == other_episode
+
+
 def _is_generic_package_segment(name):
     if not name:
         return True
@@ -236,7 +296,6 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
             recognition_hints=recognition_hints,
         )
 
-        video_base = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
         related_items = [video_item]
         assigned_ids.add(video_fid)
 
@@ -248,7 +307,7 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
             other_dir = other_item.get('_etk_rel_dir', '')
             if other_dir != rel_dir:
                 continue
-            if other_name.startswith(video_base):
+            if _is_related_sidecar_name(file_name, other_name):
                 related_items.append(other_item)
                 assigned_ids.add(other_fid)
 
