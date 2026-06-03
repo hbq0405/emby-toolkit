@@ -91,25 +91,58 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 class AITranslator:
+    # OpenAI SDK 默认会对超时/网络错误做自动重试；长超时叠加重试会把入库链路卡十几分钟。
+    # 这里保留为类常量，并允许 config 里用 ai_request_timeout / ai_max_retries 覆盖。
+    DEFAULT_OPENAI_TIMEOUT = 60
+    DEFAULT_OPENAI_MAX_RETRIES = 0
+
     def __init__(self, config: Dict[str, Any]):
         self.provider = config.get("ai_provider", "openai").lower()
         self.api_key = config.get("ai_api_key")
         self.model = config.get("ai_model_name")
         self.base_url = config.get("ai_base_url")
         self.embedding_model = config.get("ai_embedding_model")
+        self.openai_request_timeout = self._safe_positive_int(
+            config.get("ai_request_timeout"),
+            self.DEFAULT_OPENAI_TIMEOUT,
+            allow_zero=False
+        )
+        self.openai_max_retries = self._safe_positive_int(
+            config.get("ai_max_retries"),
+            self.DEFAULT_OPENAI_MAX_RETRIES,
+            allow_zero=True
+        )
         if not self.api_key:
             raise ValueError("AI Translator: API Key 未配置。")
             
         self.client = None
         self._initialize_client()
 
+    @staticmethod
+    def _safe_positive_int(value, default: int, allow_zero: bool = False) -> int:
+        try:
+            parsed = int(value)
+            if parsed > 0 or (allow_zero and parsed == 0):
+                return parsed
+        except Exception:
+            pass
+        return default
+
     def _initialize_client(self):
         """根据提供商初始化对应的客户端"""
         try:
             if self.provider == 'openai':
                 if not OPENAI_AVAILABLE: raise ImportError("OpenAI SDK 未安装")
-                self.client = OpenAI(api_key=self.api_key, base_url=self.base_url if self.base_url else None)
-                logger.info(f"  ➜ OpenAI 初始化成功")
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url if self.base_url else None,
+                    timeout=self.openai_request_timeout,
+                    max_retries=self.openai_max_retries
+                )
+                logger.info(
+                    f"  ➜ OpenAI 初始化成功 "
+                    f"(timeout={self.openai_request_timeout}s, max_retries={self.openai_max_retries})"
+                )
             
             elif self.provider == 'zhipuai':
                 if not ZHIPUAI_AVAILABLE: raise ImportError("智谱AI SDK 未安装")
@@ -538,7 +571,7 @@ class AITranslator:
                 ],
                 temperature=0.0,
                 response_format={"type": "json_object"},
-                timeout=300
+                timeout=self.openai_request_timeout
             )
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {}
@@ -560,7 +593,7 @@ class AITranslator:
                 ],
                 temperature=0.0,
                 response_format={"type": "json_object"},
-                timeout=300
+                timeout=self.openai_request_timeout
             )
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {}
@@ -668,7 +701,7 @@ class AITranslator:
                 ],
                 temperature=0.0,
                 response_format={"type": "json_object"},
-                timeout=300
+                timeout=self.openai_request_timeout
             )
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {}
