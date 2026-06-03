@@ -4520,7 +4520,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         # ★★★ 同批次字幕完美对齐视频命名 (解决 MP 单文件上传分离问题) ★★★
         # =================================================================
         batch_video_names = {} # key: (season, episode, part) -> base_name
-        if not keep_original and is_batch:
+        if is_batch:
             # 1. 预扫描视频，生成标准命名
             for file_item in candidates:
                 fn = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
@@ -4534,10 +4534,13 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         silent_log=True,  # ★ 开启静默，防止预扫描时重复打印日志
                         recognition_hints=self.recognition_hints,
                     )
+                    video_base_name = fn.rsplit('.', 1)[0]
+                    if not keep_original:
+                        video_base_name = v_name.rsplit('.', 1)[0]
                     key = (v_s, v_e, v_part) if self.media_type == 'tv' else ('movie', v_part)
                     # 电影只保留第一个视频作为基准 (通常电影只有一个正片)
                     if key not in batch_video_names:
-                        batch_video_names[key] = v_name.rsplit('.', 1)[0]
+                        batch_video_names[key] = video_base_name
             
             # 2. 将视频基础名注入到同批次的字幕中
             if batch_video_names:
@@ -4698,8 +4701,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     recognition_hints=self.recognition_hints,
                 )
 
-                # ★ 核心：只保留文件名
-                new_filename = file_name
+                # ★ 核心：保留原名只对主视频生效。
+                # 外挂字幕若已绑定到同批视频，仍需跟随视频基名改名，避免 Emby/Jellyfin 挂载失配。
+                if ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'] and file_item.get('_forced_base_name'):
+                    new_filename = parsed_filename
+                else:
+                    new_filename = file_name
 
                 # ★ 目录仍走标准逻辑
                 real_target_cid = final_home_cid
@@ -6810,6 +6817,73 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             logger.warning(f"  ➜ 查找关联字幕失败: {e}")
 
     if sub_items:
+        if root_items:
+            subtitle_video_names = {}
+            for r_item in root_items:
+                info_name = (
+                    r_item.get('_new_filename')
+                    or (r_item.get('_info_data') or {}).get('file_name')
+                    or r_item.get('fn')
+                    or r_item.get('file_name')
+                    or ''
+                )
+                if not info_name:
+                    continue
+                season_key = _extract_season_number(info_name)
+                episode_key = None
+                match = re.search(
+                    r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b'
+                    r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
+                    r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
+                    r'|第(\d{1,4})[集话話回]',
+                    info_name,
+                    re.IGNORECASE,
+                )
+                if match:
+                    season_from_name = match.group(1)
+                    episode_key = match.group(2) or match.group(3) or match.group(4) or match.group(5)
+                    if season_key is None and season_from_name:
+                        season_key = int(season_from_name)
+                if episode_key is None:
+                    continue
+                try:
+                    episode_key = int(episode_key)
+                except Exception:
+                    continue
+                if season_key is None:
+                    season_key = organizer.forced_season or 1
+                subtitle_video_names[(int(season_key), int(episode_key))] = info_name.rsplit('.', 1)[0]
+
+            for sub_item in sub_items:
+                sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
+                season_key = organizer.forced_season
+                episode_key = None
+                match = re.search(
+                    r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b'
+                    r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
+                    r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
+                    r'|第(\d{1,4})[集话話回]',
+                    sub_name,
+                    re.IGNORECASE,
+                )
+                if match:
+                    season_from_name = match.group(1)
+                    episode_key = match.group(2) or match.group(3) or match.group(4) or match.group(5)
+                    if season_key is None and season_from_name:
+                        season_key = int(season_from_name)
+                if episode_key is None:
+                    continue
+                try:
+                    episode_key = int(episode_key)
+                except Exception:
+                    continue
+                if season_key is None:
+                    season_key = 1
+                forced_base_name = subtitle_video_names.get((int(season_key), int(episode_key)))
+                if forced_base_name:
+                    sub_item['_forced_base_name'] = forced_base_name
+                    sub_item['_forced_season'] = int(season_key)
+                    sub_item['_forced_episode'] = int(episode_key)
         logger.info(f"  🔤 [批量重组] 发现 {len(sub_items)} 个关联字幕，跟随重组...")
         organizer.execute(sub_items, target_cid)
 
