@@ -1911,18 +1911,81 @@ def _execute_task_from_tg(chat_id: str, task_key: str):
         send_telegram_message(chat_id, escape_markdown(f"❌ 无法获取 {processor_type} 处理器实例。"))
         return
 
-    send_telegram_message(chat_id, escape_markdown(f"🚀 任务已启动：*{task_description}*\n请在系统日志或任务中心查看进度。"))
+    current_version = ""
+    target_version = ""
+    update_container_name = ""
+    update_image_name = ""
+    if task_key == 'system-auto-update':
+        try:
+            from tasks.system_update import get_system_update_version_info, resolve_update_target
+            version_info = get_system_update_version_info() or {}
+            current_version = str(version_info.get('current_version') or '').strip()
+            target_version = str(version_info.get('target_version') or '').strip()
+            update_target = resolve_update_target(getattr(target_processor, 'config', {}) or {})
+            update_container_name = str(update_target.get('container_name') or '').strip()
+            update_image_name = str(update_target.get('docker_image_name') or '').strip()
+        except Exception as e:
+            logger.debug(f"  ➜ [TG交互] 获取系统更新版本信息失败: {e}")
+
+    start_lines = [f"🚀 任务已启动：*{task_description}*"]
+    if task_key == 'system-auto-update':
+        if current_version:
+            start_lines.append(f"当前版本: `{current_version}`")
+        if target_version:
+            start_lines.append(f"目标版本: `{target_version}`")
+        if update_container_name:
+            start_lines.append(f"目标容器: `{update_container_name}`")
+        if update_image_name:
+            start_lines.append(f"目标镜像: `{update_image_name}`")
+    start_lines.append("请在系统日志或任务中心查看进度。")
+    send_telegram_message(chat_id, escape_markdown("\n".join(start_lines)))
     logger.info(f"  ➜ [TG交互] 管理员 {chat_id} 触发了任务: {task_description}")
 
     # 包装执行逻辑，处理特殊参数
     def run_wrapper():
         try:
+            task_result = None
             tasks_requiring_force_flag = ['role-translation', 'enrich-aliases', 'populate-metadata']
             if task_key in tasks_requiring_force_flag:
-                task_function(target_processor, force_full_update=False)
+                task_result = task_function(target_processor, force_full_update=False)
             else:
-                task_function(target_processor)
-            
+                task_result = task_function(target_processor)
+
+            if task_key == 'system-auto-update':
+                result = task_result if isinstance(task_result, dict) else {}
+                ok = bool(result.get('ok'))
+                updated = bool(result.get('updated'))
+                message = str(result.get('message') or '').strip()
+                before_version = str(result.get('current_version') or current_version or '').strip()
+                after_version = str(result.get('target_version') or target_version or '').strip()
+
+                if not ok:
+                    fail_lines = [f"❌ 任务执行失败：*{task_description}*"]
+                    if before_version:
+                        fail_lines.append(f"当前版本: `{before_version}`")
+                    if after_version:
+                        fail_lines.append(f"目标版本: `{after_version}`")
+                    if message:
+                        fail_lines.append(f"错误信息: {message}")
+                    send_telegram_message(chat_id, escape_markdown("\n".join(fail_lines)))
+                    return
+
+                success_lines = [f"✅ 任务执行完毕：*{task_description}*"]
+                if updated:
+                    if before_version and after_version:
+                        success_lines.append(f"版本变化: `{before_version}` -> `{after_version}`")
+                    elif after_version:
+                        success_lines.append(f"更新目标版本: `{after_version}`")
+                else:
+                    if before_version:
+                        success_lines.append(f"当前版本: `{before_version}`")
+                    if after_version:
+                        success_lines.append(f"最新版本: `{after_version}`")
+                if message:
+                    success_lines.append(message)
+                send_telegram_message(chat_id, escape_markdown("\n".join(success_lines)))
+                return
+
             send_telegram_message(chat_id, escape_markdown(f"✅ 任务执行完毕：*{task_description}*"))
         except Exception as e:
             logger.error(f"  ➜ TG触发任务 '{task_description}' 失败: {e}", exc_info=True)
