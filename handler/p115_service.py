@@ -5757,32 +5757,13 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         else:
             logger.debug("  ➜ [清理空目录] 批量任务模式，跳过单次垃圾回收检查，等待统一清理。")
 
-        # --- 整理记录 ---
-        if moved_count > 0:
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        if self.media_type == 'tv' and processed_episodes_for_flag:
-                            # ★ 核心修复：取交集，只核销真正拥有特权且本次处理成功的集数
-                            actually_washed_eps = processed_episodes_for_flag.intersection(active_washing_eps)
-                            if actually_washed_eps:
-                                from psycopg2.extras import execute_batch
-                                update_data = [(str(self.tmdb_id), s, e) for s, e in actually_washed_eps]
-                                execute_batch(cursor, """
-                                    UPDATE media_metadata 
-                                    SET active_washing = FALSE 
-                                    WHERE parent_series_tmdb_id = %s 
-                                      AND item_type = 'Episode' 
-                                      AND season_number = %s 
-                                      AND episode_number = %s
-                                """, update_data)
-                                logger.info(f"  ➜ [洗版特权] 已精准核销 {len(actually_washed_eps)} 个分集的洗版特权状态。")
-                        elif self.media_type == 'movie' and movie_active_washing:
-                            cursor.execute("UPDATE media_metadata SET active_washing = FALSE WHERE tmdb_id = %s AND item_type = 'Movie'", (str(self.tmdb_id),))
-                            logger.info(f"  ➜ [洗版特权] 已核销电影的洗版特权状态。")
-                        conn.commit()
-            except Exception as e:
-                logger.error(f"  ➜ 解除洗版状态失败: {e}")
+        # --- active_washing 状态收口 ---
+        # 整理模块只读取 active_washing 来获得洗版替换特权，不再在单集入库后核销它。
+        # 完结洗版可能分多批入库；如果这里按单集清理，会导致追剧模块误以为洗版事务已结束，
+        # 进而在 Completed -> Completed 刷新中失去事务锁。active_washing 的开启/清理统一由
+        # watchlist_processor 的完结质量门禁决定：一致性通过后整季清理，超时维护再兜底清理。
+        if moved_count > 0 and (active_washing_eps or movie_active_washing):
+            logger.debug("  ➜ [洗版特权] 本次整理使用了洗版特权。")
 
         return True
     
