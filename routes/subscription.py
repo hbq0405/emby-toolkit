@@ -1,5 +1,6 @@
 # routes/subscription.py
 import logging
+import re
 from flask import Blueprint, jsonify, request
 from extensions import admin_required
 from database import settings_db
@@ -341,19 +342,25 @@ def _normalize_channel_resource(resource):
     return item
 
 
-def _build_cloud_extra_queries(title, year=None, season=None):
+def _strip_season_suffix(text):
+    value = str(text or "").strip()
+    if not value:
+        return ""
+
+    return re.sub(
+        r"\s*(?:第\s*\d+\s*季|S\d{1,3}|Season\s*\d{1,3})\s*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _build_cloud_extra_queries(title, year=None):
     title = str(title or "").strip()
     year = str(year or "").strip()
-    season = str(season or "").strip()
     queries = []
     if title and year:
         queries.append(f"{title} {year}")
-    if title and season:
-        try:
-            s = int(season)
-            queries.extend([f"{title} S{s:02d}", f"{title} 第{s}季"])
-        except Exception:
-            pass
     return queries
 
 
@@ -364,7 +371,7 @@ def get_cloud_resources():
     tmdb_id = request.args.get('tmdb_id')
     raw_media_type = request.args.get('media_type')
     season = request.args.get('season')
-    title = (request.args.get('title') or request.args.get('query') or '').strip()
+    title = _strip_season_suffix(request.args.get('title') or request.args.get('query') or '')
     year = (request.args.get('year') or '').strip()
     media_type = _normalize_hdhive_media_type(raw_media_type)
 
@@ -427,7 +434,7 @@ def get_cloud_resources():
                 tmdb_id=tmdb_id,
                 year=year,
                 limit=channel_limit,
-                extra_queries=_build_cloud_extra_queries(title, year=year, season=season),
+                extra_queries=_build_cloud_extra_queries(title, year=year),
                 timeout=35,
                 include_tmdb_query=False,
                 strict_title_match=True,
