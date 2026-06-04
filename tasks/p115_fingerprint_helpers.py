@@ -347,13 +347,22 @@ def repair_p115_fingerprints_for_rows(
             if base_name and base_name.lower().endswith('.strm'):
                 base_name = None # 置空，强制依赖本地缓存或 115 API 获取真实文件名
 
+            # ★ 核心修复：防止绝对路径污染 local_path
+            # 仅当明确配置了 local_root 且成功剥离出相对路径时，才作为候选写入
+            best_local_path = None
+            if local_root and local_candidates:
+                shortest = min(local_candidates, key=len)
+                # 如果最短的候选路径比原始路径短，说明成功剥离了 local_root
+                if len(shortest) < len(clean_path):
+                    best_local_path = shortest
+
             values = {
                 'fid': None,
                 'parent_id': None,
                 'name': base_name,
                 'sha1': None if need_sha1 else str(current_sha1).strip().upper(),
                 'pc': None if need_pc else str(current_pc).strip(),
-                'local_path': min(local_candidates, key=len) if local_candidates else None,
+                'local_path': best_local_path, # 传 None 时，SQL 的 COALESCE 会完美保留数据库中原有的正确路径
                 'size': _get_asset_size(asset),
             }
 
