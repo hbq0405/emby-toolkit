@@ -117,6 +117,7 @@ const selectedSeriesNames = ref([]);
 const currentPage = ref(1);
 const currentPageSize = ref(20);
 const expandedRowKeys = ref([]);
+const manualDeleteWithoutConfirm = ref(false);
 
 // --- 3. 计算属性 ---
 
@@ -273,24 +274,31 @@ const parseBestIds = (val) => {
   return ids.map(id => String(id));
 };
 
+const executeDeleteVersion = async (row) => {
+  try {
+    await axios.post('/api/cleanup/delete_version', { 
+      emby_id: String(row.id)
+    });
+    message.success('版本删除成功');
+    fetchData(); // 删除成功后刷新列表
+  } catch (err) {
+    message.error(err.response?.data?.error || '删除失败');
+  }
+};
+
 // ★★★ 手动删除单一版本的处理函数 ★★★
 const handleDeleteVersion = (row) => {
+  if (manualDeleteWithoutConfirm.value) {
+    executeDeleteVersion(row);
+    return;
+  }
+
   dialog.warning({
     title: '手动删除确认',
     content: `确定要永久删除该版本 (ID: ${row.id}) 吗？此操作将无视规则PK结果，直接删除对应的媒体文件！`,
     positiveText: '确定删除',
     negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        await axios.post('/api/cleanup/delete_version', { 
-          emby_id: String(row.id)
-        });
-        message.success('版本删除成功');
-        fetchData(); // 删除成功后刷新列表
-      } catch (err) {
-        message.error(err.response?.data?.error || '删除失败');
-      }
-    }
+    onPositiveClick: () => executeDeleteVersion(row)
   });
 };
 
@@ -487,8 +495,12 @@ const fetchData = async () => {
   const previousExpandedKeys = [...expandedRowKeys.value];
 
   try {
-    const response = await axios.get('/api/cleanup/tasks');
-    allTasks.value = response.data;
+    const [tasksResponse, settingsResponse] = await Promise.all([
+      axios.get('/api/cleanup/tasks'),
+      axios.get('/api/cleanup/settings').catch(() => ({ data: {} }))
+    ]);
+    allTasks.value = tasksResponse.data;
+    manualDeleteWithoutConfirm.value = !!settingsResponse.data.manual_delete_without_confirm;
 
     // 刷新后只保留仍然存在的展开分组，避免删光后残留无效 key
     const validKeys = new Set(groupedTasks.value.map(group => group.key));

@@ -126,6 +126,17 @@
                 </n-radio-group>
               </div>
 
+              <div class="setting-row">
+                <div class="setting-info">
+                  <div class="setting-title">手动删除无需确认</div>
+                  <div class="setting-desc">
+                    开启后，重复项列表里手动点击单个版本的删除按钮会直接删除，不再弹出二次确认对话框。<br>
+                    仅影响手动删除单版本按钮，不影响批量清理和一键清理的高危确认。
+                  </div>
+                </div>
+                <n-switch v-model:value="manualDeleteWithoutConfirm" />
+              </div>
+
             </n-space>
           </n-card>
         </n-gi>
@@ -209,6 +220,7 @@ const saving = ref(false);
 const showEditModal = ref(false);
 const keepOnePerRes = ref(false);
 const deleteMode = ref('physical');
+const manualDeleteWithoutConfirm = ref(false);
 const draggableRules = ref([]);
 const fallbackRule = ref(null);
 const currentEditingRule = ref({ priority: [] });
@@ -289,6 +301,7 @@ const fetchSettings = async () => {
     let loadedRules = settingsRes.data.rules || [];
     keepOnePerRes.value = settingsRes.data.keep_one_per_res || false;
     deleteMode.value = settingsRes.data.delete_mode || 'physical';
+    manualDeleteWithoutConfirm.value = !!settingsRes.data.manual_delete_without_confirm;
     
     loadedRules = loadedRules.map(rule => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
@@ -340,7 +353,8 @@ const saveSettings = async () => {
       rules: rulesToSave,
       library_ids: selectedLibraryIds.value,
       keep_one_per_res: keepOnePerRes.value,
-      delete_mode: deleteMode.value
+      delete_mode: deleteMode.value,
+      manual_delete_without_confirm: manualDeleteWithoutConfirm.value
     };
 
     await axios.post('/api/cleanup/settings', payload);

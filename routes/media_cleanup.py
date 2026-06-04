@@ -147,6 +147,7 @@ def get_cleanup_settings():
             keep_one_per_res = config_data.get('keep_one_per_res', False)
             delete_delay = config_data.get('delete_delay', 0)
             delete_mode = config_data.get('delete_mode', 'physical')
+            manual_delete_without_confirm = config_data.get('manual_delete_without_confirm', False)
         else:
             # 向下兼容：如果没找到新配置，去读老配置
             saved_rules_list = settings_db.get_setting('media_cleanup_rules') or []
@@ -154,6 +155,7 @@ def get_cleanup_settings():
             keep_one_per_res = settings_db.get_setting('media_cleanup_keep_one_per_res') or False
             delete_delay = settings_db.get_setting('media_cleanup_delete_delay') or 0
             delete_mode = 'physical'
+            manual_delete_without_confirm = False
         
         # --- 规则清洗逻辑 (保持你原来的逻辑不变) ---
         if not saved_rules_list:
@@ -225,7 +227,8 @@ def get_cleanup_settings():
             "library_ids": saved_library_ids,
             "keep_one_per_res": keep_one_per_res,
             "delete_delay": delete_delay,
-            "delete_mode": delete_mode  # ★ 返回删除模式
+            "delete_mode": delete_mode,  # ★ 返回删除模式
+            "manual_delete_without_confirm": manual_delete_without_confirm
         })
         
     except Exception as e:
@@ -245,6 +248,7 @@ def save_cleanup_settings():
     keep_one_per_res = data.get('keep_one_per_res')
     delete_delay = data.get('delete_delay')
     delete_mode = data.get('delete_mode', 'physical') # ★ 获取删除模式
+    manual_delete_without_confirm = data.get('manual_delete_without_confirm', False)
 
     if not isinstance(new_rules, list):
         return jsonify({"error": "无效的规则格式，'rules' 必须是一个列表。"}), 400
@@ -260,7 +264,8 @@ def save_cleanup_settings():
             "library_ids": library_ids,
             "keep_one_per_res": bool(keep_one_per_res),
             "delete_delay": int(delete_delay or 0),
-            "delete_mode": delete_mode
+            "delete_mode": delete_mode,
+            "manual_delete_without_confirm": bool(manual_delete_without_confirm)
         }
         settings_db.save_setting('media_cleanup_config', config_data)
         
