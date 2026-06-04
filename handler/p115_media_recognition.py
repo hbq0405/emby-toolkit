@@ -559,6 +559,124 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertNotIn("season_number", hints)
         self.assertNotIn("episode_number", hints)
 
+    def test_filewise_big_package_prefers_top_level_explicit_tmdbid_over_file_search(self):
+        gathered_files = [
+            {
+                "fid": "v1",
+                "file_id": "v1",
+                "fn": "Neymar.The.Perfect.Chaos.S01E01.2022.2160p.NF.WEB-DL.mkv",
+                "sha1": "sha-v1",
+                "fs": str(7 * 1024 * 1024 * 1024),
+                "_etk_rel_dir": "Neymar.The.Perfect.Chaos.S01",
+            }
+        ]
+
+        def fake_identify(filename, main_dir_name=None, **kwargs):
+            self.assertEqual(main_dir_name, "内马尔：完美乱局 (2022) {tmdbid-153519}")
+            return "153519", "tv", "Neymar: The Perfect Chaos"
+
+        with mock.patch.object(task_p115, "_identify_media_enhanced", side_effect=fake_identify):
+            groups, unresolved = task_p115._build_filewise_big_package_groups(
+                gathered_files,
+                "内马尔：完美乱局 (2022) {tmdbid-153519}",
+                use_ai=False,
+            )
+
+        self.assertEqual(unresolved, [])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["identified_tmdb_id"], "153519")
+        self.assertEqual(groups[0]["identified_title"], "Neymar: The Perfect Chaos")
+
+    def test_filewise_big_package_keeps_distinct_nested_contexts_separate(self):
+        gathered_files = [
+            {
+                "fid": "v1",
+                "file_id": "v1",
+                "fn": "Show.A.S01E01.2022.1080p.WEB-DL.mkv",
+                "sha1": "sha-a1",
+                "fs": str(7 * 1024 * 1024 * 1024),
+                "_etk_rel_dir": "Show A (2022) {tmdbid-111111}/Season 01",
+            },
+            {
+                "fid": "v2",
+                "file_id": "v2",
+                "fn": "Show.B.S01E01.2023.1080p.WEB-DL.mkv",
+                "sha1": "sha-b1",
+                "fs": str(7 * 1024 * 1024 * 1024),
+                "_etk_rel_dir": "Show B (2023) {tmdbid-222222}/Season 01",
+            },
+        ]
+
+        seen_main_dirs = []
+
+        def fake_identify(filename, main_dir_name=None, **kwargs):
+            seen_main_dirs.append(main_dir_name)
+            if "Show.A" in filename:
+                return "111111", "tv", "Show A"
+            return "222222", "tv", "Show B"
+
+        with mock.patch.object(task_p115, "_identify_media_enhanced", side_effect=fake_identify):
+            groups, unresolved = task_p115._build_filewise_big_package_groups(
+                gathered_files,
+                "Mixed Resource Pack",
+                use_ai=False,
+            )
+
+        self.assertEqual(unresolved, [])
+        self.assertEqual(len(groups), 2)
+        self.assertIn("Show A (2022) {tmdbid-111111}", seen_main_dirs)
+        self.assertIn("Show B (2023) {tmdbid-222222}", seen_main_dirs)
+        self.assertEqual({g["identified_tmdb_id"] for g in groups}, {"111111", "222222"})
+
+    def test_filewise_big_package_without_explicit_tmdbid_keeps_context_search(self):
+        gathered_files = [
+            {
+                "fid": "v1",
+                "file_id": "v1",
+                "fn": "Plain.Show.S01E01.2022.1080p.WEB-DL.mkv",
+                "sha1": "sha-v1",
+                "fs": str(7 * 1024 * 1024 * 1024),
+                "_etk_rel_dir": "Plain Show (2022)/Season 01",
+            }
+        ]
+
+        def fake_identify(filename, main_dir_name=None, **kwargs):
+            self.assertEqual(main_dir_name, "Plain Show (2022)")
+            return "333333", "tv", "Plain Show"
+
+        with mock.patch.object(task_p115, "_identify_media_enhanced", side_effect=fake_identify):
+            groups, unresolved = task_p115._build_filewise_big_package_groups(
+                gathered_files,
+                "Generic Pack",
+                use_ai=False,
+            )
+
+        self.assertEqual(unresolved, [])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["identified_tmdb_id"], "333333")
+
+    def test_identify_media_enhanced_prefers_main_dir_explicit_tmdbid_for_normal_path(self):
+        with mock.patch.object(
+            p115_service.tmdb,
+            "get_tv_details",
+            return_value={"name": "Neymar: The Perfect Chaos"},
+        ) as details_mock:
+            with mock.patch.dict(
+                p115_service.config_manager.APP_CONFIG,
+                {"tmdb_api_key": "fake"},
+                clear=False,
+            ):
+                tmdb_id, media_type, title = p115_service._identify_media_enhanced(
+                    "Neymar.The.Perfect.Chaos.S01E01.2022.2160p.NF.WEB-DL.mkv",
+                    main_dir_name="内马尔：完美乱局 (2022) {tmdbid-153519}",
+                    use_ai=False,
+                )
+
+        self.assertEqual(tmdb_id, "153519")
+        self.assertEqual(media_type, "tv")
+        self.assertEqual(title, "Neymar: The Perfect Chaos")
+        details_mock.assert_called_once_with("153519", "fake")
+
 
 if __name__ == "__main__":
     unittest.main()

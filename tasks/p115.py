@@ -275,6 +275,9 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
         file_name = video_item.get('fn') or video_item.get('n') or video_item.get('file_name', '')
         rel_dir = video_item.get('_etk_rel_dir', '')
         context_name = _choose_big_package_context_name(top_name, rel_dir)
+        identify_main_dir = context_name or top_name
+        if not _name_has_tmdb_tag(identify_main_dir) and _name_has_tmdb_tag(top_name):
+            identify_main_dir = top_name
         forced_type = 'tv' if (_name_has_tv_hint(file_name) or _name_has_tv_hint(rel_dir)) else None
         season_num = _extract_season_number(file_name, rel_dir, context_name)
         recognition_hints = _normalize_batch_recognition_hints(lookup_candidate_hint_for_name(
@@ -286,7 +289,7 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
         file_sha1 = video_item.get('sha1') or video_item.get('sha')
         tmdb_id, media_type, title = _identify_media_enhanced(
             file_name,
-            main_dir_name=context_name,
+            main_dir_name=identify_main_dir,
             has_season_subdirs=False,
             forced_media_type=forced_type,
             ai_translator=ai_translator,
