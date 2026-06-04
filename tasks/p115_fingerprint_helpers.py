@@ -147,9 +147,16 @@ def p115_fp_extract_info_data(info_res) -> Dict[str, Any]:
     if not isinstance(data, dict):
         return {}
 
+    # ★ 兼容 OpenAPI 的 paths 字段提取父目录 ID
+    parent_id = data.get('parent_id') or data.get('pid') or data.get('cid')
+    if not parent_id and 'paths' in data and isinstance(data['paths'], list) and len(data['paths']) > 0:
+        # paths 数组的最后一个元素就是直接父目录
+        last_path_node = data['paths'][-1]
+        parent_id = last_path_node.get('file_id') or last_path_node.get('cid')
+
     return {
         'id': data.get('fid') or data.get('file_id') or data.get('id'),
-        'parent_id': data.get('parent_id') or data.get('pid') or data.get('cid'),
+        'parent_id': parent_id,
         'name': data.get('fn') or data.get('n') or data.get('file_name') or data.get('name'),
         'sha1': data.get('sha1') or data.get('sha') or data.get('file_sha1'),
         'pick_code': data.get('pc') or data.get('pick_code') or data.get('pickcode'),
