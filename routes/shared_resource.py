@@ -253,6 +253,7 @@ def _collect_files_from_cache(root_fid: str, root_name: str = '', max_depth: int
         files.append({
             'fid': str(row.get('id') or ''),
             'sha1': (str(row.get('sha1')).upper() if row.get('sha1') else None),
+            'pick_code': row.get('pick_code') or row.get('pc') or row.get('pickcode'),
             'size': _safe_size_bytes(row.get('size')),
             'file_name': name,
             'relative_path': rel,
@@ -331,6 +332,7 @@ def _collect_files_from_media_payload(data: Dict[str, Any]) -> List[Dict[str, An
         files.append({
             'fid': fid,
             'sha1': sha1 or None,
+            'pick_code': pc or None,
             'size': _safe_size_bytes(r.get('size')),
             'file_name': name,
             'relative_path': r.get('local_path') or name,
@@ -366,6 +368,7 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
         return [{
             'fid': _node_id(root_info) or str(root_fid),
             'sha1': root_info.get('sha1') or root_info.get('sha') or root_info.get('file_sha1'),
+            'pick_code': root_info.get('pc') or root_info.get('pick_code') or root_info.get('pickcode'),
             'size': _safe_size_bytes(root_info.get('size') or root_info.get('fs') or root_info.get('s')),
             'file_name': name,
             'relative_path': name,
@@ -395,6 +398,7 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
             files.append({
                 'fid': node_id,
                 'sha1': node.get('sha1') or node.get('sha') or node.get('file_sha1'),
+                'pick_code': node.get('pc') or node.get('pick_code') or node.get('pickcode'),
                 'size': _safe_size_bytes(node.get('size') or node.get('fs') or node.get('s')),
                 'file_name': name,
                 'relative_path': rel,
@@ -671,38 +675,324 @@ def _raw_ffprobe_has_media_payload(raw: Dict[str, Any]) -> bool:
         return True
     return False
 
-def _load_local_raw_ffprobe(sha1: str):
-    """从本地 p115_mediainfo_cache 读取 raw_ffprobe_json，并在上传前补齐 _etk 身份。"""
+def _normalize_raw_etk_type(value: Any) -> str:
+    text = str(value or '').strip().lower()
+    if text in {'movie', 'movies', 'film', '电影'}:
+        return 'movie'
+    if text in {'tv', 'series', 'season', 'episode', '电视剧', '剧集', '季', '集', '分集'}:
+        return 'tv'
+    return ''
+
+def _find_nested_raw_value(value: Any, keys: set, max_depth: int = 4):
+    """在分享 item/raw_json/cache_row 等嵌套结构里提取 PC/FID/名称等稳定字段。"""
+    if max_depth < 0:
+        return None
+    if isinstance(value, dict):
+        for key in keys:
+            if value.get(key) not in [None, '', [], {}]:
+                return value.get(key)
+        for child in value.values():
+            found = _find_nested_raw_value(child, keys, max_depth - 1)
+            if found not in [None, '', [], {}]:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            found = _find_nested_raw_value(child, keys, max_depth - 1)
+            if found not in [None, '', [], {}]:
+                return found
+    return None
+
+def _share_item_raw_metadata_context(item: Dict[str, Any]) -> Dict[str, Any]:
+    """从分享文件行构建 raw_ffprobe_json._etk 所需的媒体身份。
+
+    P115CacheManager.get_raw_ffprobe_cache 会优先按 SHA1 从 media_metadata 回填；这里再用
+    分享上下文兜底，覆盖自动分享/手动分享/维护任务里还没落库或 Episode 行只带在
+    raw_json.episode_meta 内的场景。
+    """
+    item = item or {}
+    raw = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
+    episode_meta = raw.get('episode_meta') if isinstance(raw.get('episode_meta'), dict) else {}
+
+    item_type = (
+        item.get('item_type')
+        or item.get('share_type')
+        or episode_meta.get('item_type')
+        or raw.get('item_type')
+    )
+    normalized_type = _normalize_raw_etk_type(item_type)
+
+    tmdb_id = (
+        item.get('parent_series_tmdb_id')
+        or item.get('series_tmdb_id')
+        or episode_meta.get('parent_series_tmdb_id')
+        or episode_meta.get('series_tmdb_id')
+        or item.get('tmdb_id')
+        or episode_meta.get('tmdb_id')
+        or raw.get('tmdb_id')
+    )
+
+    season_number = (
+        item.get('season_number')
+        if item.get('season_number') not in [None, '']
+        else episode_meta.get('season_number')
+    )
+    episode_number = (
+        item.get('episode_number')
+        if item.get('episode_number') not in [None, '']
+        else episode_meta.get('episode_number')
+    )
+
+    ctx = {
+        'tmdb_id': str(tmdb_id).strip() if tmdb_id not in [None, ''] else None,
+        'type': normalized_type or None,
+        'original_language': (
+            str(item.get('original_language') or episode_meta.get('original_language') or raw.get('original_language') or '').strip()
+            or None
+        ),
+        'season_number': _safe_int(season_number, None) if season_number not in [None, ''] else None,
+        'episode_number': _safe_int(episode_number, None) if episode_number not in [None, ''] else None,
+        'sha1': str(item.get('sha1') or '').strip().upper() or None,
+    }
+    return {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
+
+def _raw_ffprobe_missing_etk_fields(raw: Dict[str, Any], expected_ctx: Dict[str, Any] = None) -> List[str]:
+    """返回 RAW 上传中心前仍缺失的 _etk 字段。
+
+    tmdb_id/type/sha1 是共享中心识别和消费端免二次猜测的硬字段；
+    original_language/season_number/episode_number 如果本地上下文已经明确，也必须写回。
+    """
+    if not isinstance(raw, dict):
+        return ['_etk']
+    ctx = raw.get('_etk') if isinstance(raw.get('_etk'), dict) else {}
+    expected_ctx = expected_ctx or {}
+    missing = []
+
+    for key in ('tmdb_id', 'type', 'sha1'):
+        if not ctx.get(key):
+            missing.append(key)
+
+    for key in ('original_language', 'season_number', 'episode_number'):
+        if expected_ctx.get(key) not in [None, '', [], {}] and ctx.get(key) in [None, '', [], {}]:
+            missing.append(key)
+
+    return list(dict.fromkeys(missing))
+
+def _patch_raw_ffprobe_etk_from_item(sha1: str, item: Dict[str, Any], *, force_identity: bool = False) -> bool:
+    """把分享上下文写回 p115_mediainfo_cache.raw_ffprobe_json._etk。"""
+    ctx = _share_item_raw_metadata_context({**(item or {}), 'sha1': sha1})
+    if not ctx:
+        return False
+    try:
+        return bool(P115CacheManager.patch_raw_ffprobe_etk_context(
+            sha1,
+            tmdb_id=ctx.get('tmdb_id'),
+            media_type=ctx.get('type'),
+            original_language=ctx.get('original_language'),
+            season_number=ctx.get('season_number'),
+            episode_number=ctx.get('episode_number'),
+            force_identity=force_identity,
+        ))
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 修复 raw_ffprobe _etk 失败: sha1={str(sha1)[:12]}..., err={e}")
+        return False
+
+def _extract_pick_code_from_share_item(item: Dict[str, Any], sha1: str = '', client=None) -> str:
+    """尽量从分享行、p115_filesystem_cache 或 115 实时详情中找 pick_code。"""
+    item = item or {}
+    pc = _find_nested_raw_value(item, {'pc', 'pick_code', 'pickcode'})
+    if pc:
+        return str(pc).strip()
+
+    raw = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
+    # shared_share_items.id 是本地数据库行 ID，不是 115 FID；顶层不能用 id 兜底。
+    fid = str(item.get('fid') or item.get('file_id') or _find_nested_raw_value(raw, {'fid', 'file_id', 'id'}) or '').strip()
+
+    try:
+        cache_row = None
+        if sha1:
+            cache_row = P115CacheManager.get_file_cache_by_sha1(sha1)
+        if not cache_row and fid:
+            cache_row = P115CacheManager.get_file_cache_by_id(fid)
+        if cache_row:
+            pc = cache_row.get('pick_code') or cache_row.get('pc') or cache_row.get('pickcode')
+            if pc:
+                return str(pc).strip()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询 p115_filesystem_cache 获取 PC 失败: sha1={sha1[:12]}..., fid={fid}, err={e}")
+
+    if fid and client:
+        try:
+            info = client.fs_get_info(fid)
+            node = (info or {}).get('data') or {}
+            pc = _find_nested_raw_value(node, {'pc', 'pick_code', 'pickcode'})
+            if pc:
+                return str(pc).strip()
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 实时查询 115 文件详情获取 PC 失败: fid={fid}, err={e}")
+
+    return ''
+
+def _build_raw_probe_file_node(item: Dict[str, Any], sha1: str, pick_code: str) -> Dict[str, Any]:
+    item = item or {}
+    raw = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
+    name = (
+        item.get('file_name')
+        or item.get('relative_path')
+        or item.get('name')
+        or item.get('title')
+        or _find_nested_raw_value(raw, {'fn', 'n', 'file_name', 'name', 'title'})
+        or sha1
+        or 'unknown.mkv'
+    )
+    fid = item.get('fid') or item.get('file_id') or _find_nested_raw_value(raw, {'fid', 'file_id', 'id'})
+    size = _safe_size_bytes(
+        item.get('size')
+        or item.get('fs')
+        or _find_nested_raw_value(raw, {'size', 'fs', 'file_size', 's'})
+    )
+    return {
+        'fid': str(fid or ''),
+        'file_id': str(fid or ''),
+        'pc': str(pick_code or '').strip(),
+        'pick_code': str(pick_code or '').strip(),
+        'pickcode': str(pick_code or '').strip(),
+        'fn': os.path.basename(str(name)),
+        'n': os.path.basename(str(name)),
+        'file_name': os.path.basename(str(name)),
+        'original_name': os.path.basename(str(name)),
+        'sha1': sha1,
+        'fs': size,
+        'size': size,
+    }
+
+def _probe_and_cache_raw_ffprobe_for_share_item(item: Dict[str, Any], sha1: str, metadata_context: Dict[str, Any]) -> Dict[str, Any]:
+    """本地没有完整 RAW 时，通过 115 直链在线 ffprobe 并写回 p115_mediainfo_cache。"""
     sha1 = str(sha1 or '').strip().upper()
     if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
-        return None
+        return {'ok': False, 'message': '缺少合法 SHA1，无法在线提取 RAW'}
+
+    client = P115Service.get_client()
+    if not client:
+        return {'ok': False, 'message': '未配置可用的 115 客户端，无法在线提取 RAW'}
+
+    pick_code = _extract_pick_code_from_share_item(item, sha1=sha1, client=client)
+    if not pick_code:
+        return {'ok': False, 'message': '缺少 PickCode，无法通过 115 直链在线提取 RAW'}
+
     try:
-        # 不能直接 SELECT raw_ffprobe_json：旧缓存可能只有 _etk.sha1，缺 tmdb_id/type。
-        # get_raw_ffprobe_cache 会按 SHA1 从 media_metadata 回填 tmdb_id/type/original_language，
-        # 并同步写回 p115_mediainfo_cache，避免把“残疾 RAW”上传到中心。
-        raw = P115CacheManager.get_raw_ffprobe_cache(sha1)
-        raw = _safe_json_obj(raw)
-        if not raw:
-            return None
-        # get_raw_ffprobe_cache 在 raw 为空时会创建只有 _etk 的最小缓存。
-        # 这种缓存只能辅助识别，不能当完整 RAW 上传到中心，否则中心资源库仍缺媒体参数。
-        if not _raw_ffprobe_has_media_payload(raw):
-            logger.warning(
-                "  ➜ [共享资源] 本地 raw_ffprobe_json 只有 _etk 身份，没有 format/streams，禁止上传中心: "
-                f"sha1={sha1}"
-            )
-            return None
-        ctx = raw.get('_etk') if isinstance(raw.get('_etk'), dict) else {}
-        if not ctx.get('tmdb_id') or not ctx.get('type'):
-            logger.warning(
-                "  ➜ [共享资源] 本地 raw_ffprobe_json 未能从 media_metadata 补齐 _etk.tmdb_id/type，禁止上传中心: "
-                f"sha1={sha1}"
-            )
-            return None
-        return raw
+        from handler.p115_service import SmartOrganizer
+        analyzer = SmartOrganizer.__new__(SmartOrganizer)
+        analyzer.client = client
+        try:
+            import utils as _utils
+            analyzer.language_map = settings_db.get_setting('language_mapping') or getattr(_utils, 'DEFAULT_LANGUAGE_MAPPING', [])
+            analyzer.stream_feature_map = settings_db.get_setting('stream_feature_mapping') or getattr(_utils, 'DEFAULT_STREAM_FEATURE_MAPPING', [])
+        except Exception:
+            pass
+
+        file_node = _build_raw_probe_file_node(item, sha1, pick_code)
+        probe_result = analyzer._probe_mediainfo_with_ffprobe(
+            file_node=file_node,
+            sha1=sha1,
+            silent_log=True,
+            metadata_context=metadata_context or {},
+        ) or (None, None)
+        emby_json, raw_ffprobe = probe_result
+        raw_ffprobe = _safe_json_obj(raw_ffprobe)
+
+        if not emby_json or not raw_ffprobe or not _raw_ffprobe_has_media_payload(raw_ffprobe):
+            return {'ok': False, 'message': '在线 ffprobe 未能提取到完整 format/streams RAW'}
+
+        if not P115CacheManager.save_mediainfo_cache(sha1, emby_json, raw_ffprobe):
+            return {'ok': False, 'message': '在线提取成功，但写入 p115_mediainfo_cache 失败'}
+
+        logger.info(f"  ➜ [共享资源] 已在线提取并写回 raw_ffprobe_json: sha1={sha1[:12]}...")
+        return {'ok': True, 'raw': raw_ffprobe, 'message': '已在线提取 raw_ffprobe_json'}
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 查询/补齐本地 raw_ffprobe_json 失败: sha1={sha1}, err={e}")
-        return None
+        logger.warning(f"  ➜ [共享资源] 在线提取 raw_ffprobe_json 失败: sha1={sha1[:12]}..., err={e}", exc_info=True)
+        return {'ok': False, 'message': f'在线提取 raw_ffprobe_json 失败: {e}'}
+
+def _ensure_local_raw_ffprobe_for_share_item(item: Dict[str, Any], *, allow_online_probe: bool = True) -> Dict[str, Any]:
+    """统一 RAW 校验入口。
+
+    适用于手动创建、手动上传、自动登记、维护任务：
+    1. 本地有完整 RAW 但缺 _etk 字段：只重新计算/回写 _etk；
+    2. 本地没有完整 format/streams RAW：通过 115 直链在线 ffprobe 并写回缓存；
+    3. 最终仍没有完整 RAW 或核心 _etk，则返回 missing，禁止继续登记中心。
+    """
+    item = item or {}
+    sha1 = str(item.get('sha1') or '').strip().upper()
+    if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
+        return {'ok': False, 'status': 'missing_sha1', 'message': '缺少 SHA1'}
+
+    changed = False
+    metadata_context = _share_item_raw_metadata_context(item)
+
+    try:
+        raw = _safe_json_obj(P115CacheManager.get_raw_ffprobe_cache(sha1))
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 读取 raw_ffprobe 缓存失败: sha1={sha1[:12]}..., err={e}")
+        raw = None
+
+    # 有完整媒体 RAW 时，只补 _etk，不重新跑 ffprobe。
+    if raw and _raw_ffprobe_has_media_payload(raw):
+        missing_etk = _raw_ffprobe_missing_etk_fields(raw, metadata_context)
+        if missing_etk:
+            if _patch_raw_ffprobe_etk_from_item(sha1, item):
+                changed = True
+                raw = _safe_json_obj(P115CacheManager.get_raw_ffprobe_cache(sha1)) or raw
+                missing_etk = _raw_ffprobe_missing_etk_fields(raw, metadata_context)
+        if missing_etk:
+            return {
+                'ok': False,
+                'status': 'missing_etk',
+                'message': f"raw_ffprobe_json 缺少 _etk.{','.join(missing_etk)}，且无法从本地媒体库回填",
+                'raw': raw,
+                'changed': changed,
+            }
+        return {'ok': True, 'status': 'ready', 'raw': raw, 'changed': changed}
+
+    # 没有完整 RAW：只在这里在线 ffprobe，避免为了补 _etk 重扫媒体流。
+    if allow_online_probe:
+        probe_result = _probe_and_cache_raw_ffprobe_for_share_item(item, sha1, metadata_context)
+        if probe_result.get('ok'):
+            changed = True
+            raw = _safe_json_obj(P115CacheManager.get_raw_ffprobe_cache(sha1)) or _safe_json_obj(probe_result.get('raw'))
+            if raw and _raw_ffprobe_has_media_payload(raw):
+                missing_etk = _raw_ffprobe_missing_etk_fields(raw, metadata_context)
+                if missing_etk and _patch_raw_ffprobe_etk_from_item(sha1, item):
+                    raw = _safe_json_obj(P115CacheManager.get_raw_ffprobe_cache(sha1)) or raw
+                    missing_etk = _raw_ffprobe_missing_etk_fields(raw, metadata_context)
+                if not missing_etk:
+                    return {'ok': True, 'status': 'probed', 'raw': raw, 'changed': changed}
+                return {
+                    'ok': False,
+                    'status': 'missing_etk',
+                    'message': f"在线提取 RAW 成功，但 _etk.{','.join(missing_etk)} 仍缺失",
+                    'raw': raw,
+                    'changed': changed,
+                }
+        return {
+            'ok': False,
+            'status': 'missing_raw',
+            'message': probe_result.get('message') or '本地 p115_mediainfo_cache 缺少完整 raw_ffprobe_json',
+            'changed': changed,
+        }
+
+    return {
+        'ok': False,
+        'status': 'missing_raw',
+        'message': '本地 p115_mediainfo_cache 缺少完整 raw_ffprobe_json',
+        'changed': changed,
+    }
+
+def _load_local_raw_ffprobe(sha1: str, item: Dict[str, Any] = None, *, allow_online_probe: bool = False):
+    """兼容旧调用：读取并校验本地 RAW；显式允许时才在线提取。"""
+    sha1 = str(sha1 or '').strip().upper()
+    source_item = dict(item or {})
+    source_item.setdefault('sha1', sha1)
+    result = _ensure_local_raw_ffprobe_for_share_item(source_item, allow_online_probe=allow_online_probe)
+    return result.get('raw') if result.get('ok') else None
 
 def _infer_size_from_raw(raw: Dict[str, Any]) -> int:
     if not isinstance(raw, dict):
@@ -769,12 +1059,17 @@ def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any]
     if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
         return {'ok': False, 'status': 'missing_sha1', 'message': '缺少 SHA1'}
 
-    if item.get('raw_ffprobe_uploaded') and not force:
-        return {'ok': True, 'status': 'already_uploaded', 'message': '已标记上传过'}
+    ensure_result = _ensure_local_raw_ffprobe_for_share_item(item, allow_online_probe=True)
+    if not ensure_result.get('ok'):
+        return {
+            'ok': False,
+            'status': ensure_result.get('status') or 'missing_raw',
+            'message': ensure_result.get('message') or '本地 p115_mediainfo_cache 没有完整 raw_ffprobe_json',
+        }
 
-    raw = _load_local_raw_ffprobe(sha1)
-    if not raw:
-        return {'ok': False, 'status': 'missing_raw', 'message': '本地 p115_mediainfo_cache 没有 raw_ffprobe_json'}
+    raw = ensure_result.get('raw')
+    if item.get('raw_ffprobe_uploaded') and not force and not ensure_result.get('changed'):
+        return {'ok': True, 'status': 'already_uploaded', 'message': '已标记上传过'}
 
     raw_size = _infer_size_from_raw(raw)
     item_size = _safe_size_bytes(item.get('size'))
@@ -848,13 +1143,14 @@ def _upload_share_raw_ffprobe_to_center_batch(items: List[Dict[str, Any]], cfg: 
         if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
             missing += 1
             continue
-        if item.get('raw_ffprobe_uploaded') and not force:
-            skipped += 1
-            continue
-        raw = _load_local_raw_ffprobe(sha1)
-        if not raw:
+        ensure_result = _ensure_local_raw_ffprobe_for_share_item(item, allow_online_probe=True)
+        if not ensure_result.get('ok'):
             missing += 1
             continue
+        if item.get('raw_ffprobe_uploaded') and not force and not ensure_result.get('changed'):
+            skipped += 1
+            continue
+        raw = ensure_result.get('raw')
         raw_size = _infer_size_from_raw(raw)
         item_size = _safe_size_bytes(item.get('size'))
         final_size = item_size if item_size > 0 else raw_size
@@ -960,8 +1256,9 @@ def _files_missing_raw_ffprobe(files: List[Dict[str, Any]]) -> List[Dict[str, An
         if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1 or ''):
             missing.append({'sha1': sha1, 'file_name': name, 'reason': '缺少 SHA1，无法匹配 raw_ffprobe_json'})
             continue
-        if not _load_local_raw_ffprobe(sha1):
-            missing.append({'sha1': sha1, 'file_name': name, 'reason': '本地 p115_mediainfo_cache 缺少 raw_ffprobe_json'})
+        ensure_result = _ensure_local_raw_ffprobe_for_share_item(item, allow_online_probe=True)
+        if not ensure_result.get('ok'):
+            missing.append({'sha1': sha1, 'file_name': name, 'reason': ensure_result.get('message') or '本地 p115_mediainfo_cache 缺少完整 raw_ffprobe_json'})
     return missing
 
 def _raw_missing_message(missing: List[Dict[str, Any]], limit: int = 6) -> str:
@@ -3377,7 +3674,8 @@ def api_upload_share_raw_ffprobe(record_id):
     if not record:
         return jsonify({"success": False, "message": "分享记录不存在"}), 404
     cfg, headers = _center_headers()
-    force = bool(_request_json().get('force'))
+    req = _request_json()
+    force = bool(req.get('force', True))
     summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=force)
     shared_credit_db.add_credit_ledger(
         'share_raw_uploaded', 0,

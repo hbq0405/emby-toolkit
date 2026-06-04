@@ -2570,9 +2570,8 @@ class P115CacheManager:
         if en is not None:
             patch['episode_number'] = en
 
-        # 除了 sha1 外没有任何可写字段，不需要触库。
-        if set(patch.keys()) == {'sha1'}:
-            return False
+        # 即使只有 sha1，也允许写回 _etk.sha1。旧缓存可能已有 tmdb_id/type，
+        # 但缺少 sha1；共享 RAW 上传前应把这个稳定身份字段补齐。
 
         try:
             from psycopg2.extras import Json
