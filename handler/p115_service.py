@@ -6409,34 +6409,34 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     # ★ 优先级 0：共享媒体信息缓存身份命中
     # raw_ffprobe_json 顶层 _etk 来自 p115_mediainfo_cache，跨账号仍可复用。
     # =================================================================
-    probe_identity = _extract_raw_ffprobe_identity(raw_ffprobe_json)
-    if not probe_identity and sha1:
-        probe_identity = _get_raw_ffprobe_identity_by_sha1(sha1)
+    # probe_identity = _extract_raw_ffprobe_identity(raw_ffprobe_json)
+    # if not probe_identity and sha1:
+    #     probe_identity = _get_raw_ffprobe_identity_by_sha1(sha1)
 
-    if probe_identity:
-        tmdb_id = probe_identity.get("tmdb_id")
-        probe_type = probe_identity.get("media_type")
+    # if probe_identity:
+    #     tmdb_id = probe_identity.get("tmdb_id")
+    #     probe_type = probe_identity.get("media_type")
 
-        # forced_media_type 仍然拥有最终约束权，但不允许与缓存类型冲突时静默误判。
-        if forced_media_type and forced_media_type != probe_type:
-            logger.debug(
-                f"  ➜ [raw_ffprobe识别] 命中 TMDb:{tmdb_id} 类型:{probe_type}，"
-                f"但当前强制类型为 {forced_media_type}，跳过缓存身份。"
-            )
-        else:
-            media_type = probe_type
-            official_title = _fetch_title_by_id(tmdb_id, media_type)
-            se_text = ''
-            if probe_identity.get('season_number') not in (None, ''):
-                se_text += f", S{int(probe_identity.get('season_number')):02d}"
-            if probe_identity.get('episode_number') not in (None, ''):
-                se_text += f"E{int(probe_identity.get('episode_number')):02d}"
-            logger.info(
-                f"  ➜ [raw_ffprobe识别] 命中共享媒体信息缓存: "
-                f"TMDb:{tmdb_id}, type:{media_type}{se_text}"
-                f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
-            )
-            return tmdb_id, media_type, official_title or filename
+    #     # forced_media_type 仍然拥有最终约束权，但不允许与缓存类型冲突时静默误判。
+    #     if forced_media_type and forced_media_type != probe_type:
+    #         logger.debug(
+    #             f"  ➜ [raw_ffprobe识别] 命中 TMDb:{tmdb_id} 类型:{probe_type}，"
+    #             f"但当前强制类型为 {forced_media_type}，跳过缓存身份。"
+    #         )
+    #     else:
+    #         media_type = probe_type
+    #         official_title = _fetch_title_by_id(tmdb_id, media_type)
+    #         se_text = ''
+    #         if probe_identity.get('season_number') not in (None, ''):
+    #             se_text += f", S{int(probe_identity.get('season_number')):02d}"
+    #         if probe_identity.get('episode_number') not in (None, ''):
+    #             se_text += f"E{int(probe_identity.get('episode_number')):02d}"
+    #         logger.info(
+    #             f"  ➜ [raw_ffprobe识别] 命中共享媒体信息缓存: "
+    #             f"TMDb:{tmdb_id}, type:{media_type}{se_text}"
+    #             f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
+    #         )
+    #         return tmdb_id, media_type, official_title or filename
 
     if normalized_hints.get('tmdb_id') and normalized_hints.get('confidence') == 'high':
         hinted_type = normalized_hints.get('media_type') or media_type
