@@ -186,10 +186,20 @@ const rawTitle = computed(() => {
   return props.media?.title || props.media?.name || props.media?.series_title || props.media?.parent_title || '';
 });
 
+const stripSeasonSuffix = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return '';
+
+  return text
+    .replace(/\s*(?:第\s*\d+\s*季|S\d{1,3}|Season\s*\d{1,3})\s*$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+};
+
 const mediaTitle = computed(() => {
   if (!props.media) return '';
 
-  let title = rawTitle.value || '未知影视';
+  let title = stripSeasonSuffix(rawTitle.value) || '未知影视';
   const sNum = props.seasonNumber || props.media.season_number;
 
   if (sNum && !title.includes('季')) {
@@ -350,7 +360,7 @@ const fetchResources = async () => {
 
 watch(() => props.show, (newVal) => {
   if (newVal) {
-    searchTitle.value = rawTitle.value || mediaTitle.value;
+    searchTitle.value = stripSeasonSuffix(rawTitle.value) || rawTitle.value || mediaTitle.value;
     sourceFilter.value = 'all';
     fetchResources();
   }
