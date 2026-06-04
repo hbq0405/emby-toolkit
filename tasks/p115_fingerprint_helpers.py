@@ -160,7 +160,7 @@ def p115_fp_extract_info_data(info_res) -> Dict[str, Any]:
         'name': data.get('fn') or data.get('n') or data.get('file_name') or data.get('name'),
         'sha1': data.get('sha1') or data.get('sha') or data.get('file_sha1'),
         'pick_code': data.get('pc') or data.get('pick_code') or data.get('pickcode'),
-        'size': data.get('fs') or data.get('size') or data.get('file_size') or 0,
+        'size': _parse_size_to_bytes(data.get('size_byte') or data.get('fs') or data.get('size') or data.get('file_size') or 0),
     }
 
 
@@ -202,14 +202,37 @@ def _guess_item_type(row: Dict[str, Any]) -> str:
     return 'Movie'
 
 
-def _get_asset_size(asset: Dict[str, Any]):
-    return (
-        asset.get('size')
+def _parse_size_to_bytes(size_val) -> int:
+    """将各种格式的大小转换为纯字节数 (BIGINT)"""
+    try:
+        if size_val is None: return 0
+        if isinstance(size_val, (int, float)): return int(size_val)
+        if isinstance(size_val, str):
+            s = size_val.strip()
+            if not s: return 0
+            if s.isdigit(): return int(s)
+            s_upper = s.upper().replace(',', '')
+            mult = 1
+            if 'TB' in s_upper: mult = 1024**4
+            elif 'GB' in s_upper: mult = 1024**3
+            elif 'MB' in s_upper: mult = 1024**2
+            elif 'KB' in s_upper: mult = 1024
+            match = re.search(r'([\d\.]+)', s_upper)
+            if match:
+                return int(float(match.group(1)) * mult)
+    except Exception:
+        pass
+    return 0
+
+def _get_asset_size(asset: Dict[str, Any]) -> int:
+    val = (
+        asset.get('size_bytes')
+        or asset.get('size')
         or asset.get('Size')
-        or asset.get('size_bytes')
         or asset.get('file_size')
         or 0
     )
+    return _parse_size_to_bytes(val)
 
 
 def repair_p115_fingerprints_for_rows(
