@@ -179,7 +179,13 @@ def _fix_mp_tv_parent_id(client, file_info):
         # 直接通过 OpenAPI 获取真实的文件详情
         info_res = client.fs_get_info(file_id)
         if info_res and info_res.get('state') and info_res.get('data'):
-            real_parent_id = info_res['data'].get('parent_id') or info_res['data'].get('cid')
+            data = info_res['data']
+            
+            # ★ 兼容 OpenAPI 的 paths 字段提取父目录 ID
+            real_parent_id = data.get('parent_id') or data.get('pid') or data.get('cid')
+            if not real_parent_id and 'paths' in data and isinstance(data['paths'], list) and len(data['paths']) > 0:
+                last_path_node = data['paths'][-1]
+                real_parent_id = last_path_node.get('file_id') or last_path_node.get('cid')
             
             if real_parent_id and str(real_parent_id) != str(file_info.get('parent_id')):
                 old_parent_id = file_info.get('parent_id')
