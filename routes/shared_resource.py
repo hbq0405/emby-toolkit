@@ -21,15 +21,6 @@ from database import shared_credit_db, shared_share_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service, P115CacheManager
 import tasks.helpers as helpers
-try:
-    from tasks.p115_fingerprint_helpers import repair_p115_fingerprints_for_rows, p115_fp_is_missing
-except Exception:  # 兼容旧版本/未带辅助模块时，分享主流程仍可运行
-    repair_p115_fingerprints_for_rows = None
-    def p115_fp_is_missing(value):
-        if value is None:
-            return True
-        text = str(value).strip()
-        return text == '' or text.lower() in {'none', 'null', '[]', '{}'}
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
 logger = logging.getLogger(__name__)
@@ -1281,216 +1272,6 @@ def _raw_missing_message(missing: List[Dict[str, Any]], limit: int = 6) -> str:
         suffix = f" 等 {len(missing)} 个文件"
     return "缺少 raw_ffprobe_json，禁止分享/登记中心：" + "；".join(shown) + suffix
 
-def _get_nested_config_value(obj: Any, keys: List[str]):
-    """从 dict / 对象配置里按多个候选 key 读取值。"""
-    if obj is None:
-        return None
-    for key in keys or []:
-        try:
-            if isinstance(obj, dict) and obj.get(key) not in (None, ''):
-                return obj.get(key)
-            if hasattr(obj, key):
-                val = getattr(obj, key)
-                if val not in (None, ''):
-                    return val
-        except Exception:
-            continue
-    return None
-
-
-def _guess_p115_local_root_for_fingerprint(processor=None) -> str:
-    """尽量拿到媒体库本地根目录，辅助 STRM/挂载模式从绝对路径反推缓存 local_path。"""
-    keys = [
-        'local_root', 'library_root', 'media_root', 'strm_root', 'mount_root',
-        'p115_local_root', 'p115_mount_root', 'p115_strm_root', 'emby_library_root',
-        'download_path', 'media_path', 'root_path', 'path',
-    ]
-
-    # 1) 优先从调用方 processor / config / settings 读，避免使用全局配置导致目录漂移。
-    for obj in [
-        processor,
-        getattr(processor, 'config', None) if processor is not None else None,
-        getattr(processor, 'settings', None) if processor is not None else None,
-    ]:
-        val = _get_nested_config_value(obj, keys)
-        if val:
-            return str(val).strip()
-
-    # 2) 再尝试全局配置，不依赖某个固定函数名，避免旧版 config_manager 直接报错。
-    for getter_name in ('get_config', 'load_config', 'get_settings'):
-        getter = getattr(config_manager, getter_name, None)
-        if not callable(getter):
-            continue
-        try:
-            cfg = getter() or {}
-        except Exception:
-            continue
-        val = _get_nested_config_value(cfg, keys)
-        if val:
-            return str(val).strip()
-        for section_key in ('p115', 'media', 'library', 'emby', 'paths'):
-            section = cfg.get(section_key) if isinstance(cfg, dict) else None
-            val = _get_nested_config_value(section, keys)
-            if val:
-                return str(val).strip()
-
-    # 3) 最后尝试 settings_db 的常见 key；没有就返回空，helper 会退化为缓存/115 API 修复。
-    for key in keys:
-        try:
-            getter = getattr(settings_db, 'get_setting', None)
-            if callable(getter):
-                val = getter(key)
-                if val not in (None, ''):
-                    return str(val).strip()
-        except Exception:
-            continue
-    return ''
-
-
-def _row_needs_p115_fingerprint_repair(row: Dict[str, Any]) -> bool:
-    """判断 media_metadata 行是否缺 PC/SHA1。"""
-    if not row:
-        return False
-    assets = _safe_json_value(row.get('asset_details_json'), fallback=[])
-    if isinstance(assets, dict):
-        assets = [assets]
-    if not isinstance(assets, list):
-        assets = []
-    asset_count = len([a for a in assets if isinstance(a, dict)])
-
-    sha1_values = _norm_sha1_list(_json_array_values(row.get('file_sha1_json')))
-    pc_values = _norm_pc_list(_json_array_values(row.get('file_pickcode_json')))
-
-    if asset_count > 0:
-        if len(sha1_values) < asset_count or len(pc_values) < asset_count:
-            return True
-    return not sha1_values or not pc_values
-
-
-def _load_episode_rows_for_fingerprint_payload(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """按单集分享 payload 定位 Episode 行，兼容 tmdb_id 传父剧 ID 或集 ID 两种情况。"""
-    data = dict(data or {})
-    season = data.get('season_number')
-    episode = data.get('episode_number')
-    parent_series_id = str(data.get('parent_series_tmdb_id') or data.get('series_tmdb_id') or '').strip()
-    tmdb_id = str(data.get('tmdb_id') or data.get('share_tmdb_id') or '').strip()
-    episode_tmdb_id = str(data.get('episode_tmdb_id') or '').strip()
-
-    rows: List[Dict[str, Any]] = []
-    seen = set()
-
-    def _append(row):
-        if not row:
-            return
-        d = dict(row)
-        key = (str(d.get('tmdb_id') or ''), str(d.get('parent_series_tmdb_id') or ''), str(d.get('season_number') or ''), str(d.get('episode_number') or ''))
-        if key in seen:
-            return
-        seen.add(key)
-        rows.append(d)
-
-    # 精确集 ID 先查。
-    for eid in (episode_tmdb_id, tmdb_id):
-        if eid:
-            try:
-                row = _get_media_row(eid, 'Episode')
-                if row:
-                    _append(row)
-            except Exception:
-                pass
-
-    # 父剧 + 季集号是最稳定的单集定位方式。
-    if (parent_series_id or tmdb_id) and season not in (None, '') and episode not in (None, ''):
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT *
-                        FROM media_metadata
-                        WHERE item_type='Episode'
-                          AND (parent_series_tmdb_id=%s OR parent_series_tmdb_id=%s OR tmdb_id=%s OR tmdb_id=%s)
-                          AND season_number=%s
-                          AND episode_number=%s
-                        ORDER BY in_library DESC NULLS LAST, updated_at DESC NULLS LAST
-                        LIMIT 5
-                    """, (
-                        parent_series_id,
-                        tmdb_id,
-                        parent_series_id,
-                        tmdb_id,
-                        int(float(season)),
-                        int(float(episode)),
-                    ))
-                    for row in cur.fetchall() or []:
-                        _append(dict(row))
-        except Exception as e:
-            logger.debug(
-                "  ➜ [共享资源] 查询单集行用于指纹补齐失败: tmdb=%s parent=%s S%sE%s -> %s",
-                tmdb_id, parent_series_id, season, episode, e,
-            )
-
-    return rows
-
-
-def _ensure_single_episode_share_fingerprints(data: Dict[str, Any], processor=None, *, log_prefix: str = '共享资源单集分享前指纹补齐') -> Dict[str, Any]:
-    """单集自动/手动分享前统一补齐 media_metadata PC/SHA1 与 p115_filesystem_cache。"""
-    share_type = str((data or {}).get('share_type') or '').strip().lower()
-    item_type = str((data or {}).get('item_type') or (data or {}).get('share_item_type') or '').strip()
-    if item_type != 'Episode' and share_type != 'episode_file':
-        return {'ok': True, 'skipped': True, 'reason': 'not_episode_share'}
-
-    if repair_p115_fingerprints_for_rows is None:
-        return {'ok': False, 'skipped': True, 'reason': 'helper_unavailable', 'message': 'p115_fingerprint_helpers 不可用'}
-
-    rows = _load_episode_rows_for_fingerprint_payload(data)
-    if not rows:
-        return {'ok': False, 'skipped': True, 'reason': 'episode_row_not_found', 'message': '未找到对应 Episode 媒体库记录'}
-
-    # 单集分享只涉及极少数行：即使 PC/SHA1 已经存在，也跑一次轻量体检，
-    # 让 helper 顺手修复 p115_filesystem_cache 的 fid/parent_id/name/local_path/size。
-    # 否则会出现媒体库有指纹，但分享根 FID 反查不到的边缘问题。
-    rows_need_fp = [r for r in rows if _row_needs_p115_fingerprint_repair(r)]
-    rows_to_repair = rows
-
-    try:
-        stats = repair_p115_fingerprints_for_rows(
-            processor,
-            rows_to_repair,
-            local_root=_guess_p115_local_root_for_fingerprint(processor),
-            update_db=True,
-            allow_api_fetch=True,
-            log_prefix=log_prefix,
-            progress_interval=0,
-        ) or {}
-        ok = (
-            int(stats.get('scanned_assets') or 0) > 0
-            and (
-                int(stats.get('failed_assets') or 0) == 0
-                or int(stats.get('fixed_assets') or 0) > 0
-                or int(stats.get('cache_updates') or 0) > 0
-            )
-        )
-        if ok:
-            logger.info(
-                "  ➜ [%s] 完成：rows=%s fixed=%s cache_updates=%s failed=%s",
-                log_prefix,
-                len(rows_to_repair),
-                stats.get('fixed_assets', 0),
-                stats.get('cache_updates', 0),
-                stats.get('failed_assets', 0),
-            )
-        else:
-            logger.warning(
-                "  ➜ [%s] 未能补齐：rows=%s failed=%s",
-                log_prefix,
-                len(rows_to_repair),
-                stats.get('failed_assets', 0),
-            )
-        return {'ok': ok, 'skipped': False, 'rows': len(rows_to_repair), 'needs_fingerprint_rows': len(rows_need_fp), 'stats': stats}
-    except Exception as e:
-        logger.warning("  ➜ [%s] 执行异常: %s", log_prefix, e, exc_info=True)
-        return {'ok': False, 'skipped': False, 'message': str(e), 'rows': len(rows_to_repair)}
-
 def _guess_season_episode_numbers(text: str):
     """从文件名/标题里尽量解析 SxxEyy，用于老数据和外来分享兜底。"""
     text = str(text or '')
@@ -2713,47 +2494,7 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
             'completion': policy.get('completion'),
         }
 
-    # 单集候选搜索阶段也要触发一次轻量体检。
-    # 之前只在 manual-create / auto-create 前补齐，但前端列表页已经因为 root_fid 为空
-    # 把按钮置为“不可用”，用户根本进不到创建阶段。这里在 PC/SHA1 已有但
-    # p115_filesystem_cache 缺失时，实时用 PC 计算 FID 并查 115 详情回补缓存，然后重试定位。
-    fingerprint_repair = None
-    if item_type == 'Episode' and not file_rows and repair_p115_fingerprints_for_rows is not None:
-        try:
-            repair_payload = {
-                **dict(media_row or {}),
-                'item_type': 'Episode',
-                'share_type': 'episode_file',
-                'parent_series_tmdb_id': media_row.get('parent_series_tmdb_id') or media_row.get('series_tmdb_id'),
-                'season_number': media_row.get('season_number'),
-                'episode_number': media_row.get('episode_number'),
-            }
-            fingerprint_repair = _ensure_single_episode_share_fingerprints(
-                repair_payload,
-                processor=None,
-                log_prefix='共享资源搜索单集实时体检补缓存',
-            ) or {}
-            refreshed_rows = _load_episode_rows_for_fingerprint_payload(repair_payload)
-            if refreshed_rows:
-                media_row = {**dict(media_row or {}), **dict(refreshed_rows[0] or {})}
-            ids = _collect_media_identifiers(media_row)
-            file_rows = _get_p115_file_rows(ids['pickcodes'], ids['sha1s'])
-            if file_rows:
-                messages.append('已实时体检并补齐 p115_filesystem_cache')
-        except Exception as e:
-            logger.debug(
-                "  ➜ [共享资源] 搜索单集实时体检补缓存失败: tmdb=%s S%sE%s -> %s",
-                media_row.get('tmdb_id'), media_row.get('season_number'), media_row.get('episode_number'), e,
-            )
-
     if not file_rows:
-        detail = ''
-        if fingerprint_repair is not None:
-            stats = fingerprint_repair.get('stats') if isinstance(fingerprint_repair, dict) else None
-            if isinstance(stats, dict):
-                detail = f"；已触发实时体检：扫描 {stats.get('scanned_assets', 0)}，缓存回写 {stats.get('cache_updates', 0)}，失败 {stats.get('failed_assets', 0)}"
-            elif isinstance(fingerprint_repair, dict) and fingerprint_repair.get('message'):
-                detail = f"；实时体检结果：{fingerprint_repair.get('message')}"
         return {
             'resolvable': False,
             'root_fid': '',
@@ -2764,7 +2505,7 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
             'matched_sha1s': len(ids['sha1s']),
             'share_type': share_type,
             'share_item_type': share_item_type,
-            'message': 'media_metadata 中有记录，但没有通过 PC/SHA1 在 p115_filesystem_cache 反查到文件' + detail,
+            'message': 'media_metadata 中有记录，但没有通过 PC/SHA1 在 p115_filesystem_cache 反查到文件',
             'completion': policy.get('completion'),
         }
 
@@ -3185,12 +2926,6 @@ def _collect_manual_share_files_for_payload(data: Dict[str, Any], client=None) -
         return {**normalized, 'files': [], 'root_name': '', 'root_is_dir': True, 'info_resp': {}}
     data = normalized.get('data') or {}
 
-    fingerprint_repair = _ensure_single_episode_share_fingerprints(
-        data,
-        processor=None,
-        log_prefix='共享资源手动单集分享前指纹补齐',
-    )
-
     root_fid = str(data.get('root_fid') or '').strip()
     if not root_fid:
         return {'ok': False, 'message': '缺少要分享的 115 文件/目录 FID/CID', 'data': data, 'files': [], 'root_name': '', 'root_is_dir': True, 'info_resp': {}}
@@ -3255,7 +2990,6 @@ def _collect_manual_share_files_for_payload(data: Dict[str, Any], client=None) -
         'root_name': root_name,
         'root_is_dir': root_is_dir,
         'info_resp': info_resp,
-        'fingerprint_repair': fingerprint_repair,
     }
 
 @shared_resource_bp.route('/shares/manual-validate', methods=['POST'])
@@ -3276,7 +3010,6 @@ def api_manual_validate_share():
         'root_name': prepared.get('root_name') or share_data.get('root_name'),
         'root_is_dir': prepared.get('root_is_dir'),
         'message': prepared.get('message') or '校验失败',
-        'fingerprint_repair': prepared.get('fingerprint_repair'),
     }
 
     if not prepared.get('ok'):
@@ -3344,12 +3077,6 @@ def api_manual_create_share():
             return jsonify({"success": False, "message": policy.get('message') or "未完结季禁止按季包分享，请选择单集分享"}), 400
     if item_type == 'Episode':
         data['share_type'] = 'episode_file'
-
-    fingerprint_repair = _ensure_single_episode_share_fingerprints(
-        data,
-        processor=None,
-        log_prefix='共享资源手动单集分享前指纹补齐',
-    )
 
     client = P115Service.get_client()
     if not client:
@@ -3466,7 +3193,7 @@ def api_manual_create_share():
     record = shared_share_db.update_share_record(record['id'], item_count=count)
     shared_credit_db.add_credit_ledger('share_created', 0, '手动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'share_code': share_code, 'item_count': count})
 
-    return jsonify({"success": True, "message": "分享已创建，等待 115 审核通过后再登记中心", "data": record, "items": files, "fingerprint_repair": fingerprint_repair})
+    return jsonify({"success": True, "message": "分享已创建，等待 115 审核通过后再登记中心", "data": record, "items": files})
 
 @shared_resource_bp.route('/shares/<int:record_id>/check', methods=['POST'])
 @admin_required

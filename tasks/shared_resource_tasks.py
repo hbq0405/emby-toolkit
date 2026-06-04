@@ -1462,7 +1462,7 @@ def _collect_auto_share_files_for_candidate(sr, p115, gap: Dict[str, Any], candi
             return [], consistency.get('message') or '包内媒体参数不一致'
     return files, ''
 
-def _create_auto_share_for_single_gap(client: SharedCenterClient, gap: Dict[str, Any], *, trigger: str = 'center_gap', processor=None) -> Dict[str, Any]:
+def _create_auto_share_for_single_gap(client: SharedCenterClient, gap: Dict[str, Any], *, trigger: str = 'center_gap') -> Dict[str, Any]:
     """对单个中心需求创建本地 115 分享，后续由高频状态同步登记中心。"""
     result = {'created': 0, 'skipped': 0, 'failed': 0, 'message': ''}
     gap = dict(gap or {})
@@ -1494,32 +1494,6 @@ def _create_auto_share_for_single_gap(client: SharedCenterClient, gap: Dict[str,
         result['skipped'] += 1
         result['message'] = '本地未找到已入库媒体'
         return result
-
-    # 单集自动分享依赖 media_metadata 的 PC/SHA1 反查 p115_filesystem_cache。
-    # 这里先补齐指纹，再展开候选，避免新增单集因为指纹异步缺口而错过自动分享。
-    fingerprint_repair = None
-    if str(gap.get('item_type') or row.get('item_type') or '').strip() == 'Episode' and hasattr(sr, '_ensure_single_episode_share_fingerprints'):
-        repair_payload = {
-            **dict(row or {}),
-            **gap,
-            'item_type': 'Episode',
-            'share_type': 'episode_file',
-            'parent_series_tmdb_id': row.get('parent_series_tmdb_id') or gap.get('parent_series_tmdb_id') or gap.get('tmdb_id'),
-            'season_number': row.get('season_number') if row.get('season_number') not in (None, '') else gap.get('season_number'),
-            'episode_number': row.get('episode_number') if row.get('episode_number') not in (None, '') else gap.get('episode_number'),
-        }
-        try:
-            fingerprint_repair = sr._ensure_single_episode_share_fingerprints(
-                repair_payload,
-                processor=processor,
-                log_prefix='共享资源单集自动分享前指纹补齐',
-            ) or {}
-            if not fingerprint_repair.get('skipped'):
-                # 补齐后重新读取行，确保 _expand_share_candidates 使用最新 PC/SHA1。
-                row = _find_local_media_for_gap(gap) or row
-        except Exception as e:
-            fingerprint_repair = {'ok': False, 'message': str(e)}
-            logger.warning(f"  ➜ [共享资源] 单集自动分享前补齐指纹失败，继续按现有数据尝试: gap={gap}, err={e}", exc_info=True)
 
     candidates = sr._expand_share_candidates(row) if hasattr(sr, '_expand_share_candidates') else [sr._build_media_candidate(row)]
     for candidate in candidates or []:
@@ -1599,7 +1573,6 @@ def _create_auto_share_for_single_gap(client: SharedCenterClient, gap: Dict[str,
                 'share_response': share_resp,
                 'candidate': candidate,
                 'standard_identity': standard_identity,
-                'fingerprint_repair': fingerprint_repair,
             }
             if is_backup_share:
                 raw_json.update({
@@ -1740,7 +1713,7 @@ def trigger_shared_auto_share_for_library_item(
                 'title': item.get('title'),
                 'release_year': item.get('release_year'),
             }
-        return _create_auto_share_for_single_gap(client, gap, trigger='library_webhook', processor=processor)
+        return _create_auto_share_for_single_gap(client, gap, trigger='library_webhook')
 
     logger.debug(
         "  ➜ [共享资源] 入库实时正常分享跳过：%s S%sE%s reason=%s",
@@ -1781,7 +1754,7 @@ def trigger_shared_auto_share_for_library_item(
             'query': backup_probe.get('query'),
         },
     }
-    return _create_auto_share_for_single_gap(client, gap, trigger='library_backup', processor=processor)
+    return _create_auto_share_for_single_gap(client, gap, trigger='library_backup')
 
 def _active_episode_share_statuses_for_rollup() -> List[str]:
     """完结汇总只处理仍然占用分享名额/中心源的活动单集分享。"""

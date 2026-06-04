@@ -1179,7 +1179,7 @@ class WatchlistProcessor:
                 for emby_item_id in precise_episode_ids:
                     checked_total += 1
                     result = trigger_shared_auto_share_for_library_item(
-                        self,
+                        None,
                         item_type='Episode',
                         emby_item_id=emby_item_id,
                         parent_series_tmdb_id=parent_series_tmdb_id,
