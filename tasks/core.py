@@ -53,7 +53,7 @@ TASK_HELP_TEXTS = {
     'full-sync-strm': '全量重建 STRM 与字幕文件，保持网盘和本地一致，适合媒体库重建或迁移时使用。',
     'monitor-115-life-events': '增量处理 115 网盘文件变化，功能较弱，不熟悉不建议使用。',
     'backup-mediainfo': '备份本地媒体信息缓存，避免重建库或迁移后丢失媒体参数。',
-    'repair-p115-fingerprints': '扫描在库电影和分集，补齐共享资源必需的 115 PC 与 SHA1；优先从本地 115 缓存恢复，必要时查询 115。',
+    'repair-p115-fingerprints': '扫描在库电影和分集，补齐共享资源必需的 115 PC 与 SHA1 以及缓存；优先从本地缓存恢复，必要时查询 115。',
     'restore_mediainfo': '从备份中还原媒体信息缓存，适合重装Emby 容器或迁移时使用，或修复本地媒体信息缓存丢失、迁移或缓存损坏后恢复数据。',
     'hdhive-auto-checkin': '执行影巢自动签到，获取签到奖励或保持账号活跃。',
     'restore-nfo-and-images': '从备份或缓存中还原 NFO、海报、背景图等媒体附属文件。',
