@@ -297,7 +297,7 @@ def get_task_registry(context: str = 'all'):
         'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
         'monitor-115-life-events': (task_monitor_115_life_events, "增量生成STRM", 'media', True),
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
-        'repair-p115-fingerprints': (task_repair_p115_fingerprints, "补齐共享指纹", 'media', True),
+        'repair-p115-fingerprints': (task_repair_p115_fingerprints, "补齐缓存指纹", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'hdhive-auto-checkin': (task_hdhive_auto_checkin, "影巢自动签到", 'media', True),
         'restore-nfo-and-images': (task_restore_nfo_and_images, "还原NFO和封面", 'media', True),

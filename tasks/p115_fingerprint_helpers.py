@@ -302,6 +302,10 @@ def repair_p115_fingerprints_for_rows(
             if ext and ext not in video_exts:
                 continue
 
+            # ★ 优化 1：释放 GIL 锁，防止全库体检时 CPU 满载导致前端无响应
+            import time
+            time.sleep(0.002)
+
             stats['scanned_assets'] += 1
             current_sha1 = sha1s[asset_idx] if asset_idx < len(sha1s) else None
             current_pc = pcs[asset_idx] if asset_idx < len(pcs) else None
@@ -312,15 +316,18 @@ def repair_p115_fingerprints_for_rows(
             if need_sha1 or need_pc:
                 stats['missing_assets'] += 1
 
-            # ★ 核心修改 1：移除提前 continue，强制所有文件进入体检流程
-
             strm_target = p115_fp_read_strm_target(clean_path)
             local_candidates = p115_fp_build_local_path_candidates(clean_path, strm_target, local_root)
             
+            # ★ 优化 2：防止 .strm 污染 115 真实文件名
+            base_name = os.path.basename(clean_path) if clean_path else None
+            if base_name and base_name.lower().endswith('.strm'):
+                base_name = None # 置空，强制依赖本地缓存或 115 API 获取真实文件名
+
             values = {
                 'fid': None,
                 'parent_id': None,
-                'name': os.path.basename(clean_path) if clean_path else None,
+                'name': base_name,
                 'sha1': None if need_sha1 else str(current_sha1).strip().upper(),
                 'pc': None if need_pc else str(current_pc).strip(),
                 'local_path': min(local_candidates, key=len) if local_candidates else None,
@@ -389,8 +396,13 @@ def repair_p115_fingerprints_for_rows(
                                 values['sha1'] = str(info_data['sha1']).strip().upper()
                             if info_data.get('pick_code') and not values.get('pc'):
                                 values['pc'] = str(info_data['pick_code']).strip()
+                            
+                            if info_data.get('name'):
+                                values['name'] = info_data['name']
+                            else:
+                                values['name'] = values.get('name')
+                                
                             values['parent_id'] = values.get('parent_id') or info_data.get('parent_id')
-                            values['name'] = values.get('name') or info_data.get('name')
                             values['size'] = values.get('size') or info_data.get('size') or 0
                             stats['api_fixed_assets'] += 1
                     except Exception as e:
