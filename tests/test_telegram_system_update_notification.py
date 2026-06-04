@@ -87,7 +87,131 @@ telegram = importlib.import_module("handler.telegram")
 system_update = importlib.import_module("tasks.system_update")
 
 
+def _load_helper_namespace():
+    helper_env = {
+        "ETK_UPDATE_STATUS_PATH": "/config/system_update_result.json",
+        "ETK_TARGET_CONTAINER": "emby-toolkit",
+        "ETK_TARGET_IMAGE": "hbq0405/emby-toolkit:latest",
+    }
+    namespace = {}
+    with mock.patch.dict("os.environ", helper_env, clear=False):
+        exec(system_update.DOCKER_HELPER_SCRIPT, namespace)
+    return namespace
+
+
 class TelegramSystemUpdateNotificationTests(unittest.TestCase):
+    def test_collect_create_kwargs_skips_port_bindings_for_host_network(self):
+        helper = _load_helper_namespace()
+        fake_client = mock.Mock()
+        fake_client.api.create_host_config.return_value = {"kind": "host-config"}
+
+        fake_container = mock.Mock()
+        fake_container.name = "emby-toolkit"
+        fake_container.attrs = {
+            "Config": {
+                "ExposedPorts": {"8096/tcp": {}},
+                "Env": ["A=B"],
+            },
+            "HostConfig": {
+                "NetworkMode": "host",
+                "PortBindings": {
+                    "8096/tcp": [{"HostIp": "", "HostPort": "8096"}]
+                },
+            },
+            "NetworkSettings": {
+                "Networks": {}
+            },
+        }
+
+        kwargs = helper["collect_create_kwargs"](fake_client, fake_container)
+
+        self.assertIsNone(kwargs["ports"])
+        host_config_kwargs = fake_client.api.create_host_config.call_args.kwargs
+        self.assertEqual(host_config_kwargs["network_mode"], "host")
+        self.assertIsNone(host_config_kwargs["port_bindings"])
+
+    def test_collect_create_kwargs_skips_runtime_ip_for_default_bridge(self):
+        helper = _load_helper_namespace()
+        fake_client = mock.Mock()
+        fake_client.api.create_host_config.return_value = {"kind": "host-config"}
+
+        endpoint_calls = []
+
+        def fake_endpoint_config(**kwargs):
+            endpoint_calls.append(kwargs)
+            return {"endpoint": kwargs}
+
+        fake_client.api.create_endpoint_config.side_effect = fake_endpoint_config
+        fake_client.api.create_networking_config.side_effect = lambda endpoints: {"endpoints": endpoints}
+
+        fake_container = mock.Mock()
+        fake_container.name = "emby-toolkit"
+        fake_container.attrs = {
+            "Config": {
+                "Env": ["A=B"],
+            },
+            "HostConfig": {
+                "NetworkMode": "bridge",
+            },
+            "NetworkSettings": {
+                "Networks": {
+                    "bridge": {
+                        "Aliases": ["emby-toolkit"],
+                        "IPAddress": "172.17.0.2",
+                        "GlobalIPv6Address": "",
+                        "IPAMConfig": None,
+                        "NetworkID": "bridge-id",
+                    }
+                }
+            },
+        }
+
+        kwargs = helper["collect_create_kwargs"](fake_client, fake_container)
+
+        self.assertEqual(endpoint_calls, [{"aliases": ["emby-toolkit"]}])
+        self.assertEqual(kwargs["networking_config"], {"endpoints": {"bridge": {"endpoint": {"aliases": ["emby-toolkit"]}}}})
+
+    def test_collect_create_kwargs_keeps_explicit_static_ip_for_user_defined_network(self):
+        helper = _load_helper_namespace()
+        fake_client = mock.Mock()
+        fake_client.api.create_host_config.return_value = {"kind": "host-config"}
+
+        endpoint_calls = []
+
+        def fake_endpoint_config(**kwargs):
+            endpoint_calls.append(kwargs)
+            return {"endpoint": kwargs}
+
+        fake_client.api.create_endpoint_config.side_effect = fake_endpoint_config
+        fake_client.api.create_networking_config.side_effect = lambda endpoints: {"endpoints": endpoints}
+
+        fake_container = mock.Mock()
+        fake_container.name = "emby-toolkit"
+        fake_container.attrs = {
+            "Config": {
+                "Env": ["A=B"],
+            },
+            "HostConfig": {
+                "NetworkMode": "custom-net",
+            },
+            "NetworkSettings": {
+                "Networks": {
+                    "custom-net": {
+                        "Aliases": ["emby-toolkit"],
+                        "IPAddress": "172.20.0.5",
+                        "GlobalIPv6Address": "",
+                        "IPAMConfig": {"IPv4Address": "172.20.0.5"},
+                        "NetworkID": "custom-net-id",
+                    }
+                }
+            },
+        }
+
+        kwargs = helper["collect_create_kwargs"](fake_client, fake_container)
+
+        self.assertEqual(endpoint_calls, [{"aliases": ["emby-toolkit"], "ipv4_address": "172.20.0.5"}])
+        self.assertEqual(kwargs["networking_config"], {"endpoints": {"custom-net": {"endpoint": {"aliases": ["emby-toolkit"], "ipv4_address": "172.20.0.5"}}}})
+
     def test_task_check_and_update_container_falls_back_when_logger_has_no_trace(self):
         fake_processor = types.SimpleNamespace(config={})
         fake_logger = mock.Mock(spec=["debug", "info", "error", "warning"])
