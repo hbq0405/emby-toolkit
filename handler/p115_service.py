@@ -1367,7 +1367,9 @@ class P115Service:
                 return self._call_api('fs_search', payload, normalizer=_p115_normalize_list_response)
             
             def fs_get_info(self, file_id):
-                return self._call_api('fs_get_info', file_id, normalizer=_p115_normalize_info_response)
+                # 强制使用 OpenAPI 获取详情，因为 Cookie 接口存在不返回父目录 ID 的缺陷
+                self._check_openapi()
+                return self._call_api('fs_get_info', file_id, normalizer=_p115_normalize_info_response, force_openapi=True)
 
             def _is_exists_error(self, resp):
                 text = json.dumps(resp, ensure_ascii=False).lower() if resp is not None else ""
