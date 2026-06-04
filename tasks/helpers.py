@@ -1085,6 +1085,29 @@ def _season_consistency_effect_key(asset: Dict[str, Any]) -> str:
         return 'SDR'
     return 'Unknown'
 
+# tasks/helpers.py
+
+def _get_local_strm_root_for_consistency(processor=None) -> str:
+    local_root = ''
+
+    if processor is not None:
+        try:
+            local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, '') or ''
+        except Exception:
+            local_root = ''
+
+    if not local_root:
+        try:
+            import config_manager
+            local_root = (
+                config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, '')
+                or config_manager.APP_CONFIG.get('local_strm_root', '')
+                or ''
+            )
+        except Exception:
+            local_root = ''
+
+    return str(local_root or '').strip()
 
 def check_season_consistency(
     tmdb_id: str,
@@ -1224,12 +1247,7 @@ def check_season_consistency(
             try:
                 from .p115_fingerprint_helpers import repair_p115_fingerprints_for_rows
 
-                local_root = ''
-                if processor is not None:
-                    try:
-                        local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, '') or ''
-                    except Exception:
-                        local_root = ''
+                local_root = _get_local_strm_root_for_consistency(processor)
 
                 fingerprint_repair_stats = repair_p115_fingerprints_for_rows(
                     processor,
