@@ -87,7 +87,12 @@ def _get_shared_config() -> Dict[str, Any]:
 def _shared_resource_config_payload() -> Dict[str, Any]:
     payload = settings_db.get_shared_resource_config()
     if isinstance(payload, dict):
-        payload.setdefault('p115_shared_auto_share_requests_enabled', False)
+        auto_enabled = _boolish(
+            payload.get('p115_shared_auto_share_requests_enabled', payload.get('shared_auto_share_requests_enabled')),
+            False,
+        )
+        payload.setdefault('p115_shared_auto_share_requests_enabled', auto_enabled)
+        payload.setdefault('shared_auto_share_requests_enabled', auto_enabled)
     return payload
 
 def _fetch_center_credit() -> Dict[str, Any]:
@@ -2778,10 +2783,17 @@ def api_shared_resource_config():
         return jsonify({'success': True, 'data': _shared_resource_config_payload()})
 
     data = _request_json()
-    data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
+    auto_enabled = _boolish(
+        data.get('p115_shared_auto_share_requests_enabled', data.get('shared_auto_share_requests_enabled')),
+        False,
+    )
+    # 兼容前端短字段 shared_auto_share_requests_enabled 与后端现有 p115_ 前缀字段。
+    data['p115_shared_auto_share_requests_enabled'] = auto_enabled
+    data['shared_auto_share_requests_enabled'] = auto_enabled
     payload = settings_db.save_shared_resource_config(data)
     if isinstance(payload, dict):
-        payload.setdefault('p115_shared_auto_share_requests_enabled', data['p115_shared_auto_share_requests_enabled'])
+        payload.setdefault('p115_shared_auto_share_requests_enabled', auto_enabled)
+        payload.setdefault('shared_auto_share_requests_enabled', auto_enabled)
     return jsonify({'success': True, 'message': '共享资源配置已保存', 'data': payload})
 
 @shared_resource_bp.route('/115/folders', methods=['GET'])

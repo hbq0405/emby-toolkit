@@ -38,6 +38,39 @@ def _shared_resource_switch_enabled() -> bool:
 def _enabled() -> bool:
     return _shared_resource_switch_enabled() and shared_center_enabled()
 
+
+def _cfg_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'on', '启用', '开启'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'off', '停用', '关闭'):
+        return False
+    return bool(default)
+
+
+def _shared_auto_share_requests_enabled() -> bool:
+    """是否允许本机自动响应中心“求分享”。
+
+    兼容两种配置名：
+    - p115_shared_auto_share_requests_enabled：当前配置页保存的字段；
+    - shared_auto_share_requests_enabled：早期/前端可能使用的短字段。
+    """
+    try:
+        cfg = settings_db.get_shared_resource_config() or {}
+        value = cfg.get('p115_shared_auto_share_requests_enabled')
+        if value is None:
+            value = cfg.get('shared_auto_share_requests_enabled')
+        return _cfg_bool(value, False)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 读取自动响应求分享开关失败，按未启用处理: {e}")
+        return False
+
 def _is_network_error(e: Any) -> bool:
     """判断异常是否属于网络超时或连接失败"""
     text = str(e).lower()
@@ -2774,6 +2807,446 @@ def _shared_event_library_hit(event: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug(f"  ➜ [共享事件监听] 本地入库门禁查询失败，继续转存: {e}")
     return {'hit': False, 'reason': 'not_in_library'}
 
+def _json_obj(value) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            obj = json.loads(value)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _share_request_filter_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """把中心求分享事件/列表行整理成 shared_resource 候选筛选参数。"""
+    event = dict(event or {})
+    payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+    params = payload.get('params')
+    if params in (None, {}, ''):
+        params = payload.get('params_json')
+    params = _json_obj(params)
+
+    def _first(*keys, default=None):
+        for key in keys:
+            value = event.get(key)
+            if value not in (None, '', [], {}):
+                return value
+            value = payload.get(key)
+            if value not in (None, '', [], {}):
+                return value
+        return default
+
+    return {
+        'group_id': str(_first('group_id', 'share_request_group_id', default='') or '').strip(),
+        'tmdb_id': str(_first('tmdb_id', default='') or '').strip(),
+        'media_type': str(_first('media_type', default='') or '').strip().lower(),
+        'target_type': str(_first('target_type', 'item_type', default='') or '').strip().lower(),
+        'season_number': _safe_int(_first('season_number', default=None), None),
+        'episode_number': _safe_int(_first('episode_number', default=None), None),
+        'episode_numbers': payload.get('episode_numbers') or event.get('episode_numbers') or [],
+        'season_count': _safe_int(_first('season_count', default=0), 0),
+        'title': _first('title', default='') or '',
+        'release_year': _safe_int(_first('release_year', default=None), None),
+        'current_bounty': _safe_int(_first('current_bounty', 'bounty_total', default=0), 0),
+        'params': params,
+        'raw_event': event,
+        'payload': payload,
+    }
+
+
+def _local_rows_for_share_request(sr, request_filter: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """按求分享目标从本地 media_metadata 精确取可分享候选基础行。"""
+    tmdb_id = str((request_filter or {}).get('tmdb_id') or '').strip()
+    if not tmdb_id:
+        return []
+
+    target_type = str((request_filter or {}).get('target_type') or '').strip().lower()
+    media_type = str((request_filter or {}).get('media_type') or '').strip().lower()
+    season = request_filter.get('season_number')
+
+    if target_type in ('series', 'tv'):
+        row = sr._load_series_row_for_share_request(request_filter)
+        return [row] if row else []
+
+    if target_type == 'episode':
+        row = sr._load_exact_episode_row_for_share_request(request_filter)
+        return [row] if row else []
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if media_type == 'movie' or target_type == 'movie':
+                    cur.execute("""
+                        SELECT *
+                        FROM media_metadata
+                        WHERE item_type='Movie'
+                          AND tmdb_id=%s
+                          AND COALESCE(in_library, FALSE)=TRUE
+                        LIMIT 1
+                    """, (tmdb_id,))
+                    row = cur.fetchone()
+                    return [dict(row)] if row else []
+
+                if target_type == 'season' and season is not None:
+                    cur.execute("""
+                        SELECT *
+                        FROM media_metadata
+                        WHERE item_type='Season'
+                          AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
+                          AND season_number=%s
+                          AND COALESCE(in_library, FALSE)=TRUE
+                        ORDER BY tmdb_id
+                        LIMIT 1
+                    """, (tmdb_id, tmdb_id, season))
+                    row = cur.fetchone()
+                    if row:
+                        return [dict(row)]
+
+                    cur.execute("""
+                        SELECT *
+                        FROM media_metadata
+                        WHERE item_type='Episode'
+                          AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
+                          AND season_number=%s
+                          AND COALESCE(in_library, FALSE)=TRUE
+                        ORDER BY episode_number NULLS LAST, tmdb_id
+                        LIMIT 50
+                    """, (tmdb_id, tmdb_id, season))
+                    return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        logger.debug(f"  ➜ [共享事件监听] 查询本地可响应求分享资源失败: tmdb={tmdb_id}, err={e}")
+    return []
+
+
+def _find_auto_share_request_candidate(sr, request_filter: Dict[str, Any]) -> Dict[str, Any]:
+    rows = _local_rows_for_share_request(sr, request_filter)
+    candidates = []
+    seen = set()
+    for row in rows:
+        try:
+            for cand in sr._expand_share_candidates_for_share_request(row, request_filter):
+                key = (
+                    cand.get('share_tmdb_id') or cand.get('tmdb_id'),
+                    cand.get('share_item_type') or cand.get('item_type'),
+                    cand.get('season_number'),
+                    cand.get('episode_number'),
+                    cand.get('root_fid'),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(cand)
+        except Exception as e:
+            logger.debug(f"  ➜ [共享事件监听] 展开求分享候选失败: row={row.get('tmdb_id')}, err={e}")
+
+    candidates = sr._filter_candidates_for_share_request(candidates, request_filter)
+    candidates = [
+        c for c in candidates
+        if c.get('resolvable') and str(c.get('root_fid') or '').strip()
+    ]
+    if not candidates:
+        return {}
+
+    def _score(c: Dict[str, Any]) -> tuple:
+        share_type = str(c.get('share_type') or '').strip().lower()
+        item_type = str(c.get('share_item_type') or c.get('item_type') or '').strip()
+        file_count = _safe_int(c.get('file_count'), 0)
+        pack_score = 0
+        target_type = str(request_filter.get('target_type') or '').lower()
+        if target_type in ('season', 'series', 'tv') and share_type in ('season_pack', 'series_pack'):
+            pack_score = 2
+        elif item_type in ('Season', 'Series'):
+            pack_score = 1
+        return (pack_score, file_count)
+
+    return sorted(candidates, key=_score, reverse=True)[0]
+
+
+def _local_share_request_response_exists(group_id: str) -> bool:
+    group_id = str(group_id or '').strip()
+    if not group_id:
+        return False
+    try:
+        records, _ = shared_share_db.list_share_records(status='all', keyword='', page=1, page_size=200)
+    except Exception:
+        return False
+
+    for record in records or []:
+        status = str(record.get('status') or '').strip()
+        if status in ('cancelled', 'deleted', 'dead', 'blocked', 'violation'):
+            continue
+        raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+        manual = raw.get('manual_payload') if isinstance(raw.get('manual_payload'), dict) else {}
+        payload = raw.get('share_request_payload') if isinstance(raw.get('share_request_payload'), dict) else {}
+        found = (
+            record.get('share_request_group_id') or
+            raw.get('share_request_group_id') or
+            manual.get('share_request_group_id') or
+            payload.get('group_id') or
+            payload.get('share_request_group_id')
+        )
+        if str(found or '').strip() == group_id:
+            return True
+    return False
+
+
+def _build_auto_share_payload_from_candidate(candidate: Dict[str, Any], request_filter: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(candidate or {})
+    share_item_type = payload.get('share_item_type') or payload.get('item_type')
+    share_tmdb_id = payload.get('share_tmdb_id') or payload.get('tmdb_id') or request_filter.get('tmdb_id')
+
+    payload.update({
+        'tmdb_id': str(share_tmdb_id or ''),
+        'item_type': share_item_type,
+        'share_type': payload.get('share_type') or (
+            'season_pack' if share_item_type == 'Season' else
+            'series_pack' if share_item_type == 'Series' else
+            'episode_file' if share_item_type == 'Episode' else
+            'movie_file'
+        ),
+        'root_fid': str(payload.get('root_fid') or '').strip(),
+        'root_name': payload.get('root_name') or payload.get('display_title') or payload.get('title') or '',
+        'root_is_dir': payload.get('root_is_dir'),
+        'parent_series_tmdb_id': payload.get('parent_series_tmdb_id') or (request_filter.get('tmdb_id') if share_item_type in ('Season', 'Episode', 'Series') else ''),
+        'season_number': payload.get('season_number') if payload.get('season_number') not in (None, '') else request_filter.get('season_number'),
+        'episode_number': payload.get('episode_number') if payload.get('episode_number') not in (None, '') else request_filter.get('episode_number'),
+        'title': payload.get('standard_title') or payload.get('title') or request_filter.get('title') or '',
+        'release_year': payload.get('release_year') or request_filter.get('release_year'),
+        'share_request_group_id': request_filter.get('group_id'),
+        'share_request_payload': {
+            'group_id': request_filter.get('group_id'),
+            'tmdb_id': request_filter.get('tmdb_id'),
+            'media_type': request_filter.get('media_type'),
+            'target_type': request_filter.get('target_type'),
+            'season_number': request_filter.get('season_number'),
+            'episode_number': request_filter.get('episode_number'),
+            'episode_numbers': request_filter.get('episode_numbers') or [],
+            'season_count': request_filter.get('season_count') or 0,
+            'title': request_filter.get('title') or '',
+            'release_year': request_filter.get('release_year'),
+            'params': request_filter.get('params') or {},
+            'current_bounty': request_filter.get('current_bounty') or 0,
+        },
+    })
+    return payload
+
+
+def _create_auto_share_request_response(sr, request_filter: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """为求分享自动创建 115 分享记录；审核/登记继续走现有高频同步链路。"""
+    group_id = str(request_filter.get('group_id') or '').strip()
+    if group_id and _local_share_request_response_exists(group_id):
+        return {'success': True, 'skipped': True, 'message': '该求分享本机已创建过响应分享，跳过重复创建'}
+
+    p115 = P115Service.get_client()
+    if not p115:
+        return {'success': False, 'message': '未配置可用的 115 Cookie 客户端，无法自动响应求分享'}
+
+    data = _build_auto_share_payload_from_candidate(candidate, request_filter)
+    prepared = sr._collect_manual_share_files_for_payload(data, client=p115)
+    if not prepared.get('ok'):
+        return {'success': False, 'skipped': True, 'message': prepared.get('message') or '自动响应求分享预处理失败'}
+
+    share_data = prepared.get('data') or data
+    files = prepared.get('files') or []
+    missing_raw = sr._files_missing_raw_ffprobe(files)
+    if missing_raw:
+        return {
+            'success': False,
+            'skipped': True,
+            'message': sr._raw_missing_message(missing_raw) if hasattr(sr, '_raw_missing_message') else '缺少 raw_ffprobe_json，跳过自动响应求分享',
+            'missing_raw': missing_raw,
+        }
+
+    if str(share_data.get('share_type') or '').strip().lower() == 'season_pack':
+        consistency = sr._validate_season_pack_consistency(files, share_data)
+        if not consistency.get('ok'):
+            return {
+                'success': False,
+                'skipped': True,
+                'message': consistency.get('message') or '季包媒体参数不一致，跳过自动响应求分享',
+                'season_pack_consistency': consistency,
+            }
+
+    root_fid = str(share_data.get('root_fid') or '').strip()
+    receive_code = str(share_data.get('receive_code') or '').strip() or None
+    share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=receive_code)
+    if not share_resp or not share_resp.get('state'):
+        return {'success': False, 'message': f"创建 115 分享失败: {share_resp}"}
+
+    share_resp_data = share_resp.get('data') or {}
+    share_code = share_resp_data.get('share_code') or share_resp.get('share_code')
+    share_url = share_resp_data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
+    receive_code = receive_code or share_resp_data.get('receive_code') or ''
+
+    standard_identity = sr._standard_media_identity_for_share({
+        **share_data,
+        'item_type': share_data.get('item_type') or 'Season',
+        'share_type': share_data.get('share_type') or ('season_pack' if share_data.get('season_number') else 'movie_folder'),
+    })
+    standard_title = standard_identity.get('title') or str(share_data.get('title') or '').strip() or prepared.get('root_name') or root_fid
+    standard_year = standard_identity.get('release_year') or share_data.get('release_year')
+
+    record = shared_share_db.create_share_record({
+        'share_code': share_code,
+        'receive_code': receive_code,
+        'share_url': share_url,
+        'share_type': share_data.get('share_type') or ('season_pack' if share_data.get('season_number') else 'movie_folder'),
+        'root_fid': root_fid,
+        'root_name': prepared.get('root_name') or share_data.get('root_name') or root_fid,
+        'root_is_dir': prepared.get('root_is_dir'),
+        'tmdb_id': str(standard_identity.get('tmdb_id') or share_data.get('tmdb_id') or ''),
+        'item_type': share_data.get('item_type') or 'Season',
+        'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or share_data.get('parent_series_tmdb_id'),
+        'season_number': share_data.get('season_number'),
+        'episode_number': share_data.get('episode_number'),
+        'title': standard_title,
+        'release_year': standard_year,
+        'status': 'pending_review',
+        'review_status': 'pending_review',
+        'center_status': 'not_reported',
+        'raw_json': {
+            'share_response': share_resp,
+            'root_info': prepared.get('info_resp') or {},
+            'auto_share_request': True,
+            'share_request_group_id': group_id or None,
+            'share_request_payload': share_data.get('share_request_payload') or request_filter,
+            'auto_payload': share_data,
+            'standard_identity': standard_identity,
+        },
+    })
+    count = shared_share_db.replace_share_items(record['id'], files)
+    record = shared_share_db.update_share_record(record['id'], item_count=count)
+    shared_credit_db.add_credit_ledger(
+        'share_request_auto_share_created', 0,
+        f"自动响应求分享，已创建115分享：{standard_title}",
+        ref_id=str(record.get('id')),
+        title=standard_title,
+        raw_json={'share_code': share_code, 'group_id': group_id, 'item_count': count},
+    )
+
+    try:
+        sync_client = SharedCenterClient()
+        if sync_client.ready:
+            _auto_check_and_report_local_shares(sync_client, max_records=20)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享事件监听] 自动响应求分享后同步分享状态失败，等待下轮高频任务: {e}")
+
+    return {
+        'success': True,
+        'message': f"已自动响应求分享并创建 115 分享：{standard_title}",
+        'record_id': record.get('id'),
+        'share_code': share_code,
+        'item_count': count,
+        'title': standard_title,
+    }
+
+
+def _auto_respond_to_share_request_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    if not _shared_auto_share_requests_enabled():
+        return {'success': False, 'skipped': True, 'message': '自动响应求分享未启用'}
+
+    try:
+        from routes import shared_resource as sr
+    except Exception as e:
+        return {'success': False, 'message': f'共享资源路由辅助函数不可用，无法自动响应求分享: {e}'}
+
+    request_filter = _share_request_filter_from_event(event)
+    group_id = request_filter.get('group_id')
+    if not group_id or not request_filter.get('tmdb_id'):
+        return {'success': False, 'skipped': True, 'message': '求分享事件缺少 group_id 或 tmdb_id'}
+
+    candidate = _find_auto_share_request_candidate(sr, request_filter)
+    if not candidate:
+        title = request_filter.get('title') or request_filter.get('tmdb_id') or group_id
+        return {'success': False, 'skipped': True, 'message': f'本机没有可自动响应的资源：{title}'}
+
+    return _create_auto_share_request_response(sr, request_filter, candidate)
+
+
+def _handle_share_request_auto_response_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
+    event = dict(event or {})
+    event_id = str(event.get('event_id') or '').strip()
+    payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+    title = event.get('title') or payload.get('title') or payload.get('group_id') or event_id or '求分享'
+
+    result = _auto_respond_to_share_request_event(event)
+    ok = bool(result.get('success'))
+    skipped = bool(result.get('skipped'))
+    message = result.get('message') or ('已自动响应求分享' if ok else '自动响应求分享失败')
+
+    if event_id:
+        _ack_shared_device_event(client, event, 'success' if ok else ('skipped' if skipped else 'failed'), message)
+
+    try:
+        shared_credit_db.add_credit_ledger(
+            'share_request_auto_response_success' if ok else 'share_request_auto_response_skipped' if skipped else 'share_request_auto_response_failed',
+            0,
+            f"自动响应求分享：{title}，{message}",
+            ref_id=str(payload.get('group_id') or event.get('group_id') or event_id),
+            title=title,
+            raw_json={'event': event, 'result': result},
+        )
+    except Exception:
+        pass
+
+    if ok:
+        logger.info("  ➜ [共享事件监听] 自动响应求分享成功: %s", message)
+    elif skipped:
+        logger.info("  ➜ [共享事件监听] 自动响应求分享跳过: %s", message)
+    else:
+        logger.warning("  ➜ [共享事件监听] 自动响应求分享失败: %s", message)
+    return result
+
+
+def _auto_respond_open_share_requests(client: SharedCenterClient, max_requests: int = 20) -> Dict[str, int]:
+    """高频任务兜底扫描 open 求分享，防止离线期间错过长轮询事件。"""
+    if not _shared_auto_share_requests_enabled():
+        return {'share_request_auto_checked': 0, 'share_request_auto_created': 0, 'share_request_auto_skipped': 0, 'share_request_auto_failed': 0}
+    try:
+        from routes import shared_resource as sr
+        data = sr._center_json_request(
+            'GET',
+            '/api/v1/share-requests',
+            params={'status': 'open', 'limit': max(1, min(int(max_requests or 20), 100)), 'offset': 0},
+            timeout=25,
+        )
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 拉取中心 open 求分享用于自动响应失败: {e}")
+        return {'share_request_auto_checked': 0, 'share_request_auto_created': 0, 'share_request_auto_skipped': 0, 'share_request_auto_failed': 1}
+
+    checked = created = skipped = failed = 0
+    for item in data.get('items') or []:
+        if item.get('joined_by_me'):
+            continue
+        checked += 1
+        payload = dict(item)
+        if 'params' not in payload:
+            payload['params'] = _json_obj(payload.get('params_json'))
+        event = {
+            'event_id': '',
+            'event_type': 'share_request_created',
+            'title': payload.get('title') or '',
+            'payload': payload,
+        }
+        result = _auto_respond_to_share_request_event(event)
+        if result.get('success') and not result.get('skipped'):
+            created += 1
+        elif result.get('skipped'):
+            skipped += 1
+        else:
+            failed += 1
+        if created > 0:
+            break
+    return {
+        'share_request_auto_checked': checked,
+        'share_request_auto_created': created,
+        'share_request_auto_skipped': skipped,
+        'share_request_auto_failed': failed,
+    }
+
+
 def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
     event = dict(event or {})
     payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
@@ -2784,6 +3257,9 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
 
     if not event_id:
         return {'success': False, 'message': '事件缺少 event_id'}
+
+    if event_type in ('share_request_created', 'share_request_updated', 'share_request_opened'):
+        return _handle_share_request_auto_response_event(client, event)
 
     if event_type not in ('resource_available', 'request_matched'):
         msg = f'暂不支持的事件类型：{event_type}'
@@ -2953,19 +3429,23 @@ def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: 
 
     total = {}
     try:
-        _status(20, '正在检查 115 分享审核状态并登记中心...')
+        if _shared_auto_share_requests_enabled():
+            _status(15, '正在自动响应中心求分享...')
+            _merge_maintenance_counts(total, _auto_respond_open_share_requests(client, max_requests=20))
+        _status(45, '正在检查 115 分享审核状态并登记中心...')
         total.update(_auto_check_and_report_local_shares(client, max_records=80))
         _status(80, '正在确保共享中心事件监听...')
         total['device_event_listener'] = ensure_shared_device_event_listener()
         logger.debug(
             "\n=== 共享分享状态同步完成 ===\n"
+            f"  ➜ 自动响应求分享: 检查 {total.get('share_request_auto_checked', 0)}，创建 {total.get('share_request_auto_created', 0)}，跳过 {total.get('share_request_auto_skipped', 0)}，失败 {total.get('share_request_auto_failed', 0)}\n"
             f"  ➜ 分享状态同步: 检查 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，中心补登 {total.get('resynced', 0)}，清理失效 {total.get('cancelled', 0)}\n"
             f"  ➜ 共享事件监听: {'已启动/运行中' if total.get('device_event_listener') else '未启动'}\n"
             "========================"
         )
         _status(
             100,
-            f"同步完成：检查 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，中心补登 {total.get('resynced', 0)}，清理失效 {total.get('cancelled', 0)}。"
+            f"同步完成：自动响应求分享创建 {total.get('share_request_auto_created', 0)}；检查 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，中心补登 {total.get('resynced', 0)}，清理失效 {total.get('cancelled', 0)}。"
         )
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 高频分享状态同步失败: {e}", exc_info=True)
