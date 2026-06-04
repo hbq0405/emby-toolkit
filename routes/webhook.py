@@ -627,6 +627,32 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
                 precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
 
+                # 在触发追剧刷新前，先对新入库的集进行体检补齐缺失的数据 
+                if precise_new_episode_ids:
+                    try:
+                        logger.info(f"  ➜ [指纹补齐] 正在为 《{item_name_for_log}》 的 {len(precise_new_episode_ids)} 个新集执行 115 指纹体检...")
+                        rows_to_repair = []
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                for ep_id in precise_new_episode_ids:
+                                    # 通过 Emby ID 模糊匹配查出对应的分集记录
+                                    cursor.execute("SELECT * FROM media_metadata WHERE emby_item_ids_json::text LIKE %s", (f'%"{ep_id}"%',))
+                                    row = cursor.fetchone()
+                                    if row:
+                                        rows_to_repair.append(dict(row))
+                        
+                        if rows_to_repair:
+                            from tasks.p115_fingerprint_helpers import repair_p115_fingerprints_for_rows
+                            repair_p115_fingerprints_for_rows(
+                                processor=processor,
+                                rows=rows_to_repair,
+                                update_db=True,
+                                allow_api_fetch=True,
+                                log_prefix="Webhook新集指纹补齐"
+                            )
+                    except Exception as e:
+                        logger.warning(f"  ➜ [指纹补齐] 执行失败: {e}", exc_info=True)
+
                 logger.info(
                     f"  ➜ [智能追剧] 触发单项刷新..."
                     f"{' (透传新增分集: ' + str(len(precise_new_episode_ids)) + ' 个)' if precise_new_episode_ids else ''}"
