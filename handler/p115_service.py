@@ -2896,6 +2896,8 @@ def get_config():
     return config_manager.APP_CONFIG
 
 class SmartOrganizer(P115MediaAnalyzerMixin):
+    _P115_INVALID_NAME_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
+
     def __init__(self, client, tmdb_id, media_type, original_title, ai_translator=None, use_ai=False):
         self.client = client
         self.tmdb_id = tmdb_id
@@ -3448,10 +3450,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             val = None
             is_sep = False
             
-            # 优先使用传入的 safe_title，防止文件名包含 \/:*?"<>| 导致报错
-            if block == 'title_zh': val = safe_title if safe_title else (self.details.get('title') or self.original_title)
-            elif block == 'title_en': val = self.details.get('title_en') or original_title or self.details.get('original_title') or self.original_title
-            elif block == 'title_orig': val = original_title or self.details.get('original_title') or self.original_title
+            # 标题块统一做 115 非法字符清洗，避免目录/文件名因原文标题中的引号等字符创建失败。
+            if block == 'title_zh':
+                raw_title = safe_title if safe_title else (self.details.get('title') or self.original_title)
+                val = self._sanitize_115_name_component(raw_title)
+            elif block == 'title_en':
+                raw_title = self.details.get('title_en') or original_title or self.details.get('original_title') or self.original_title
+                val = self._sanitize_115_name_component(raw_title)
+            elif block == 'title_orig':
+                raw_title = original_title or self.details.get('original_title') or self.original_title
+                val = self._sanitize_115_name_component(raw_title)
             elif block == 'year': val = f"({self.details.get('date', '')[:4]})" if self.details.get('date') else None
             elif block == 'year_pure': val = self.details.get('date', '')[:4] if self.details.get('date') else None
             elif block == 'tmdb_bracket': val = f"{{tmdb={self.tmdb_id}}}"
@@ -3507,6 +3515,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 final_parts.append(item['val'])
 
         return "".join(final_parts)
+
+    @classmethod
+    def _sanitize_115_name_component(cls, text):
+        cleaned = utils.clean_invisible_chars(text)
+        cleaned = cls._P115_INVALID_NAME_CHARS_RE.sub('', cleaned).strip()
+        return cleaned
 
     def _get_episode_regex_rules(self):
         """懒加载自定义季集号识别规则，避免每个文件都查数据库"""
@@ -4411,7 +4425,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         
         # ★ 必须保留 safe_title 的计算，供后续文件重命名使用
         base_title = original_title if cfg.get('main_title_lang', 'zh') == 'original' else title
-        safe_title = re.sub(r'[\\/:*?"<>|]', '', base_title).strip()
+        safe_title = self._sanitize_115_name_component(base_title)
 
         # ★ 保留原名只影响文件名，不影响主目录
         # batch 模式 root_name 可能是“批量文件”，绝不能拿它当目标主目录
@@ -4419,7 +4433,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         std_root_name = self._build_name_from_format(
             main_format,
             is_tv=(self.media_type == 'tv'),
-            original_title=original_title
+            original_title=original_title,
+            safe_title=safe_title
         )
 
         # 兜底防空
