@@ -69,6 +69,8 @@ const isOpeningEditor = ref(false);
 
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲' });
 let statusIntervalId = null;
+const pendingSystemUpdateReload = ref(false);
+const waitingForBackendRecovery = ref(false);
 
 const app = document.getElementById('app');
 
@@ -219,13 +221,29 @@ watch(() => authStore.isLoggedIn, (isLoggedIn) => {
         try {
           const response = await axios.get('/api/status');
           backgroundTaskStatus.value = response.data;
+          if (waitingForBackendRecovery.value) {
+            waitingForBackendRecovery.value = false;
+            if (pendingSystemUpdateReload.value) {
+              window.location.reload();
+              return;
+            }
+          }
+          const statusMessage = String(response.data?.message || '');
+          if (statusMessage.includes('系统正在重启')) {
+            pendingSystemUpdateReload.value = true;
+          }
         } catch (error) { console.error('获取状态失败:', error); }
+        if (pendingSystemUpdateReload.value) {
+          waitingForBackendRecovery.value = true;
+        }
       };
       fetchStatus();
       statusIntervalId = setInterval(fetchStatus, 2000);
     }
   } else {
     if (statusIntervalId) { clearInterval(statusIntervalId); statusIntervalId = null; }
+    pendingSystemUpdateReload.value = false;
+    waitingForBackendRecovery.value = false;
   }
 }, { immediate: true });
 

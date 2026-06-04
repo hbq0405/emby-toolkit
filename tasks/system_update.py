@@ -347,6 +347,22 @@ def consume_post_update_status():
     return payload
 
 
+def peek_post_update_status():
+    return _read_json_file(_get_update_status_path())
+
+
+def clear_post_update_status():
+    status_path = _get_update_status_path()
+    try:
+        os.remove(status_path)
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        logger.warning(f"删除更新状态文件失败: {status_path}, err={e}")
+        return False
+    return True
+
+
 def _normalize_container_path(path_value):
     path_text = _clean_version_text(path_value)
     if not path_text:
