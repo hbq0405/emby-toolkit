@@ -1288,7 +1288,7 @@ class WatchlistProcessor:
 
             action = "开启" if enabled else "清理"
             reason_msg = f"，原因：{reason}" if reason else ""
-            logger.info(
+            logger.debug(
                 f"  ➜ [完结洗版] 已为《{tmdb_id}》S{season_number} {action} active_washing 洗版特权标记 "
                 f"(影响 {affected} 集){reason_msg}。"
             )
