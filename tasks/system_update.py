@@ -116,22 +116,29 @@ def build_networking(client, container_attrs):
     network_mode = host_config.get("NetworkMode") or "default"
     network_settings = (container_attrs.get("NetworkSettings") or {}).get("Networks") or {}
     networking_config = None
+    endpoint_network_mode = (network_mode or "").split(":", 1)[0]
 
-    if network_mode not in {"host", "none", "container"} and network_settings:
+    if endpoint_network_mode not in {"host", "none", "container"} and network_settings:
         endpoints = {}
         for network_name, network_data in network_settings.items():
             endpoint_kwargs = {}
             aliases = list(network_data.get("Aliases") or [])
             if aliases:
                 endpoint_kwargs["aliases"] = aliases
-            ipv4_address = (network_data.get("IPAMConfig") or {}).get("IPv4Address") or network_data.get("IPAddress")
+            is_user_defined = bool(network_data.get("NetworkID")) and network_name not in {"bridge", "host", "none"}
+            ipv4_address = (network_data.get("IPAMConfig") or {}).get("IPv4Address")
+            if not ipv4_address and is_user_defined:
+                ipv4_address = network_data.get("IPAddress")
             if ipv4_address:
                 endpoint_kwargs["ipv4_address"] = ipv4_address
-            ipv6_address = (network_data.get("IPAMConfig") or {}).get("IPv6Address") or network_data.get("GlobalIPv6Address")
+            ipv6_address = (network_data.get("IPAMConfig") or {}).get("IPv6Address")
+            if not ipv6_address and is_user_defined:
+                ipv6_address = network_data.get("GlobalIPv6Address")
             if ipv6_address:
                 endpoint_kwargs["ipv6_address"] = ipv6_address
             endpoints[network_name] = client.api.create_endpoint_config(**endpoint_kwargs)
-        networking_config = client.api.create_networking_config(endpoints)
+        if endpoints:
+            networking_config = client.api.create_networking_config(endpoints)
 
     return network_mode, networking_config
 
@@ -147,6 +154,10 @@ def collect_create_kwargs(client, container):
     port_bindings = build_port_bindings(host_config)
     restart_policy = build_restart_policy(host_config)
     network_mode, networking_config = build_networking(client, attrs)
+    network_mode_kind = (network_mode or "").split(":", 1)[0]
+    if network_mode_kind in {"host", "container"}:
+        port_bindings = None
+        ports = None
     healthcheck = config.get("Healthcheck")
     host_cfg = client.api.create_host_config(
         auto_remove=bool(host_config.get("AutoRemove")),
