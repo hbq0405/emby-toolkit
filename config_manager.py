@@ -57,19 +57,19 @@ def _notify_pending_system_update_result():
     try:
         admin_chat_ids = set(user_db.get_admin_telegram_chat_ids() or [])
         if not admin_chat_ids:
-            logger.warning("系统更新结果通知未发送：当前没有可用的管理员 Telegram Chat ID。")
+            logger.warning("  ➜ 系统更新结果通知未发送：当前没有可用的管理员 Telegram Chat ID。")
             return False
 
         for chat_id in admin_chat_ids:
             send_telegram_message(str(chat_id), text)
     except Exception as e:
-        logger.warning(f"发送系统更新结果 TG 通知失败: {e}")
+        logger.warning(f"  ➜ 发送系统更新结果 TG 通知失败: {e}")
         return False
 
     if clear_post_update_status():
         logger.info("  ➜ 系统更新结果通知发送成功，已清理待通知结果文件。")
     else:
-        logger.warning("系统更新结果通知已发送，但清理结果文件失败。")
+        logger.warning("  ➜ 系统更新结果通知已发送，但清理结果文件失败。")
     return True
 
 
@@ -80,7 +80,7 @@ def retry_pending_system_update_result(max_attempts: int = 10, interval_seconds:
             return True
         if attempt < max_attempts:
             time.sleep(interval_seconds)
-    logger.warning("系统更新结果通知重试结束，仍未成功发送。")
+    logger.trace("  ➜ 系统更新结果通知重试结束，仍未成功发送。")
     return False
 
 # --- 路径和配置定义 ---
