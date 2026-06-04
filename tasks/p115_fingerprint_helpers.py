@@ -226,15 +226,7 @@ def repair_p115_fingerprints_for_rows(
     video_exts: Optional[set] = None,
 ) -> Dict[str, Any]:
     """
-    只针对传入 rows 补齐 115 PC/SHA1。
-
-    rows 建议包含：
-    tmdb_id, item_type, title, asset_details_json, file_sha1_json, file_pickcode_json。
-
-    设计目的：
-    - 全库维护任务可以传全库 rows；
-    - 季包一致性检查可以只传当前季 Episode rows，避免扫全库；
-    - 本模块不导入 tasks.media / tasks.helpers，避免导入循环。
+    全方位体检并补齐 115 PC/SHA1 及本地缓存。
     """
     stats = {
         'scanned_assets': 0,
@@ -316,40 +308,44 @@ def repair_p115_fingerprints_for_rows(
 
             need_sha1 = p115_fp_is_missing(current_sha1)
             need_pc = p115_fp_is_missing(current_pc)
-            if not need_sha1 and not need_pc:
-                continue
+            
+            if need_sha1 or need_pc:
+                stats['missing_assets'] += 1
 
-            stats['missing_assets'] += 1
+            # ★ 核心修改 1：移除提前 continue，强制所有文件进入体检流程
+
             strm_target = p115_fp_read_strm_target(clean_path)
             local_candidates = p115_fp_build_local_path_candidates(clean_path, strm_target, local_root)
+            
             values = {
                 'fid': None,
                 'parent_id': None,
                 'name': os.path.basename(clean_path) if clean_path else None,
                 'sha1': None if need_sha1 else str(current_sha1).strip().upper(),
                 'pc': None if need_pc else str(current_pc).strip(),
-                # 优先写相对路径；如果只能拿到挂载绝对路径，也先保留，后续同步目录树会刷新。
                 'local_path': min(local_candidates, key=len) if local_candidates else None,
                 'size': _get_asset_size(asset),
             }
 
-            # 1) 走已有万能提取器，兼容 URL、STRM 内容、挂载路径映射。
-            extractor = getattr(processor, '_extract_115_fingerprints', None) if processor else None
-            if callable(extractor):
-                for probe_path in [clean_path, strm_target]:
-                    if not probe_path:
-                        continue
-                    try:
-                        extracted_pc, extracted_sha1 = extractor(probe_path)
-                        if extracted_pc and need_pc and not values.get('pc'):
-                            values['pc'] = str(extracted_pc).strip()
-                        if extracted_sha1 and need_sha1 and not values.get('sha1'):
-                            values['sha1'] = str(extracted_sha1).strip().upper()
-                    except Exception as e:
-                        logger.debug(f"  ➜ [{log_prefix}] 指纹提取器跳过异常路径: {probe_path} -> {e}")
+            # 1) 走已有万能提取器 (仅在缺失 PC/SHA1 时调用)
+            if need_pc or need_sha1:
+                extractor = getattr(processor, '_extract_115_fingerprints', None) if processor else None
+                if callable(extractor):
+                    for probe_path in [clean_path, strm_target]:
+                        if not probe_path:
+                            continue
+                        try:
+                            extracted_pc, extracted_sha1 = extractor(probe_path)
+                            if extracted_pc and need_pc and not values.get('pc'):
+                                values['pc'] = str(extracted_pc).strip()
+                            if extracted_sha1 and need_sha1 and not values.get('sha1'):
+                                values['sha1'] = str(extracted_sha1).strip().upper()
+                        except Exception as e:
+                            logger.debug(f"  ➜ [{log_prefix}] 指纹提取器跳过异常路径: {probe_path} -> {e}")
 
-            # 2) 从 p115_filesystem_cache 反查，优先 PC/SHA1/FID，再用 local_path 兼容挂载模式。
+            # 2) 从 p115_filesystem_cache 反查
             cache_hit = False
+            cache_is_complete = False # ★ 新增：标记缓存是否完整
             if P115CacheManager:
                 try:
                     cache_row = None
@@ -366,12 +362,21 @@ def repair_p115_fingerprints_for_rows(
                             if cache_row:
                                 break
 
-                    cache_hit = _merge_cache_row(cache_row, values)
+                    if cache_row:
+                        cache_hit = True
+                        _merge_cache_row(cache_row, values)
+                        
+                        # ★ 核心修改 2：检查缓存六芒星是否齐全
+                        if (values.get('fid') and values.get('parent_id') and 
+                            values.get('name') and values.get('sha1') and 
+                            values.get('pc') and values.get('size')):
+                            cache_is_complete = True
                 except Exception as e:
                     logger.debug(f"  ➜ [{log_prefix}] 查询 p115_filesystem_cache 失败: {e}")
 
             # 3) 仍然缺字段时，现场按 PC 计算 FID，再查 115 详情。
-            if (need_sha1 and not values.get('sha1')) or (need_pc and not values.get('pc')):
+            # ★ 核心修改 3：只要缓存不完整，也触发 API 查询
+            if (need_sha1 and not values.get('sha1')) or (need_pc and not values.get('pc')) or not cache_is_complete:
                 if not values.get('fid') and values.get('pc'):
                     values['fid'] = p115_fp_compute_fid_from_pickcode(values['pc'])
 
@@ -393,19 +398,21 @@ def repair_p115_fingerprints_for_rows(
 
             # 4) 成功拿到字段后，回写 p115_filesystem_cache。
             if P115CacheManager and values.get('fid') and values.get('parent_id') and values.get('name'):
-                try:
-                    P115CacheManager.save_file_cache(
-                        fid=values['fid'],
-                        parent_id=values['parent_id'],
-                        name=values['name'],
-                        sha1=values.get('sha1'),
-                        pick_code=values.get('pc'),
-                        local_path=values.get('local_path'),
-                        size=values.get('size') or 0,
-                    )
-                    stats['cache_updates'] += 1
-                except Exception as e:
-                    logger.debug(f"  ➜ [{log_prefix}] 回写 p115_filesystem_cache 失败 fid={values.get('fid')}: {e}")
+                # ★ 核心修改 4：只要之前缓存不完整，就执行回写
+                if not cache_is_complete:
+                    try:
+                        P115CacheManager.save_file_cache(
+                            fid=values['fid'],
+                            parent_id=values['parent_id'],
+                            name=values['name'],
+                            sha1=values.get('sha1'),
+                            pick_code=values.get('pc'),
+                            local_path=values.get('local_path'),
+                            size=values.get('size') or 0,
+                        )
+                        stats['cache_updates'] += 1
+                    except Exception as e:
+                        logger.debug(f"  ➜ [{log_prefix}] 回写 p115_filesystem_cache 失败 fid={values.get('fid')}: {e}")
 
             asset_fixed = False
             if need_sha1 and values.get('sha1'):
@@ -426,6 +433,10 @@ def repair_p115_fingerprints_for_rows(
                     f"PC={'✓' if not p115_fp_is_missing(pcs[asset_idx]) else '×'}, "
                     f"SHA1={'✓' if not p115_fp_is_missing(sha1s[asset_idx]) else '×'}"
                 )
+            elif not need_sha1 and not need_pc:
+                # ★ 核心修改 5：如果媒体库本身不缺，但修复了本地缓存，打印一条体检日志
+                if not cache_is_complete and values.get('fid') and values.get('parent_id'):
+                    logger.info(f"  ➜ [{log_prefix}] 已体检并修复本地缓存 {title} #{asset_idx + 1}")
             else:
                 stats['failed_assets'] += 1
                 logger.warning(
