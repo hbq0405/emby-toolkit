@@ -241,6 +241,8 @@ def _flush_mp_batch(key):
                 'parent_id': f.get('parent_id'),
                 'pc': f.get('pickcode'),
                 'pick_code': f.get('pickcode'),
+                'size': f.get('size'),
+                'fs': f.get('fs') or f.get('size'),
                 '115_path': f.get('115_path'), # ★ 核心新增：将 115 物理路径传递给底层
                 '_forced_season': f.get('season_num'),
                 '_forced_episode': f.get('episode_num'),
@@ -305,6 +307,8 @@ def _process_mp_passthrough_immediate(file_info):
             'parent_id': file_info.get('parent_id'),
             'pc': file_info.get('pickcode'),
             'pick_code': file_info.get('pickcode'),
+            'size': file_info.get('size'),
+            'fs': file_info.get('fs') or file_info.get('size'),
             '115_path': file_info.get('115_path'),
             '_forced_season': season_num,
             '_forced_episode': file_info.get('episode_num'),
@@ -1428,12 +1432,19 @@ def emby_webhook():
             
             target_item = transfer_info.get("target_item", {})
             target_dir = transfer_info.get("target_diritem", {})
+            source_item = transfer_info.get("fileitem") or data.get("data", {}).get("fileitem") or {}
             
             file_id = target_item.get("fileid")
             file_name = target_item.get("name")
             file_type = target_item.get("type") 
             pickcode = target_item.get("pickcode")
             dir_cid = target_dir.get("fileid")
+
+            file_size = (
+                target_item.get("size")
+                or source_item.get("size")
+                or transfer_info.get("total_size")
+            )
             
             tmdb_id = media_info.get("tmdb_id")
             media_type_cn = media_info.get("type") 
@@ -1459,6 +1470,8 @@ def emby_webhook():
                     'title': title,
                     'season_num': begin_season,
                     'episode_num': begin_episode,
+                    'size': file_size,
+                    'fs': file_size,
                     '115_path': target_item.get("path") # ★ 核心新增：直接提取 115 物理路径
                 }
                 
