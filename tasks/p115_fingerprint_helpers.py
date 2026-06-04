@@ -302,8 +302,21 @@ def repair_p115_fingerprints_for_rows(
         sha1s = p115_fp_safe_json_list(row.get('file_sha1_json'))
         pcs = p115_fp_safe_json_list(row.get('file_pickcode_json'))
 
+        # 旧数据/非 ETK 整理数据可能只有 file_pickcode_json/file_sha1_json，
+        # asset_details_json 为空。单集分享定位根 FID 时恰好最需要这种场景：
+        # 直接用 PC 计算 FID，再查 115 详情并补 p115_filesystem_cache。
         if not assets:
-            continue
+            synthetic_count = max(len(sha1s), len(pcs))
+            if synthetic_count <= 0:
+                continue
+            assets = [
+                {
+                    '_synthetic_from_fingerprint': True,
+                    'path': row.get('path') or row.get('Path') or row.get('local_path') or '',
+                    'size': row.get('size') or row.get('size_bytes') or 0,
+                }
+                for _ in range(synthetic_count)
+            ]
 
         while len(sha1s) < len(assets):
             sha1s.append(None)
@@ -316,12 +329,16 @@ def repair_p115_fingerprints_for_rows(
             if not isinstance(asset, dict):
                 continue
 
+            current_sha1 = sha1s[asset_idx] if asset_idx < len(sha1s) else None
+            current_pc = pcs[asset_idx] if asset_idx < len(pcs) else None
+
             path = asset.get('path') or asset.get('Path')
-            if not path:
+            # 没有路径但已有 PC/SHA1 时，仍然允许体检缓存；没有任何身份才跳过。
+            if not path and p115_fp_is_missing(current_sha1) and p115_fp_is_missing(current_pc):
                 continue
 
-            clean_path = p115_fp_clean_path(path) or str(path)
-            ext = os.path.splitext(clean_path)[1].lower()
+            clean_path = p115_fp_clean_path(path) if path else ''
+            ext = os.path.splitext(clean_path)[1].lower() if clean_path else ''
             if ext and ext not in video_exts:
                 continue
 
@@ -330,8 +347,6 @@ def repair_p115_fingerprints_for_rows(
             time.sleep(0.002)
 
             stats['scanned_assets'] += 1
-            current_sha1 = sha1s[asset_idx] if asset_idx < len(sha1s) else None
-            current_pc = pcs[asset_idx] if asset_idx < len(pcs) else None
 
             need_sha1 = p115_fp_is_missing(current_sha1)
             need_pc = p115_fp_is_missing(current_pc)
@@ -339,8 +354,8 @@ def repair_p115_fingerprints_for_rows(
             if need_sha1 or need_pc:
                 stats['missing_assets'] += 1
 
-            strm_target = p115_fp_read_strm_target(clean_path)
-            local_candidates = p115_fp_build_local_path_candidates(clean_path, strm_target, local_root)
+            strm_target = p115_fp_read_strm_target(clean_path) if clean_path else None
+            local_candidates = p115_fp_build_local_path_candidates(clean_path, strm_target, local_root) if (clean_path or strm_target) else []
             
             # ★ 优化 2：防止 .strm 污染 115 真实文件名
             base_name = os.path.basename(clean_path) if clean_path else None
@@ -350,7 +365,7 @@ def repair_p115_fingerprints_for_rows(
             # ★ 核心修复：防止绝对路径污染 local_path
             # 仅当明确配置了 local_root 且成功剥离出相对路径时，才作为候选写入
             best_local_path = None
-            if local_root and local_candidates:
+            if local_root and local_candidates and clean_path:
                 shortest = min(local_candidates, key=len)
                 # 如果最短的候选路径比原始路径短，说明成功剥离了 local_root
                 if len(shortest) < len(clean_path):
