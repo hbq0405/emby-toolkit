@@ -475,6 +475,96 @@ def _get_processor_local_strm_root(processor) -> str:
 
     return ''
 
+def _repair_webhook_p115_fingerprints_for_emby_ids(
+    processor,
+    item_name_for_log: str,
+    emby_item_ids,
+    *,
+    expected_item_type: Optional[str] = None,
+    log_prefix: str = "Webhook指纹补齐",
+) -> int:
+    """Webhook 入库后按 Emby ID 找 media_metadata 行，并执行 115 指纹体检补齐。"""
+    ids = [str(x).strip() for x in (emby_item_ids or []) if str(x or '').strip()]
+    if not ids:
+        return 0
+
+    try:
+        rows_to_repair = []
+        seen_keys = set()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                for emby_id in ids:
+                    if expected_item_type:
+                        cursor.execute(
+                            """
+                            SELECT *
+                            FROM media_metadata
+                            WHERE item_type = %s
+                              AND emby_item_ids_json::text LIKE %s
+                            """,
+                            (expected_item_type, f'%"{emby_id}"%')
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            SELECT *
+                            FROM media_metadata
+                            WHERE emby_item_ids_json::text LIKE %s
+                            """,
+                            (f'%"{emby_id}"%',)
+                        )
+
+                    for row in cursor.fetchall() or []:
+                        row_dict = dict(row)
+                        dedupe_key = (
+                            row_dict.get("id"),
+                            row_dict.get("tmdb_id"),
+                            row_dict.get("parent_series_tmdb_id"),
+                            row_dict.get("item_type"),
+                            row_dict.get("season_number"),
+                            row_dict.get("episode_number"),
+                        )
+                        if dedupe_key in seen_keys:
+                            continue
+
+                        seen_keys.add(dedupe_key)
+                        rows_to_repair.append(row_dict)
+
+        if not rows_to_repair:
+            logger.debug(
+                f"  ➜ [指纹补齐] 未在 media_metadata 中找到可体检记录: "
+                f"{item_name_for_log} ids={ids} type={expected_item_type or 'Any'}"
+            )
+            return 0
+
+        logger.info(
+            f"  ➜ [指纹补齐] 正在为《{item_name_for_log}》执行 115 指纹体检，"
+            f"记录数: {len(rows_to_repair)}"
+        )
+
+        from tasks.p115_fingerprint_helpers import repair_p115_fingerprints_for_rows
+
+        local_root = _get_processor_local_strm_root(processor)
+        if not local_root:
+            logger.warning(
+                "  ➜ [指纹补齐] 未获取到 local_strm_root，本次只能补齐 PC/SHA1/115 缓存基础字段，无法可靠写入 local_path。"
+            )
+
+        repair_p115_fingerprints_for_rows(
+            processor=processor,
+            rows=rows_to_repair,
+            local_root=local_root,
+            update_db=True,
+            allow_api_fetch=True,
+            log_prefix=log_prefix,
+        )
+
+        return len(rows_to_repair)
+
+    except Exception as e:
+        logger.warning(f"  ➜ [指纹补齐] 执行失败: {e}", exc_info=True)
+        return 0
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
     """
@@ -505,7 +595,18 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
-    # 2. 共享资源供给侧实时触发：Webhook 只负责 Movie；剧集单集/季包由智能追剧最终判定后触发。
+    # 2. 电影入库后先做 115 指纹体检，再进入共享资源探测。
+    # 共享电影创建分享依赖 PC/SHA1/FID/缓存字段，体检要放在分享探测前。
+    if item_type == "Movie":
+        _repair_webhook_p115_fingerprints_for_emby_ids(
+            processor,
+            item_name_for_log,
+            [item_id],
+            expected_item_type="Movie",
+            log_prefix="Webhook电影指纹补齐",
+        )
+
+    # 3. 共享资源供给侧实时触发：Webhook 只负责 Movie；剧集单集/季包由智能追剧最终判定后触发。
     _submit_shared_auto_share_after_library_ready(item_details, item_id, item_type, tmdb_id)
 
     # 3. 智能追剧判断 - 初始入库
@@ -680,39 +781,15 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
                 precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
 
-                # 在触发追剧刷新前，先对新入库的集进行体检补齐缺失的数据 
+                # 在触发追剧刷新前，先对新入库的集进行体检补齐缺失的数据
                 if precise_new_episode_ids:
-                    try:
-                        logger.info(f"  ➜ [指纹补齐] 正在为 《{item_name_for_log}》 的 {len(precise_new_episode_ids)} 个新集执行 115 指纹体检...")
-                        rows_to_repair = []
-                        with get_db_connection() as conn:
-                            with conn.cursor() as cursor:
-                                for ep_id in precise_new_episode_ids:
-                                    # 通过 Emby ID 模糊匹配查出对应的分集记录
-                                    cursor.execute("SELECT * FROM media_metadata WHERE emby_item_ids_json::text LIKE %s", (f'%"{ep_id}"%',))
-                                    row = cursor.fetchone()
-                                    if row:
-                                        rows_to_repair.append(dict(row))
-                        
-                        if rows_to_repair:
-                            from tasks.p115_fingerprint_helpers import repair_p115_fingerprints_for_rows
-
-                            local_root = _get_processor_local_strm_root(processor)
-                            if not local_root:
-                                logger.warning(
-                                    "  ➜ [指纹补齐] 未获取到 local_strm_root，本次只能补齐 PC/SHA1/115 缓存基础字段，无法可靠写入 local_path。"
-                                )
-
-                            repair_p115_fingerprints_for_rows(
-                                processor=processor,
-                                rows=rows_to_repair,
-                                local_root=local_root,
-                                update_db=True,
-                                allow_api_fetch=True,
-                                log_prefix="Webhook新集指纹补齐"
-                            )
-                    except Exception as e:
-                        logger.warning(f"  ➜ [指纹补齐] 执行失败: {e}", exc_info=True)
+                    _repair_webhook_p115_fingerprints_for_emby_ids(
+                        processor,
+                        item_name_for_log,
+                        precise_new_episode_ids,
+                        expected_item_type="Episode",
+                        log_prefix="Webhook新集指纹补齐",
+                    )
 
                 logger.info(
                     f"  ➜ [智能追剧] 触发单项刷新..."
