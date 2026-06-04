@@ -110,6 +110,19 @@ def _looks_share_alive(resp: Dict[str, Any]) -> bool:
 def _record_reportable(record: Dict[str, Any]) -> bool:
     return (record.get('status') in ('alive', 'reported') or record.get('review_status') == 'alive') and record.get('center_status') not in ('reported', 'partial')
 
+def _record_raw_etk_dirty(record: Dict[str, Any]) -> bool:
+    raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+    dirty = raw_json.get('raw_etk_dirty') if isinstance(raw_json, dict) else None
+    return bool(isinstance(dirty, dict) and dirty.get('pending'))
+
+def _clear_record_raw_etk_dirty(record: Dict[str, Any]) -> Dict[str, Any]:
+    raw_json = dict(record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {})
+    dirty = raw_json.pop('raw_etk_dirty', None)
+    if isinstance(dirty, dict):
+        dirty['cleared_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        raw_json['raw_etk_last_resync'] = dirty
+    return raw_json
+
 def _max_active_shares_limit() -> int:
     """本机 115 分享数量上限；0 表示不限制。"""
     return max(0, _safe_int(settings_db.get_shared_resource_config().get('p115_shared_max_active_shares', 0), 0))
@@ -795,29 +808,36 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                 continue
             if alive:
                 old_raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+                raw_etk_dirty = _record_raw_etk_dirty(record)
                 update = {
                     'status': 'alive',
                     'review_status': 'alive',
                     'last_checked_at': 'NOW()',
                     # 正常可用不再写入 last_error，避免前端“备注”误把成功状态当原因。
-                    'last_error': '',
+                    # 但 RAW 修复重传标记不能被这里清空，否则维护任务日志看不出正在处理什么。
+                    'last_error': '本地 RAW _etk 已修复，等待覆盖中心 RAW' if raw_etk_dirty else '',
                     # 保留 auto_gap / manual_payload 等来源标记，只追加 last_snap。
                     'raw_json': {**old_raw_json, 'last_snap': snap},
                 }
                 shared_share_db.update_share_record(record['id'], **update)
                 record = shared_share_db.get_share_record(record['id']) or record
                 items = shared_share_db.list_share_items(record['id']) or []
+                raw_etk_dirty = _record_raw_etk_dirty(record)
                 sync_reason = _center_share_sync_reason(center_snapshot, share_code, items)
-                need_report = _record_reportable(record) or bool(sync_reason)
+                need_report = _record_reportable(record) or bool(sync_reason) or raw_etk_dirty
 
                 if need_report and sr is not None:
-                    if sync_reason:
-                        reason_text = _center_share_sync_reason_text(sync_reason)
-                        logger.debug(f"  ➜ [共享资源维护] 本地分享仍可用但中心登记异常，准备重新登记: share={share_code}, reason={reason_text}")
+                    if sync_reason or raw_etk_dirty:
+                        reason_text = _center_share_sync_reason_text(sync_reason) if sync_reason else '本地 RAW _etk 已修复'
+                        logger.debug(f"  ➜ [共享资源维护] 本地分享需要重新同步中心: share={share_code}, reason={reason_text}")
                         shared_share_db.update_share_record(
                             record['id'],
                             center_status='not_reported',
-                            last_error=f'{reason_text}，维护任务将重新登记中心',
+                            last_error=(
+                                f'{reason_text}，维护任务将重新上传 RAW 并登记中心'
+                                if raw_etk_dirty else
+                                f'{reason_text}，维护任务将重新登记中心'
+                            ),
                         )
                         # 中心源如果是 dead，register_source 当前不会把 dead 自动拉回 pending；
                         # 先删除中心旧源但保留 raw，再重新登记，避免继续不可见。
@@ -892,18 +912,22 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                         if ok > 0:
                             center_status = 'reported' if ok == len(items) and not errors else 'partial'
                             last_error = '自动登记中心成功' if not errors else '；'.join(errors[:5])
-                            if sync_reason and not errors:
+                            if raw_etk_dirty and not errors:
+                                last_error = '本地 RAW _etk 修复后已覆盖中心并重新登记成功'
+                            elif sync_reason and not errors:
                                 last_error = f'中心同步补登成功：{_center_share_sync_reason_text(sync_reason)}'
-                            shared_share_db.update_share_record(
-                                record['id'],
-                                center_status=center_status,
-                                status='reported' if center_status == 'reported' else record.get('status'),
-                                reported_count=ok,
-                                reported_at='NOW()',
-                                last_error=last_error,
-                            )
+                            update_fields = {
+                                'center_status': center_status,
+                                'status': 'reported' if center_status == 'reported' else record.get('status'),
+                                'reported_count': ok,
+                                'reported_at': 'NOW()',
+                                'last_error': last_error,
+                            }
+                            if raw_etk_dirty and not errors:
+                                update_fields['raw_json'] = _clear_record_raw_etk_dirty(record)
+                            shared_share_db.update_share_record(record['id'], **update_fields)
                             reported += 1
-                            if sync_reason:
+                            if sync_reason or raw_etk_dirty:
                                 resynced += 1
                                 # 更新内存快照，避免同一个分享码后续同轮被误判仍缺失。
                                 local_sha1s = {str(i.get('sha1') or '').strip().upper() for i in items if str(i.get('sha1') or '').strip()}
