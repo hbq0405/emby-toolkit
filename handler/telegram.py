@@ -2382,6 +2382,17 @@ def start_telegram_bot():
     _tg_polling_thread = threading.Thread(target=_telegram_polling_worker, daemon=True, name="TG_Polling_Thread")
     _tg_polling_thread.start()
 
+    try:
+        from config_manager import retry_pending_system_update_result
+        threading.Thread(
+            target=retry_pending_system_update_result,
+            kwargs={"max_attempts": 10, "interval_seconds": 3.0},
+            daemon=True,
+            name="SystemUpdateNotifyRetry",
+        ).start()
+    except Exception as e:
+        logger.debug(f"  ➜ 启动系统更新结果通知重试线程失败: {e}")
+
 def stop_telegram_bot():
     """停止 Telegram 机器人监听"""
     global _tg_polling_active

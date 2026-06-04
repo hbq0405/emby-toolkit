@@ -165,6 +165,8 @@ def _install_stubs():
 
     tasks_system_update = sys.modules.get("tasks.system_update") or types.ModuleType("tasks.system_update")
     tasks_system_update.consume_post_update_status = lambda: None
+    tasks_system_update.peek_post_update_status = lambda: None
+    tasks_system_update.clear_post_update_status = lambda: True
     sys.modules["tasks.system_update"] = tasks_system_update
 
 
@@ -181,16 +183,52 @@ class PostUpdateNotifyTests(unittest.TestCase):
             "target_version": "v10.2.6",
             "message": "容器健康检查通过。",
         }
-        with mock.patch("tasks.system_update.consume_post_update_status", return_value=payload):
-            with mock.patch("handler.telegram.send_telegram_message") as send_mock:
-                config_manager._notify_pending_system_update_result()
+        with mock.patch("tasks.system_update.peek_post_update_status", return_value=payload):
+            with mock.patch("tasks.system_update.clear_post_update_status", return_value=True) as clear_mock:
+                with mock.patch("handler.telegram.send_telegram_message") as send_mock:
+                    result = config_manager._notify_pending_system_update_result()
 
+        self.assertTrue(result)
         send_mock.assert_called_once()
+        clear_mock.assert_called_once()
         message = send_mock.call_args.args[1]
         self.assertIn("系统自动更新", message)
         self.assertIn("10.2.5", message)
         self.assertIn("v10.2.6", message)
         self.assertIn("容器健康检查通过。", message)
+
+    def test_notify_pending_system_update_result_keeps_file_when_send_fails(self):
+        payload = {
+            "ok": True,
+            "current_version": "10.2.5",
+            "target_version": "v10.2.6",
+            "message": "容器健康检查通过。",
+        }
+        with mock.patch("tasks.system_update.peek_post_update_status", return_value=payload):
+            with mock.patch("tasks.system_update.clear_post_update_status", return_value=True) as clear_mock:
+                with mock.patch("handler.telegram.send_telegram_message", side_effect=RuntimeError("tg down")):
+                    result = config_manager._notify_pending_system_update_result()
+
+        self.assertFalse(result)
+        clear_mock.assert_not_called()
+
+    def test_retry_pending_system_update_result_retries_until_success(self):
+        with mock.patch.object(config_manager, "_notify_pending_system_update_result", side_effect=[False, False, True]) as notify_mock:
+            with mock.patch("time.sleep") as sleep_mock:
+                result = config_manager.retry_pending_system_update_result(max_attempts=5, interval_seconds=1.5)
+
+        self.assertTrue(result)
+        self.assertEqual(notify_mock.call_count, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_retry_pending_system_update_result_returns_false_after_exhausted_attempts(self):
+        with mock.patch.object(config_manager, "_notify_pending_system_update_result", return_value=False) as notify_mock:
+            with mock.patch("time.sleep") as sleep_mock:
+                result = config_manager.retry_pending_system_update_result(max_attempts=3, interval_seconds=1.5)
+
+        self.assertFalse(result)
+        self.assertEqual(notify_mock.call_count, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
 
 
 if __name__ == "__main__":
