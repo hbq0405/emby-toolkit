@@ -1462,7 +1462,14 @@ def _ensure_single_episode_share_fingerprints(data: Dict[str, Any], processor=No
             log_prefix=log_prefix,
             progress_interval=0,
         ) or {}
-        ok = int(stats.get('failed_assets') or 0) == 0 or int(stats.get('fixed_assets') or 0) > 0 or int(stats.get('cache_updates') or 0) > 0
+        ok = (
+            int(stats.get('scanned_assets') or 0) > 0
+            and (
+                int(stats.get('failed_assets') or 0) == 0
+                or int(stats.get('fixed_assets') or 0) > 0
+                or int(stats.get('cache_updates') or 0) > 0
+            )
+        )
         if ok:
             logger.info(
                 "  ➜ [%s] 完成：rows=%s fixed=%s cache_updates=%s failed=%s",
@@ -2706,7 +2713,47 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
             'completion': policy.get('completion'),
         }
 
+    # 单集候选搜索阶段也要触发一次轻量体检。
+    # 之前只在 manual-create / auto-create 前补齐，但前端列表页已经因为 root_fid 为空
+    # 把按钮置为“不可用”，用户根本进不到创建阶段。这里在 PC/SHA1 已有但
+    # p115_filesystem_cache 缺失时，实时用 PC 计算 FID 并查 115 详情回补缓存，然后重试定位。
+    fingerprint_repair = None
+    if item_type == 'Episode' and not file_rows and repair_p115_fingerprints_for_rows is not None:
+        try:
+            repair_payload = {
+                **dict(media_row or {}),
+                'item_type': 'Episode',
+                'share_type': 'episode_file',
+                'parent_series_tmdb_id': media_row.get('parent_series_tmdb_id') or media_row.get('series_tmdb_id'),
+                'season_number': media_row.get('season_number'),
+                'episode_number': media_row.get('episode_number'),
+            }
+            fingerprint_repair = _ensure_single_episode_share_fingerprints(
+                repair_payload,
+                processor=None,
+                log_prefix='共享资源搜索单集实时体检补缓存',
+            ) or {}
+            refreshed_rows = _load_episode_rows_for_fingerprint_payload(repair_payload)
+            if refreshed_rows:
+                media_row = {**dict(media_row or {}), **dict(refreshed_rows[0] or {})}
+            ids = _collect_media_identifiers(media_row)
+            file_rows = _get_p115_file_rows(ids['pickcodes'], ids['sha1s'])
+            if file_rows:
+                messages.append('已实时体检并补齐 p115_filesystem_cache')
+        except Exception as e:
+            logger.debug(
+                "  ➜ [共享资源] 搜索单集实时体检补缓存失败: tmdb=%s S%sE%s -> %s",
+                media_row.get('tmdb_id'), media_row.get('season_number'), media_row.get('episode_number'), e,
+            )
+
     if not file_rows:
+        detail = ''
+        if fingerprint_repair is not None:
+            stats = fingerprint_repair.get('stats') if isinstance(fingerprint_repair, dict) else None
+            if isinstance(stats, dict):
+                detail = f"；已触发实时体检：扫描 {stats.get('scanned_assets', 0)}，缓存回写 {stats.get('cache_updates', 0)}，失败 {stats.get('failed_assets', 0)}"
+            elif isinstance(fingerprint_repair, dict) and fingerprint_repair.get('message'):
+                detail = f"；实时体检结果：{fingerprint_repair.get('message')}"
         return {
             'resolvable': False,
             'root_fid': '',
@@ -2717,7 +2764,7 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
             'matched_sha1s': len(ids['sha1s']),
             'share_type': share_type,
             'share_item_type': share_item_type,
-            'message': 'media_metadata 中有记录，但没有通过 PC/SHA1 在 p115_filesystem_cache 反查到文件',
+            'message': 'media_metadata 中有记录，但没有通过 PC/SHA1 在 p115_filesystem_cache 反查到文件' + detail,
             'completion': policy.get('completion'),
         }
 
