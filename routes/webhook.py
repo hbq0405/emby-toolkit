@@ -422,6 +422,59 @@ def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: s
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 提交 webhook 电影自动分享探测失败: {e}", exc_info=True)
 
+def _get_processor_local_strm_root(processor) -> str:
+    """从 MediaProcessor / 配置中提取本地 STRM 根目录，用于补齐 p115_filesystem_cache.local_path。"""
+    candidates = []
+
+    if processor:
+        for attr in (
+            'local_strm_root',
+            'p115_local_strm_root',
+            'strm_root',
+            'p115_strm_root',
+        ):
+            try:
+                value = getattr(processor, attr, None)
+                if value:
+                    candidates.append(value)
+            except Exception:
+                pass
+
+    try:
+        nb_config = get_config() or {}
+        for key in (
+            'local_strm_root',
+            'p115_local_strm_root',
+            'strm_root',
+            'p115_strm_root',
+        ):
+            value = nb_config.get(key)
+            if value:
+                candidates.append(value)
+    except Exception:
+        pass
+
+    try:
+        app_config = config_manager.APP_CONFIG or {}
+        for key in (
+            'local_strm_root',
+            'p115_local_strm_root',
+            'strm_root',
+            'p115_strm_root',
+        ):
+            value = app_config.get(key)
+            if value:
+                candidates.append(value)
+    except Exception:
+        pass
+
+    for value in candidates:
+        text = str(value).strip().replace('\\', '/').rstrip('/')
+        if text:
+            return text
+
+    return ''
+
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
     """
@@ -643,9 +696,17 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                         
                         if rows_to_repair:
                             from tasks.p115_fingerprint_helpers import repair_p115_fingerprints_for_rows
+
+                            local_root = _get_processor_local_strm_root(processor)
+                            if not local_root:
+                                logger.warning(
+                                    "  ➜ [指纹补齐] 未获取到 local_strm_root，本次只能补齐 PC/SHA1/115 缓存基础字段，无法可靠写入 local_path。"
+                                )
+
                             repair_p115_fingerprints_for_rows(
                                 processor=processor,
                                 rows=rows_to_repair,
+                                local_root=local_root,
                                 update_db=True,
                                 allow_api_fetch=True,
                                 log_prefix="Webhook新集指纹补齐"
