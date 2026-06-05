@@ -1020,6 +1020,36 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             if success:
                 ok += 1
                 group_done = True
+                receive_title = ((resp or {}).get('data') or {}).get('receive_title') if isinstance(resp, dict) else None
+                context_title = context.get('title') or src.get('title') or src.get('file_name') or ''
+                source_item_type = str(src.get('item_type') or context.get('item_type') or '')
+                transfer_media_type = 'movie' if source_item_type == 'Movie' else 'tv'
+                if transfer_media_type == 'movie':
+                    transfer_tmdb_id = str(src.get('tmdb_id') or context.get('tmdb_id') or '')
+                else:
+                    transfer_tmdb_id = str(
+                        context.get('parent_tmdb_id')
+                        or src.get('parent_series_tmdb_id')
+                        or src.get('tmdb_id')
+                        or context.get('tmdb_id')
+                        or ''
+                    )
+                transfer_season, transfer_episode = _guess_se_from_source(src, context)
+                if receive_title and transfer_tmdb_id:
+                    P115CacheManager.save_transfer_context(
+                        receive_title,
+                        transfer_tmdb_id,
+                        transfer_media_type,
+                        context_title,
+                        season_number=transfer_season,
+                        episode_number=transfer_episode,
+                        pick_code=src.get('pick_code') or src.get('pc'),
+                        sha1=src.get('sha1'),
+                        source='shared-permanent-import',
+                        source_kind='shared_transfer_context',
+                        source_kinds=['shared_transfer_context', 'shared-permanent-import'],
+                        authority_role='expected',
+                    )
                 if is_already_saved:
                     # 4100024 是本账号已经接收过该分享，不是本次真实转存成功；不要向中心重复报 success，
                     # 但也绝不能报 failed。触发一次整理扫描，让已存在文件尽快被识别入库。

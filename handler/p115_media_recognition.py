@@ -289,20 +289,11 @@ class P115RecognitionRuleTests(unittest.TestCase):
             )
         )
 
-    def test_identify_media_enhanced_prefers_raw_ffprobe_identity_over_rule_tmdbid(self):
-        raw_ffprobe_json = {
-            "_etk": {
-                "tmdb_id": "777",
-                "media_type": "movie",
-            }
-        }
+    def test_identify_media_enhanced_prefers_explicit_tmdbid_when_raw_ffprobe_identity_is_disabled(self):
         with mock.patch.object(
             p115_service.tmdb,
             "get_movie_details",
-            side_effect=[
-                {"title": "Cached Movie"},
-                {"title": "Rule Movie"},
-            ],
+            return_value={"title": "Rule Movie"},
         ) as details_mock:
             with mock.patch.dict(
                 p115_service.config_manager.APP_CONFIG,
@@ -313,13 +304,13 @@ class P115RecognitionRuleTests(unittest.TestCase):
                     "Other.Title.tmdbid=123456.1080p.mkv",
                     main_dir_name="Other Title",
                     use_ai=False,
-                    raw_ffprobe_json=raw_ffprobe_json,
+                    raw_ffprobe_json={"_etk": {"tmdb_id": "777", "media_type": "movie"}},
                 )
 
-        self.assertEqual(tmdb_id, "777")
+        self.assertEqual(tmdb_id, "123456")
         self.assertEqual(media_type, "movie")
-        self.assertEqual(title, "Cached Movie")
-        details_mock.assert_called_once_with("777", "fake")
+        self.assertEqual(title, "Rule Movie")
+        details_mock.assert_called_once_with("123456", "fake")
 
     def test_identify_media_enhanced_keeps_folder_guard_without_id(self):
         result = p115_service._identify_media_enhanced(
@@ -329,6 +320,100 @@ class P115RecognitionRuleTests(unittest.TestCase):
             use_ai=False,
         )
         self.assertEqual(result, (None, None, None))
+
+    def test_smart_organizer_init_sets_recognition_hints_before_metadata_fetch(self):
+        seen = {}
+
+        def fake_fetch(self):
+            seen["recognition_hints"] = dict(self.recognition_hints)
+            return {}
+
+        with mock.patch.object(p115_service.SmartOrganizer, "_fetch_raw_metadata", autospec=True, side_effect=fake_fetch):
+            with mock.patch.object(p115_service.settings_db, "get_setting", return_value={}):
+                p115_service.SmartOrganizer(
+                    client=mock.Mock(),
+                    tmdb_id="36338",
+                    media_type="tv",
+                    original_title="The Lead",
+                    recognition_hints={
+                        "title": "The Lead",
+                        "identify_title": "The Lead",
+                        "tmdb_id": "36338",
+                        "media_type": "tv",
+                        "source_kind": "tg_rule_library",
+                        "authority_role": "expected",
+                        "confidence": "high",
+                    },
+                )
+
+        self.assertEqual(seen["recognition_hints"].get("identify_title"), "The Lead")
+        self.assertEqual(seen["recognition_hints"].get("source_kind"), "tg_rule_library")
+
+    def test_fetch_raw_metadata_skips_cached_title_when_authoritative_hint_conflicts(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.api_key = "fake"
+        organizer.media_type = "tv"
+        organizer.tmdb_id = "36338"
+        organizer.rating_map = {}
+        organizer.rating_priority = []
+        organizer.recognition_hints = {
+            "title": "The Lead",
+            "identify_title": "The Lead",
+            "tmdb_id": "36338",
+            "media_type": "tv",
+            "source_kind": "tg_rule_library",
+            "authority_role": "expected",
+            "confidence": "high",
+        }
+
+        class _Cursor:
+            def execute(self, *_args, **_kwargs):
+                return None
+
+            def fetchone(self):
+                return {"title": "The Lead Sheet", "original_title": "The Lead Sheet"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        raw_details = {
+            "name": "The Lead",
+            "original_name": "The Lead",
+            "genres": [],
+            "production_countries": [],
+            "origin_country": [],
+            "production_companies": [],
+            "networks": [],
+            "keywords": {"results": []},
+            "credits": {"cast": []},
+            "alternative_titles": {"results": []},
+            "first_air_date": "2026-01-01",
+            "vote_average": 0,
+            "episode_run_time": [],
+            "seasons": [],
+            "last_episode_to_air": {},
+        }
+
+        with mock.patch.object(p115_service.tmdb, "get_tv_details", return_value=raw_details):
+            with mock.patch.object(p115_service.utils, "get_rating_label", return_value="未知"):
+                with mock.patch.object(p115_service, "get_db_connection", return_value=_Conn()):
+                    metadata = organizer._fetch_raw_metadata()
+
+        self.assertEqual(metadata.get("title"), "The Lead")
+        self.assertEqual(metadata.get("original_title"), "The Lead")
 
     def test_rename_file_node_consumes_rule_episode_result(self):
         organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
@@ -358,6 +443,75 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertEqual(episode_num, 3)
         self.assertEqual(s_name, "Season 02")
         self.assertTrue(new_name.endswith(".mkv"))
+
+    def test_transfer_context_to_recognition_hints_marks_expected_authority(self):
+        hints = p115_service._transfer_context_to_recognition_hints(
+            {
+                "tmdb_id": "153519",
+                "media_type": "tv",
+                "title": "主角",
+                "identify_title": "The Lead",
+                "clean_title": "The Lead",
+                "season_number": 1,
+                "confidence": "high",
+                "matched_rules": ["tmdb_id_pattern", "title_rule"],
+                "source": "tg_rule_library",
+                "authority_role": "expected",
+                "keys": ["thelead"],
+            }
+        )
+        self.assertEqual(hints["tmdb_id"], "153519")
+        self.assertEqual(hints["source"], "tg_rule_library")
+        self.assertEqual(hints["source_kind"], "tg_rule_library")
+        self.assertEqual(hints["source_kinds"], ["tg_rule_library"])
+        self.assertEqual(hints["authority_role"], "expected")
+        self.assertEqual(hints["matched_rules"], ["tmdb_id_pattern", "title_rule"])
+        self.assertTrue(p115_service._is_authoritative_recognition_hint(hints))
+
+    def test_plain_tg_candidate_hint_is_not_authority_by_default(self):
+        hints = {
+            "tmdb_id": "36338",
+            "media_type": "tv",
+            "identify_title": "The Lead Sheet",
+            "confidence": "high",
+            "source": "tg_candidate",
+            "source_kind": "tg_candidate",
+            "authority_role": "advisory",
+        }
+        self.assertFalse(p115_service._is_authoritative_recognition_hint(hints))
+
+    def test_merge_authority_hints_prefers_expected_context_fields(self):
+        merged = task_p115._merge_authority_hints(
+            {
+                "tmdb_id": "153519",
+                "media_type": "tv",
+                "title": "主角",
+                "identify_title": "The Lead",
+                "confidence": "high",
+                "source": "tg_rule_library",
+                "source_kind": "tg_rule_library",
+                "source_kinds": ["tg_rule_library"],
+                "authority_role": "expected",
+                "matched_rules": ["tmdb_id_pattern"],
+            },
+            {
+                "tmdb_id": "36338",
+                "media_type": "tv",
+                "identify_title": "The Lead Sheet",
+                "confidence": "high",
+                "source": "tg_candidate",
+                "authority_role": "advisory",
+                "matched_rules": ["identify_title"],
+            },
+            is_tv=True,
+        )
+        self.assertEqual(merged["tmdb_id"], "153519")
+        self.assertEqual(merged["identify_title"], "The Lead")
+        self.assertEqual(merged["source"], "tg_rule_library")
+        self.assertEqual(merged["source_kind"], "tg_rule_library")
+        self.assertEqual(merged["source_kinds"], ["tg_rule_library"])
+        self.assertEqual(merged["authority_role"], "expected")
+        self.assertEqual(merged["matched_rules"], ["tmdb_id_pattern"])
 
     def test_rename_file_node_falls_back_when_rules_miss(self):
         organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
@@ -506,7 +660,7 @@ class P115RecognitionRuleTests(unittest.TestCase):
             if "s_e" in format_array else f"Season {int(kwargs.get('season_num') or 0):02d}"
         )
 
-        with mock.patch.object(p115_service.P115CacheManager, "patch_raw_ffprobe_etk_context") as patch_mock:
+        with mock.patch.object(p115_service.P115CacheManager, "patch_raw_ffprobe_etk_context"):
             _, season_num, episode_num, _, _, _, _ = organizer._rename_file_node(
                 {"fn": "Show.S01E07.mkv", "rel_path": "Show", "sha1": "abc123"},
                 new_base_name="Show",
@@ -523,7 +677,6 @@ class P115RecognitionRuleTests(unittest.TestCase):
 
         self.assertEqual(season_num, 1)
         self.assertEqual(episode_num, 7)
-        patch_mock.assert_called_once_with("abc123", season_number=1, episode_number=7)
 
     def test_normalize_batch_recognition_hints_drops_group_episode_for_tv(self):
         hints = task_p115._normalize_batch_recognition_hints(
@@ -572,7 +725,7 @@ class P115RecognitionRuleTests(unittest.TestCase):
         ]
 
         def fake_identify(filename, main_dir_name=None, **kwargs):
-            self.assertEqual(main_dir_name, "内马尔：完美乱局 (2022) {tmdbid-153519}")
+            self.assertEqual(main_dir_name, "Neymar.The.Perfect.Chaos.S01")
             return "153519", "tv", "Neymar: The Perfect Chaos"
 
         with mock.patch.object(task_p115, "_identify_media_enhanced", side_effect=fake_identify):

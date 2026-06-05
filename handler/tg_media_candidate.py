@@ -632,6 +632,7 @@ def build_tg_media_candidate(
         "_tg_source": "channel",
         "source": "channel",
         "source_kind": "channel",
+        "authority_role": "advisory",
         "title": title_for_display,
         "name": title_for_display,
         "original_title": original_title or title_for_display,
@@ -709,6 +710,8 @@ def candidate_to_recognition_hints(candidate):
         "identify_title": candidate.get("identify_title") or candidate.get("clean_title") or candidate.get("title"),
         "year": candidate.get("year"),
         "media_type": candidate.get("media_type") or candidate.get("item_type"),
+        "source_kind": candidate.get("source_kind") or candidate.get("source") or "tg_candidate",
+        "source_kinds": list(candidate.get("source_kinds") or ([candidate.get("source_kind") or candidate.get("source") or "tg_candidate"])),
         "season_number": candidate.get("season_number"),
         "episode_number": candidate.get("episode_number"),
         "is_special": bool(candidate.get("is_special")),
@@ -731,7 +734,8 @@ def candidate_to_recognition_hints(candidate):
         "conflict_reason": candidate.get("conflict_reason") or "",
         "parse_version": candidate.get("parse_version") or TG_CANDIDATE_PARSE_VERSION,
         "alias_titles": list(candidate.get("alias_titles") or []),
-        "source": "tg_candidate",
+        "source": candidate.get("source") or "tg_candidate",
+        "authority_role": candidate.get("authority_role") or "advisory",
     }
 
 

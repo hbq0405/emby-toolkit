@@ -12,7 +12,7 @@ from telethon.errors import SessionPasswordNeededError, AuthKeyUnregisteredError
 import config_manager
 import constants
 from database import settings_db
-from handler.p115_service import P115Service
+from handler.p115_service import P115Service, P115CacheManager
 from utils import DEFAULT_TG_REGEX
 from handler.tg_media_candidate import (
     build_channel_task_payload,
@@ -1133,6 +1133,33 @@ def _process_tg_queue():
                     res = client.share_import(share_code, receive_code, target_cid)
                     if res and res.get('state'):
                         logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
+                        receive_title = (res.get('data') or {}).get('receive_title') if isinstance(res, dict) else None
+                        transfer_media_type = 'movie' if str(task.get('item_type') or '').lower() == 'movie' else 'tv'
+                        if receive_title and task.get('tmdb_id') and task.get('title'):
+                            authority_role = candidate_hints.get('authority_role') or 'advisory'
+                            transfer_source = candidate_hints.get('source') or 'tg-channel-import'
+                            transfer_source_kind = candidate_hints.get('source_kind') or transfer_source
+                            P115CacheManager.save_transfer_context(
+                                receive_title,
+                                task.get('tmdb_id'),
+                                transfer_media_type,
+                                task.get('title'),
+                                season_number=task.get('season_number'),
+                                episode_number=task.get('episode_number'),
+                                source=transfer_source,
+                                source_kind=transfer_source_kind,
+                                source_kinds=candidate_hints.get('source_kinds') or [transfer_source_kind],
+                                confidence=candidate_hints.get('confidence') or 'high',
+                                authority_role=authority_role,
+                                identify_title=candidate_hints.get('identify_title') or task.get('title'),
+                                clean_title=candidate_hints.get('clean_title') or task.get('title'),
+                                matched_rules=candidate_hints.get('matched_rules') or [],
+                                evidence=candidate_hints.get('evidence') or [],
+                                conflict_reason=candidate_hints.get('conflict_reason') or '',
+                                alias_titles=candidate_hints.get('alias_titles') or [],
+                                parse_version=candidate_hints.get('parse_version') or '',
+                                is_special=task.get('is_special'),
+                            )
                         
                         notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
                         if 'transfer_success' in notify_types:
