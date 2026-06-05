@@ -3040,22 +3040,6 @@ def get_config():
     return config_manager.APP_CONFIG
 
 
-CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION = getattr(
-    constants,
-    'CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION',
-    'p115_mediainfo_assisted_recognition'
-)
-
-
-def is_p115_mediainfo_assisted_recognition_enabled():
-    """媒体信息辅助识别开关：必须同时开启媒体信息格式化才生效。"""
-    cfg = get_config() or {}
-    return bool(
-        cfg.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False)
-        and cfg.get(CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION, False)
-    )
-
-
 class SmartOrganizer(P115MediaAnalyzerMixin):
     _P115_INVALID_NAME_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
 
@@ -3872,7 +3856,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         hint_season = _se_int(normalized_hints.get('season_number')) if normalized_hints else None
         hint_episode = _se_int(normalized_hints.get('episode_number')) if normalized_hints else None
 
-        if is_tv and real_info and is_p115_mediainfo_assisted_recognition_enabled():
+        mediainfo_assisted_recognition = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION, False)
+        if is_tv and real_info and mediainfo_assisted_recognition():
             raw_probe_season = _se_int(real_info.get('season_number'))
             raw_probe_episode = _se_int(real_info.get('episode_number'))
             if season_num is None:
@@ -6426,7 +6411,8 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     # ★ 优先级 0：共享媒体信息缓存身份命中
     # raw_ffprobe_json 顶层 _etk 来自 p115_mediainfo_cache，跨账号仍可复用。
     # =================================================================
-    if is_p115_mediainfo_assisted_recognition_enabled():
+    mediainfo_assisted_recognition = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION, False)
+    if mediainfo_assisted_recognition():
         probe_identity = _extract_raw_ffprobe_identity(raw_ffprobe_json)
         if not probe_identity and sha1:
             probe_identity = _get_raw_ffprobe_identity_by_sha1(sha1)
