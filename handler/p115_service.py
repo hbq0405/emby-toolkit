@@ -3039,6 +3039,23 @@ class P115DeleteBuffer:
 def get_config():
     return config_manager.APP_CONFIG
 
+
+CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION = getattr(
+    constants,
+    'CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION',
+    'p115_mediainfo_assisted_recognition'
+)
+
+
+def is_p115_mediainfo_assisted_recognition_enabled():
+    """媒体信息辅助识别开关：必须同时开启媒体信息格式化才生效。"""
+    cfg = get_config() or {}
+    return bool(
+        cfg.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False)
+        and cfg.get(CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION, False)
+    )
+
+
 class SmartOrganizer(P115MediaAnalyzerMixin):
     _P115_INVALID_NAME_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
 
@@ -3855,23 +3872,23 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         hint_season = _se_int(normalized_hints.get('season_number')) if normalized_hints else None
         hint_episode = _se_int(normalized_hints.get('episode_number')) if normalized_hints else None
 
-        # if is_tv and real_info:
-        #     raw_probe_season = _se_int(real_info.get('season_number'))
-        #     raw_probe_episode = _se_int(real_info.get('episode_number'))
-        #     if season_num is None:
-        #         season_num = raw_probe_season
-        #         if raw_probe_season is not None:
-        #             season_source = 'raw_ffprobe'
-        #     if episode_num is None:
-        #         episode_num = raw_probe_episode
-        #         if raw_probe_episode is not None:
-        #             episode_source = 'raw_ffprobe'
-        #     if (raw_probe_season is not None or raw_probe_episode is not None) and not silent_log:
-        #         logger.info(
-        #             f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
-        #             f"S{int(raw_probe_season if raw_probe_season is not None else 1):02d}"
-        #             f"E{int(raw_probe_episode if raw_probe_episode is not None else 0):02d} | {original_name}"
-        #         )
+        if is_tv and real_info and is_p115_mediainfo_assisted_recognition_enabled():
+            raw_probe_season = _se_int(real_info.get('season_number'))
+            raw_probe_episode = _se_int(real_info.get('episode_number'))
+            if season_num is None:
+                season_num = raw_probe_season
+                if raw_probe_season is not None:
+                    season_source = 'raw_ffprobe'
+            if episode_num is None:
+                episode_num = raw_probe_episode
+                if raw_probe_episode is not None:
+                    episode_source = 'raw_ffprobe'
+            if (raw_probe_season is not None or raw_probe_episode is not None) and not silent_log:
+                logger.info(
+                    f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
+                    f"S{int(raw_probe_season if raw_probe_season is not None else 1):02d}"
+                    f"E{int(raw_probe_episode if raw_probe_episode is not None else 0):02d} | {original_name}"
+                )
 
         if is_tv and (season_num is None or episode_num is None):
 
@@ -6409,34 +6426,35 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     # ★ 优先级 0：共享媒体信息缓存身份命中
     # raw_ffprobe_json 顶层 _etk 来自 p115_mediainfo_cache，跨账号仍可复用。
     # =================================================================
-    # probe_identity = _extract_raw_ffprobe_identity(raw_ffprobe_json)
-    # if not probe_identity and sha1:
-    #     probe_identity = _get_raw_ffprobe_identity_by_sha1(sha1)
+    if is_p115_mediainfo_assisted_recognition_enabled():
+        probe_identity = _extract_raw_ffprobe_identity(raw_ffprobe_json)
+        if not probe_identity and sha1:
+            probe_identity = _get_raw_ffprobe_identity_by_sha1(sha1)
 
-    # if probe_identity:
-    #     tmdb_id = probe_identity.get("tmdb_id")
-    #     probe_type = probe_identity.get("media_type")
+        if probe_identity:
+            tmdb_id = probe_identity.get("tmdb_id")
+            probe_type = probe_identity.get("media_type")
 
-    #     # forced_media_type 仍然拥有最终约束权，但不允许与缓存类型冲突时静默误判。
-    #     if forced_media_type and forced_media_type != probe_type:
-    #         logger.debug(
-    #             f"  ➜ [raw_ffprobe识别] 命中 TMDb:{tmdb_id} 类型:{probe_type}，"
-    #             f"但当前强制类型为 {forced_media_type}，跳过缓存身份。"
-    #         )
-    #     else:
-    #         media_type = probe_type
-    #         official_title = _fetch_title_by_id(tmdb_id, media_type)
-    #         se_text = ''
-    #         if probe_identity.get('season_number') not in (None, ''):
-    #             se_text += f", S{int(probe_identity.get('season_number')):02d}"
-    #         if probe_identity.get('episode_number') not in (None, ''):
-    #             se_text += f"E{int(probe_identity.get('episode_number')):02d}"
-    #         logger.info(
-    #             f"  ➜ [raw_ffprobe识别] 命中共享媒体信息缓存: "
-    #             f"TMDb:{tmdb_id}, type:{media_type}{se_text}"
-    #             f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
-    #         )
-    #         return tmdb_id, media_type, official_title or filename
+            # forced_media_type 仍然拥有最终约束权，但不允许与缓存类型冲突时静默误判。
+            if forced_media_type and forced_media_type != probe_type:
+                logger.debug(
+                    f"  ➜ [raw_ffprobe识别] 命中 TMDb:{tmdb_id} 类型:{probe_type}，"
+                    f"但当前强制类型为 {forced_media_type}，跳过缓存身份。"
+                )
+            else:
+                media_type = probe_type
+                official_title = _fetch_title_by_id(tmdb_id, media_type)
+                se_text = ''
+                if probe_identity.get('season_number') not in (None, ''):
+                    se_text += f", S{int(probe_identity.get('season_number')):02d}"
+                if probe_identity.get('episode_number') not in (None, ''):
+                    se_text += f"E{int(probe_identity.get('episode_number')):02d}"
+                logger.info(
+                    f"  ➜ [raw_ffprobe识别] 命中共享媒体信息缓存: "
+                    f"TMDb:{tmdb_id}, type:{media_type}{se_text}"
+                    f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
+                )
+                return tmdb_id, media_type, official_title or filename
 
     if normalized_hints.get('tmdb_id') and normalized_hints.get('confidence') == 'high':
         hinted_type = normalized_hints.get('media_type') or media_type

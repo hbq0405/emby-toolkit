@@ -606,6 +606,20 @@
                           </n-text>
                       </template>
                   </n-form-item>
+                  <n-form-item label="媒体信息辅助识别" path="p115_mediainfo_assisted_recognition">
+                      <n-switch
+                          v-model:value="configModel.p115_mediainfo_assisted_recognition"
+                          :disabled="organizeDependentDisabled || !configModel.p115_generate_mediainfo"
+                      >
+                          <template #checked>启用辅助识别</template>
+                          <template #unchecked>不参与识别</template>
+                      </n-switch>
+                      <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                              允许整理流程复用媒体信息缓存中的 _etk 身份辅助识别 TMDb 与季集号；仅在“媒体信息格式化”开启时生效。
+                          </n-text>
+                      </template>
+                  </n-form-item>
                   <n-form-item label="默认音轨/字幕">
                       <n-button
                           @click="openDefaultStreamConfig"
@@ -2246,6 +2260,7 @@ const enforceMediainfoExclusive = (preferred = 'center', notify = true) => {
     if (notify) message.info('已关闭“媒体信息中心化”，同步生成媒体信息与中心化只能二选一。');
   } else {
     configModel.value.p115_generate_mediainfo = false;
+    configModel.value.p115_mediainfo_assisted_recognition = false;
     if (notify) message.info('已关闭“同步生成媒体信息”，媒体信息中心化与同步生成只能二选一。');
   }
 };
@@ -2566,6 +2581,15 @@ watch(
       enforceMediainfoExclusive('center');
     } else {
       enforceMediainfoExclusive('center');
+    }
+  }
+);
+
+watch(
+  () => configModel.value?.p115_generate_mediainfo,
+  (enabled) => {
+    if (configModel.value && !enabled) {
+      configModel.value.p115_mediainfo_assisted_recognition = false;
     }
   }
 );
@@ -3217,8 +3241,16 @@ const save = async () => {
     }
     if (cleanConfigPayload.p115_mediainfo_center && cleanConfigPayload.p115_generate_mediainfo) {
         cleanConfigPayload.p115_generate_mediainfo = false;
-        if (configModel.value) configModel.value.p115_generate_mediainfo = false;
+        cleanConfigPayload.p115_mediainfo_assisted_recognition = false;
+        if (configModel.value) {
+            configModel.value.p115_generate_mediainfo = false;
+            configModel.value.p115_mediainfo_assisted_recognition = false;
+        }
         message.warning('媒体信息中心化与同步生成媒体信息互斥，已自动关闭“同步生成媒体信息”。');
+    }
+    if (!cleanConfigPayload.p115_generate_mediainfo) {
+        cleanConfigPayload.p115_mediainfo_assisted_recognition = false;
+        if (configModel.value) configModel.value.p115_mediainfo_assisted_recognition = false;
     }
     if (cleanConfigPayload.p115_shared_resource_enabled) {
         if (!['permanent', 'virtual'].includes(cleanConfigPayload.p115_shared_resource_mode)) {

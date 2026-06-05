@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "10.3.7"  # 更新版本号
+APP_VERSION = "10.3.8"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -63,6 +63,7 @@ CONFIG_OPTION_LOCAL_STRM_ROOT = "local_strm_root"                # 本地生成.
 CONFIG_OPTION_ETK_SERVER_URL = "etk_server_url"                  # ETK服务器地址 (用于strm文件内)
 CONFIG_OPTION_115_ENABLE_SYNC_DELETE = "p115_enable_sync_delete" # 是否联动删除网盘文件
 CONFIG_OPTION_115_GENERATE_MEDIAINFO = "p115_generate_mediainfo" # 是否生成MediaInfo文件
+CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION = "p115_mediainfo_assisted_recognition" # 是否启用MediaInfo辅助识别
 CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"           # 是否下载字幕文件
 CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"           # 是否启用本地清理功能
 CONFIG_OPTION_115_MEDIAINFO_CENTER = "p115_mediainfo_center"     # 分布式媒体信息
