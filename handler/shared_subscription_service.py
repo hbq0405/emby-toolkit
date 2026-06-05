@@ -169,15 +169,47 @@ def _share_import_success(resp: Any) -> bool:
         if code in ('0', '200'):
             return True
     return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist'))
-def _is_share_import_local_account_issue(resp: Any) -> bool:
+def _is_share_import_local_account_issue(resp: Any) -> bool:def _is_share_import_local_account_issue(resp: Any) -> bool:
     """本机账号/频率/空间/幂等问题，不应上报中心 failed。"""
     if _is_share_import_already_saved(resp):
         return True
+
+    code = _share_import_resp_code(resp)
+    if code in ('4200041',):
+        return True
+
     text = _share_import_resp_text(resp).lower()
     return any(k in text for k in (
-        '空间不足', '超过限制', '转存超限', '任务上限', '频繁',
-        '770004', '990001', '4100010', '4100025',
-        'quota', 'limit', 'too many', 'rate',
+        '空间不足',
+        '超过限制',
+        '转存超限',
+        '任务上限',
+        '频繁',
+
+        '你已被限制接收',
+        '限制接收',
+        '被限制接收',
+        '接收功能受限',
+        '接收功能被限制',
+
+        '你已被限制转存',
+        '限制转存',
+        '被限制转存',
+        '转存功能受限',
+        '转存功能被限制',
+
+        '770004',
+        '990001',
+        '4100010',
+        '4100025',
+        '4200041',
+
+        'quota',
+        'limit',
+        'too many',
+        'rate',
+        'account',
+        'permission',
     ))
 def _is_share_import_source_dead(resp: Any) -> bool:
     """只有明确死链/提取码错误/源文件删除，才允许向中心上报 failed。"""
