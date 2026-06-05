@@ -3882,7 +3882,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     episode_source = 'raw_ffprobe'
             if (raw_probe_season is not None or raw_probe_episode is not None) and not silent_log:
                 logger.info(
-                    f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
+                    f"  ➜ [媒体信息辅助识别] 命中缓存季集号 -> "
                     f"S{int(raw_probe_season if raw_probe_season is not None else 1):02d}"
                     f"E{int(raw_probe_episode if raw_probe_episode is not None else 0):02d} | {original_name}"
                 )
@@ -6435,7 +6435,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             # forced_media_type 仍然拥有最终约束权，但不允许与缓存类型冲突时静默误判。
             if forced_media_type and forced_media_type != probe_type:
                 logger.debug(
-                    f"  ➜ [raw_ffprobe识别] 命中 TMDb:{tmdb_id} 类型:{probe_type}，"
+                    f"  ➜ [媒体信息辅助识别] 命中 TMDb:{tmdb_id} 类型:{probe_type}，"
                     f"但当前强制类型为 {forced_media_type}，跳过缓存身份。"
                 )
             else:
@@ -6447,7 +6447,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                 if probe_identity.get('episode_number') not in (None, ''):
                     se_text += f"E{int(probe_identity.get('episode_number')):02d}"
                 logger.info(
-                    f"  ➜ [raw_ffprobe识别] 命中共享媒体信息缓存: "
+                    f"  ➜ [媒体信息辅助识别] 命中共享媒体信息缓存: "
                     f"TMDb:{tmdb_id}, type:{media_type}{se_text}"
                     f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
                 )
