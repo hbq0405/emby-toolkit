@@ -241,6 +241,23 @@ class SharedCenterClient:
 
 
 
+
+    def check_resource_blacklist(self, item: Dict[str, Any] = None, items: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """创建 115 分享/登记缺口前检查中心资源黑名单。"""
+        if items is not None:
+            payload = {'items': [dict(x) for x in (items or []) if isinstance(x, dict)]}
+        else:
+            payload = {'item': dict(item or {})}
+        return self._post('/api/v1/blacklist/check', payload, timeout=15)
+
+    def report_resource_blacklist(self, item: Dict[str, Any], *, reason: str = 'violation', message: str = '', source: str = 'auto_report') -> Dict[str, Any]:
+        """确认资源级违规后上报中心黑名单。账号 24 小时限制不要调用。"""
+        payload = dict(item or {})
+        payload['reason'] = reason or payload.get('reason') or 'violation'
+        payload['message'] = message or payload.get('message') or ''
+        payload['source'] = source or payload.get('source') or 'auto_report'
+        return self._post('/api/v1/blacklist/report', payload, timeout=20)
+
     def list_share_requests(self, *, status: str = 'open', keyword: str = '', media_type: str = '', target_type: str = '', limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         """拉取共享中心求分享列表。维护任务用于自动响应别人发布的求分享。"""
         import urllib.parse

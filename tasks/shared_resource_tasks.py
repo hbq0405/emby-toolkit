@@ -1194,6 +1194,47 @@ def _blacklist_auto_gap_candidate(
             exc_info=True,
         )
 
+
+def _center_blacklist_item_from_identity(identity: Dict[str, Any], fallback: Dict[str, Any] = None) -> Dict[str, Any]:
+    identity = dict(identity or {})
+    fallback = dict(fallback or {})
+    item_type = identity.get('item_type') or fallback.get('share_item_type') or fallback.get('item_type') or fallback.get('share_type') or ''
+    share_type = str(fallback.get('share_type') or identity.get('share_type') or '').strip().lower()
+    if share_type in ('season_pack', 'tv_pack'):
+        item_type = 'Season'
+    elif share_type == 'series_pack':
+        item_type = 'Series'
+    elif share_type == 'episode_file':
+        item_type = 'Episode'
+    return {
+        'tmdb_id': str(identity.get('parent_series_tmdb_id') or identity.get('tmdb_id') or fallback.get('parent_series_tmdb_id') or fallback.get('tmdb_id') or fallback.get('share_tmdb_id') or '').strip(),
+        'item_type': item_type or ('Movie' if str(fallback.get('media_type') or '').lower() == 'movie' else 'Season'),
+        'season_number': identity.get('season_number') if identity.get('season_number') not in (None, '') else fallback.get('season_number'),
+        'episode_number': identity.get('episode_number') if identity.get('episode_number') not in (None, '') else fallback.get('episode_number'),
+        'title': identity.get('title') or identity.get('standard_title') or fallback.get('standard_title') or fallback.get('title') or fallback.get('display_title') or '',
+        'release_year': identity.get('release_year') or fallback.get('release_year'),
+    }
+
+
+def _center_resource_blacklisted(client: SharedCenterClient, item: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        resp = client.check_resource_blacklist(item=item)
+        if resp.get('blacklisted'):
+            return resp.get('first_match') or {'blacklisted': True, 'message': '命中中心黑名单'}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 中心黑名单检查失败，为安全起见跳过自动分享: {e}")
+        return {'blacklisted': True, 'message': f'中心黑名单检查失败：{e}'}
+    return {}
+
+
+def _report_center_resource_blacklist(client: SharedCenterClient, item: Dict[str, Any], resp: Any, reason: str = 'share_blocked') -> None:
+    try:
+        message = _share_resp_text(resp)
+        client.report_resource_blacklist(item, reason=reason, message=message, source='auto_report')
+        logger.info(f"  ➜ [共享资源] 已上报中心资源黑名单：{item.get('title') or item.get('tmdb_id')} reason={reason}")
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 上报中心资源黑名单失败: {e}")
+
 def _flatten_center_search_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     items = []
     for block in (data or {}).get('results') or []:
@@ -1585,12 +1626,21 @@ def _create_auto_share_for_single_gap(client: SharedCenterClient, gap: Dict[str,
                 result['skipped'] += 1
                 continue
 
+            blacklist_item = _center_blacklist_item_from_identity(standard_identity, candidate)
+            blacklist_hit = _center_resource_blacklisted(client, blacklist_item)
+            if blacklist_hit:
+                result['skipped'] += 1
+                result['message'] = blacklist_hit.get('message') or '命中中心黑名单，跳过自动分享'
+                logger.info(f"  ➜ [共享资源] 命中中心黑名单，跳过自动分享：{blacklist_item.get('title') or blacklist_item.get('tmdb_id')}")
+                continue
+
             share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
             if not share_resp or not share_resp.get('state'):
                 if _looks_share_source_missing(share_resp):
                     _blacklist_auto_gap_candidate(candidate_gap, candidate, files, root_fid=root_fid, root_name=root_name, share_resp=share_resp, reason='source_missing')
                 elif _looks_share_blocked(share_resp):
                     _blacklist_auto_gap_candidate(candidate_gap, candidate, files, root_fid=root_fid, root_name=root_name, share_resp=share_resp, reason='share_blocked')
+                    _report_center_resource_blacklist(client, blacklist_item, share_resp, reason='share_blocked')
                 result['failed'] += 1
                 result['message'] = f'创建 115 分享失败：{share_resp}'
                 continue
@@ -2363,8 +2413,15 @@ def _create_completed_season_pack_share(
     if not share_fids:
         return {'ok': False, 'message': '创建完结季季包分享失败：缺少可分享 FID', 'reason': 'season_pack_share_fids_missing'}
 
+    blacklist_item = _center_blacklist_item_from_identity(standard_identity, candidate)
+    blacklist_hit = _center_resource_blacklisted(client, blacklist_item)
+    if blacklist_hit:
+        return {'ok': False, 'skipped': True, 'reason': 'RESOURCE_BLACKLISTED', 'message': blacklist_hit.get('message') or '命中中心黑名单，跳过完结季季包分享', 'blacklist': blacklist_hit}
+
     share_resp = p115.share_create(share_fids, share_duration=-1, receive_code=None)
     if not share_resp or not share_resp.get('state'):
+        if _looks_share_blocked(share_resp):
+            _report_center_resource_blacklist(client, blacklist_item, share_resp, reason='share_blocked')
         return {'ok': False, 'message': f'创建完结季季包分享失败：{share_resp}', 'share_response': share_resp, 'share_fids': share_fids}
 
     data = share_resp.get('data') or {}
@@ -3071,8 +3128,23 @@ def _create_auto_share_request_response(sr, request_filter: Dict[str, Any], cand
 
     root_fid = str(share_data.get('root_fid') or '').strip()
     receive_code = str(share_data.get('receive_code') or '').strip() or None
+
+    standard_identity_for_check = sr._standard_media_identity_for_share({
+        **share_data,
+        'item_type': share_data.get('item_type') or 'Season',
+        'share_type': share_data.get('share_type') or ('season_pack' if share_data.get('season_number') else 'movie_folder'),
+    })
+    blacklist_item = _center_blacklist_item_from_identity(standard_identity_for_check, share_data)
+    sync_client = SharedCenterClient()
+    if sync_client.ready:
+        blacklist_hit = _center_resource_blacklisted(sync_client, blacklist_item)
+        if blacklist_hit:
+            return {'success': False, 'skipped': True, 'reason': 'RESOURCE_BLACKLISTED', 'message': blacklist_hit.get('message') or '命中中心黑名单，跳过自动响应求分享', 'blacklist': blacklist_hit}
+
     share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=receive_code)
     if not share_resp or not share_resp.get('state'):
+        if sync_client.ready and _looks_share_blocked(share_resp):
+            _report_center_resource_blacklist(sync_client, blacklist_item, share_resp, reason='share_blocked')
         return {'success': False, 'message': f"创建 115 分享失败: {share_resp}"}
 
     share_resp_data = share_resp.get('data') or {}

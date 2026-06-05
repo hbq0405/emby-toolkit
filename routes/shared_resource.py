@@ -458,6 +458,121 @@ def _center_json_request(method: str, path: str, *, params: Dict[str, Any] = Non
         raise RuntimeError(msg or f'中心接口 HTTP {resp.status_code}')
     return resp.json() if resp.text else {}
 
+
+def _looks_resource_violation_response(resp: Any) -> bool:
+    try:
+        text = json.dumps(resp, ensure_ascii=False).lower()
+    except Exception:
+        text = str(resp or '').lower()
+
+    resource_violation_keywords = (
+        '文件违规',
+        '内容违规',
+        '资源违规',
+        '涉嫌违规',
+        '违规文件',
+        '违规资源',
+        '禁止分享该文件',
+        '禁止分享文件',
+        '禁止分享此文件',
+        '审核失败',
+        '审核不通过',
+        '被屏蔽',
+        '侵权',
+        '违法',
+        '敏感',
+        '暴恐',
+        '涉政',
+        '暴恐涉政',
+        '恐怖',
+        '恐怖主义',
+        '政治敏感',
+        'violation',
+        'illegal',
+        'copyright',
+        'forbidden by policy',
+        'risk file',
+    )
+
+    account_limit_keywords = (
+        '24小时',
+        '24 小时',
+        '账号',
+        '账户',
+        '功能权限',
+        '分享功能',
+        '禁止分享功能',
+        '分享功能受限',
+        '分享功能被限制',
+        '转存功能受限',
+        '转存功能被限制',
+        '频繁',
+        'rate limit',
+        'too many',
+        'account',
+        'permission',
+    )
+
+    # 明确出现资源违规关键词时，优先认为是资源级风险。
+    # 这样“账号因分享暴恐涉政资源被限制”也能把资源上报中心黑名单。
+    if any(k in text for k in resource_violation_keywords):
+        return True
+
+    # 没有资源违规关键词，只是账号/频率/功能限制时，不上报资源黑名单。
+    if any(k in text for k in account_limit_keywords):
+        return False
+
+    return False
+
+
+def _center_blacklist_item_for_share(data: Dict[str, Any], standard_identity: Dict[str, Any] = None) -> Dict[str, Any]:
+    data = dict(data or {})
+    standard_identity = dict(standard_identity or {})
+    share_type = str(data.get('share_type') or '').strip().lower()
+    item_type = standard_identity.get('item_type') or data.get('item_type') or ''
+    if share_type in ('season_pack', 'tv_pack'):
+        item_type = 'Season'
+    elif share_type == 'series_pack':
+        item_type = 'Series'
+    elif share_type == 'episode_file':
+        item_type = 'Episode'
+    tmdb_id = standard_identity.get('parent_series_tmdb_id') or standard_identity.get('tmdb_id') or data.get('parent_series_tmdb_id') or data.get('tmdb_id')
+    return {
+        'tmdb_id': str(tmdb_id or '').strip(),
+        'item_type': item_type or ('Movie' if share_type in ('movie', 'movie_file', 'movie_folder') else 'Season'),
+        'season_number': standard_identity.get('season_number') if standard_identity.get('season_number') not in (None, '') else data.get('season_number'),
+        'episode_number': standard_identity.get('episode_number') if standard_identity.get('episode_number') not in (None, '') else data.get('episode_number'),
+        'title': standard_identity.get('title') or data.get('title') or data.get('root_name') or '',
+        'release_year': standard_identity.get('release_year') or data.get('release_year'),
+    }
+
+
+def _check_center_resource_blacklist(item: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = _get_shared_config()
+    if not cfg.get('enabled') or not cfg.get('device_token'):
+        return {}
+    try:
+        resp = _center_json_request('POST', '/api/v1/blacklist/check', json_body={'item': item}, timeout=15)
+        if resp.get('blacklisted'):
+            return resp.get('first_match') or {'blacklisted': True, 'message': '命中中心黑名单'}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 中心黑名单检查失败，为安全起见阻止创建分享: {e}")
+        return {'blacklisted': True, 'message': f'中心黑名单检查失败：{e}'}
+    return {}
+
+
+def _report_center_resource_blacklist(item: Dict[str, Any], resp: Any, reason: str = 'share_blocked') -> None:
+    cfg = _get_shared_config()
+    if not cfg.get('enabled') or not cfg.get('device_token'):
+        return
+    try:
+        _center_json_request(
+            'POST', '/api/v1/blacklist/report', timeout=20,
+            json_body={**(item or {}), 'reason': reason, 'source': 'manual_share', 'message': json.dumps(resp, ensure_ascii=False, default=str)},
+        )
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 上报中心资源黑名单失败: {e}")
+
 def _tmdb_api_key_for_share_request() -> str:
     candidates = []
     for attr in (
@@ -3034,6 +3149,18 @@ def api_manual_validate_share():
         result['message'] = _raw_missing_message(missing_raw)
         return jsonify({'success': True, 'message': result['message'], 'data': result})
 
+    standard_identity = _standard_media_identity_for_share({
+        **share_data,
+        'item_type': share_data.get('item_type') or 'Season',
+        'share_type': share_data.get('share_type') or ('season_pack' if share_data.get('season_number') else 'movie_folder'),
+    })
+    blacklist_item = _center_blacklist_item_for_share(share_data, standard_identity)
+    blacklist_hit = _check_center_resource_blacklist(blacklist_item)
+    result['blacklist'] = blacklist_hit or None
+    if blacklist_hit:
+        result['message'] = blacklist_hit.get('message') or '命中中心黑名单，禁止创建分享'
+        return jsonify({'success': True, 'message': result['message'], 'data': result})
+
     if share_type == 'season_pack':
         consistency = _validate_season_pack_consistency(files, share_data)
         result['season_pack_consistency'] = consistency
@@ -3156,9 +3283,21 @@ def api_manual_create_share():
                 "season_pack_consistency": consistency,
             }), 400
 
+    standard_identity = _standard_media_identity_for_share({
+        **data,
+        'item_type': data.get('item_type') or 'Season',
+        'share_type': data.get('share_type') or ('season_pack' if data.get('season_number') else 'movie_folder'),
+    })
+    blacklist_item = _center_blacklist_item_for_share(data, standard_identity)
+    blacklist_hit = _check_center_resource_blacklist(blacklist_item)
+    if blacklist_hit:
+        return jsonify({"success": False, "message": blacklist_hit.get('message') or "命中中心黑名单，禁止创建分享", "blacklist": blacklist_hit}), 400
+
     receive_code = str(data.get('receive_code') or '').strip() or None
     share_resp = client.share_create([root_fid], share_duration=-1, receive_code=receive_code)
     if not share_resp or not share_resp.get('state'):
+        if _looks_resource_violation_response(share_resp):
+            _report_center_resource_blacklist(blacklist_item, share_resp, reason='share_blocked')
         return jsonify({"success": False, "message": f"创建 115 分享失败: {share_resp}"}), 500
 
     share_data = share_resp.get('data') or {}
