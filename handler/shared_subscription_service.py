@@ -169,7 +169,7 @@ def _share_import_success(resp: Any) -> bool:
         if code in ('0', '200'):
             return True
     return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist'))
-def _is_share_import_local_account_issue(resp: Any) -> bool:def _is_share_import_local_account_issue(resp: Any) -> bool:
+def _is_share_import_local_account_issue(resp: Any) -> bool:
     """本机账号/频率/空间/幂等问题，不应上报中心 failed。"""
     if _is_share_import_already_saved(resp):
         return True
