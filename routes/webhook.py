@@ -713,18 +713,24 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
     # 4. ★★★ 通知分流 ★★★
-    try:
-        # 如果提供了 new_episode_ids，说明是追更通知
-        # 如果 is_new_item 为 True，说明是新入库通知
-        notif_type = 'update' if (new_episode_ids and not is_new_item) else 'new'
-        
-        telegram.send_media_notification(
-            item_details=item_details, 
-            notification_type=notif_type, 
-            new_episode_ids=new_episode_ids
+    should_send_notification = bool(is_new_item or new_episode_ids)
+    if should_send_notification:
+        try:
+            # 如果提供了 new_episode_ids，说明是追更通知
+            # 如果 is_new_item 为 True，说明是新入库通知
+            notif_type = 'update' if (new_episode_ids and not is_new_item) else 'new'
+
+            telegram.send_media_notification(
+                item_details=item_details,
+                notification_type=notif_type,
+                new_episode_ids=new_episode_ids
+            )
+        except Exception as e:
+            logger.error(f"触发通知失败: {e}")
+    else:
+        logger.info(
+            f"  ➜ 跳过媒体通知：'{item_name_for_log}' 已存在，且本次 Webhook 未携带新增分集。"
         )
-    except Exception as e:
-        logger.error(f"触发通知失败: {e}")
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 

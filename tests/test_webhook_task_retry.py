@@ -65,10 +65,12 @@ def _install_test_stubs():
     emby_mod.get_emby_item_details = lambda *args, **kwargs: {}
     emby_mod.add_tags_to_item = lambda *args, **kwargs: None
     emby_mod.get_user_details = lambda *args, **kwargs: None
+    emby_mod.get_library_root_for_item = lambda *args, **kwargs: None
     sys.modules["handler.emby"] = emby_mod
 
     telegram_mod = sys.modules.get("handler.telegram") or types.ModuleType("handler.telegram")
     telegram_mod.send_playback_notification = lambda *args, **kwargs: None
+    telegram_mod.send_media_notification = lambda *args, **kwargs: None
     sys.modules["handler.telegram"] = telegram_mod
 
     config_manager_mod = sys.modules.get("config_manager") or types.ModuleType("config_manager")
@@ -139,6 +141,11 @@ def _install_test_stubs():
         mod = sys.modules.get(f"database.{name}") or types.ModuleType(f"database.{name}")
         if name == "media_db":
             mod.is_emby_id_in_library = lambda *args, **kwargs: False
+            mod.get_media_details = lambda *args, **kwargs: None
+        if name == "custom_collection_db":
+            mod.match_and_update_list_collections_on_item_add = lambda *args, **kwargs: []
+        if name == "settings_db":
+            mod.get_setting = lambda *args, **kwargs: {}
         if name == "watchlist_db":
             mod.get_watching_tmdb_ids = lambda: []
         if name == "queries_db":
@@ -171,6 +178,8 @@ def _install_test_stubs():
 
 _install_test_stubs()
 webhook = importlib.import_module("routes.webhook")
+if not hasattr(webhook.logger, "trace"):
+    webhook.logger.trace = lambda *args, **kwargs: None
 
 
 class WebhookTaskRetryTests(unittest.TestCase):
@@ -245,6 +254,96 @@ class WebhookTaskRetryTests(unittest.TestCase):
                 webhook._drain_pending_webhook_tasks()
         self.assertEqual(len(webhook.WEBHOOK_PENDING_TASKS), 1)
         spawn_later_mock.assert_called_once()
+
+    def test_existing_item_without_new_episodes_skips_media_notification(self):
+        processor = mock.MagicMock()
+        processor.process_single_item.return_value = True
+        processor.emby_url = "http://emby"
+        processor.emby_api_key = "key"
+        processor.emby_user_id = "user"
+
+        item_details = {
+            "Id": "series-1",
+            "Name": "永生",
+            "Type": "Series",
+            "ProviderIds": {"Tmdb": "123"},
+        }
+
+        with mock.patch.object(webhook.emby, "get_emby_item_details", return_value=item_details):
+            with mock.patch.object(webhook, "_submit_shared_auto_share_after_library_ready"):
+                with mock.patch.object(webhook.telegram, "send_media_notification") as notify_mock:
+                    webhook._handle_full_processing_flow(
+                        processor,
+                        "series-1",
+                        force_full_update=False,
+                        new_episode_ids=None,
+                        is_new_item=False,
+                    )
+
+        notify_mock.assert_not_called()
+
+    def test_existing_item_with_new_episodes_still_sends_update_notification(self):
+        processor = mock.MagicMock()
+        processor.process_single_item.return_value = True
+        processor.emby_url = "http://emby"
+        processor.emby_api_key = "key"
+        processor.emby_user_id = "user"
+
+        item_details = {
+            "Id": "series-1",
+            "Name": "永生",
+            "Type": "Series",
+            "ProviderIds": {"Tmdb": "123"},
+        }
+
+        with mock.patch.object(webhook.emby, "get_emby_item_details", return_value=item_details):
+            with mock.patch.object(webhook, "_submit_shared_auto_share_after_library_ready"):
+                with mock.patch.object(webhook.telegram, "send_media_notification") as notify_mock:
+                    webhook._handle_full_processing_flow(
+                        processor,
+                        "series-1",
+                        force_full_update=False,
+                        new_episode_ids=["ep-1"],
+                        is_new_item=False,
+                    )
+
+        notify_mock.assert_called_once_with(
+            item_details=item_details,
+            notification_type="update",
+            new_episode_ids=["ep-1"],
+        )
+
+    def test_new_item_still_sends_new_notification(self):
+        processor = mock.MagicMock()
+        processor.process_single_item.return_value = True
+        processor.emby_url = "http://emby"
+        processor.emby_api_key = "key"
+        processor.emby_user_id = "user"
+        processor.check_and_add_to_watchlist = mock.MagicMock()
+
+        item_details = {
+            "Id": "series-1",
+            "Name": "永生",
+            "Type": "Series",
+            "ProviderIds": {"Tmdb": "123"},
+        }
+
+        with mock.patch.object(webhook.emby, "get_emby_item_details", return_value=item_details):
+            with mock.patch.object(webhook, "_submit_shared_auto_share_after_library_ready"):
+                with mock.patch.object(webhook.telegram, "send_media_notification") as notify_mock:
+                    webhook._handle_full_processing_flow(
+                        processor,
+                        "series-1",
+                        force_full_update=False,
+                        new_episode_ids=None,
+                        is_new_item=True,
+                    )
+
+        notify_mock.assert_called_once_with(
+            item_details=item_details,
+            notification_type="new",
+            new_episode_ids=None,
+        )
 
 
 if __name__ == "__main__":
