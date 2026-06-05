@@ -23,7 +23,8 @@ from handler.p115_service import (
     SmartOrganizer,
     get_config,
     _parse_115_size,
-    _identify_media_enhanced
+    _identify_media_enhanced,
+    _transfer_context_to_recognition_hints,
 )
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.tg_media_candidate import candidate_to_recognition_hints, lookup_candidate_hint_for_name
@@ -77,6 +78,24 @@ def _normalize_batch_recognition_hints(hints, *, is_tv=False, preserve_episode=F
         normalized.pop("episode_number", None)
 
     return normalized
+
+
+def _merge_authority_hints(primary, fallback, *, is_tv=False, preserve_episode=False):
+    merged = _normalize_batch_recognition_hints(fallback or {}, is_tv=is_tv, preserve_episode=preserve_episode)
+    authoritative = _normalize_batch_recognition_hints(primary or {}, is_tv=is_tv, preserve_episode=preserve_episode)
+    if not authoritative:
+        return merged
+    result = dict(merged)
+    result.update({k: v for k, v in authoritative.items() if v not in (None, "", [], {})})
+    if authoritative.get("matched_rules"):
+        result["matched_rules"] = list(authoritative.get("matched_rules") or [])
+    if authoritative.get("evidence"):
+        result["evidence"] = list(authoritative.get("evidence") or [])
+    if authoritative.get("source_kind"):
+        result["source_kind"] = authoritative.get("source_kind")
+    if authoritative.get("source_kinds"):
+        result["source_kinds"] = list(authoritative.get("source_kinds") or [])
+    return result
 
 
 def _name_has_tv_hint(name):
@@ -257,6 +276,8 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
     unresolved = []
     assigned_ids = set()
     all_items = list(gathered_files or [])
+    shared_context = P115CacheManager.get_transfer_context(top_name)
+    shared_context_hints = _transfer_context_to_recognition_hints(shared_context)
 
     valid_video_files = []
     for item in all_items:
@@ -280,24 +301,36 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
             identify_main_dir = top_name
         forced_type = 'tv' if (_name_has_tv_hint(file_name) or _name_has_tv_hint(rel_dir)) else None
         season_num = _extract_season_number(file_name, rel_dir, context_name)
-        recognition_hints = _normalize_batch_recognition_hints(lookup_candidate_hint_for_name(
+        candidate_hints = lookup_candidate_hint_for_name(
             file_name,
             alt_texts=[context_name, top_name],
             media_type=forced_type,
             season_number=season_num,
-        ), is_tv=(forced_type == 'tv'))
-        file_sha1 = video_item.get('sha1') or video_item.get('sha')
-        tmdb_id, media_type, title = _identify_media_enhanced(
-            file_name,
-            main_dir_name=identify_main_dir,
-            has_season_subdirs=False,
-            forced_media_type=forced_type,
-            ai_translator=ai_translator,
-            use_ai=use_ai,
-            is_folder=False,
-            sha1=file_sha1,
-            recognition_hints=recognition_hints,
         )
+        recognition_hints = _merge_authority_hints(
+            shared_context_hints,
+            candidate_hints,
+            is_tv=(forced_type == 'tv'),
+        )
+        file_sha1 = video_item.get('sha1') or video_item.get('sha')
+        if shared_context and str(shared_context.get("media_type") or "") in ("tv", "movie"):
+            tmdb_id = str(shared_context.get("tmdb_id") or "").strip() or None
+            media_type = str(shared_context.get("media_type") or "").strip() or forced_type
+            title = shared_context.get("title") or context_name or file_name
+            if media_type == "tv" and season_num is None:
+                season_num = shared_context.get("season_number")
+        else:
+            tmdb_id, media_type, title = _identify_media_enhanced(
+                file_name,
+                main_dir_name=context_name,
+                has_season_subdirs=False,
+                forced_media_type=forced_type,
+                ai_translator=ai_translator,
+                use_ai=use_ai,
+                is_folder=False,
+                sha1=file_sha1,
+                recognition_hints=recognition_hints,
+            )
 
         related_items = [video_item]
         assigned_ids.add(video_fid)
@@ -473,6 +506,8 @@ def task_scan_and_organize_115(processor=None):
             fc_val = str(root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type'))
             is_folder = (fc_val == '0')
             force_nested_package_scan = bool(is_folder and _should_force_nested_package_scan(top_name))
+            transfer_context = P115CacheManager.get_transfer_context(top_name)
+            transfer_context_hints = _transfer_context_to_recognition_hints(transfer_context)
 
             local_processed = 0
             local_unidentified = []
@@ -605,6 +640,19 @@ def task_scan_and_organize_115(processor=None):
                 if forced_type == 'tv' and season_num is None:
                     season_num = _extract_season_number(g_top_name)
 
+                if transfer_context and not tmdb_id:
+                    tmdb_id = str(transfer_context.get("tmdb_id") or "").strip() or None
+                    media_type = str(transfer_context.get("media_type") or "").strip() or media_type or forced_type
+                    title = transfer_context.get("title") or title or g_top_name
+                    if media_type == 'tv' and season_num is None:
+                        season_num = transfer_context.get("season_number")
+
+                recognition_hints = _merge_authority_hints(
+                    transfer_context_hints,
+                    recognition_hints,
+                    is_tv=((media_type or forced_type) == 'tv'),
+                )
+
                 if not tmdb_id:
                     # 👇 核心修改：提取组内第一个视频的 SHA1，传给识别函数，直接从 RAW 提取 TMDb ID！
                     group_sha1 = None
@@ -616,7 +664,8 @@ def task_scan_and_organize_115(processor=None):
                             if group_sha1:
                                 break
 
-                    recognition_hints = _normalize_batch_recognition_hints(
+                    recognition_hints = _merge_authority_hints(
+                        transfer_context_hints,
                         lookup_candidate_hint_for_name(g_top_name, alt_texts=[top_name], media_type=forced_type),
                         is_tv=(forced_type == 'tv')
                     )
@@ -633,16 +682,28 @@ def task_scan_and_organize_115(processor=None):
                     continue
                     
                 try:
-                    organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
-                    organizer.recognition_hints = _normalize_batch_recognition_hints(
+                    organizer_hints = _merge_authority_hints(
+                        transfer_context_hints,
                         recognition_hints,
                         is_tv=(media_type == 'tv')
                     )
+                    organizer = SmartOrganizer(
+                        client,
+                        tmdb_id,
+                        media_type,
+                        title,
+                        ai_translator,
+                        use_ai,
+                        recognition_hints=organizer_hints,
+                    )
+                    organizer.recognition_hints = organizer_hints
                     if season_num is not None: organizer.forced_season = season_num
                     
                     # 执行整理 (直接传 None，让 execute 内部统一计算最终的 target_cid)
                     if organizer.execute(g_files, None, skip_gc=True):
                         local_processed += len(g_files)
+                        if transfer_context:
+                            P115CacheManager.delete_transfer_context(top_name, g_top_name, title)
                 except Exception as e:
                     logger.error(f"  ➜ 整理出错 (组: {g_top_name}): {e}")
 

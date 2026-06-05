@@ -20,7 +20,7 @@ import handler.tmdb as tmdb
 from tasks import helpers
 import utils
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
-from handler.tg_media_candidate import candidate_to_recognition_hints, is_recognition_hint_eligible, lookup_candidate_hint_for_name
+from handler.tg_media_candidate import candidate_to_recognition_hints, is_recognition_hint_eligible, lookup_candidate_hint_for_name, normalize_title_for_match
 try:
     from p115client import P115Client
 except ImportError:
@@ -78,6 +78,128 @@ _DIRECT_URL_CACHE = LimitedCache(maxsize=2000)
 # 全局目录缓存池
 _GLOBAL_DIR_CACHE = LimitedCache(maxsize=5000)
 _GLOBAL_DIR_LOCK = threading.Lock()
+_TRANSFER_CONTEXTS_KEY = "p115_transfer_contexts"
+_TRANSFER_CONTEXT_LIMIT = 200
+_AUTHORITY_RECOGNITION_SOURCES = frozenset({
+    "tg_rule_library",
+    "transfer_context",
+    "shared_transfer_context",
+    "hdhive-share-import",
+    "shared-permanent-import",
+    "tg-channel-import",
+})
+
+
+def _normalize_transfer_context_name(name):
+    normalized = re.sub(r'[\s\._\-]+', '', str(name or '').strip()).lower()
+    return normalized
+
+
+def _build_transfer_context_keys(*values):
+    keys = []
+    seen = set()
+    for value in values:
+        norm = _normalize_transfer_context_name(value)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        keys.append(norm)
+    return keys
+
+
+def _coerce_transfer_context_dict(payload):
+    if not isinstance(payload, dict):
+        return {}
+
+    out = {}
+    for key in (
+        "tmdb_id",
+        "year",
+        "title",
+        "clean_title",
+        "identify_title",
+        "media_type",
+        "source_kind",
+        "pick_code",
+        "sha1",
+        "root_name",
+        "source",
+        "authority_role",
+        "conflict_reason",
+        "parse_version",
+    ):
+        value = payload.get(key)
+        if value in (None, "", [], {}):
+            continue
+        out[key] = str(value).strip()
+
+    season_number = payload.get("season_number")
+    if season_number not in (None, ""):
+        try:
+            out["season_number"] = int(season_number)
+        except Exception:
+            pass
+
+    episode_number = payload.get("episode_number")
+    if episode_number not in (None, ""):
+        try:
+            out["episode_number"] = int(episode_number)
+        except Exception:
+            pass
+
+    confidence = str(payload.get("confidence") or "").strip().lower()
+    if confidence in ("low", "medium", "high"):
+        out["confidence"] = confidence
+
+    is_special = payload.get("is_special")
+    if isinstance(is_special, bool):
+        out["is_special"] = is_special
+    elif str(is_special).strip().lower() in ("1", "true", "yes"):
+        out["is_special"] = True
+
+    for list_key in ("matched_rules", "evidence", "alias_titles"):
+        raw_list = payload.get(list_key)
+        if not isinstance(raw_list, (list, tuple, set)):
+            continue
+        normalized = []
+        seen = set()
+        for item in raw_list:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        if normalized:
+            out[list_key] = normalized
+
+    source_kinds = payload.get("source_kinds")
+    if isinstance(source_kinds, (list, tuple, set)):
+        normalized_source_kinds = []
+        seen_source_kinds = set()
+        for item in source_kinds:
+            text = str(item or "").strip()
+            if not text or text in seen_source_kinds:
+                continue
+            seen_source_kinds.add(text)
+            normalized_source_kinds.append(text)
+        if normalized_source_kinds:
+            out["source_kinds"] = normalized_source_kinds
+    elif payload.get("source_kind"):
+        out["source_kinds"] = [str(payload.get("source_kind")).strip()]
+
+    keys = payload.get("keys")
+    if isinstance(keys, (list, tuple, set)):
+        out["keys"] = _build_transfer_context_keys(*keys)
+    else:
+        out["keys"] = _build_transfer_context_keys(
+            payload.get("root_name"),
+            payload.get("title"),
+        )
+
+    if not out.get("keys"):
+        return {}
+
+    return out
 
 
 def _extract_sidecar_episode_number(*texts):
@@ -110,6 +232,64 @@ def _extract_sidecar_part_number(*texts):
         if match:
             return int(match.group(2))
     return None
+
+
+def _transfer_context_to_recognition_hints(context):
+    context = _coerce_transfer_context_dict(context if isinstance(context, dict) else {})
+    if not context:
+        return {}
+
+    source = str(context.get("source") or "").strip()
+    source_kind = str(context.get("source_kind") or "").strip()
+    if not source_kind:
+        source_kind = source or "transfer_context"
+    authority_role = str(context.get("authority_role") or "").strip() or "expected"
+    if not source:
+        source = "transfer_context"
+    if source in ("shared-permanent-import",):
+        normalized_source = "shared_transfer_context"
+    else:
+        normalized_source = source
+
+    return {
+        "tmdb_id": context.get("tmdb_id"),
+        "title": context.get("title") or context.get("identify_title") or context.get("clean_title"),
+        "clean_title": context.get("clean_title") or context.get("title"),
+        "identify_title": context.get("identify_title") or context.get("title") or context.get("clean_title"),
+        "year": context.get("year"),
+        "media_type": context.get("media_type"),
+        "source_kind": source_kind,
+        "source_kinds": list(context.get("source_kinds") or ([source_kind] if source_kind else [])),
+        "season_number": context.get("season_number"),
+        "episode_number": context.get("episode_number"),
+        "is_special": bool(context.get("is_special")),
+        "confidence": context.get("confidence") or "high",
+        "evidence": list(context.get("evidence") or []),
+        "matched_rules": list(context.get("matched_rules") or []),
+        "conflict_reason": context.get("conflict_reason") or "",
+        "parse_version": context.get("parse_version") or "transfer-context-v1",
+        "alias_titles": list(context.get("alias_titles") or []),
+        "source": normalized_source,
+        "authority_role": authority_role,
+    }
+
+
+def _is_authoritative_recognition_hint(hints):
+    normalized = candidate_to_recognition_hints(hints or {})
+    if not normalized:
+        return False
+    if normalized.get("conflict_reason"):
+        return False
+    if normalized.get("confidence") not in ("medium", "high"):
+        return False
+    source = str(normalized.get("source") or "").strip()
+    source_kind = str(normalized.get("source_kind") or "").strip()
+    authority_role = str(normalized.get("authority_role") or "").strip().lower()
+    return (
+        source in _AUTHORITY_RECOGNITION_SOURCES
+        or source_kind in _AUTHORITY_RECOGNITION_SOURCES
+        or authority_role in ("expected", "authoritative", "canonical")
+    )
 
 
 def _extract_sidecar_season_number(*texts):
@@ -2213,6 +2393,139 @@ class P115CacheManager:
         return None
 
     @staticmethod
+    def save_transfer_context(root_name, tmdb_id, media_type, title, season_number=None, episode_number=None, *, pick_code=None, sha1=None, source='', source_kind='', source_kinds=None, confidence='high', authority_role='expected', identify_title=None, clean_title=None, matched_rules=None, evidence=None, conflict_reason='', alias_titles=None, parse_version='transfer-context-v1', is_special=None):
+        payload = _coerce_transfer_context_dict({
+            "root_name": root_name,
+            "tmdb_id": tmdb_id,
+            "media_type": media_type,
+            "title": title,
+            "identify_title": identify_title or title,
+            "clean_title": clean_title or title,
+            "season_number": season_number,
+            "episode_number": episode_number,
+            "pick_code": pick_code,
+            "sha1": sha1,
+            "source": source,
+            "source_kind": source_kind,
+            "source_kinds": list(source_kinds or []),
+            "confidence": confidence,
+            "authority_role": authority_role,
+            "matched_rules": list(matched_rules or []),
+            "evidence": list(evidence or []),
+            "conflict_reason": conflict_reason,
+            "alias_titles": list(alias_titles or []),
+            "parse_version": parse_version,
+            "is_special": is_special,
+            "keys": [root_name, title],
+        })
+        if not payload:
+            return False
+
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = %s", (_TRANSFER_CONTEXTS_KEY,))
+                    row = cursor.fetchone()
+                    current = row.get("value_json") if row else {}
+                    contexts = current.get("contexts") if isinstance(current, dict) else {}
+                    if not isinstance(contexts, dict):
+                        contexts = {}
+
+                    updated_at = int(time.time())
+                    payload["updated_at"] = updated_at
+                    for key in payload.get("keys") or []:
+                        contexts[key] = dict(payload)
+
+                    if len(contexts) > _TRANSFER_CONTEXT_LIMIT:
+                        items = sorted(
+                            contexts.items(),
+                            key=lambda item: int(((item[1] or {}).get("updated_at") or 0)),
+                            reverse=True,
+                        )
+                        contexts = {k: v for k, v in items[:_TRANSFER_CONTEXT_LIMIT]}
+
+                    cursor.execute(
+                        """
+                        INSERT INTO app_settings (setting_key, value_json, last_updated_at)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT (setting_key) DO UPDATE SET
+                            value_json = EXCLUDED.value_json,
+                            last_updated_at = NOW()
+                        """,
+                        (_TRANSFER_CONTEXTS_KEY, json.dumps({"contexts": contexts}, ensure_ascii=False)),
+                    )
+                    conn.commit()
+                    return True
+        except Exception as e:
+            logger.error(f"  ➜ 保存转存整理上下文失败: {e}", exc_info=True)
+            return False
+
+    @staticmethod
+    def get_transfer_context(*names):
+        keys = _build_transfer_context_keys(*names)
+        if not keys:
+            return None
+
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = %s", (_TRANSFER_CONTEXTS_KEY,))
+                    row = cursor.fetchone()
+                    current = row.get("value_json") if row else {}
+                    contexts = current.get("contexts") if isinstance(current, dict) else {}
+                    if not isinstance(contexts, dict):
+                        return None
+
+                    for key in keys:
+                        payload = _coerce_transfer_context_dict(contexts.get(key))
+                        if payload:
+                            payload["updated_at"] = (contexts.get(key) or {}).get("updated_at")
+                            return payload
+        except Exception as e:
+            logger.error(f"  ➜ 读取转存整理上下文失败: {e}", exc_info=True)
+
+        return None
+
+    @staticmethod
+    def delete_transfer_context(*names):
+        keys = _build_transfer_context_keys(*names)
+        if not keys:
+            return False
+
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = %s", (_TRANSFER_CONTEXTS_KEY,))
+                    row = cursor.fetchone()
+                    current = row.get("value_json") if row else {}
+                    contexts = current.get("contexts") if isinstance(current, dict) else {}
+                    if not isinstance(contexts, dict):
+                        return False
+
+                    changed = False
+                    for key in keys:
+                        if key in contexts:
+                            contexts.pop(key, None)
+                            changed = True
+
+                    if changed:
+                        cursor.execute(
+                            """
+                            INSERT INTO app_settings (setting_key, value_json, last_updated_at)
+                            VALUES (%s, %s, NOW())
+                            ON CONFLICT (setting_key) DO UPDATE SET
+                                value_json = EXCLUDED.value_json,
+                                last_updated_at = NOW()
+                            """,
+                            (_TRANSFER_CONTEXTS_KEY, json.dumps({"contexts": contexts}, ensure_ascii=False)),
+                        )
+                        conn.commit()
+                    return changed
+        except Exception as e:
+            logger.error(f"  ➜ 清理转存整理上下文失败: {e}", exc_info=True)
+            return False
+
+    @staticmethod
     def delete_files(fids):
         """批量从缓存中物理删除文件记录"""
         if not fids: return
@@ -3056,7 +3369,7 @@ def get_config():
 class SmartOrganizer(P115MediaAnalyzerMixin):
     _P115_INVALID_NAME_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
 
-    def __init__(self, client, tmdb_id, media_type, original_title, ai_translator=None, use_ai=False):
+    def __init__(self, client, tmdb_id, media_type, original_title, ai_translator=None, use_ai=False, recognition_hints=None):
         self.client = client
         self.tmdb_id = tmdb_id
         self.media_type = media_type
@@ -3071,7 +3384,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         self.rating_priority = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
         self.country_map = settings_db.get_setting('country_mapping') or utils.DEFAULT_COUNTRY_MAPPING
         self.language_map = settings_db.get_setting('language_mapping') or utils.DEFAULT_LANGUAGE_MAPPING
-        self.recognition_hints = {}
+        self.recognition_hints = candidate_to_recognition_hints(recognition_hints or {})
 
         self.raw_metadata = self._fetch_raw_metadata()
         self.details = self.raw_metadata
@@ -3163,6 +3476,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             # =====================================================================
             cached_title = None
             cached_original_title = None
+            original_title = None
+            authoritative_title_hint = None
+
+            normalized_hints = candidate_to_recognition_hints(getattr(self, 'recognition_hints', {}) or {})
+            if _is_authoritative_recognition_hint(normalized_hints):
+                authoritative_title_hint = (
+                    normalized_hints.get('identify_title')
+                    or normalized_hints.get('clean_title')
+                    or normalized_hints.get('title')
+                )
             
             # 5.1 优先查询本地数据库缓存 (免疫 TMDb 后期篡改，保持网盘与 Emby 绝对一致)
             try:
@@ -3181,11 +3504,24 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             except Exception as e:
                 logger.warning(f"  ➜ [115整理] 查询本地标题缓存失败: {e}")
 
-            if cached_title:
+            cached_title_conflicts_with_authority = False
+            if cached_title and authoritative_title_hint:
+                cached_norm = normalize_title_for_match(cached_title)
+                authoritative_norm = normalize_title_for_match(authoritative_title_hint)
+                cached_title_conflicts_with_authority = bool(
+                    cached_norm and authoritative_norm and cached_norm != authoritative_norm
+                )
+
+            if cached_title and not cached_title_conflicts_with_authority:
                 logger.info(f"  ➜ [115整理] 命中本地数据库片名: '{cached_title}'，无视 TMDb 最新变动。")
                 current_title = cached_title
                 original_title = cached_original_title or cached_title
             else:
+                if cached_title_conflicts_with_authority:
+                    logger.info(
+                        f"  ➜ [115整理] 权威识别标题 '{authoritative_title_hint}' 与本地数据库片名 '{cached_title}' 冲突，"
+                        f"优先使用当前 TMDb 标题。"
+                    )
                 # 5.2 本地无缓存 (首次入库)，走 TMDb 提取与清洗流程
                 raw_title = raw_details.get('title') or raw_details.get('name')
                 current_title = utils.clean_invisible_chars(raw_title)
@@ -4320,10 +4656,14 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 
                 # ★ 核心修改：不再立即执行，而是加入分组字典
                 if tmdb_id:
+                    sub_item['_recognition_hints'] = sub_hint or {}
                     key = (tmdb_id, sub_type, sub_title)
                     if key not in grouped_sub_items:
-                        grouped_sub_items[key] = []
-                    grouped_sub_items[key].append(sub_item)
+                        grouped_sub_items[key] = {
+                            "items": [],
+                            "recognition_hints": sub_item.get('_recognition_hints') or {},
+                        }
+                    grouped_sub_items[key]["items"].append(sub_item)
                 else:
                     unidentified_sub_fids.append(sub_id)
                     # ★ 检查是否为真正的视频文件
@@ -4332,11 +4672,21 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         unidentified_video_names.append(sub_name)
             
             # ★ 核心修改：遍历分组，批量执行
-            for (tmdb_id, sub_type, sub_title), items in grouped_sub_items.items():
+            for (tmdb_id, sub_type, sub_title), group_data in grouped_sub_items.items():
+                items = group_data.get("items") or []
+                group_hints = group_data.get("recognition_hints") or {}
                 logger.info(f"    ├─ 准备批量整理合集子项: {sub_title} -> ID:{tmdb_id} (共 {len(items)} 个文件)")
                 try:
-                    organizer = SmartOrganizer(self.client, tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
-                    organizer.recognition_hints = sub_hint or {}
+                    organizer = SmartOrganizer(
+                        self.client,
+                        tmdb_id,
+                        sub_type,
+                        sub_title,
+                        self.ai_translator,
+                        self.use_ai,
+                        recognition_hints=group_hints,
+                    )
+                    organizer.recognition_hints = group_hints
                     target_cid_for_sub = organizer.get_target_cid()
                     if organizer.execute(items, target_cid_for_sub):
                         processed_count += len(items)
@@ -6365,6 +6715,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     )
     normalized_hints = candidate_to_recognition_hints(recognition_hints or {})
     eligible_hints = normalized_hints if is_recognition_hint_eligible(normalized_hints) else {}
+    authoritative_hints = normalized_hints if _is_authoritative_recognition_hint(normalized_hints) else {}
     if normalized_hints:
         if normalized_hints.get('media_type') and not forced_media_type:
             media_type = normalized_hints.get('media_type')
@@ -6402,7 +6753,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             f"  ➜ [TG Candidate] 命中识别 hints: title='{normalized_hints.get('identify_title') or normalized_hints.get('clean_title') or normalized_hints.get('title')}', "
             f"year={normalized_hints.get('year')}, type={normalized_hints.get('media_type')}, "
             f"season={normalized_hints.get('season_number')}, episode={normalized_hints.get('episode_number')}, "
-            f"special={normalized_hints.get('is_special')} (confidence={normalized_hints.get('confidence')})"
+            f"special={normalized_hints.get('is_special')} (confidence={normalized_hints.get('confidence')}, source={normalized_hints.get('source')}, authority={normalized_hints.get('authority_role')})"
         )
 
     # 辅助函数：用已锁定的类型去 TMDb 查官方标题
@@ -6563,6 +6914,15 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
         except Exception:
             pass
         return None
+
+    if authoritative_hints.get('tmdb_id'):
+        hinted_type = authoritative_hints.get('media_type') or media_type
+        official_title = _fetch_title_by_id(authoritative_hints.get('tmdb_id'), hinted_type)
+        logger.info(
+            f"  ➜ [Authority识别] 命中权威身份: TMDb:{authoritative_hints.get('tmdb_id')} "
+            f"type:{hinted_type} source:{authoritative_hints.get('source')}"
+        )
+        return authoritative_hints.get('tmdb_id'), hinted_type, official_title or title or filename
 
     if rule_result.get('title') and rule_result.get('confidence') in ('medium', 'high'):
         res = _search_by_title_year(
