@@ -50,7 +50,6 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'shared_share_items': {'raw_json'},
         'shared_credit_snapshot': {'raw_json'},
         'shared_credit_ledger_local': {'raw_json'},
-        'shared_maintenance_state': {'raw_json'},
     }
 
     LIST_TO_STRING_COLUMNS = {
@@ -126,7 +125,6 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
         'shared_share_records': 'share_code',
         'shared_share_items': 'share_record_id, fid',
         'shared_credit_snapshot': 'id',
-        'shared_maintenance_state': 'task_name'
     }
     
     db_table_name = table_name.lower()
@@ -368,8 +366,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'shared_share_records': '我的分享记录',
         'shared_share_items': '分享文件明细',
         'shared_credit_snapshot': '贡献值快照',
-        'shared_credit_ledger_local': '贡献值明细',
-        'shared_maintenance_state': '共享维护状态'
+        'shared_credit_ledger_local': '贡献值明细'
     }
     summary_lines = []
     conn = None
@@ -393,8 +390,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 'shared_share_records': 20,
                 'shared_share_items': 21,
                 'shared_credit_snapshot': 23,
-                'shared_credit_ledger_local': 24,
-                'shared_maintenance_state': 25
+                'shared_credit_ledger_local': 24
             }
             return order.get(table_name.lower(), 100)
 

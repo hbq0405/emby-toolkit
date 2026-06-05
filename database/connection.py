@@ -567,18 +567,6 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  ➜ 正在创建 'shared_maintenance_state' 表 (共享资源维护任务状态)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS shared_maintenance_state (
-                        task_name TEXT PRIMARY KEY,
-                        last_run_at TIMESTAMP WITH TIME ZONE,
-                        last_success_at TIMESTAMP WITH TIME ZONE,
-                        last_error TEXT,
-                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    )
-                """)
-
                 logger.trace("  ➜ 正在创建 'p115_organize_records' 表 (115整理记录)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS p115_organize_records (
@@ -797,7 +785,8 @@ def init_db():
                     deprecated_tables = [
                         'watchlist',
                         'tracked_actor_media',
-                        'shared_virtual_items'
+                        'shared_virtual_items',
+                        'shared_maintenance_state'
                     ]
                     for table in deprecated_tables:
                         logger.trace(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")

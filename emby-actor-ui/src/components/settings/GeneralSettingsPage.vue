@@ -2177,7 +2177,6 @@ const tableInfo = {
   'shared_share_items': { cn: '分享文件明细', isSharable: false },
   'shared_credit_snapshot': { cn: '贡献值快照', isSharable: false },
   'shared_credit_ledger_local': { cn: '贡献值明细', isSharable: false },
-  'shared_maintenance_state': { cn: '共享维护状态', isSharable: false },
   'washing_priority_groups': {cn: '115洗版规则', isSharable: false }
 };
 const tableDependencies = {
