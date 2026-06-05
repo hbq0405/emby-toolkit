@@ -3855,23 +3855,23 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         hint_season = _se_int(normalized_hints.get('season_number')) if normalized_hints else None
         hint_episode = _se_int(normalized_hints.get('episode_number')) if normalized_hints else None
 
-        if is_tv and real_info:
-            raw_probe_season = _se_int(real_info.get('season_number'))
-            raw_probe_episode = _se_int(real_info.get('episode_number'))
-            if season_num is None:
-                season_num = raw_probe_season
-                if raw_probe_season is not None:
-                    season_source = 'raw_ffprobe'
-            if episode_num is None:
-                episode_num = raw_probe_episode
-                if raw_probe_episode is not None:
-                    episode_source = 'raw_ffprobe'
-            if (raw_probe_season is not None or raw_probe_episode is not None) and not silent_log:
-                logger.info(
-                    f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
-                    f"S{int(raw_probe_season if raw_probe_season is not None else 1):02d}"
-                    f"E{int(raw_probe_episode if raw_probe_episode is not None else 0):02d} | {original_name}"
-                )
+        # if is_tv and real_info:
+        #     raw_probe_season = _se_int(real_info.get('season_number'))
+        #     raw_probe_episode = _se_int(real_info.get('episode_number'))
+        #     if season_num is None:
+        #         season_num = raw_probe_season
+        #         if raw_probe_season is not None:
+        #             season_source = 'raw_ffprobe'
+        #     if episode_num is None:
+        #         episode_num = raw_probe_episode
+        #         if raw_probe_episode is not None:
+        #             episode_source = 'raw_ffprobe'
+        #     if (raw_probe_season is not None or raw_probe_episode is not None) and not silent_log:
+        #         logger.info(
+        #             f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
+        #             f"S{int(raw_probe_season if raw_probe_season is not None else 1):02d}"
+        #             f"E{int(raw_probe_episode if raw_probe_episode is not None else 0):02d} | {original_name}"
+        #         )
 
         if is_tv and (season_num is None or episode_num is None):
 
