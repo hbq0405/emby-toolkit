@@ -1343,6 +1343,198 @@ class P115CookieClient:
             if url_obj: return str(url_obj)
         return None
 
+
+    def rapid_upload(self, payload=None, **kwargs):
+        """Cookie 侧上传初始化探测入口。
+
+        目的：验证 115 Cookie/web 上传初始化是否比 OpenAPI 更少触发 status=7。
+        这里只做“秒传/复用”探测与创建，不做明文上传；如果 p115client 返回需要普通上传的
+        MultipartUpload 对象，直接按失败返回，避免把几十 GB 文件真的上传出去。
+        """
+        payload = dict(payload or {})
+        payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
+
+        def _as_dict(value):
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = json.loads(value)
+                    return parsed if isinstance(parsed, dict) else {}
+                except Exception:
+                    return {}
+            return {}
+
+        def _first(*values):
+            for value in values:
+                if value not in (None, '', [], {}):
+                    return value
+            return None
+
+        def _safe_size(value):
+            try:
+                if value in (None, '', [], {}):
+                    return 0
+                if isinstance(value, (int, float)):
+                    return int(value)
+                text = str(value).strip().replace(',', '')
+                if not text:
+                    return 0
+                if re.fullmatch(r'\d+(?:\.\d+)?', text):
+                    return int(float(text))
+                upper = text.upper()
+                multiplier = 1
+                if 'TB' in upper:
+                    multiplier = 1024 ** 4
+                elif 'GB' in upper:
+                    multiplier = 1024 ** 3
+                elif 'MB' in upper:
+                    multiplier = 1024 ** 2
+                elif 'KB' in upper:
+                    multiplier = 1024
+                match = re.search(r'([0-9]+(?:\.[0-9]+)?)', upper)
+                return int(float(match.group(1)) * multiplier) if match else 0
+            except Exception:
+                return 0
+
+        rapid_meta = _as_dict(payload.get('rapid_meta_json') or payload.get('rapid_meta') or payload.get('meta'))
+        source_meta = _as_dict(payload.get('source') or payload.get('source_json'))
+
+        target_cid = str(_first(
+            payload.get('cid'), payload.get('target_cid'), payload.get('target'), payload.get('to_cid'),
+            rapid_meta.get('cid'), rapid_meta.get('target_cid'), rapid_meta.get('target'), rapid_meta.get('to_cid'),
+        ) or '').strip()
+        sha1 = str(_first(
+            payload.get('sha1'), payload.get('fileid'), payload.get('file_sha1'),
+            rapid_meta.get('sha1'), rapid_meta.get('fileid'), rapid_meta.get('file_sha1'),
+            source_meta.get('sha1'), source_meta.get('file_sha1'),
+        ) or '').strip().upper()
+        pick_code = str(_first(
+            payload.get('pick_code'), payload.get('pickcode'), payload.get('pc'),
+            rapid_meta.get('pick_code'), rapid_meta.get('pickcode'), rapid_meta.get('pc'),
+            source_meta.get('pick_code'), source_meta.get('pickcode'), source_meta.get('pc'),
+        ) or '').strip()
+        file_name = str(_first(
+            payload.get('file_name'), payload.get('filename'), payload.get('name'),
+            rapid_meta.get('file_name'), rapid_meta.get('filename'), rapid_meta.get('name'),
+            source_meta.get('file_name'), source_meta.get('filename'), source_meta.get('name'),
+        ) or '').strip()
+        size = _safe_size(_first(
+            payload.get('size'), payload.get('file_size'), payload.get('filesize'), payload.get('size_bytes'),
+            rapid_meta.get('size'), rapid_meta.get('file_size'), rapid_meta.get('filesize'), rapid_meta.get('size_bytes'),
+            source_meta.get('size'), source_meta.get('file_size'), source_meta.get('filesize'), source_meta.get('size_bytes'),
+        ))
+
+        cache_mgr = globals().get('P115CacheManager')
+        if cache_mgr and (not pick_code or not file_name or size <= 0):
+            try:
+                row = None
+                if sha1 and hasattr(cache_mgr, 'get_file_cache_by_sha1'):
+                    row = cache_mgr.get_file_cache_by_sha1(sha1)
+                if not row and pick_code and hasattr(cache_mgr, 'get_file_cache_by_pickcode'):
+                    row = cache_mgr.get_file_cache_by_pickcode(pick_code)
+                if row:
+                    row = dict(row)
+                    pick_code = pick_code or str(row.get('pick_code') or '').strip()
+                    file_name = file_name or str(row.get('name') or '').strip()
+                    if size <= 0:
+                        size = _safe_size(row.get('size'))
+            except Exception as e:
+                logger.debug(f"  ➜ [Cookie秒传] 查询 p115_filesystem_cache 失败: {e}")
+
+        if not target_cid:
+            return {'state': False, 'error_msg': 'Cookie 秒传缺少目标目录 cid', '_rapid_upload_backend': 'cookie'}
+        if not re.fullmatch(r'[A-F0-9]{40}', sha1 or ''):
+            return {'state': False, 'error_msg': 'Cookie 秒传缺少合法 SHA1', '_rapid_upload_backend': 'cookie'}
+        if size <= 0:
+            return {'state': False, 'error_msg': 'Cookie 秒传缺少文件大小', '_rapid_upload_backend': 'cookie'}
+        if not file_name:
+            file_name = f'{sha1}.mkv'
+        if not pick_code:
+            return {
+                'state': False,
+                'error_msg': 'Cookie 上传初始化需要源文件 pick_code 以读取前 128KB/签名片段；当前中心源未携带 pick_code，跳过 Cookie 秒传探测',
+                '_rapid_upload_backend': 'cookie',
+                '_rapid_cookie_unsupported': True,
+            }
+        if not self.webapi:
+            return {'state': False, 'error_msg': 'Cookie 客户端未初始化 p115client，无法调用 Cookie 上传初始化', '_rapid_upload_backend': 'cookie'}
+
+        try:
+            from p115client.tool.upload import upload_init
+        except Exception as e:
+            return {
+                'state': False,
+                'error_msg': f'当前 p115client 不支持 tool.upload.upload_init，无法测试 Cookie 上传初始化: {e}',
+                '_rapid_upload_backend': 'cookie',
+                '_rapid_cookie_unsupported': True,
+            }
+
+        ua = self.user_agent or get_115_ua(self.app_type)
+        try:
+            source_url = self.download_url(pick_code, user_agent=ua)
+        except Exception as e:
+            return {
+                'state': False,
+                'error_msg': f'Cookie 秒传获取源文件直链失败: {e}',
+                '_rapid_upload_backend': 'cookie',
+            }
+        if not source_url:
+            return {'state': False, 'error_msg': 'Cookie 秒传获取源文件直链失败：空 URL', '_rapid_upload_backend': 'cookie'}
+
+        logger.info(
+            f"  ➜ [Cookie秒传] 尝试 Cookie 上传初始化: {file_name} | "
+            f"sha1={sha1[:12]}... | size={size} | target_cid={target_cid}"
+        )
+        try:
+            # upload_init 只负责初始化：若秒传成功会返回 dict(reuse=True)；若需要普通上传，
+            # 可能返回 MultipartUpload 对象。这里绝不继续 iter_upload，避免真实上传大文件。
+            resp = upload_init(
+                self.webapi,
+                source_url,
+                pid=str(target_cid),
+                filename=file_name,
+                filesha1=sha1,
+                filesize=int(size),
+                async_=False,
+                headers={'User-Agent': ua},
+            )
+        except Exception as e:
+            return {
+                'state': False,
+                'error_msg': f'Cookie 上传初始化异常: {e}',
+                '_rapid_upload_backend': 'cookie',
+            }
+
+        if isinstance(resp, dict):
+            out = dict(resp)
+            out['_rapid_upload_backend'] = 'cookie'
+            reuse = out.get('reuse') is True or str(out.get('reuse')).lower() == 'true'
+            data = out.get('data') if isinstance(out.get('data'), dict) else {}
+            status = str(out.get('status') if out.get('status') is not None else data.get('status') if data.get('status') is not None else '')
+            if reuse or status in ('2', 'success', 'done'):
+                out['state'] = True
+                out['success'] = True
+                out.setdefault('message', '115 Cookie 上传初始化秒传成功')
+                out.setdefault('rapid_upload', True)
+                out.setdefault('sha1', sha1)
+                out.setdefault('file_name', file_name)
+                out.setdefault('target_cid', target_cid)
+                out.setdefault('size', size)
+                logger.info(f"  ➜ [Cookie秒传] Cookie 上传初始化秒传成功: {file_name}")
+                return out
+            out.setdefault('state', False)
+            out.setdefault('error_msg', f'Cookie 上传初始化未直接秒传，已停止真实上传: {out}')
+            return out
+
+        return {
+            'state': False,
+            'error_msg': 'Cookie 上传初始化返回普通上传对象，说明未直接秒传；已停止真实上传',
+            '_rapid_upload_backend': 'cookie',
+            '_rapid_cookie_need_plain_upload': True,
+            'response_type': type(resp).__name__,
+        }
+
     def get_user_info(self):
         """获取用户信息 (仅用于验证)"""
         if self.webapi:
@@ -2252,15 +2444,15 @@ class P115Service:
 
 
             def rapid_upload(self, payload=None, **kwargs):
-                """Rapid v2 秒传入口：强制走本机 OpenAPI，不经过中心、不上传 CK。
+                """Rapid v2 秒传入口：按用户配置的 115 API 优先级尝试。
 
-                注意：这里不读 shared_share_records/shared_share_items 旧表；缺失 size/name
-                的补齐全部交给 P115OpenAPIClient.rapid_upload 从 p115_filesystem_cache / 115 详情完成。
+                - cookie 优先：先走 Cookie/p115client 的上传初始化探测；失败再退 OpenAPI。
+                - openapi 优先：维持原 OpenAPI /open/upload/init 优先。
+                注意：这里只使用本机 CK/Token，不把账号凭据上传中心，也不恢复旧分享表。
                 """
-                self._check_openapi()
                 payload = dict(payload or {})
                 payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
-                return self._call_api('rapid_upload', payload, normalizer=_p115_normalize_common_response, force_openapi=True)
+                return self._call_api('rapid_upload', payload, normalizer=_p115_normalize_common_response)
 
             def fs_rapid_upload(self, target_cid, sha1, size, file_name, preid=None, **kwargs):
                 payload = {'cid': target_cid, 'sha1': sha1, 'size': size, 'file_name': file_name}
