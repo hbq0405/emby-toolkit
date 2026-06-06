@@ -166,14 +166,24 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
             source_kind = 'episode'
         elif source_kind in ('season', 'completed_season'):
             source_kind = 'completed_season'
+
+    # 兼容中心返回的 completed season 包：列表接口只给源摘要，真正文件清单要再取 manifest。
+    # 如果 manifest 为空，不能再显示“秒传完成 0/0”，这属于 manifest 缺失/旧数据，需要重新登记该季。
     if source_kind == 'completed_season':
         manifest = client.completed_season_manifest(source_id)
-        files = manifest.get('files') or []
+        files = (manifest.get('files') or manifest.get('items') or []) if isinstance(manifest, dict) else []
+        if not files and isinstance(manifest, dict):
+            data = manifest.get('data') if isinstance(manifest.get('data'), dict) else {}
+            files = data.get('files') or data.get('items') or []
+        if not files and isinstance(payload.get('files'), list):
+            files = payload.get('files') or []
+        files = [dict(f or {}) for f in files if isinstance(f, dict)]
         for f in files:
             f.setdefault('tmdb_id', payload.get('tmdb_id'))
             f.setdefault('item_type', 'Episode')
             f.setdefault('season_number', payload.get('season_number'))
         return source_kind, source_id, files
+
     file_info = dict(payload or {})
     file_info.setdefault('source_kind', source_kind)
     file_info.setdefault('source_id', source_id)
@@ -183,11 +193,29 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
 def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
     client = SharedCenterClient()
     event_id = str(event.get('event_id') or '')
+    payload = _event_payload(event)
+
+    # 调试/验收阶段允许本机手动秒传自己的共享源。
+    # 中心长轮询仍会自然排除 provider=consumer 的事件，不影响线上调度。
+
     source_kind, source_id, files = _event_sources(event, client)
     if not source_kind or not source_id:
         if ack and event_id:
             client.ack_device_events([event_id], result='failed', message='事件缺少 source_kind/source_id')
-        return {'ok': False, 'message': '事件缺少 source_kind/source_id', 'event_id': event_id}
+        return {'ok': False, 'message': '事件缺少 source_kind/source_id', 'event_id': event_id, 'success_count': 0, 'total': 0, 'errors': []}
+
+    if not files:
+        message = '中心返回的文件清单为空，无法秒传；如果这是完结季收藏源，请重新手动登记/一键全库登记该季，让中心重建 manifest。'
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='failed', message=message)
+            except Exception:
+                pass
+        return {
+            'ok': False, 'message': message, 'event_id': event_id,
+            'source_kind': source_kind, 'source_id': source_id,
+            'success_count': 0, 'total': 0, 'errors': [{'error': message}],
+        }
 
     target_cid = _target_cid()
     ok_count = 0
@@ -220,7 +248,12 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         except Exception as e:
             logger.debug(f"  ➜ [共享资源] ACK 中心事件失败: {e}")
 
-    return {'ok': ok_count > 0, 'event_id': event_id, 'source_kind': source_kind, 'source_id': source_id, 'success_count': ok_count, 'total': len(files), 'errors': errors}
+    message = f'秒传完成：{ok_count}/{len(files)}' if ok_count else (errors[0].get('error') if errors and isinstance(errors[0], dict) and errors[0].get('error') else f'秒传失败：0/{len(files)}')
+    return {
+        'ok': ok_count > 0, 'message': message, 'event_id': event_id,
+        'source_kind': source_kind, 'source_id': source_id,
+        'success_count': ok_count, 'total': len(files), 'errors': errors
+    }
 
 
 def poll_and_consume_once(timeout: int = 25, limit: int = 5) -> Dict[str, Any]:

@@ -283,6 +283,57 @@ def api_share_library():
     return jsonify({'success': True, 'message': '已启动一键登记媒体库任务；不会创建 115 分享，只登记中心秒传索引'})
 
 
+
+def _json_dict(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            obj = json.loads(value)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _first_text(*values):
+    for value in values:
+        if value not in (None, '', [], {}):
+            return value
+    return ''
+
+
+def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    """中心资源库展示用版本摘要。
+
+    Rapid v2 中心源的媒体参数来自 media_signature_json；中心若同时返回 raw_summary_json/summary_json，
+    则作为兜底。前端表格只读 version_summary，避免字段散落导致整列都是“-”。
+    """
+    row = row or {}
+    sig = _json_dict(row.get('media_signature_json') or row.get('media_signature'))
+    raw = _json_dict(row.get('raw_summary_json') or row.get('summary_json') or row.get('version_summary'))
+    out = {}
+    out.update(raw)
+    out.update(sig)
+    resolution = _first_text(out.get('resolution'), out.get('resolution_display'), raw.get('resolution'), sig.get('resolution'))
+    effect = _first_text(out.get('effect'), out.get('effect_display'), out.get('effect_key'), raw.get('effect'), sig.get('effect_key'))
+    video_codec = _first_text(out.get('video_codec'), out.get('codec_display'), out.get('codec'), raw.get('video_codec'))
+    bit_depth = _first_text(out.get('bit_depth'), raw.get('bit_depth'), sig.get('bit_depth'))
+    fps = _first_text(out.get('fps'), out.get('frame_rate'), raw.get('fps'), raw.get('frame_rate'))
+    audio_list = out.get('audio_list') or out.get('audio_tracks') or out.get('audios') or []
+    subtitle_list = out.get('subtitle_list') or out.get('subtitle_tracks') or out.get('subtitles') or []
+    out.update({
+        'resolution': resolution,
+        'effect': effect,
+        'video_codec': video_codec,
+        'codec': video_codec,
+        'bit_depth': bit_depth,
+        'fps': fps,
+        'audio_list': audio_list if isinstance(audio_list, list) else ([audio_list] if audio_list else []),
+        'subtitle_list': subtitle_list if isinstance(subtitle_list, list) else ([subtitle_list] if subtitle_list else []),
+    })
+    return {k: v for k, v in out.items() if v not in (None, '', [], {})}
+
 @shared_resource_bp.route('/center/sources', methods=['GET'])
 @admin_required
 def api_center_sources():
@@ -298,6 +349,17 @@ def api_center_sources():
             limit=int(request.args.get('limit') or request.args.get('page_size') or 200),
             offset=int(request.args.get('offset') or 0),
         )
+        items = []
+        for row in resp.get('items') or []:
+            if not isinstance(row, dict):
+                continue
+            row = dict(row)
+            row['version_summary'] = _center_version_summary(row)
+            # 兼容旧前端按 size 读取大小；completed season 用 total_size。
+            if not row.get('size') and row.get('total_size'):
+                row['size'] = row.get('total_size')
+            items.append(row)
+        resp['items'] = items
         return jsonify({'success': True, **resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
@@ -308,12 +370,25 @@ def api_center_sources():
 def api_center_import():
     data = _request_json()
     source = data.get('source') if isinstance(data.get('source'), dict) else data
+
+    # 旧前端曾只提交 source_ids/context，没有提交完整中心源行；Rapid v2 需要 source_kind/source_id/sha1 等字段。
+    # 这里给出明确错误，避免前端继续显示“秒传完成 0/0”。
+    if not isinstance(source, dict):
+        source = {}
     source_kind = source.get('source_kind') or source.get('kind') or ''
     source_id = source.get('source_id') or source.get('source_ref_id') or ''
+    if (not source_kind or not source_id) and data.get('source_ids'):
+        return jsonify({
+            'success': False,
+            'message': '前端提交的还是旧 source_ids 转存参数，缺少 Rapid v2 的 source_kind/source_id；请覆盖最新 SharedResourceManagerPage.vue。',
+            'data': {'ok': False, 'success_count': 0, 'total': 0}
+        }), 400
+
     event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
     result = consume_device_event(event)
     status = 200 if result.get('ok') else 400
-    return jsonify({'success': bool(result.get('ok')), 'message': f"秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}", 'data': result}), status
+    message = result.get('message') or f"秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}"
+    return jsonify({'success': bool(result.get('ok')), 'message': message, 'data': result}), status
 
 
 @shared_resource_bp.route('/center/device/register', methods=['POST'])

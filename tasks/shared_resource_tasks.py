@@ -149,23 +149,170 @@ def _effect_key(raw: Dict[str, Any]) -> str:
     return 'SDR'
 
 
-def _media_signature(raw: Dict[str, Any]) -> Dict[str, Any]:
-    video = _raw_video_stream(raw)
+def _stream_type(stream: Dict[str, Any]) -> str:
+    return str(stream.get('Type') or stream.get('codec_type') or stream.get('type') or '').strip().lower()
+
+
+def _raw_streams(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = raw or {}
+    if isinstance(raw.get('MediaSourceInfo'), dict):
+        streams = raw.get('MediaSourceInfo', {}).get('MediaStreams') or []
+    elif isinstance(raw.get('MediaStreams'), list):
+        streams = raw.get('MediaStreams') or []
+    elif isinstance(raw.get('streams'), list):
+        streams = raw.get('streams') or []
+    else:
+        streams = []
+    return [s for s in streams if isinstance(s, dict)]
+
+
+def _codec_display(value: Any) -> str:
+    text = str(value or '').strip()
+    low = text.lower()
     return {
-        'resolution': _video_resolution(video),
-        'effect_key': _effect_key(raw),
-        'codec': str(video.get('Codec') or video.get('codec_name') or video.get('codec') or '').lower(),
+        'hevc': 'HEVC', 'h265': 'HEVC', 'x265': 'HEVC',
+        'h264': 'H.264', 'avc': 'H.264', 'x264': 'H.264',
+        'av1': 'AV1', 'vp9': 'VP9',
+    }.get(low, text.upper() if text else '')
+
+
+def _fraction_to_float(value: Any):
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        if '/' in text:
+            a, b = text.split('/', 1)
+            b = float(b)
+            return float(a) / b if b else None
+        return float(text)
+    except Exception:
+        return None
+
+
+def _fps_display(video: Dict[str, Any]) -> str:
+    value = (
+        video.get('AverageFrameRate') or video.get('RealFrameRate') or video.get('FrameRate') or
+        video.get('avg_frame_rate') or video.get('r_frame_rate')
+    )
+    fps = _fraction_to_float(value)
+    if fps is None or fps <= 0:
+        return ''
+    if abs(fps - round(fps)) < 0.03:
+        return f'{int(round(fps))} fps'
+    return f'{fps:.2f} fps'
+
+
+def _track_display(stream: Dict[str, Any]) -> Dict[str, Any]:
+    lang = str(stream.get('Language') or stream.get('language') or stream.get('lang') or '').strip()
+    codec = _codec_display(stream.get('Codec') or stream.get('codec_name') or stream.get('codec'))
+    channels = stream.get('Channels') or stream.get('channels') or stream.get('channel_layout')
+    title = str(stream.get('DisplayTitle') or stream.get('Title') or stream.get('title') or '').strip()
+    parts = []
+    if lang:
+        parts.append(lang)
+    if codec:
+        parts.append(codec)
+    if channels:
+        ch_text = str(channels)
+        if ch_text.isdigit():
+            ch_text = f'{ch_text}ch'
+        parts.append(ch_text)
+    if title and title not in parts:
+        parts.append(title)
+    return {
+        'language': lang,
+        'codec': codec,
+        'channels': channels,
+        'title': title,
+        'display': ' · '.join([str(x) for x in parts if str(x).strip()]),
     }
 
 
-def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any]) -> bool:
+def _media_signature(raw: Dict[str, Any]) -> Dict[str, Any]:
+    streams = _raw_streams(raw)
+    video = next((s for s in streams if _stream_type(s) == 'video'), {}) or {}
+    audio_list = [_track_display(s) for s in streams if _stream_type(s) == 'audio']
+    subtitle_list = [_track_display(s) for s in streams if _stream_type(s) in ('subtitle', 'subtitles')]
+    codec = _codec_display(video.get('Codec') or video.get('codec_name') or video.get('codec'))
+    bit_depth = video.get('BitDepth') or video.get('bits_per_raw_sample') or video.get('bits_per_sample')
+    fps = _fps_display(video)
+    resolution = _video_resolution(video)
+    effect = _effect_key(raw)
+    return {
+        'resolution': resolution,
+        'resolution_display': resolution,
+        'effect': effect,
+        'effect_key': effect,
+        'codec': codec,
+        'video_codec': codec,
+        'codec_display': codec,
+        'bit_depth': bit_depth,
+        'fps': fps,
+        'frame_rate': fps,
+        'audio_list': [x for x in audio_list if x.get('display') or x.get('codec') or x.get('language')],
+        'subtitle_list': [x for x in subtitle_list if x.get('display') or x.get('codec') or x.get('language')],
+    }
+
+
+def _prepare_raw_upload_entry(file_info: Dict[str, Any]) -> Dict[str, Any]:
     sha1 = _norm_sha1(file_info.get('sha1'))
     if not sha1:
-        return False
+        return {}
     raw = _raw_for_file(file_info)
     if not raw:
+        return {}
+    return {
+        'sha1': sha1,
+        'size': _safe_int(file_info.get('size'), 0) or None,
+        'raw_ffprobe_json': raw,
+    }
+
+
+def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    entries = []
+    for f in files or []:
+        entry = _prepare_raw_upload_entry(f)
+        if entry:
+            entries.append(entry)
+    if not entries:
+        return {'ok': True, 'uploaded': {}, 'count': 0, 'errors': []}
+
+    uploaded = {}
+    errors = []
+    try:
+        if hasattr(client, 'upload_raw_ffprobe_batch'):
+            resp = client.upload_raw_ffprobe_batch(entries)
+            ok_items = resp.get('items') or resp.get('uploaded') or []
+            for item in ok_items:
+                sha = _norm_sha1((item or {}).get('sha1'))
+                if sha:
+                    uploaded[sha] = True
+            # 中心旧版本可能只返回 count；这种情况下视本批次都成功，避免回退逐个再刷屏。
+            if not uploaded and int(resp.get('count') or 0) == len(entries) and not resp.get('errors'):
+                uploaded = {_norm_sha1(x.get('sha1')): True for x in entries if _norm_sha1(x.get('sha1'))}
+            errors = resp.get('errors') or []
+            if uploaded:
+                return {'ok': not errors, 'uploaded': uploaded, 'count': len(uploaded), 'errors': errors}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] RAW 批量上传失败，回退逐个上传: {e}")
+
+    # 兼容未升级中心：单个逐个传，但只作为 fallback。
+    for entry in entries:
+        sha = _norm_sha1(entry.get('sha1'))
+        try:
+            client.upload_raw_ffprobe(sha, entry.get('raw_ffprobe_json') or {}, size=entry.get('size'))
+            uploaded[sha] = True
+        except Exception as e:
+            errors.append({'sha1': sha, 'error': str(e)})
+    return {'ok': not errors, 'uploaded': uploaded, 'count': len(uploaded), 'errors': errors}
+
+
+def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any]) -> bool:
+    entry = _prepare_raw_upload_entry(file_info)
+    if not entry:
         return False
-    client.upload_raw_ffprobe(sha1, raw, size=_safe_int(file_info.get('size'), 0) or None)
+    client.upload_raw_ffprobe(entry['sha1'], entry['raw_ffprobe_json'], size=entry.get('size'))
     return True
 
 
@@ -230,9 +377,11 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
 
     root = shared_share_db.candidate_root_from_files(files)
     client = SharedCenterClient()
+    raw_batch_result = _upload_raw_batch(client, files)
+    uploaded_sha1s = raw_batch_result.get('uploaded') or {}
     results = []
-    uploaded = 0
-    errors = []
+    uploaded = int(raw_batch_result.get('count') or 0)
+    errors = list(raw_batch_result.get('errors') or [])
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     if item_type == 'Movie':
         tmdb_id = str(candidate.get('tmdb_id') or '').strip()
@@ -245,9 +394,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             f.setdefault('item_type', 'Episode')
             f.setdefault('season_number', candidate.get('season_number'))
         try:
-            raw_ok = _upload_raw_if_needed(client, f)
-            if raw_ok:
-                uploaded += 1
+            sha_for_raw = _norm_sha1(f.get('sha1'))
+            raw_ok = bool(uploaded_sha1s.get(sha_for_raw))
             common = _file_payload_common(f, raw_uploaded=raw_ok)
             if item_type == 'Movie':
                 payload = {
@@ -320,6 +468,12 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes'), 0)
         consistency = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
         status = _completed_status_from_files(completed_files, expected)
+        common_signature = {}
+        for _cf in completed_files:
+            sig = _cf.get('media_signature_json') if isinstance(_cf.get('media_signature_json'), dict) else {}
+            if sig:
+                common_signature = sig
+                break
         if isinstance(consistency, dict) and consistency:
             reason = consistency.get('reason')
             if consistency.get('ok'):
@@ -345,6 +499,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'is_clean_version': bool(candidate.get('is_clean_version', False)),
                 'clean_version_confidence': candidate.get('clean_version_confidence'),
                 'clean_version_meta_json': candidate.get('clean_version_meta_json') or {},
+                'media_signature_json': common_signature,
                 'files': completed_files,
             }
             completed_resp = client.register_completed_season_source(payload)

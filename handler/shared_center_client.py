@@ -239,6 +239,20 @@ class SharedCenterClient:
     def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size: int | None = None) -> Dict[str, Any]:
         return self._post('/api/v1/rawffprobe/upload', {'sha1': sha1, 'size': size, 'raw_ffprobe_json': raw_ffprobe_json or {}}, timeout=35)
 
+    def upload_raw_ffprobe_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        payload_items = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            sha1 = str(item.get('sha1') or '').strip().upper()
+            raw = item.get('raw_ffprobe_json') or item.get('raw') or {}
+            if not sha1 or not isinstance(raw, dict):
+                continue
+            payload_items.append({'sha1': sha1, 'size': item.get('size'), 'raw_ffprobe_json': raw})
+        if not payload_items:
+            return {'ok': True, 'items': [], 'errors': [], 'count': 0}
+        return self._post('/api/v1/rawffprobe/upload-batch', {'items': payload_items}, timeout=max(60, min(300, 20 + len(payload_items) * 4)))
+
     def raw_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
         return self._post('/api/v1/rawffprobe/batch', {'sha1_list': list(sha1_list or [])}, timeout=25)
 
