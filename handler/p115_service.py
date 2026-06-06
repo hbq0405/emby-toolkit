@@ -1347,9 +1347,15 @@ class P115CookieClient:
     def rapid_upload(self, payload=None, **kwargs):
         """Cookie 侧上传初始化探测入口。
 
-        目的：验证 115 Cookie/web 上传初始化是否比 OpenAPI 更少触发 status=7。
-        这里只做“秒传/复用”探测与创建，不做明文上传；如果 p115client 返回需要普通上传的
-        MultipartUpload 对象，直接按失败返回，避免把几十 GB 文件真的上传出去。
+        这条链路直接调用 p115client.P115Client.upload_init，对应
+        https://uplb.115.com/4.0/initupload.php。
+
+        注意：Cookie 版 initupload 和 OpenAPI /open/upload/init 不是同一套字段：
+        - Cookie: filename / filesize / fileid / target / userid / userkey / sign_key / sign_val
+        - OpenAPI: file_name / file_size / fileid / preid / target
+
+        这里只做“是否可直接秒传/复用”的探测；如果返回普通上传(status=1)，立刻停止，
+        绝不继续上传明文文件。
         """
         payload = dict(payload or {})
         payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
@@ -1396,6 +1402,13 @@ class P115CookieClient:
                 return int(float(match.group(1)) * multiplier) if match else 0
             except Exception:
                 return 0
+
+        def _status_from_cookie_init(resp):
+            if not isinstance(resp, dict):
+                return '', {}
+            data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
+            status = resp.get('status') if resp.get('status') is not None else data.get('status')
+            return str(status) if status is not None else '', data
 
         rapid_meta = _as_dict(payload.get('rapid_meta_json') or payload.get('rapid_meta') or payload.get('meta'))
         source_meta = _as_dict(payload.get('source') or payload.get('source_json'))
@@ -1450,90 +1463,117 @@ class P115CookieClient:
             return {'state': False, 'error_msg': 'Cookie 秒传缺少文件大小', '_rapid_upload_backend': 'cookie'}
         if not file_name:
             file_name = f'{sha1}.mkv'
-        if not pick_code:
-            return {
-                'state': False,
-                'error_msg': 'Cookie 上传初始化需要源文件 pick_code 以读取前 128KB/签名片段；当前中心源未携带 pick_code，跳过 Cookie 秒传探测',
-                '_rapid_upload_backend': 'cookie',
-                '_rapid_cookie_unsupported': True,
-            }
         if not self.webapi:
             return {'state': False, 'error_msg': 'Cookie 客户端未初始化 p115client，无法调用 Cookie 上传初始化', '_rapid_upload_backend': 'cookie'}
-
-        try:
-            from p115client.tool.upload import upload_init
-        except Exception as e:
+        if not hasattr(self.webapi, 'upload_init'):
             return {
                 'state': False,
-                'error_msg': f'当前 p115client 不支持 tool.upload.upload_init，无法测试 Cookie 上传初始化: {e}',
+                'error_msg': '当前 p115client 不支持 P115Client.upload_init，无法测试 Cookie 上传初始化',
                 '_rapid_upload_backend': 'cookie',
                 '_rapid_cookie_unsupported': True,
             }
 
-        ua = self.user_agent or get_115_ua(self.app_type)
-        try:
-            source_url = self.download_url(pick_code, user_agent=ua)
-        except Exception as e:
-            return {
-                'state': False,
-                'error_msg': f'Cookie 秒传获取源文件直链失败: {e}',
-                '_rapid_upload_backend': 'cookie',
-            }
-        if not source_url:
-            return {'state': False, 'error_msg': 'Cookie 秒传获取源文件直链失败：空 URL', '_rapid_upload_backend': 'cookie'}
+        target = target_cid if str(target_cid).startswith('U_') else f'U_1_{target_cid}'
+        init_payload = {
+            'filename': file_name,
+            'filesize': int(size),
+            'fileid': sha1,
+            'target': target,
+            'topupload': 'true',
+        }
 
         logger.info(
-            f"  ➜ [Cookie秒传] 尝试 Cookie 上传初始化: {file_name} | "
-            f"sha1={sha1[:12]}... | size={size} | target_cid={target_cid}"
+            f"  ➜ [Cookie秒传] 尝试 Cookie initupload: {file_name} | "
+            f"sha1={sha1[:12]}... | size={size} | target={target}"
         )
+
         try:
-            # upload_init 只负责初始化：若秒传成功会返回 dict(reuse=True)；若需要普通上传，
-            # 可能返回 MultipartUpload 对象。这里绝不继续 iter_upload，避免真实上传大文件。
-            resp = upload_init(
-                self.webapi,
-                source_url,
-                pid=str(target_cid),
-                filename=file_name,
-                filesha1=sha1,
-                filesize=int(size),
-                async_=False,
-                headers={'User-Agent': ua},
-            )
+            resp = self.webapi.upload_init(init_payload)
         except Exception as e:
             return {
                 'state': False,
-                'error_msg': f'Cookie 上传初始化异常: {e}',
+                'error_msg': f'Cookie initupload 异常: {e}',
                 '_rapid_upload_backend': 'cookie',
+                '_rapid_cookie_payload': {'target': target, 'sha1': sha1[:12] + '...', 'size': size},
             }
 
-        if isinstance(resp, dict):
-            out = dict(resp)
-            out['_rapid_upload_backend'] = 'cookie'
-            reuse = out.get('reuse') is True or str(out.get('reuse')).lower() == 'true'
-            data = out.get('data') if isinstance(out.get('data'), dict) else {}
-            status = str(out.get('status') if out.get('status') is not None else data.get('status') if data.get('status') is not None else '')
-            if reuse or status in ('2', 'success', 'done'):
-                out['state'] = True
-                out['success'] = True
-                out.setdefault('message', '115 Cookie 上传初始化秒传成功')
-                out.setdefault('rapid_upload', True)
-                out.setdefault('sha1', sha1)
-                out.setdefault('file_name', file_name)
-                out.setdefault('target_cid', target_cid)
-                out.setdefault('size', size)
-                logger.info(f"  ➜ [Cookie秒传] Cookie 上传初始化秒传成功: {file_name}")
-                return out
-            out.setdefault('state', False)
-            out.setdefault('error_msg', f'Cookie 上传初始化未直接秒传，已停止真实上传: {out}')
+        if not isinstance(resp, dict):
+            return {
+                'state': False,
+                'error_msg': f'Cookie initupload 返回非 dict: {type(resp).__name__}',
+                '_rapid_upload_backend': 'cookie',
+                'response': str(resp)[:500],
+            }
+
+        out = dict(resp)
+        out['_rapid_upload_backend'] = 'cookie'
+        out.setdefault('sha1', sha1)
+        out.setdefault('file_name', file_name)
+        out.setdefault('target_cid', target_cid)
+        out.setdefault('size', size)
+        status, data = _status_from_cookie_init(out)
+        reuse = out.get('reuse') is True or str(out.get('reuse')).lower() == 'true'
+
+        if reuse or status in ('2', 'success', 'done'):
+            out['state'] = True
+            out['success'] = True
+            out.setdefault('message', '115 Cookie initupload 秒传成功')
+            out.setdefault('rapid_upload', True)
+            logger.info(f"  ➜ [Cookie秒传] Cookie initupload 秒传成功: {file_name}")
             return out
 
-        return {
-            'state': False,
-            'error_msg': 'Cookie 上传初始化返回普通上传对象，说明未直接秒传；已停止真实上传',
-            '_rapid_upload_backend': 'cookie',
-            '_rapid_cookie_need_plain_upload': True,
-            'response_type': type(resp).__name__,
-        }
+        if status == '1':
+            out['state'] = False
+            out.setdefault('error_msg', 'Cookie initupload 返回普通上传(status=1)，Rapid v2 不上传明文文件')
+            out['_rapid_cookie_need_plain_upload'] = True
+            return out
+
+        if status == '7':
+            sign_checks = []
+            status_counts = {'7': 1}
+            first_sign_check = out.get('sign_check') or data.get('sign_check')
+            if first_sign_check:
+                sign_checks.append(str(first_sign_check))
+
+            # 和 OpenAPI 探测一致：只重复初始化，不读原文件、不提交 sign_val，观察 sign_check 是否稳定。
+            rounds = 10
+            for _ in range(rounds - 1):
+                try:
+                    time.sleep(0.25)
+                    probe = self.webapi.upload_init(init_payload)
+                    p_status, p_data = _status_from_cookie_init(probe if isinstance(probe, dict) else {})
+                    status_counts[p_status or 'unknown'] = status_counts.get(p_status or 'unknown', 0) + 1
+                    p_sign_check = None
+                    if isinstance(probe, dict):
+                        p_sign_check = probe.get('sign_check') or p_data.get('sign_check')
+                    if p_sign_check:
+                        sign_checks.append(str(p_sign_check))
+                except Exception as e:
+                    status_counts['exception'] = status_counts.get('exception', 0) + 1
+                    logger.debug(f"  ➜ [Cookie秒传] sign_check 探测异常: {e}")
+
+            unique_checks = sorted(set(sign_checks))
+            logger.info(
+                f"  ➜ [Cookie秒传] 115 Cookie 二次校验 sign_check 探测完成："
+                f"sha1={sha1[:12]}..., rounds={rounds}, unique_sign_check={len(unique_checks)}, "
+                f"status_counts={status_counts}, sign_checks={unique_checks}"
+            )
+            out['state'] = False
+            out['error_msg'] = (
+                f'Cookie initupload 要求二次校验(status=7)，已完成 sign_check 探测：'
+                f'共 {rounds} 次，唯一 sign_check={len(unique_checks)} 个'
+            )
+            out['_rapid_cookie_status7_probe'] = {
+                'rounds': rounds,
+                'unique_sign_check': len(unique_checks),
+                'status_counts': status_counts,
+                'sign_checks': unique_checks,
+            }
+            return out
+
+        out['state'] = False
+        out.setdefault('error_msg', f'Cookie initupload 未直接秒传，status={status or "unknown"}')
+        return out
 
     def get_user_info(self):
         """获取用户信息 (仅用于验证)"""
