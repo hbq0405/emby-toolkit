@@ -53,6 +53,124 @@ def get_115_ua(app_type):
     }
     return ua_map.get(str(app_type).lower() if app_type else 'web', ua_map['web'])
 
+
+def _p115_parse_sign_check_range(sign_check):
+    """解析 115 upload/init 返回的 sign_check，返回闭区间 start/end。"""
+    text = str(sign_check or '').strip()
+    m = re.fullmatch(r'\s*(\d+)\s*-\s*(\d+)\s*', text)
+    if not m:
+        raise ValueError(f'非法 sign_check: {text!r}')
+    start, end = int(m.group(1)), int(m.group(2))
+    if start < 0 or end < start:
+        raise ValueError(f'非法 sign_check 区间: {text!r}')
+    return start, end
+
+
+def _p115_extract_down_url(resp):
+    """兼容提取 115 OpenAPI/Cookie 返回的直链 URL。"""
+    if not resp:
+        return ''
+    if isinstance(resp, str):
+        return resp
+    # p115client 的 P115URL 等对象
+    try:
+        text = str(resp)
+        if text.startswith(('http://', 'https://')):
+            return text
+    except Exception:
+        pass
+    if not isinstance(resp, dict):
+        return ''
+    for key in ('url', 'download_url', 'downurl', 'direct_url'):
+        val = resp.get(key)
+        if isinstance(val, str) and val.startswith(('http://', 'https://')):
+            return val
+        if isinstance(val, dict):
+            nested = _p115_extract_down_url(val)
+            if nested:
+                return nested
+    data = resp.get('data')
+    if isinstance(data, dict):
+        # OpenAPI downurl: data = {fid: {url: {url: ...}}}
+        for val in data.values():
+            nested = _p115_extract_down_url(val)
+            if nested:
+                return nested
+        nested = _p115_extract_down_url(data)
+        if nested:
+            return nested
+    if isinstance(data, list):
+        for val in data:
+            nested = _p115_extract_down_url(val)
+            if nested:
+                return nested
+    return ''
+
+
+def _p115_range_sha1_from_url(down_url, sign_check, user_agent=None, label='115', timeout=45):
+    """按 sign_check 对直链执行 Range GET，返回 (sign_val, byte_len, start, end)。"""
+    start, end = _p115_parse_sign_check_range(sign_check)
+    expected_len = end - start + 1
+    headers = {
+        'Range': f'bytes={start}-{end}',
+        'Accept': '*/*',
+        'Connection': 'close',
+    }
+    if user_agent:
+        headers['User-Agent'] = user_agent
+    logger.info(
+        f"  ➜ [Rapid签名闭环] {label} 开始读取 sign_check Range: "
+        f"{start}-{end}，expected={expected_len} bytes"
+    )
+    resp = requests.get(str(down_url), headers=headers, timeout=timeout, allow_redirects=True)
+    status_code = getattr(resp, 'status_code', None)
+    if status_code != 206:
+        raise RuntimeError(f'Range GET HTTP={status_code}，expected=206')
+    content = resp.content or b''
+    if not content:
+        raise RuntimeError('Range GET 返回空内容')
+    if len(content) != expected_len:
+        logger.warning(
+            f"  ➜ [Rapid签名闭环] {label} Range 长度与 sign_check 不一致："
+            f"got={len(content)}, expected={expected_len}，继续按实际内容计算 sign_val"
+        )
+    sign_val = hashlib.sha1(content).hexdigest().upper()
+    logger.info(
+        f"  ➜ [Rapid签名闭环] {label} Range 读取完成："
+        f"got={len(content)} bytes, sign_val={sign_val[:12]}..."
+    )
+    return sign_val, len(content), start, end
+
+
+def _p115_try_local_holder_sign(*, pick_code, sign_check, downurl_getter, user_agent=None, label='本机Holder', sha1='', file_name=''):
+    """最小闭环：本机作为 holder，用自己的 CK/Token 取直链并计算 sign_val。"""
+    pc = str(pick_code or '').strip()
+    if not pc:
+        logger.warning(
+            f"  ➜ [Rapid签名闭环] {label} 无法计算 sign_val：缺少源文件 pick_code；"
+            f"sha1={str(sha1 or '')[:12]}..., file={file_name or '-'}"
+        )
+        return None
+    logger.info(
+        f"  ➜ [Rapid签名闭环] {label} 收到二次校验任务："
+        f"sha1={str(sha1 or '')[:12]}..., pc={pc[:8]}..., sign_check={sign_check}, file={file_name or '-'}"
+    )
+    down_url = downurl_getter(pc, user_agent)
+    down_url = _p115_extract_down_url(down_url)
+    if not down_url:
+        raise RuntimeError(f'{label} 未能获取源文件直链')
+    logger.info(f"  ➜ [Rapid签名闭环] {label} 已获取源文件直链，准备 Range 读取：pc={pc[:8]}...")
+    sign_val, byte_len, start, end = _p115_range_sha1_from_url(
+        down_url, sign_check, user_agent=user_agent, label=label
+    )
+    return {
+        'sign_val': sign_val,
+        'byte_len': byte_len,
+        'start': start,
+        'end': end,
+        'pick_code': pc,
+    }
+
 class LimitedCache(OrderedDict):
     """带容量限制的内存缓存，防止内存泄漏撑爆服务器"""
     def __init__(self, maxsize=1000, *args, **kwds):
@@ -777,118 +895,125 @@ class P115OpenAPIClient:
             }
 
         if status == '7':
-            def _status_from_upload_init(resp):
-                if not isinstance(resp, dict):
-                    return '', {}
-                resp_data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
-                resp_status = str(
-                    resp_data.get('status')
-                    if resp_data.get('status') is not None
-                    else resp.get('status')
-                    if resp.get('status') is not None
-                    else ''
-                )
-                return resp_status, resp_data
+            sign_key_text = str(data.get('sign_key') or init_res.get('sign_key') or '')
+            sign_check_text = str(data.get('sign_check') or init_res.get('sign_check') or '')
+            logger.warning(
+                f"  ➜ [Rapid秒传] OpenAPI 返回 status=7，进入本机 Holder 签名闭环："
+                f"sha1={sha1[:12]}..., preid={(preid or sha1)[:12]}..., "
+                f"pc={(pick_code or '-')[:8]}..., sign_check={sign_check_text or '-'}, "
+                f"sign_key_prefix={sign_key_text[:12]}..., sign_key_len={len(sign_key_text)}"
+            )
 
-            def _sign_probe_item(resp, index=1):
-                resp_status, resp_data = _status_from_upload_init(resp)
-                sign_key_text = str(resp_data.get('sign_key') or '')
+            if not sign_key_text or not sign_check_text:
+                logger.warning("  ➜ [Rapid签名闭环] OpenAPI status=7 但缺少 sign_key/sign_check，无法闭环重试。")
                 return {
-                    'index': index,
-                    'status': resp_status,
-                    'sign_check': str(resp_data.get('sign_check') or ''),
-                    # sign_key 只用于本次重试，日志里保留前缀便于判断是否每次变化，不完整暴露。
-                    'sign_key_prefix': sign_key_text[:12],
-                    'sign_key_len': len(sign_key_text),
-                    'state': bool(resp.get('state')) if isinstance(resp, dict) else False,
-                    'message': (resp.get('message') or resp.get('error_msg') or resp.get('error') or '') if isinstance(resp, dict) else str(resp),
+                    'state': False,
+                    'error_msg': '115 要求二次校验(status=7)，但返回缺少 sign_key/sign_check，无法计算 sign_val',
+                    'response': init_res,
+                    '_rapid_sign_closed_loop': False,
+                    '_rapid_sign_backend': 'openapi',
+                    '_rapid_sign_stage': 'missing_sign_key_or_check',
                 }
 
             try:
-                probe_rounds = int(
-                    _first(
-                        payload.get('sign_probe_rounds'), payload.get('rapid_sign_probe_rounds'),
-                        rapid_meta.get('sign_probe_rounds'), rapid_meta.get('rapid_sign_probe_rounds'),
-                        source_meta.get('sign_probe_rounds'), source_meta.get('rapid_sign_probe_rounds'),
-                        (config_manager.APP_CONFIG or {}).get('p115_rapid_sign_probe_rounds'),
-                        os.environ.get('ETK_RAPID_SIGN_PROBE_ROUNDS'),
-                        10,
-                    )
-                )
-            except Exception:
-                probe_rounds = 10
-            probe_rounds = max(1, min(probe_rounds, 20))
-
-            sign_probe = [_sign_probe_item(init_res, 1)]
-            for idx in range(2, probe_rounds + 1):
                 try:
-                    time.sleep(0.35)
-                    retry_res = self.fs_upload_init(file_name, size, target_cid, sha1, preid or sha1)
-                    retry_status, _retry_data = _status_from_upload_init(retry_res)
-                    if retry_res.get('state') and retry_status == '2':
-                        logger.info(
-                            f"  ➜ [Rapid秒传] sign_check 探测第 {idx} 次直接秒传成功："
-                            f"sha1={sha1[:12]}..., preid={(preid or sha1)[:12]}..."
-                        )
-                        out = dict(retry_res)
-                        out['state'] = True
-                        out['success'] = True
-                        out['message'] = out.get('message') or '115 秒传成功'
-                        out.setdefault('rapid_upload', True)
-                        out.setdefault('sha1', sha1)
-                        out.setdefault('file_name', file_name)
-                        out.setdefault('target_cid', target_cid)
-                        out.setdefault('size', size)
-                        out['sign_probe'] = sign_probe
-                        return out
-                    sign_probe.append(_sign_probe_item(retry_res, idx))
-                except Exception as e:
-                    sign_probe.append({
-                        'index': idx,
-                        'status': 'exception',
-                        'sign_check': '',
-                        'sign_key_prefix': '',
-                        'sign_key_len': 0,
-                        'state': False,
-                        'message': str(e),
-                    })
+                    _, _, _, app_type = get_115_tokens()
+                except Exception:
+                    app_type = 'web'
+                sign_ua = str(_first(
+                    payload.get('sign_user_agent'), payload.get('user_agent'), payload.get('ua'),
+                    rapid_meta.get('sign_user_agent'), rapid_meta.get('user_agent'), rapid_meta.get('ua'),
+                    get_115_ua(app_type),
+                ) or get_115_ua('web'))
 
-            sign_checks = [x.get('sign_check') for x in sign_probe if x.get('sign_check')]
-            unique_checks = []
-            for value in sign_checks:
-                if value not in unique_checks:
-                    unique_checks.append(value)
-            status_counts = {}
-            for item in sign_probe:
-                key = str(item.get('status') or 'unknown')
-                status_counts[key] = status_counts.get(key, 0) + 1
+                def _openapi_downurl_getter(pc, ua):
+                    return self.fs_downurl(pc, user_agent=ua)
 
-            logger.warning(
-                f"  ➜ [Rapid秒传] 115 二次校验 sign_check 探测完成："
-                f"sha1={sha1[:12]}..., preid={(preid or sha1)[:12]}..., "
-                f"rounds={len(sign_probe)}, unique_sign_check={len(unique_checks)}, "
-                f"status_counts={status_counts}, sign_checks={unique_checks[:20]}"
-            )
+                sign_result = _p115_try_local_holder_sign(
+                    pick_code=pick_code,
+                    sign_check=sign_check_text,
+                    downurl_getter=_openapi_downurl_getter,
+                    user_agent=sign_ua,
+                    label='OpenAPI本机Holder',
+                    sha1=sha1,
+                    file_name=file_name,
+                )
+                if not sign_result or not sign_result.get('sign_val'):
+                    raise RuntimeError('本机 Holder 未返回 sign_val')
 
-            return {
-                'state': False,
-                'error_msg': (
-                    '115 要求二次校验(status=7)，已完成 sign_check 探测：'
-                    f'共 {len(sign_probe)} 次，唯一 sign_check={len(unique_checks)} 个'
-                ),
-                'response': init_res,
-                'sign_probe': {
-                    'rounds': len(sign_probe),
-                    'unique_sign_check_count': len(unique_checks),
-                    'unique_sign_checks': unique_checks,
-                    'status_counts': status_counts,
-                    'items': sign_probe,
-                    'sha1': sha1,
-                    'preid': preid or sha1,
-                    'size': size,
-                    'file_name': file_name,
-                },
-            }
+                logger.info(
+                    f"  ➜ [Rapid签名闭环] OpenAPI 已拿到 sign_val，准备带 sign_key/sign_val 重试 upload/init："
+                    f"sign_val={sign_result['sign_val'][:12]}..., bytes={sign_result.get('byte_len')}"
+                )
+                signed_res = self.fs_upload_init(
+                    file_name, size, target_cid, sha1, preid or sha1,
+                    sign_key=sign_key_text,
+                    sign_val=sign_result['sign_val'],
+                )
+                signed_data = signed_res.get('data') if isinstance(signed_res, dict) and isinstance(signed_res.get('data'), dict) else {}
+                signed_status = str(
+                    signed_data.get('status')
+                    if signed_data.get('status') is not None
+                    else signed_res.get('status')
+                    if isinstance(signed_res, dict) and signed_res.get('status') is not None
+                    else ''
+                )
+                logger.info(
+                    f"  ➜ [Rapid签名闭环] OpenAPI 带签名重试完成："
+                    f"state={bool(isinstance(signed_res, dict) and signed_res.get('state'))}, status={signed_status or '-'}, "
+                    f"new_sign_check={signed_data.get('sign_check') or '-'}"
+                )
+                if isinstance(signed_res, dict) and signed_res.get('state') and signed_status == '2':
+                    out = dict(signed_res)
+                    out['state'] = True
+                    out['success'] = True
+                    out['message'] = out.get('message') or '115 秒传成功（OpenAPI 本机 Holder 签名闭环）'
+                    out.setdefault('rapid_upload', True)
+                    out.setdefault('sha1', sha1)
+                    out.setdefault('file_name', file_name)
+                    out.setdefault('target_cid', target_cid)
+                    out.setdefault('size', size)
+                    out['_rapid_sign_closed_loop'] = True
+                    out['_rapid_sign_backend'] = 'openapi'
+                    out['_rapid_sign_holder'] = {
+                        'pick_code_prefix': pick_code[:8] if pick_code else '',
+                        'byte_len': sign_result.get('byte_len'),
+                        'range': f"{sign_result.get('start')}-{sign_result.get('end')}",
+                    }
+                    logger.info(f"  ➜ [Rapid签名闭环] OpenAPI 本机 Holder 闭环成功：{file_name}")
+                    return out
+
+                return {
+                    'state': False,
+                    'error_msg': f'OpenAPI 本机 Holder 已计算 sign_val，但带签名重试未秒传成功，status={signed_status or "unknown"}',
+                    'response': init_res,
+                    'signed_response': signed_res,
+                    '_rapid_sign_closed_loop': False,
+                    '_rapid_sign_backend': 'openapi',
+                    '_rapid_sign_stage': 'signed_retry_not_success',
+                    '_rapid_sign_holder': {
+                        'pick_code_prefix': pick_code[:8] if pick_code else '',
+                        'byte_len': sign_result.get('byte_len'),
+                        'range': f"{sign_result.get('start')}-{sign_result.get('end')}",
+                    },
+                }
+            except Exception as e:
+                logger.warning(f"  ➜ [Rapid签名闭环] OpenAPI 本机 Holder 签名闭环失败：{e}")
+                return {
+                    'state': False,
+                    'error_msg': f'115 要求二次校验(status=7)，本机 Holder 签名闭环失败：{e}',
+                    'response': init_res,
+                    '_rapid_sign_closed_loop': False,
+                    '_rapid_sign_backend': 'openapi',
+                    '_rapid_sign_stage': 'local_holder_sign_failed',
+                    'debug': {
+                        'sha1': sha1,
+                        'preid': preid or sha1,
+                        'pick_code': pick_code,
+                        'sign_check': sign_check_text,
+                        'sign_key_prefix': sign_key_text[:12],
+                    }
+                }
 
         return init_res
 
@@ -1529,47 +1654,108 @@ class P115CookieClient:
             return out
 
         if status == '7':
-            sign_checks = []
-            status_counts = {'7': 1}
-            first_sign_check = out.get('sign_check') or data.get('sign_check')
-            if first_sign_check:
-                sign_checks.append(str(first_sign_check))
-
-            # 和 OpenAPI 探测一致：只重复初始化，不读原文件、不提交 sign_val，观察 sign_check 是否稳定。
-            rounds = 10
-            for _ in range(rounds - 1):
-                try:
-                    time.sleep(0.25)
-                    probe = self.webapi.upload_init(init_payload)
-                    p_status, p_data = _status_from_cookie_init(probe if isinstance(probe, dict) else {})
-                    status_counts[p_status or 'unknown'] = status_counts.get(p_status or 'unknown', 0) + 1
-                    p_sign_check = None
-                    if isinstance(probe, dict):
-                        p_sign_check = probe.get('sign_check') or p_data.get('sign_check')
-                    if p_sign_check:
-                        sign_checks.append(str(p_sign_check))
-                except Exception as e:
-                    status_counts['exception'] = status_counts.get('exception', 0) + 1
-                    logger.debug(f"  ➜ [Cookie秒传] sign_check 探测异常: {e}")
-
-            unique_checks = sorted(set(sign_checks))
-            logger.info(
-                f"  ➜ [Cookie秒传] 115 Cookie 二次校验 sign_check 探测完成："
-                f"sha1={sha1[:12]}..., rounds={rounds}, unique_sign_check={len(unique_checks)}, "
-                f"status_counts={status_counts}, sign_checks={unique_checks}"
+            sign_key_text = str(out.get('sign_key') or data.get('sign_key') or '')
+            sign_check_text = str(out.get('sign_check') or data.get('sign_check') or '')
+            logger.warning(
+                f"  ➜ [Cookie秒传] Cookie initupload 返回 status=7，进入本机 Holder 签名闭环："
+                f"sha1={sha1[:12]}..., pc={(pick_code or '-')[:8]}..., "
+                f"sign_check={sign_check_text or '-'}, sign_key_prefix={sign_key_text[:12]}..., "
+                f"sign_key_len={len(sign_key_text)}"
             )
-            out['state'] = False
-            out['error_msg'] = (
-                f'Cookie initupload 要求二次校验(status=7)，已完成 sign_check 探测：'
-                f'共 {rounds} 次，唯一 sign_check={len(unique_checks)} 个'
-            )
-            out['_rapid_cookie_status7_probe'] = {
-                'rounds': rounds,
-                'unique_sign_check': len(unique_checks),
-                'status_counts': status_counts,
-                'sign_checks': unique_checks,
-            }
-            return out
+
+            if not sign_key_text or not sign_check_text:
+                out['state'] = False
+                out['error_msg'] = 'Cookie initupload 要求二次校验(status=7)，但返回缺少 sign_key/sign_check，无法计算 sign_val'
+                out['_rapid_sign_closed_loop'] = False
+                out['_rapid_sign_backend'] = 'cookie'
+                out['_rapid_sign_stage'] = 'missing_sign_key_or_check'
+                return out
+
+            try:
+                sign_ua = str(_first(
+                    payload.get('sign_user_agent'), payload.get('user_agent'), payload.get('ua'),
+                    rapid_meta.get('sign_user_agent'), rapid_meta.get('user_agent'), rapid_meta.get('ua'),
+                    self.user_agent,
+                    get_115_ua(self.app_type),
+                ) or get_115_ua('web'))
+
+                sign_result = _p115_try_local_holder_sign(
+                    pick_code=pick_code,
+                    sign_check=sign_check_text,
+                    downurl_getter=lambda pc, ua: self.download_url(pc, user_agent=ua),
+                    user_agent=sign_ua,
+                    label='Cookie本机Holder',
+                    sha1=sha1,
+                    file_name=file_name,
+                )
+                if not sign_result or not sign_result.get('sign_val'):
+                    raise RuntimeError('本机 Holder 未返回 sign_val')
+
+                signed_payload = dict(init_payload)
+                signed_payload['sign_key'] = sign_key_text
+                signed_payload['sign_val'] = sign_result['sign_val']
+                logger.info(
+                    f"  ➜ [Rapid签名闭环] Cookie 已拿到 sign_val，准备带 sign_key/sign_val 重试 initupload："
+                    f"sign_val={sign_result['sign_val'][:12]}..., bytes={sign_result.get('byte_len')}"
+                )
+                signed_resp = self.webapi.upload_init(signed_payload)
+                signed_status, signed_data = _status_from_cookie_init(signed_resp if isinstance(signed_resp, dict) else {})
+                logger.info(
+                    f"  ➜ [Rapid签名闭环] Cookie 带签名重试完成："
+                    f"state={bool(isinstance(signed_resp, dict) and signed_resp.get('state'))}, "
+                    f"status={signed_status or '-'}, new_sign_check={signed_data.get('sign_check') or '-'}"
+                )
+                signed_reuse = False
+                if isinstance(signed_resp, dict):
+                    signed_reuse = signed_resp.get('reuse') is True or str(signed_resp.get('reuse')).lower() == 'true'
+
+                if isinstance(signed_resp, dict) and (signed_reuse or signed_status in ('2', 'success', 'done')):
+                    signed_out = dict(signed_resp)
+                    signed_out['_rapid_upload_backend'] = 'cookie'
+                    signed_out['state'] = True
+                    signed_out['success'] = True
+                    signed_out.setdefault('message', '115 Cookie initupload 秒传成功（本机 Holder 签名闭环）')
+                    signed_out.setdefault('rapid_upload', True)
+                    signed_out.setdefault('sha1', sha1)
+                    signed_out.setdefault('file_name', file_name)
+                    signed_out.setdefault('target_cid', target_cid)
+                    signed_out.setdefault('size', size)
+                    signed_out['_rapid_sign_closed_loop'] = True
+                    signed_out['_rapid_sign_backend'] = 'cookie'
+                    signed_out['_rapid_sign_holder'] = {
+                        'pick_code_prefix': pick_code[:8] if pick_code else '',
+                        'byte_len': sign_result.get('byte_len'),
+                        'range': f"{sign_result.get('start')}-{sign_result.get('end')}",
+                    }
+                    logger.info(f"  ➜ [Rapid签名闭环] Cookie 本机 Holder 闭环成功：{file_name}")
+                    return signed_out
+
+                out['state'] = False
+                out['error_msg'] = f'Cookie 本机 Holder 已计算 sign_val，但带签名重试未秒传成功，status={signed_status or "unknown"}'
+                out['signed_response'] = signed_resp
+                out['_rapid_sign_closed_loop'] = False
+                out['_rapid_sign_backend'] = 'cookie'
+                out['_rapid_sign_stage'] = 'signed_retry_not_success'
+                out['_rapid_sign_holder'] = {
+                    'pick_code_prefix': pick_code[:8] if pick_code else '',
+                    'byte_len': sign_result.get('byte_len'),
+                    'range': f"{sign_result.get('start')}-{sign_result.get('end')}",
+                }
+                return out
+            except Exception as e:
+                logger.warning(f"  ➜ [Rapid签名闭环] Cookie 本机 Holder 签名闭环失败：{e}")
+                out['state'] = False
+                out['error_msg'] = f'Cookie initupload 要求二次校验(status=7)，本机 Holder 签名闭环失败：{e}'
+                out['_rapid_sign_closed_loop'] = False
+                out['_rapid_sign_backend'] = 'cookie'
+                out['_rapid_sign_stage'] = 'local_holder_sign_failed'
+                out['_rapid_sign_debug'] = {
+                    'sha1': sha1,
+                    'pick_code': pick_code,
+                    'sign_check': sign_check_text,
+                    'sign_key_prefix': sign_key_text[:12],
+                }
+                return out
 
         out['state'] = False
         out.setdefault('error_msg', f'Cookie initupload 未直接秒传，status={status or "unknown"}')
