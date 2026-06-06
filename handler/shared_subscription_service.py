@@ -1041,6 +1041,22 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                 group_done = True
                 break
 
+            # 体验层预检：避免贡献值不足时先把 115 文件转存成功，事后中心拒绝结算。
+            # 旧中心没有 precheck 也没关系，/transfers/report 仍会做原子扣减兜底。
+            try:
+                if hasattr(client, 'precheck_transfer'):
+                    precheck = client.precheck_transfer(src.get('source_id'))
+                    if precheck.get('supported') and not precheck.get('allowed', precheck.get('ok', True)):
+                        msg = precheck.get('message') or (
+                            f"贡献值不足：需要 {precheck.get('required_credit') or 1}，当前 {precheck.get('credit') or 0}"
+                        )
+                        errors.append(f"{src.get('file_name')}: {msg}")
+                        group_had_local_account_issue = True
+                        logger.warning(f"  ➜ [共享资源] 中心转存预检失败，跳过 115 转存：share={share_code}, {msg}")
+                        break
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源] 中心转存预检异常，继续由上报接口兜底：share={share_code}, err={e}")
+
             import_target_cid = str(target_cid)
             import_container = {}
 

@@ -438,6 +438,25 @@ class SharedCenterClient:
         }
         return self._post('/api/v1/sources/cancel', payload, timeout=25)
 
+    def get_me(self) -> Dict[str, Any]:
+        """实时读取中心端当前设备信息。贡献值以中心端为准，本地只做缓存。"""
+        return self._get('/api/v1/me', timeout=15)
+
+    def precheck_transfer(self, source_id: str) -> Dict[str, Any]:
+        """转存前余额预检；旧中心不支持时返回 supported=False，由中心 report 继续兜底。"""
+        source_id = str(source_id or '').strip()
+        if not source_id:
+            return {'supported': True, 'ok': False, 'allowed': False, 'message': 'missing source_id'}
+        try:
+            resp = self._post('/api/v1/transfers/precheck', {'source_id': source_id}, timeout=15)
+            resp['supported'] = True
+            return resp
+        except RuntimeError as e:
+            text = str(e)
+            if '404' in text or 'Not Found' in text:
+                return {'supported': False, 'ok': True, 'allowed': True, 'message': 'center_transfer_precheck_not_supported'}
+            raise
+
     def report_transfer(self, source_id: str, result: str, expected_sha1: str = '', actual_sha1: str = '', expected_size=None, actual_size=None, message: str = ''):
         if not source_id:
             return None
