@@ -572,8 +572,9 @@ def _check_center_resource_blacklist(item: Dict[str, Any]) -> Dict[str, Any]:
         if resp.get('blacklisted'):
             return resp.get('first_match') or {'blacklisted': True, 'message': '命中中心黑名单'}
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 中心黑名单检查失败，为安全起见阻止创建分享: {e}")
-        return {'blacklisted': True, 'message': f'中心黑名单检查失败：{e}'}
+        # 中心黑名单只是全局风险情报；中心不可用时不能阻断本地分享。
+        logger.warning(f"  ➜ [共享资源] 中心黑名单检查失败，跳过中心黑名单拦截继续创建分享: {e}")
+        return {}
     return {}
 
 
@@ -582,12 +583,14 @@ def _report_center_resource_blacklist(item: Dict[str, Any], resp: Any, reason: s
     if not cfg.get('enabled') or not cfg.get('device_token'):
         return
     try:
+        # 不再伪装成 manual_share。115 分享失败只能作为自动风险上报，中心只记 suspect，
+        # 不直接升级为 active 全局黑名单。人工确认请走 /blacklist/add。
         _center_json_request(
             'POST', '/api/v1/blacklist/report', timeout=20,
-            json_body={**(item or {}), 'reason': reason, 'source': 'manual_share', 'message': json.dumps(resp, ensure_ascii=False, default=str)},
+            json_body={**(item or {}), 'reason': reason, 'source': 'auto_report', 'message': json.dumps(resp, ensure_ascii=False, default=str)},
         )
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 上报中心资源黑名单失败: {e}")
+        logger.debug(f"  ➜ [共享资源] 上报中心资源风险失败: {e}")
 
 def _tmdb_api_key_for_share_request() -> str:
     candidates = []

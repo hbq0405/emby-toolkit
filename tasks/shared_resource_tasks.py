@@ -1320,10 +1320,11 @@ def _hard_block_review_statuses() -> List[str]:
 
     cancelled 本身不等于黑名单：水位清理、用户取消、完结汇总取消都可能是 cancelled，
     这些资源后续仍应允许再次响应中心缺口。只有 115 违规/风控、源文件已不存在、
-    自动失败黑名单这类确定性失败，才阻止重复创建。
+    自动失败黑名单这类确定性失败，才阻止本机重复创建。
     """
     return [
         'violation',
+        'rejected',
         'blocked',
         'share_blocked',
         'source_missing',
@@ -1456,8 +1457,9 @@ def _center_resource_blacklisted(client: SharedCenterClient, item: Dict[str, Any
         if resp.get('blacklisted'):
             return resp.get('first_match') or {'blacklisted': True, 'message': '命中中心黑名单'}
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 中心黑名单检查失败，为安全起见跳过自动分享: {e}")
-        return {'blacklisted': True, 'message': f'中心黑名单检查失败：{e}'}
+        # 中心黑名单检查失败不再阻断本地自动分享；真正防重复由本地 hard_block 负责。
+        logger.warning(f"  ➜ [共享资源] 中心黑名单检查失败，跳过中心黑名单拦截继续自动分享: {e}")
+        return {}
     return {}
 
 
@@ -1465,7 +1467,7 @@ def _report_center_resource_blacklist(client: SharedCenterClient, item: Dict[str
     try:
         message = _share_resp_text(resp)
         client.report_resource_blacklist(item, reason=reason, message=message, source='auto_report')
-        logger.info(f"  ➜ [共享资源] 已上报中心资源黑名单：{item.get('title') or item.get('tmdb_id')} reason={reason}")
+        logger.info(f"  ➜ [共享资源] 已上报中心资源疑似风险：{item.get('title') or item.get('tmdb_id')} reason={reason}")
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 上报中心资源黑名单失败: {e}")
 
@@ -2643,6 +2645,30 @@ def _create_completed_season_pack_share(
     root_name = file_error_meta.get('root_name') or candidate.get('root_name') or standard_identity.get('title') or root_fid
     root_is_dir = bool(file_error_meta.get('root_is_dir', candidate.get('root_is_dir') is not False))
 
+    parent_series_id_for_block = (
+        standard_identity.get('parent_series_tmdb_id')
+        or candidate.get('parent_series_tmdb_id')
+        or season_row.get('parent_series_tmdb_id')
+        or season_row.get('tmdb_id')
+    )
+    season_number_for_block = candidate.get('season_number') or season_row.get('season_number')
+    hard_block_gap = {
+        'tmdb_id': str(parent_series_id_for_block or ''),
+        'item_type': 'Season',
+        'parent_series_tmdb_id': str(parent_series_id_for_block or ''),
+        'season_number': season_number_for_block,
+        'episode_number': None,
+        'title': standard_identity.get('title') or candidate.get('standard_title') or candidate.get('title') or root_name,
+        'release_year': standard_identity.get('release_year') or candidate.get('release_year') or season_row.get('release_year'),
+    }
+    if _has_existing_share_for_gap(hard_block_gap, candidate=candidate, files=files):
+        return {
+            'ok': False,
+            'skipped': True,
+            'reason': 'existing_or_hard_blocked_season_pack',
+            'message': '本地已有活动季包分享或历史违规硬黑名单，跳过重复创建季包分享',
+        }
+
     share_fids = [str(x).strip() for x in (file_error_meta.get('share_fids') or []) if str(x or '').strip()]
     if not share_fids:
         return {'ok': False, 'message': '创建完结季季包分享失败：缺少可分享 FID', 'reason': 'season_pack_share_fids_missing'}
@@ -2654,7 +2680,16 @@ def _create_completed_season_pack_share(
 
     share_resp = p115.share_create(share_fids, share_duration=-1, receive_code=None)
     if not share_resp or not share_resp.get('state'):
-        if _looks_share_blocked(share_resp):
+        if _looks_share_source_missing(share_resp):
+            _blacklist_auto_gap_candidate(
+                hard_block_gap, candidate, files,
+                root_fid=root_fid, root_name=root_name, share_resp=share_resp, reason='source_missing',
+            )
+        elif _looks_share_blocked(share_resp):
+            _blacklist_auto_gap_candidate(
+                hard_block_gap, candidate, files,
+                root_fid=root_fid, root_name=root_name, share_resp=share_resp, reason='share_blocked',
+            )
             _report_center_resource_blacklist(client, blacklist_item, share_resp, reason='share_blocked')
         return {'ok': False, 'message': f'创建完结季季包分享失败：{share_resp}', 'share_response': share_resp, 'share_fids': share_fids}
 
@@ -3369,6 +3404,23 @@ def _create_auto_share_request_response(sr, request_filter: Dict[str, Any], cand
         'share_type': share_data.get('share_type') or ('season_pack' if share_data.get('season_number') else 'movie_folder'),
     })
     blacklist_item = _center_blacklist_item_from_identity(standard_identity_for_check, share_data)
+    candidate_gap_for_block = {
+        'tmdb_id': str(blacklist_item.get('tmdb_id') or ''),
+        'item_type': blacklist_item.get('item_type') or share_data.get('item_type') or 'Season',
+        'parent_series_tmdb_id': share_data.get('parent_series_tmdb_id') or blacklist_item.get('tmdb_id') or '',
+        'season_number': blacklist_item.get('season_number'),
+        'episode_number': blacklist_item.get('episode_number'),
+        'title': blacklist_item.get('title') or share_data.get('title') or prepared.get('root_name') or root_fid,
+        'release_year': blacklist_item.get('release_year') or share_data.get('release_year'),
+    }
+    if _has_existing_share_for_gap(candidate_gap_for_block, candidate=share_data, files=files):
+        return {
+            'success': False,
+            'skipped': True,
+            'reason': 'existing_or_hard_blocked_share_request',
+            'message': '本地已有活动分享或历史违规硬黑名单，跳过自动响应求分享',
+        }
+
     sync_client = SharedCenterClient()
     if sync_client.ready:
         blacklist_hit = _center_resource_blacklisted(sync_client, blacklist_item)
@@ -3377,8 +3429,20 @@ def _create_auto_share_request_response(sr, request_filter: Dict[str, Any], cand
 
     share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=receive_code)
     if not share_resp or not share_resp.get('state'):
-        if sync_client.ready and _looks_share_blocked(share_resp):
-            _report_center_resource_blacklist(sync_client, blacklist_item, share_resp, reason='share_blocked')
+        if _looks_share_source_missing(share_resp):
+            _blacklist_auto_gap_candidate(
+                candidate_gap_for_block, share_data, files,
+                root_fid=root_fid, root_name=prepared.get('root_name') or root_fid,
+                share_resp=share_resp, reason='source_missing',
+            )
+        elif _looks_share_blocked(share_resp):
+            _blacklist_auto_gap_candidate(
+                candidate_gap_for_block, share_data, files,
+                root_fid=root_fid, root_name=prepared.get('root_name') or root_fid,
+                share_resp=share_resp, reason='share_blocked',
+            )
+            if sync_client.ready:
+                _report_center_resource_blacklist(sync_client, blacklist_item, share_resp, reason='share_blocked')
         return {'success': False, 'message': f"创建 115 分享失败: {share_resp}"}
 
     share_resp_data = share_resp.get('data') or {}
