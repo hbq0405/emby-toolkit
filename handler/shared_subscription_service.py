@@ -15,6 +15,7 @@ from database import settings_db, shared_share_db
 from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled, shared_resource_mode
+from handler import tmdb as tmdb_handler
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +451,7 @@ def _filter_sources_by_episode_transfer_policy(sources: List[Dict[str, Any]]) ->
     return filtered
 
 # 纯净版识别：只在共享池消费“季包”前执行，单集资源永不拦截。
-# 判定口径：media_metadata.runtime_minutes 只认 TMDb 官方时长；中心 RAW/ffprobe 只认物理视频时长。
+# 判定口径：TMDb 实时 episode.runtime 只认官方时长；中心 RAW/ffprobe 只认物理视频时长。
 _CLEAN_VERSION_MIN_DELTA_MINUTES = 2.5
 _CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.94
 _CLEAN_VERSION_MIN_COMPARABLE_EPISODES = 2
@@ -569,48 +570,90 @@ def _source_parent_series_tmdb_id(src: Dict[str, Any], context: Dict[str, Any]) 
             return text
     return ''
 
-def _load_tmdb_runtime_map_for_season(parent_series_tmdb_id: str, season_number) -> Dict[int, float]:
+_CLEAN_TMDB_RUNTIME_CACHE: Dict[str, Dict[str, Any]] = {}
+_CLEAN_TMDB_RUNTIME_CACHE_TTL = 6 * 3600
+
+def _tmdb_api_key_for_clean_detect() -> str:
+    candidates = []
+    for attr in (
+        'CONFIG_OPTION_TMDB_API_KEY', 'CONFIG_OPTION_TMDB_APIKEY', 'CONFIG_OPTION_TMDB_KEY',
+        'CONFIG_OPTION_TMDB_V3_API_KEY', 'CONFIG_OPTION_TMDB_API_TOKEN',
+    ):
+        key = getattr(constants, attr, None)
+        if key:
+            candidates.append(key)
+    candidates.extend(['tmdb_api_key', 'tmdb_key', 'TMDB_API_KEY', 'themoviedb_api_key'])
+    for key in candidates:
+        val = (config_manager.APP_CONFIG or {}).get(key)
+        if val:
+            return str(val).strip()
+    return ''
+
+def _load_tmdb_runtime_map_realtime(parent_series_tmdb_id: str, season_number) -> Dict[int, float]:
+    """转存前旧中心兜底：实时查询 TMDb 季详情，不依赖消费端本地 media_metadata。"""
     parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
     try:
+        series_id = int(float(parent_series_tmdb_id))
         season = int(float(season_number))
     except Exception:
         return {}
-    if not parent_series_tmdb_id:
+    if not series_id:
+        return {}
+
+    cache_key = f"{series_id}:{season}"
+    cached = _CLEAN_TMDB_RUNTIME_CACHE.get(cache_key)
+    now = time.time()
+    if cached and now - float(cached.get('ts') or 0) < _CLEAN_TMDB_RUNTIME_CACHE_TTL:
+        return dict(cached.get('data') or {})
+
+    api_key = _tmdb_api_key_for_clean_detect()
+    if not api_key:
+        logger.debug("  ➜ [共享资源] 未配置 TMDb API Key，无法实时兜底识别纯净版。")
         return {}
 
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT episode_number, runtime_minutes
-                    FROM media_metadata
-                    WHERE parent_series_tmdb_id = %s
-                      AND item_type = 'Episode'
-                      AND season_number = %s
-                      AND episode_number IS NOT NULL
-                      AND runtime_minutes IS NOT NULL
-                      AND runtime_minutes > 0
-                    """,
-                    (parent_series_tmdb_id, season),
-                )
-                rows = cur.fetchall() or []
-        result = {}
-        for row in rows:
-            try:
-                ep = int(row.get('episode_number'))
-                runtime = float(row.get('runtime_minutes') or 0)
-                if ep > 0 and runtime > 0:
-                    result[ep] = runtime
-            except Exception:
-                continue
-        return result
-    except Exception as e:
-        logger.debug(
-            f"  ➜ [共享资源] 读取 TMDb 分集时长失败: parent={parent_series_tmdb_id}, "
-            f"season={season_number}, err={e}"
+        data = tmdb_handler.get_season_details_tmdb(
+            tv_id=series_id,
+            season_number=season,
+            api_key=api_key,
+            append_to_response=None,
         )
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 实时查询 TMDb 季时长失败: tv={series_id}, season={season}, err={e}")
         return {}
+
+    result: Dict[int, float] = {}
+    for ep in (data or {}).get('episodes') or []:
+        if not isinstance(ep, dict):
+            continue
+        try:
+            ep_no = int(ep.get('episode_number'))
+            runtime = float(ep.get('runtime') or 0)
+            if ep_no > 0 and runtime > 0:
+                result[ep_no] = runtime
+        except Exception:
+            continue
+
+    if result:
+        _CLEAN_TMDB_RUNTIME_CACHE[cache_key] = {'ts': now, 'data': dict(result)}
+        logger.debug(f"  ➜ [共享资源] 实时 TMDb 时长兜底完成: tv={series_id}, S{season:02d}, episodes={len(result)}")
+    return result
+
+def _load_tmdb_runtime_map_for_season(parent_series_tmdb_id: str, season_number, *, allow_realtime_tmdb: bool = True) -> Dict[int, float]:
+    """读取 TMDb 官方分集时长。
+
+    纯净版判断必须使用“当前 TMDb 接口返回的 runtime”，不要优先读本地
+    media_metadata.runtime_minutes：
+    - 消费端数据库可能还没同步该季元数据；
+    - 也可能残留历史污染的物理时长；
+    - TMDb 分集时长本身有延迟/修订，创建分享和转存前兜底应使用同一套实时口径。
+
+    因此：只有开启实时 TMDb 兜底时才请求 TMDb；请求失败或 TMDb 没 runtime 就返回空，
+    不再用本地数据库冒充官方时长。
+    """
+    if not allow_realtime_tmdb:
+        return {}
+    return _load_tmdb_runtime_map_realtime(parent_series_tmdb_id, season_number)
 
 def _share_group_code(src: Dict[str, Any]) -> str:
     return str((src or {}).get('share_code') or (src or {}).get('source_id') or '').strip()
@@ -632,10 +675,10 @@ def _detect_clean_version_for_season_group(
 ) -> Dict[str, Any]:
     rows = [r for r in (rows or []) if isinstance(r, dict)]
     if not rows or not _is_season_pack_source_group(rows, context):
-        return {'is_clean_version': False, 'reason': 'not_season_pack'}
+        return {'is_clean_version': False, 'clean_version_checked': False, 'reason': 'not_season_pack'}
 
-    # 新中心会直接下发客户端登记时计算好的季包纯净版标记。
-    # 先相信中心字段，缺失时再用中心 RAW + 本地 TMDb runtime 兜底实时计算，兼容旧中心。
+    # 新中心会直接下发“创建分享时”计算好的季包纯净版标记。
+    # 这里仅信中心“纯净版=True”标识；没有该标识时，开启过滤就用中心 RAW + 实时 TMDb 现场复算。
     flagged = [r for r in rows if bool(r.get('is_clean_version'))]
     if flagged:
         first_flag = flagged[0]
@@ -644,6 +687,7 @@ def _detect_clean_version_for_season_group(
             meta = {}
         result = dict(meta)
         result.setdefault('is_clean_version', True)
+        result.setdefault('clean_version_checked', True)
         result.setdefault('reason', 'center_flagged_clean_version')
         result.setdefault('clean_version_confidence', first_flag.get('clean_version_confidence'))
         result.setdefault('season_number', first_flag.get('season_number') or (context or {}).get('season_number'))
@@ -651,16 +695,20 @@ def _detect_clean_version_for_season_group(
         result.setdefault('source', 'center_shared_sources')
         return result
 
+    # 没有中心“纯净版=True”标识时，不再信任中心/本地的“非纯净”缓存。
+    # 旧数据可能未计算过，TMDb runtime 也可能后来被修订；只要用户开启“不转存纯净版”，
+    # 就用中心 RAW + 实时 TMDb 季详情现场复算。TMDb 查不到 runtime 时才放行。
+
     first = rows[0]
     first_raw = raw_map.get(_norm_sha1(first.get('sha1'))) or {}
     parent = _source_parent_series_tmdb_id(first, context)
     season = _source_season_number(first, first_raw, context)
     if not parent or season is None:
-        return {'is_clean_version': False, 'reason': 'missing_identity'}
+        return {'is_clean_version': False, 'clean_version_checked': False, 'reason': 'missing_identity'}
 
     tmdb_runtime_map = _load_tmdb_runtime_map_for_season(parent, season)
     if not tmdb_runtime_map:
-        return {'is_clean_version': False, 'reason': 'missing_tmdb_runtime', 'parent_series_tmdb_id': parent, 'season_number': season}
+        return {'is_clean_version': False, 'clean_version_checked': False, 'reason': 'missing_tmdb_runtime', 'parent_series_tmdb_id': parent, 'season_number': season}
 
     by_episode: Dict[int, Dict[str, Any]] = {}
     for src in rows:
@@ -690,6 +738,7 @@ def _detect_clean_version_for_season_group(
     if comparable < _CLEAN_VERSION_MIN_COMPARABLE_EPISODES:
         return {
             'is_clean_version': False,
+            'clean_version_checked': False,
             'reason': 'not_enough_comparable_episodes',
             'parent_series_tmdb_id': parent,
             'season_number': season,
@@ -712,6 +761,7 @@ def _detect_clean_version_for_season_group(
     is_clean = len(hits) >= required_hits
     return {
         'is_clean_version': bool(is_clean),
+        'clean_version_checked': True,
         'reason': 'majority_runtime_shorter' if is_clean else 'runtime_not_short_enough',
         'parent_series_tmdb_id': parent,
         'season_number': season,
