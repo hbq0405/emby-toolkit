@@ -1,8 +1,8 @@
 <!-- src/components/ShareRequestCreateModal.vue -->
 <template>
-  <n-modal v-model:show="visible" preset="card" title="共享池求分享" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal">
+  <n-modal v-model:show="visible" preset="card" title="共享池求共享" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal">
     <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-      先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季 / 单集和可自动校验的媒体参数。中心端会按参数自动计算需要冻结的贡献值。
+      先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季 / 单集和媒体参数。Rapid v2 会由中心调度在线设备秒传供给，中心不保存 115 CK 或分享链接。
     </n-alert>
 
     <n-space class="toolbar" :vertical="isMobile" :size="12">
@@ -35,7 +35,7 @@
     </div>
 
     <n-form :model="form" label-placement="left" label-width="105" style="margin-top: 12px;">
-      <n-divider title-placement="left">求分享目标</n-divider>
+      <n-divider title-placement="left">求共享目标</n-divider>
       <n-form-item label="目标类型">
         <n-radio-group v-model:value="form.target_type">
           <n-space>
@@ -90,10 +90,10 @@
 
     <template #footer>
       <n-space justify="space-between" align="center">
-        <n-text depth="3">最高冻结由中心自动计算；关闭超时加倍时只冻结当前悬赏。</n-text>
+        <n-text depth="3">最高冻结由中心自动计算；资源被秒传成功后悬赏支付给供给设备。</n-text>
         <n-space>
           <n-button @click="visible = false">取消</n-button>
-          <n-button type="primary" :disabled="!selectedMedia" :loading="submitting" @click="submit">发布求分享</n-button>
+          <n-button type="primary" :disabled="!selectedMedia" :loading="submitting" @click="submit">发布求共享</n-button>
         </n-space>
       </n-space>
     </template>
@@ -292,7 +292,7 @@ const applyMedia = async (row) => {
         form.target_type = 'episode';
         form.episode_number = Number(props.initialTarget.episode_numbers[0]) || form.episode_number;
       } else {
-        // 115 分享没有“指定集数范围”的能力，多集缺口统一按季包求分享。
+        // Rapid v2 仍按 Season Hub 聚合多集缺口，由接收端按缺失集精确秒传。
         form.target_type = 'season';
       }
     }
@@ -351,11 +351,11 @@ const submit = async () => {
   try {
     const payload = buildPayload();
     const res = await axios.post('/api/shared/resources/share-requests', payload);
-    message.success(res.data?.message || '求分享已发布');
+    message.success(res.data?.message || '求共享已发布');
     visible.value = false;
     emit('created', res.data?.data || payload);
   } catch (e) {
-    message.error(e.response?.data?.message || '发布求分享失败');
+    message.error(e.response?.data?.message || '发布求共享失败');
   } finally {
     submitting.value = false;
   }

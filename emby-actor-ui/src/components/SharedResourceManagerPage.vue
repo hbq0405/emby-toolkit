@@ -7,7 +7,7 @@
           <div class="page-header">
             <div>
               <div class="page-title">共享资源管理</div>
-              <n-text depth="3">集中管理共享资源：本机分享、中心资源转存和贡献值流水。</n-text>
+              <n-text depth="3">集中管理共享资源：本机秒传源、中心资源秒传和贡献值流水。</n-text>
             </div>
             <n-space>
               <n-button secondary @click="openSharedConfigModal">
@@ -31,7 +31,7 @@
         </template>
 
         <n-alert v-if="!hasCenterDevice" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
-          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献值、登记分享、转存中心资源。
+          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献值、登记共享、转存中心资源。
         </n-alert>
 
         <n-grid class="stat-grid" :cols="isMobile ? 2 : 4" :x-gap="12" :y-gap="12">
@@ -47,20 +47,23 @@
 
       <n-card :bordered="false" class="dashboard-card shared-list-card">
         <n-tabs v-model:value="activeTab" animated type="line" @update:value="handleTabChange">
-          <n-tab-pane name="shares" tab="我的分享">
+          <n-tab-pane name="shares" tab="我的共享源">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-              管理本机分享出去的资源。
-“检查”用于同步 115 分享是否可用；“登记”用于把已通过的分享登记到共享中心，登记成功后可获得贡献值；“取消”会撤销 115 分享并同步清理中心记录。
+              管理本机登记到共享中心的秒传资源。Rapid v2 不再创建 115 共享，中心不保存 CK，只保存 SHA1/大小/媒体信息等索引；“登记”会把本地资源索引上传中心，“停用”会让该资源不再参与共享。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
-              <n-input v-model:value="shareFilters.keyword" placeholder="搜索标题 / 目录名 / 分享码 / TMDb ID" clearable @keyup.enter="loadShares">
+              <n-input v-model:value="shareFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadShares">
                 <template #prefix><n-icon :component="SearchIcon" /></template>
               </n-input>
               <n-select v-model:value="shareFilters.status" :options="shareStatusOptions" style="width: 170px" />
               <n-button type="primary" :loading="sharesLoading" @click="loadShares">查询</n-button>
               <n-button type="primary" @click="openManualShareModal">
                 <template #icon><n-icon :component="ShareIcon" /></template>
-                手动分享
+                手动登记
+              </n-button>
+              <n-button type="warning" secondary :loading="shareAllLoading" @click="confirmShareAllLibrary">
+                <template #icon><n-icon :component="ShareIcon" /></template>
+                一键登记媒体库
               </n-button>
             </n-space>
             <n-data-table
@@ -105,9 +108,9 @@
             />
           </n-tab-pane>
 
-          <n-tab-pane name="requests" tab="求分享">
+          <n-tab-pane name="requests" tab="求共享">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-              求分享是共享池悬赏需求：发起时冻结贡献值，参数越精确悬赏越高；其他用户可“同求”助力，也可以点“我有资源”从本地媒体库创建分享。
+              求共享是共享池悬赏需求：发起时冻结贡献值，参数越精确悬赏越高；其他用户可“同求”助力，也可以点“我有资源”从本地媒体库登记共享源。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="requestFilters.keyword" placeholder="搜索片名 / TMDb ID" clearable @keyup.enter="loadShareRequests">
@@ -151,7 +154,7 @@
                 </n-card>
               </div>
               <n-card v-else :bordered="false" class="empty-request-card">
-                <n-text depth="3">暂无求分享。可以点击“求资源”发布一个悬赏需求。</n-text>
+                <n-text depth="3">暂无求共享。可以点击“求资源”发布一个悬赏需求。</n-text>
               </n-card>
             </n-spin>
           </n-tab-pane>
@@ -203,25 +206,25 @@
             </n-switch>
             <template #feedback>仅检测季包资源：当包内多数集实际视频时长比 TMDb 官方单集时长短约 3 分钟时，自动/手动转存都会跳过该季包；单集资源不做纯净版检测。</template>
           </n-form-item>
-          <n-form-item label="最大活跃分享数">
+          <n-form-item label="最大活跃共享数">
             <n-input-number v-model:value="sharedConfigForm.p115_shared_max_active_shares" :min="0" :max="10000" :step="10" style="width: 180px;">
               <template #suffix>条</template>
             </n-input-number>
             <template #feedback>0 表示不限制；维护任务超过上限时清理到约 80% 水位。</template>
           </n-form-item>
-          <n-form-item label="自动响应求分享">
+          <n-form-item label="自动响应求共享">
             <n-switch v-model:value="sharedConfigForm.p115_shared_auto_share_requests_enabled">
-              <template #checked>自动分享别人所求</template>
+              <template #checked>自动共享别人所求</template>
               <template #unchecked>关闭</template>
             </n-switch>
-            <template #feedback>维护任务会拉取中心“求分享”列表，跳过自己发起/同求的需求，按参数匹配本地媒体库，命中后自动创建 115 分享并等待审核登记。</template>
+            <template #feedback>维护任务会拉取中心“求共享”列表，跳过自己发起/同求的需求，按参数匹配本地媒体库，命中后直接登记本机秒传索引到中心。</template>
           </n-form-item>
 
         </n-form>
       </n-spin>
       <template #footer>
         <n-space justify="space-between" align="center">
-          <n-text depth="3">共享池命中后统一执行永久转存。</n-text>
+          <n-text depth="3">共享池命中后使用本机 115 CK 秒传入库，中心不保存 CK。</n-text>
           <n-space>
             <n-button @click="showSharedConfigModal = false">取消</n-button>
             <n-button type="primary" :loading="sharedConfigSaving" @click="saveSharedConfig">保存配置</n-button>
@@ -232,13 +235,13 @@
 
     <n-modal v-model:show="showManualShareModal" preset="card" :title="manualShareModalTitle" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
       <n-alert v-if="activeCenterReplenishSource" type="success" :bordered="false" style="margin-bottom: 12px;">
-        正在补充中心待补充资源：{{ appendYear(centerTitleText(activeCenterReplenishSource), activeCenterReplenishSource.release_year) }}。系统已按中心 SHA1 精确匹配本机完全相同资源，并自动填入下方手动分享表单；确认无误后点击“创建永久分享”。
+        正在补充中心待补充资源：{{ appendYear(centerTitleText(activeCenterReplenishSource), activeCenterReplenishSource.release_year) }}。系统已按中心 SHA1 精确匹配本机完全相同资源，并自动填入下方手动共享表单；确认无误后点击“登记共享源”。
       </n-alert>
       <n-alert v-else-if="!activeLocalShareRequest" type="info" :bordered="false" style="margin-bottom: 12px;">
-        直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可分享的 115 目录或文件。剧集会优先按季目录分享，不创建单集分享。
+        直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可登记的 115 目录或文件。连载分集直接进入追更池，完结季通过一致性校验后登记收藏季源。
       </n-alert>
       <n-alert v-if="activeLocalShareRequest" type="warning" :bordered="false" style="margin-bottom: 12px;">
-        正在响应求分享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。系统会自动检索本地库并按求分享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。没有候选就是本地没有符合条件的资源。
+        正在响应求共享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。系统会自动检索本地库并按求共享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。没有候选就是本地没有符合条件的资源。
       </n-alert>
 
       <n-space v-if="!activeLocalShareRequest && !activeCenterReplenishSource" class="toolbar" :vertical="isMobile" :size="12">
@@ -262,7 +265,7 @@
       <div v-if="selectedMedia" class="selected-share-box">
         <div class="selected-title">已选择：{{ selectedMedia.display_title || selectedMedia.title }}</div>
         <div class="selected-desc">
-          TMDb {{ manualShareForm.tmdb_id || '-' }} · {{ manualShareForm.item_type }} · {{ manualShareForm.share_type }} ·
+          TMDb {{ manualShareForm.tmdb_id || '-' }} · {{ manualShareForm.item_type }} · {{ rapidShareTypeText(manualShareForm.share_type) }} ·
           115 {{ manualShareForm.root_is_dir ? '目录' : '文件' }}：{{ manualShareForm.root_name || manualShareForm.root_fid }}
         </div>
         <div class="selected-desc" v-if="selectedMedia.message">{{ selectedMedia.message }}</div>
@@ -277,18 +280,12 @@
         </n-alert>
       </div>
 
-      <n-form :model="manualShareForm" label-placement="left" label-width="90" style="margin-top: 12px;">
-        <n-form-item label="提取码">
-          <n-input v-model:value="manualShareForm.receive_code" placeholder="留空则使用 115 自动生成；分享有效期固定永久" />
-        </n-form-item>
-      </n-form>
-
       <template #footer>
         <n-space justify="space-between" align="center">
-          <n-text depth="3">{{ activeCenterReplenishSource ? '补充会复用手动分享流程：先创建 115 永久分享，审核通过后在“我的分享”里登记中心。' : '找不到候选时，先确认该媒体已入库且 media_metadata 中已有 PC/SHA1。' }}</n-text>
+          <n-text depth="3">{{ activeCenterReplenishSource ? '补充会复用手动登记流程：直接上传秒传索引到中心；不会创建 115 分享/共享码，也不等待审核。' : '找不到候选时，先确认该媒体已入库且 media_metadata 中已有 PC/SHA1。' }}</n-text>
           <n-space>
             <n-button @click="showManualShareModal = false">取消</n-button>
-            <n-button type="primary" :disabled="manualCreateDisabled" :loading="manualCreating" @click="manualCreateShare">创建永久分享</n-button>
+            <n-button type="primary" :disabled="manualCreateDisabled" :loading="manualCreating" @click="manualCreateShare">登记共享源</n-button>
           </n-space>
         </n-space>
       </template>
@@ -343,6 +340,7 @@ const shareRequestSubmitting = ref(false);
 const maintenanceSubmitting = ref(false);
 const refreshingCredit = ref(false);
 const registeringDevice = ref(false);
+const shareAllLoading = ref(false);
 const manualCreating = ref(false);
 const showSharedConfigModal = ref(false);
 const sharedConfigLoading = ref(false);
@@ -351,7 +349,7 @@ const sharedConfigForm = reactive({
   p115_shared_resource_enabled: false,
   p115_shared_center_url: 'https://shared.55565576.xyz',
   p115_shared_device_token: '',
-  p115_shared_resource_mode: 'permanent',
+  p115_shared_resource_mode: 'rapid',
   p115_shared_disable_episode_transfer: false,
   p115_shared_block_clean_version_transfer: false,
   p115_shared_max_active_shares: 0,
@@ -382,7 +380,7 @@ const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'create
 const centerFilters = reactive({ keyword: '', status: 'alive,pending,replenish', item_type: 'all', order_by: 'latest' });
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const requestStatusOptions = [
-  { label: '求分享中', value: 'open' },
+  { label: '求共享中', value: 'open' },
   { label: '全部状态', value: 'all' },
   { label: '已完成', value: 'fulfilled' },
   { label: '已过期', value: 'expired' },
@@ -404,8 +402,8 @@ const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSize
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 
 const centerOrderOptions = [
-  { label: '最新分享', value: 'latest' },
-  { label: '热门分享', value: 'popular' },
+  { label: '最新共享', value: 'latest' },
+  { label: '热门共享', value: 'popular' },
   { label: '文件大小', value: 'size' },
   { label: '名称排序', value: 'name' },
 ];
@@ -415,24 +413,32 @@ const manualShareForm = reactive({
   share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: '',
   center_replenish_source_id: '', center_replenish_payload: null
 });
-const manualShareModalTitle = computed(() => activeCenterReplenishSource.value ? '补充中心待补充资源' : (activeLocalShareRequest.value ? '响应求分享' : '手动创建共享资源'));
+const manualShareModalTitle = computed(() => activeCenterReplenishSource.value ? '补充中心待补充资源' : (activeLocalShareRequest.value ? '响应求共享' : '手动登记共享源'));
 const manualShareValidation = ref(null);
 const manualShareValidationLoading = ref(false);
 let manualShareValidationSeq = 0;
 const isManualShareSeasonPack = computed(() => String(manualShareForm.share_type || '').toLowerCase() === 'season_pack');
+const rapidShareTypeText = (value) => {
+  const text = String(value || '').toLowerCase();
+  if (text === 'movie_file' || text === 'movie_folder') return '电影源';
+  if (text === 'season_pack') return '完结季源';
+  if (text === 'series_pack') return '全剧源';
+  if (text === 'episode_file') return '追更单集源';
+  return value || '-';
+};
 const manualShareValidationAlertType = computed(() => {
   if (manualShareValidationLoading.value) return 'info';
   if (!manualShareValidation.value) return 'info';
   return manualShareValidation.value.valid ? 'success' : 'error';
 });
 const manualShareValidationTitle = computed(() => {
-  if (manualShareValidationLoading.value) return isManualShareSeasonPack.value ? '正在校验季包一致性' : '正在预校验分享文件';
+  if (manualShareValidationLoading.value) return isManualShareSeasonPack.value ? '正在校验完结季源一致性' : '正在预校验共享源';
   if (!manualShareValidation.value) return '';
-  if (isManualShareSeasonPack.value) return manualShareValidation.value.valid ? '季包一致性校验通过' : '季包一致性校验未通过';
-  return manualShareValidation.value.valid ? '分享文件预校验通过' : '分享文件预校验未通过';
+  if (isManualShareSeasonPack.value) return manualShareValidation.value.valid ? '完结季源一致性校验通过' : '完结季源一致性校验未通过';
+  return manualShareValidation.value.valid ? '共享源预校验通过' : '共享源预校验未通过';
 });
 const manualShareValidationMessage = computed(() => {
-  if (manualShareValidationLoading.value) return '正在读取 115 文件列表、检查 RAW 媒体信息，并对季包执行集数/分辨率/编码/杜比版本一致性校验……';
+  if (manualShareValidationLoading.value) return '正在读取 115 文件列表、检查 RAW 媒体信息；完结季源会执行集数/分辨率/编码/杜比版本一致性校验……';
   if (!manualShareValidation.value) return '';
   const fileCount = manualShareValidation.value.file_count;
   const prefix = fileCount ? `已定位 ${fileCount} 个视频文件。` : '';
@@ -471,10 +477,8 @@ const shareRequestForm = reactive({
 });
 
 const shareStatusOptions = [
-  { label: '有效分享', value: 'active' }, 
+  { label: '有效共享', value: 'active' }, 
   { label: '全部状态', value: 'all' }, 
-  { label: '审核中', value: 'pending_review' },
-  { label: '已通过', value: 'alive' }, 
   { label: '已登记', value: 'reported' },
   { label: '部分登记', value: 'partial' }, 
   { label: '失败/异常', value: 'failed' },
@@ -516,7 +520,7 @@ const shareTypeLabel = (value) => resourceTypeLabel(value) || shareTypeOptions.f
 const isSuccessShareMessage = (value) => {
   const text = String(value || '').trim();
   if (!text) return true;
-  return /^(分享可用|分享可访问|分享正常|可访问|正常|ok)$/i.test(text);
+  return /^(共享可用|共享可访问|共享正常|可访问|正常|ok)$/i.test(text);
 };
 const pickShareMetaText = (value) => {
   if (value == null) return '';
@@ -544,8 +548,8 @@ const shareFailureReasonText = (row) => {
       .map(v => String(v || '').trim()).find(v => v && !isSuccessShareMessage(v));
     if (rawReasonText) return rawReasonText;
 
-    const label = statusMap[failedStatus]?.text || row?.status_label || row?.review_status_label || '分享失败';
-    return label === '分享失败' ? label : `分享失败：${label}`;
+    const label = statusMap[failedStatus]?.text || row?.status_label || row?.review_status_label || '共享失败';
+    return label === '共享失败' ? label : `共享失败：${label}`;
   }
 
   return '';
@@ -570,17 +574,17 @@ const shareSourceText = (row) => {
   const rawBackup = Boolean(raw?.auto_backup_share || raw?.backup_share || raw?.backup_instruction || raw?.backup_mirror || raw?.backup_fingerprint);
   const rawManual = Boolean(raw?.manual_payload || raw?.manual_share || raw?.manual_create || raw?.manual_created || raw?.manual_context);
   const rawAuto = Boolean(raw?.auto_gap || raw?.auto_payload || raw?.auto_task || raw?.maintenance_payload || raw?.maintenance_task || raw?.auto_share_payload || raw?.auto_context);
-  const providerBackup = /(backup_mirror|backup_share|auto_backup_share|backup)/i.test(providerText) || /(备份分享|备份源|镜像分享)/.test(labelText);
-  const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created)/i.test(providerText) || /手动分享/.test(labelText);
-  const providerAuto = /(auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /自动分享/.test(labelText);
+  const providerBackup = /(backup_mirror|backup_share|auto_backup_share|backup)/i.test(providerText) || /(备份共享|备份源|镜像共享)/.test(labelText);
+  const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created)/i.test(providerText) || /手动共享/.test(labelText);
+  const providerAuto = /(auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /自动共享/.test(labelText);
 
-  // 备份分享是中心下发的特殊来源，必须优先于 user_share/manual 兜底判断。
-  if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || rawBackup || providerBackup) return '备份分享';
-  // 手动标记优先。手动创建的分享即使后续由维护任务自动检查/登记中心，也仍然叫“手动分享”。
-  if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动分享';
-  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance || rawAuto || providerAuto) return '自动分享';
+  // 备份共享是中心下发的特殊来源，必须优先于 user_share/manual 兜底判断。
+  if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || rawBackup || providerBackup) return '备份共享';
+  // 手动标记优先。手动创建的共享即使后续由维护任务自动检查/登记中心，也仍然叫“手动共享”。
+  if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动共享';
+  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance || rawAuto || providerAuto) return '自动共享';
 
-  return '手动分享';
+  return '手动共享';
 };
 const shareRemarkNode = (row) => {
   const reason = shareFailureReasonText(row);
@@ -588,18 +592,19 @@ const shareRemarkNode = (row) => {
     return h('span', { class: 'share-remark-text share-remark-error', title: reason }, reason);
   }
   const source = shareSourceText(row);
-  const type = source === '自动分享' ? 'warning' : (source === '备份分享' ? 'info' : 'default');
+  const type = source === '自动共享' ? 'warning' : (source === '备份共享' ? 'info' : 'default');
   return h(NTag, { type, size: 'small', round: true }, { default: () => source });
 };
 
 const statusMap = {
   transferring: { text: '转存中', type: 'warning' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
-  pending_review: { text: '审核中', type: 'warning' }, alive: { text: '可用', type: 'success' },
+  active: { text: '本地可用', type: 'success' }, available: { text: '可用', type: 'success' }, alive: { text: '可用', type: 'success' },
   pending: { text: '待验证', type: 'warning' }, replenish: { text: '待补充', type: 'error' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
-  reported: { text: '已登记', type: 'success' }, partial: { text: '部分登记', type: 'warning' },
+  reported: { text: '已登记', type: 'success' }, local: { text: '本地未登记', type: 'default' }, partial: { text: '部分登记', type: 'warning' },
+  inconsistent: { text: '不一致', type: 'error' }, incomplete: { text: '不完整', type: 'warning' }, disabled: { text: '已停用', type: 'default' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
   not_reported: { text: '未登记', type: 'default' },
-  open: { text: '求分享中', type: 'success' }, fulfilled: { text: '已完成', type: 'success' },
+  open: { text: '求共享中', type: 'success' }, fulfilled: { text: '已完成', type: 'success' },
 };
 
 const fmtBytes = (value) => {
@@ -677,7 +682,7 @@ const statCards = computed(() => {
   const credit = summary.value.credit || {};
   return [
     { key: 'credit', label: '贡献值', value: credit.credit ?? 0, desc: credit.device_id ? `设备 ${credit.device_id}` : '未同步' },
-    { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效分享` },
+    { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效共享` },
     { key: 'remote_sources', label: '中心资源', value: credit.shared_sources ?? 0, desc: `${credit.raw_ffprobe ?? 0} 条媒体信息` },
     { key: 'remote_gaps', label: '待补资源', value: credit.wanted_gaps ?? 0, desc: `${credit.remote_devices ?? 0} 个设备` },
   ];
@@ -688,14 +693,12 @@ const shareColumns = [
     const seasonText = row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '';
     const episodeText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
     return h('div', [
-      h('div', { class: 'main-title' }, standardTitleText(row, row.root_name || row.share_code)),
+      h('div', { class: 'main-title' }, standardTitleText(row, row.root_name || row.center_source_id)),
       metaLine(row, [` · ${shareTypeLabel(row.share_type)}`, seasonText, episodeText])
     ]);
   } },
-  { title: '审核', key: 'review_status', width: 110, render: row => tag(row.review_status || row.status) },
   { title: '中心', key: 'center_status', width: 110, render: row => tag(row.center_status) },
-  { title: '分享码', key: 'share_code', width: 140, ellipsis: { tooltip: true } },
-  { title: '提取码', key: 'receive_code', width: 90 },
+  { title: '中心源ID', key: 'center_source_id', width: 140, ellipsis: { tooltip: true } },
   { title: '文件数', key: 'item_count', width: 90, render: row => `${row.reported_count || 0}/${row.item_count || 0}` },
   { title: '媒体信息', key: 'raw_uploaded_count', width: 110, render: row => {
     const missingSize = Number(row.size_missing_count || 0);
@@ -710,7 +713,7 @@ const shareColumns = [
   { title: '备注', key: 'share_remark', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareRemarkNode(row) },
   { title: '操作', key: 'actions', width: 300, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
     h(NButton, { size: 'small', type: 'info', ghost: true, onClick: () => checkShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CheckIcon) }), default: () => '检查' }),
-    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !['alive','reported'].includes(row.status) && row.review_status !== 'alive', onClick: () => reportShare(row) }, { icon: () => h(NIcon, null, { default: () => h(ReportIcon) }), default: () => '登记' }),
+    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: row.center_status === 'reported' || row.status === 'disabled', onClick: () => reportShare(row) }, { icon: () => h(NIcon, null, { default: () => h(ReportIcon) }), default: () => '登记' }),
     h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'cancelled', onClick: () => cancelShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '取消' }),
   ]}) },
 ];
@@ -721,12 +724,12 @@ const mediaSearchColumns = [
     metaLine(row, [` · ${resourceTypeLabel(row.item_type)}`])
   ]) },
   { title: '入库', key: 'in_library', width: 80, render: row => h(NTag, { size: 'small', type: row.in_library ? 'success' : 'default' }, { default: () => row.in_library ? '已入库' : '未入库' }) },
-  { title: '可分享根目录/文件', key: 'root_name', minWidth: 260, render: row => h('div', [
+  { title: '可共享根目录/文件', key: 'root_name', minWidth: 260, render: row => h('div', [
     h('div', { class: 'main-title' }, row.root_name || '-'),
     h('div', { class: 'sub-title' }, row.root_fid ? `FID/CID: ${row.root_fid}` : (row.message || '未定位'))
   ]) },
   { title: '文件', key: 'file_count', width: 100, render: row => `${row.file_count || 0} 个` },
-  { title: '分享粒度', key: 'share_type', width: 120, render: row => shareTypeLabel(row.share_type) },
+  { title: '源类型', key: 'share_type', width: 120, render: row => shareTypeLabel(row.share_type) },
   { title: '说明', key: 'message', minWidth: 220, ellipsis: { tooltip: true } },
   { title: '操作', key: 'actions', width: 100, fixed: 'right', render: row => h(NButton, {
     size: 'small', type: 'primary', ghost: true, disabled: !row.resolvable || !row.root_fid, onClick: () => chooseMediaCandidate(row)
@@ -745,9 +748,9 @@ const shareRequestTargetOptions = computed(() => {
 
 const requestStatusLabel = (status) => statusMap[status]?.text || status || '未知';
 const requestParticipationText = (row = {}) => {
-  if (row.my_role === 'owner') return '我发起的求分享';
+  if (row.my_role === 'owner') return '我发起的求共享';
   if (row.joined_by_me) return '我已同求';
-  return '别人发布的求分享';
+  return '别人发布的求共享';
 };
 const canProvideShareRequest = (row = {}) => row.status === 'open' && row.my_role !== 'owner';
 const requestTargetTypeLabel = (value) => ({
@@ -825,27 +828,27 @@ const ledgerEventLabel = (eventType) => {
     center_initial_credit: '基础贡献值',
     center_source_registered: '中心登记共享源',
     center_source_registered_group: '中心登记共享源',
-    center_backup_source_registered: '备份分享入池',
-    center_backup_source_registered_group: '备份分享入池',
+    center_backup_source_registered: '备份共享入池',
+    center_backup_source_registered_group: '备份共享入池',
     center_deleted_shared_source_summary: '已删除共享源',
     center_shared_source_served: '共享被转存',
     center_shared_source_served_group: '共享被转存',
     center_shared_source_consumed: '转存共享资源',
     center_shared_source_consumed_group: '转存共享资源',
-    share_created: '创建分享',
+    share_created: '登记共享源',
     share_reported_center: '登记',
     share_raw_uploaded: '媒体信息',
-    share_cancelled: '取消分享',
-    share_request_escrow: '求分享冻结',
-    share_request_refund: '求分享退款',
-    share_request_bounty_paid: '求分享悬赏支付',
-    share_request_bounty_received: '求分享悬赏收入',
-    share_request_service_fee: '求分享服务费',
-    center_share_request_escrow: '求分享冻结',
-    center_share_request_refund: '求分享退款',
-    center_share_request_bounty_paid: '求分享悬赏支付',
-    center_share_request_bounty_received: '求分享悬赏收入',
-    center_share_request_service_fee: '求分享服务费',
+    share_cancelled: '取消共享',
+    share_request_escrow: '求共享冻结',
+    share_request_refund: '求共享退款',
+    share_request_bounty_paid: '求共享悬赏支付',
+    share_request_bounty_received: '求共享悬赏收入',
+    share_request_service_fee: '求共享服务费',
+    center_share_request_escrow: '求共享冻结',
+    center_share_request_refund: '求共享退款',
+    center_share_request_bounty_paid: '求共享悬赏支付',
+    center_share_request_bounty_received: '求共享悬赏收入',
+    center_share_request_service_fee: '求共享服务费',
   };
   return map[eventType] || eventType || '-';
 };
@@ -868,7 +871,7 @@ const ledgerDisplayTitle = (row) => {
     const text = String(item || '').trim();
     if (text && !looksLikeShareRequestId(text)) return text;
   }
-  if (String(row?.event_type || '').includes('share_request')) return '求分享';
+  if (String(row?.event_type || '').includes('share_request')) return '求共享';
   return row?.title || '-';
 };
 
@@ -877,18 +880,18 @@ const ledgerReasonDisplay = (row) => {
   const deltaText = `贡献值 ${formatDelta(row?.delta || 0)}`;
   const title = ledgerDisplayTitle(row);
   const reasonMap = {
-    share_request_escrow: `求分享冻结：${title}，${deltaText}`,
-    center_share_request_escrow: `求分享冻结：${title}，${deltaText}`,
-    share_request_refund: `求分享退款：${title}，${deltaText}`,
-    center_share_request_refund: `求分享退款：${title}，${deltaText}`,
-    share_request_bounty_paid: `求分享悬赏支付：${title}，${deltaText}`,
-    center_share_request_bounty_paid: `求分享悬赏支付：${title}，${deltaText}`,
-    share_request_bounty_received: `求分享悬赏收入：${title}，${deltaText}`,
-    center_share_request_bounty_received: `求分享悬赏收入：${title}，${deltaText}`,
-    share_request_service_fee: `求分享服务费：${title}，${deltaText}`,
-    center_share_request_service_fee: `求分享服务费：${title}，${deltaText}`,
-    center_backup_source_registered: `备份分享入池：${title}，${deltaText}`,
-    center_backup_source_registered_group: `备份分享入池：${title}，${deltaText}`,
+    share_request_escrow: `求共享冻结：${title}，${deltaText}`,
+    center_share_request_escrow: `求共享冻结：${title}，${deltaText}`,
+    share_request_refund: `求共享退款：${title}，${deltaText}`,
+    center_share_request_refund: `求共享退款：${title}，${deltaText}`,
+    share_request_bounty_paid: `求共享悬赏支付：${title}，${deltaText}`,
+    center_share_request_bounty_paid: `求共享悬赏支付：${title}，${deltaText}`,
+    share_request_bounty_received: `求共享悬赏收入：${title}，${deltaText}`,
+    center_share_request_bounty_received: `求共享悬赏收入：${title}，${deltaText}`,
+    share_request_service_fee: `求共享服务费：${title}，${deltaText}`,
+    center_share_request_service_fee: `求共享服务费：${title}，${deltaText}`,
+    center_backup_source_registered: `备份共享入池：${title}，${deltaText}`,
+    center_backup_source_registered_group: `备份共享入池：${title}，${deltaText}`,
   };
   return reasonMap[event] || row?.reason || '-';
 };
@@ -1109,8 +1112,8 @@ const centerStatusTag = (row) => {
 };
 const centerSourceText = (row) => {
   // 中心端历史字段不完全统一：自动维护创建、手动创建、频道/影巢外部源可能分别落在
-  // source_provider / source_label / provider / origin / create_mode 等字段里。这里不要缺省成“手动分享”，
-  // 否则自动分享只要字段名换了就会被误判。
+  // source_provider / source_label / provider / origin / create_mode 等字段里。这里不要缺省成“手动共享”，
+  // 否则自动共享只要字段名换了就会被误判。
   const pickText = (value) => {
     if (value == null) return '';
     if (typeof value === 'object') {
@@ -1131,19 +1134,19 @@ const centerSourceText = (row) => {
   const labelText = labelParts.join(' ').toLowerCase();
   const allText = `${rawText} ${labelText}`;
 
-  if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || /(backup_mirror|backup_share|auto_backup_share|backup|备份分享|备份源|镜像分享)/i.test(allText)) return '备份分享';
-  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动分享';
+  if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || /(backup_mirror|backup_share|auto_backup_share|backup|备份共享|备份源|镜像共享)/i.test(allText)) return '备份共享';
+  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动共享';
   if (/(hdhive|影巢)/i.test(allText)) return '影巢';
   if (/(tg_channel|telegram|频道)/i.test(allText)) return '频道';
-  if (/(auto|自动|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动分享';
-  if (/(manual|user_share|手动|人工)/i.test(allText) || row?.is_manual_share) return '手动分享';
+  if (/(auto|自动|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动共享';
+  if (/(manual|user_share|手动|人工)/i.test(allText) || row?.is_manual_share) return '手动共享';
 
   const label = labelParts.join(' ').trim();
-  return label || '本机分享';
+  return label || '本机共享';
 };
 const centerSourceTag = (row) => {
   const text = centerSourceText(row);
-  const type = text === '自动分享' ? 'warning' : (text === '手动分享' ? 'default' : 'info');
+  const type = text === '自动共享' ? 'warning' : (text === '手动共享' ? 'default' : 'info');
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
 const versionSummaryText = (row) => {
@@ -1267,7 +1270,7 @@ const openManualShareForCenterReplenish = async (row) => {
     mediaCandidates.value = [candidate];
     showManualShareModal.value = true;
     chooseMediaCandidate(candidate);
-    message.success(res.data?.message || '已自动填入补充资源，请确认后创建永久分享');
+    message.success(res.data?.message || '已自动填入补充资源，请确认后登记共享源');
   } catch (e) {
     message.error(e.response?.data?.message || '准备补充资源失败');
   } finally {
@@ -1560,7 +1563,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_resource_enabled: Boolean(data.p115_shared_resource_enabled),
     p115_shared_center_url: data.p115_shared_center_url || 'https://shared.55565576.xyz',
     p115_shared_device_token: data.p115_shared_device_token || '',
-    p115_shared_resource_mode: 'permanent',
+    p115_shared_resource_mode: 'rapid',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
     p115_shared_max_active_shares: Number(data.p115_shared_max_active_shares ?? 0),
@@ -1588,7 +1591,7 @@ const openSharedConfigModal = async () => {
 const saveSharedConfig = async () => {
   sharedConfigSaving.value = true;
   try {
-    sharedConfigForm.p115_shared_resource_mode = 'permanent';
+    sharedConfigForm.p115_shared_resource_mode = 'rapid';
     sharedConfigForm.p115_shared_max_active_shares = Math.max(0, Math.floor(Number(sharedConfigForm.p115_shared_max_active_shares || 0)));
     const res = await axios.post('/api/shared/resources/config', { ...sharedConfigForm });
     applySharedConfig(res.data?.data || sharedConfigForm);
@@ -1603,7 +1606,7 @@ const saveSharedConfig = async () => {
 };
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
-const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的分享失败'); } finally { sharesLoading.value = false; } };
+const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
 
 const loadCenterSources = async () => {
   centerLoading.value = true;
@@ -1745,7 +1748,7 @@ const chooseShareRequestMedia = async (row) => {
   });
   shareRequestEpisodeText.value = '';
   await refreshShareRequestQuote();
-  message.success('已选择求分享目标');
+  message.success('已选择求共享目标');
 };
 
 const loadShareRequests = async () => {
@@ -1761,7 +1764,7 @@ const loadShareRequests = async () => {
     } });
     shareRequests.value = res.data?.items || [];
   } catch (e) {
-    message.error(e.response?.data?.message || '加载求分享失败');
+    message.error(e.response?.data?.message || '加载求共享失败');
   } finally {
     requestLoading.value = false;
   }
@@ -1777,12 +1780,12 @@ const submitShareRequest = async () => {
   try {
     const payload = buildShareRequestPayload();
     const res = await axios.post('/api/shared/resources/share-requests', payload);
-    message.success(res.data?.message || '求分享已发布');
+    message.success(res.data?.message || '求共享已发布');
     showShareRequestModal.value = false;
     activeTab.value = 'requests';
     await Promise.allSettled([loadShareRequests(), loadSummary(), loadLedger()]);
   } catch (e) {
-    message.error(e.response?.data?.message || '发布求分享失败');
+    message.error(e.response?.data?.message || '发布求共享失败');
   } finally {
     shareRequestSubmitting.value = false;
   }
@@ -1792,7 +1795,7 @@ const confirmCoRequest = (row) => {
   const cost = Number(row.max_bounty || row.current_bounty || row.bounty_total || 0);
   dialog.warning({
     title: '同求助力',
-    content: `助力求分享将冻结 ${cost} 贡献值。资源成功分享并转存后，对应贡献值会支付给分享者；未成交取消/过期会退回。确定同求吗？`,
+    content: `助力求共享将冻结 ${cost} 贡献值。资源成功共享并转存后，对应贡献值会支付给共享者；未成交取消/过期会退回。确定同求吗？`,
     positiveText: '确认同求',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -1809,17 +1812,17 @@ const confirmCoRequest = (row) => {
 
 const confirmCancelShareRequest = (row) => {
   dialog.warning({
-    title: '取消求分享',
-    content: row.my_role === 'owner' ? '发起人取消会关闭该求分享并退回所有参与者未使用贡献值，确定继续吗？' : '确定取消你的同求并退回未使用贡献值吗？',
-    positiveText: '取消求分享',
+    title: '取消求共享',
+    content: row.my_role === 'owner' ? '发起人取消会关闭该求共享并退回所有参与者未使用贡献值，确定继续吗？' : '确定取消你的同求并退回未使用贡献值吗？',
+    positiveText: '取消求共享',
     negativeText: '保留',
     onPositiveClick: async () => {
       try {
         const res = await axios.post(`/api/shared/resources/share-requests/${row.group_id}/cancel`, {});
-        message.success(res.data?.message || '已取消求分享');
+        message.success(res.data?.message || '已取消求共享');
         await Promise.allSettled([loadShareRequests(), loadSummary(), loadLedger()]);
       } catch (e) {
-        message.error(e.response?.data?.message || '取消求分享失败');
+        message.error(e.response?.data?.message || '取消求共享失败');
       }
     }
   });
@@ -1832,7 +1835,7 @@ const openLocalShareForRequest = async (row) => {
   activeLocalShareRequest.value = row || null;
   mediaSearchKeyword.value = '';
   showManualShareModal.value = true;
-  message.info('正在自动匹配本地符合条件的可分享资源。');
+  message.info('正在自动匹配本地符合条件的可共享资源。');
   await searchShareableMedia();
 };
 
@@ -1909,7 +1912,7 @@ const searchShareableMedia = async () => {
   const keyword = requestRow
     ? String(requestRow.title || requestRow.tmdb_id || '').trim()
     : String(mediaSearchKeyword.value || '').trim();
-  if (!keyword) return message.warning(requestRow ? '求分享缺少片名或 TMDb ID，无法自动匹配本地资源' : '请输入片名或 TMDb ID');
+  if (!keyword) return message.warning(requestRow ? '求共享缺少片名或 TMDb ID，无法自动匹配本地资源' : '请输入片名或 TMDb ID');
   mediaSearchLoading.value = true;
   try {
     const params = { keyword, limit: requestRow ? 100 : 30 };
@@ -1917,10 +1920,10 @@ const searchShareableMedia = async () => {
     const res = await axios.get('/api/shared/resources/media/search', { params });
     mediaCandidates.value = res.data?.items || [];
     if (!mediaCandidates.value.length) {
-      message.info(requestRow ? '本地没有符合该求分享参数的可分享资源' : '没有搜索到本地媒体记录');
+      message.info(requestRow ? '本地没有符合该求共享参数的可共享资源' : '没有搜索到本地媒体记录');
     }
   } catch (e) {
-    message.error(e.response?.data?.message || '搜索可分享媒体失败');
+    message.error(e.response?.data?.message || '搜索可共享媒体失败');
   } finally {
     mediaSearchLoading.value = false;
   }
@@ -1996,37 +1999,59 @@ const chooseMediaCandidate = (row) => {
     center_replenish_source_id: row.center_replenish_source_id || '',
     center_replenish_payload: row.center_replenish_payload || null,
   });
-  message.success('已自动填充分享信息，开始预校验');
+  message.success('已自动填充共享信息，开始预校验');
   validateManualShareSelection();
 };
 
+
+const confirmShareAllLibrary = () => {
+  dialog.warning({
+    title: '一键登记媒体库',
+    content: '将扫描当前本机媒体库并把可秒传资源索引登记到共享中心。不会创建 115 共享，也不会上传 CK；但会上传 SHA1、大小、文件名和媒体信息摘要。媒体库很大时会在后台运行较长时间，确认继续吗？',
+    positiveText: '开始共享全库',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      shareAllLoading.value = true;
+      try {
+        const res = await axios.post('/api/shared/resources/shares/share-library', {});
+        message.success(res.data?.message || '已启动一键登记媒体库任务');
+        await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '启动一键登记媒体库失败');
+      } finally {
+        shareAllLoading.value = false;
+      }
+    }
+  });
+};
+
 const manualCreateShare = async () => {
-  if (!manualShareForm.root_fid) return message.warning('请先搜索并选择一个可分享媒体');
-  if (manualShareValidationLoading.value) return message.warning('正在预校验分享文件，请稍候');
+  if (!manualShareForm.root_fid) return message.warning('请先搜索并选择一个可共享媒体');
+  if (manualShareValidationLoading.value) return message.warning('正在预校验共享源，请稍候');
   if (!manualShareValidation.value || manualShareValidation.value.valid !== true) {
     const result = await validateManualShareSelection();
     if (!result || result.valid !== true) {
-      return message.error(result?.message || '预校验未通过，不能创建分享');
+      return message.error(result?.message || '预校验未通过，不能登记共享源');
     }
   }
   manualCreating.value = true;
   try {
     const payload = buildManualSharePayload();
     await axios.post('/api/shared/resources/shares/manual-create', payload);
-    message.success('分享已创建，等待审核');
+    message.success('资源索引已登记中心');
     showManualShareModal.value = false;
     activeLocalShareRequest.value = null;
     activeCenterReplenishSource.value = null;
     activeTab.value = 'shares';
     await Promise.allSettled([loadShares(), loadCenterSources(), loadSummary(), loadLedger()]);
   } catch (e) {
-    message.error(e.response?.data?.message || '创建分享失败');
+    message.error(e.response?.data?.message || '登记资源失败');
   } finally { manualCreating.value = false; }
 };
 
 const checkShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/check`); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { message.error(e.response?.data?.message || '检查失败'); } };
 const reportShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/report-center`); message.success(res.data?.message || '已登记'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '登记失败'); } };
-const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/shares/${row.id}/cancel`); message.success('已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '取消失败'); } } }); };
+const cancelShare = (row) => { dialog.warning({ title: '停用共享源', content: `确定停用《${row.title || row.root_name || row.file_name}》的共享源吗？停用后不会再向中心供给该资源。`, positiveText: '停用共享', negativeText: '保留', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/shares/${row.id}/cancel`); message.success('已停用共享源'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '停用失败'); } } }); };
 
 
 watch(

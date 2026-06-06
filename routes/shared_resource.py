@@ -121,7 +121,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
 def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(row or {})
     # 前端旧列名兼容显示，但语义已变成 Rapid 源。
-    row.setdefault('share_code', '')
+    row['share_code'] = row.get('center_source_id') or row.get('source_key') or ''
     row.setdefault('receive_code', '')
     row.setdefault('share_url', '')
     row['share_type'] = row.get('source_kind')
@@ -131,8 +131,10 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
     row['center_reported_count'] = row.get('file_count') or (1 if row.get('center_status') == 'reported' else 0)
     row['source_provider_label'] = {
         'manual_rapid': '手动登记',
+        'rapid_auto_library': '入库自动登记',
+        'rapid_all_library': '一键全库登记',
         'auto_library': '入库自动登记',
-        'share_all_library': '一键全库共享',
+        'share_all_library': '一键全库登记',
         'rapid_completed_season': '完结季收藏源',
     }.get(row.get('source_provider'), row.get('source_provider') or '本地秒传源')
     return row
@@ -215,6 +217,11 @@ def api_search_shareable_media():
 @shared_resource_bp.route('/shares/manual-validate', methods=['POST'])
 @admin_required
 def api_manual_validate():
+    """Rapid v2 手动登记前预校验。
+
+    前端仍沿用 /shares/manual-validate 这个路由名，但这里不再校验 115 分享码/提取码，
+    只确认本地能定位到可秒传文件，并检查 RAW 媒体信息是否可用于中心展示/匹配。
+    """
     data = _request_json()
     files = shared_share_db.collect_files_for_candidate(data)
     missing_raw = []
@@ -222,9 +229,28 @@ def api_manual_validate():
         sha1 = str(f.get('sha1') or '').upper()
         if sha1 and not (shared_share_db.raw_ffprobe_for_sha1(sha1) or {}).get('raw_ffprobe_json'):
             missing_raw.append({'sha1': sha1, 'file_name': f.get('file_name')})
+
+    if not files:
+        message = '没有找到可登记视频文件'
+        valid = False
+    elif missing_raw:
+        message = f'找到 {len(files)} 个视频文件，但有 {len(missing_raw)} 个缺少 RAW 媒体信息，暂不登记中心'
+        valid = False
+    else:
+        message = f'找到 {len(files)} 个可登记视频文件，可登记为 Rapid v2 共享源'
+        valid = True
+
+    data_payload = {
+        'valid': valid,
+        'message': message,
+        'file_count': len(files),
+        'missing_raw': missing_raw,
+        'files': files,
+    }
     return jsonify({
-        'success': bool(files),
-        'message': f'找到 {len(files)} 个可登记视频文件' if files else '没有找到可登记视频文件',
+        'success': True,
+        'message': message,
+        'data': data_payload,
         'files': files,
         'missing_raw': missing_raw,
     })
@@ -236,7 +262,7 @@ def api_manual_create():
     data = _request_json()
     result = shared_tasks.register_candidate_to_center(data, source_provider='manual_rapid')
     status = 200 if result.get('ok') else 400
-    return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '登记完成', 'data': result}), status
+    return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '共享源已登记中心', 'data': result}), status
 
 
 @shared_resource_bp.route('/shares/share-library', methods=['POST'])
@@ -249,9 +275,9 @@ def api_share_library():
         try:
             shared_tasks.share_all_library(max_items=max_items)
         except Exception as e:
-            logger.error(f"  ➜ [共享资源] 一键共享媒体库任务失败: {e}", exc_info=True)
-    threading.Thread(target=_runner, name='shared-rapid-share-all-library', daemon=True).start()
-    return jsonify({'success': True, 'message': '已启动一键共享媒体库任务；不会创建 115 分享，只登记中心秒传索引'})
+            logger.error(f"  ➜ [共享资源] 一键登记媒体库任务失败: {e}", exc_info=True)
+    threading.Thread(target=_runner, name='shared-rapid-register-all-library', daemon=True).start()
+    return jsonify({'success': True, 'message': '已启动一键登记媒体库任务；不会创建 115 分享，只登记中心秒传索引'})
 
 
 @shared_resource_bp.route('/center/sources', methods=['GET'])
