@@ -69,6 +69,131 @@ def _norm_sha1(value: str) -> str:
     return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
 
 
+def _rapid_size_to_int(value, default=0) -> int:
+    """把中心端/本地缓存里的 size / file_size / 0.69 GB 统一转成字节。"""
+    try:
+        if value in (None, '', [], {}):
+            return default
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip().replace(',', '')
+        if not text:
+            return default
+        if re.fullmatch(r'\d+(?:\.0+)?', text):
+            return int(float(text))
+        m = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*(TB|GB|G|MB|M|KB|K|B)?', text, re.I)
+        if not m:
+            return default
+        n = float(m.group(1))
+        unit = (m.group(2) or 'B').upper()
+        if unit == 'TB': n *= 1024 ** 4
+        elif unit in ('GB', 'G'): n *= 1024 ** 3
+        elif unit in ('MB', 'M'): n *= 1024 ** 2
+        elif unit in ('KB', 'K'): n *= 1024
+        return int(n)
+    except Exception:
+        return default
+
+
+def _dict_size_candidates(data: Dict[str, Any]) -> List[Any]:
+    if not isinstance(data, dict):
+        return []
+    values = []
+    for key in ('size', 'file_size', 'filesize', 'size_bytes', 'fileSize', 'file_size_bytes', 'total_size'):
+        values.append(data.get(key))
+    for nested_key in ('rapid_meta_json', 'rapid_meta', 'media_signature_json', 'summary_json', 'raw_summary_json', 'version_summary'):
+        nested = data.get(nested_key)
+        if isinstance(nested, str):
+            try:
+                nested = json.loads(nested)
+            except Exception:
+                nested = None
+        if isinstance(nested, dict):
+            for key in ('size', 'file_size', 'filesize', 'size_bytes', 'fileSize', 'file_size_bytes'):
+                values.append(nested.get(key))
+    return values
+
+
+def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
+    sha1 = _norm_sha1((file_info or {}).get('sha1'))
+    meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
+    pick_code = str((file_info or {}).get('pick_code') or (file_info or {}).get('pc') or meta.get('pick_code') or meta.get('pc') or '').strip()
+    if not sha1 and not pick_code:
+        return {}
+    try:
+        if pick_code and hasattr(P115CacheManager, 'get_file_cache_by_pickcode'):
+            row = P115CacheManager.get_file_cache_by_pickcode(pick_code)
+            if row:
+                return dict(row)
+        if sha1 and hasattr(P115CacheManager, 'get_file_cache_by_sha1'):
+            row = P115CacheManager.get_file_cache_by_sha1(sha1)
+            if row:
+                return dict(row)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询 P115CacheManager 补 size 失败: {e}")
+    try:
+        clauses, args = [], []
+        if sha1:
+            clauses.append("UPPER(sha1)=%s")
+            args.append(sha1)
+        if pick_code:
+            clauses.append("pick_code=%s")
+            args.append(pick_code)
+        if not clauses:
+            return {}
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, parent_id, name, local_path, sha1, pick_code, size, updated_at
+                    FROM p115_filesystem_cache
+                    WHERE {' OR '.join(clauses)}
+                    ORDER BY CASE WHEN COALESCE(size,0) > 0 THEN 0 ELSE 1 END,
+                             updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    args,
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 直接查询 p115_filesystem_cache 补 size 失败: {e}")
+    return {}
+
+
+def _normalize_rapid_file_info(file_info: Dict[str, Any]) -> Dict[str, Any]:
+    info = dict(file_info or {})
+    meta = info.get('rapid_meta_json') if isinstance(info.get('rapid_meta_json'), dict) else {}
+    sha1 = _norm_sha1(info.get('sha1') or info.get('file_sha1') or meta.get('sha1') or meta.get('file_sha1'))
+    if sha1:
+        info['sha1'] = sha1
+    file_name = str(info.get('file_name') or info.get('name') or meta.get('file_name') or meta.get('name') or '').strip()
+    if file_name:
+        info['file_name'] = file_name
+    size = 0
+    for candidate in _dict_size_candidates(info):
+        size = _rapid_size_to_int(candidate, 0)
+        if size > 0:
+            break
+    if size <= 0:
+        cache_row = _lookup_p115_cache_for_file(info)
+        if cache_row:
+            size = _rapid_size_to_int(cache_row.get('size'), 0)
+            if not info.get('file_name') and cache_row.get('name'):
+                info['file_name'] = cache_row.get('name')
+            meta = dict(meta)
+            if cache_row.get('id') and not meta.get('fid'):
+                meta['fid'] = str(cache_row.get('id'))
+            if cache_row.get('pick_code') and not meta.get('pick_code'):
+                meta['pick_code'] = str(cache_row.get('pick_code'))
+            if meta:
+                info['rapid_meta_json'] = meta
+    if size > 0:
+        info['size'] = size
+        info['file_size'] = size
+    return info
+
+
 def _target_cid() -> str:
     cid = str(_cfg('CONFIG_OPTION_115_SAVE_PATH_CID', 'p115_save_path_cid', '') or '').strip()
     if not cid or cid == '0':
@@ -128,13 +253,18 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
     if not p115:
         raise RuntimeError('115 客户端未初始化')
     target_cid = str(target_cid or _target_cid()).strip()
+    file_info = _normalize_rapid_file_info(file_info or {})
     sha1 = _norm_sha1(file_info.get('sha1'))
-    size = _safe_int(file_info.get('size'), 0)
+    size = _rapid_size_to_int(file_info.get('size') or file_info.get('file_size'), 0)
     file_name = str(file_info.get('file_name') or file_info.get('name') or sha1).strip() or sha1
     if not sha1:
         raise RuntimeError('缺少合法 SHA1，无法秒传')
     if size <= 0:
-        raise RuntimeError(f'缺少文件大小，无法秒传：{file_name}')
+        raise RuntimeError(
+            f'中心源缺少文件大小，无法秒传：{file_name}；'
+            f'请源端重新登记该资源，或先修复 p115_filesystem_cache.size 后再登记。'
+        )
+    logger.info(f"  ➜ [共享资源] 准备执行 115 秒传：{file_name}, sha1={sha1[:8]}..., size={size}, target_cid={target_cid}")
     resp = _call_rapid_method(
         p115,
         target_cid=target_cid,
@@ -453,3 +583,45 @@ def try_consume_preprobed_shared_resource(probe_row: Dict[str, Any] = None, item
     if reported_gap:
         return {'enabled': True, 'success': False, 'reported_gap': True, 'mode': 'rapid', 'count': 0}
     return try_consume_shared_resource(item or {}, **kwargs)
+
+
+
+def consume_center_source_payload(source: Dict[str, Any], mode: str = 'rapid', context: Dict[str, Any] = None) -> Dict[str, Any]:
+    if not shared_center_enabled():
+        return {'enabled': False, 'ok': False, 'success': False, 'message': '共享资源未启用'}
+    source = dict(source or {})
+    if context:
+        for k, v in dict(context or {}).items():
+            source.setdefault(k, v)
+    source_kind = str(source.get('source_kind') or source.get('kind') or '').strip()
+    source_id = str(source.get('source_id') or source.get('source_ref_id') or source.get('episode_source_id') or '').strip()
+    if not source_kind:
+        item_type = str(source.get('item_type') or source.get('display_type') or '').strip().lower()
+        if item_type == 'movie': source_kind = 'movie'
+        elif item_type == 'episode': source_kind = 'episode'
+        elif item_type in ('season', 'completed_season'): source_kind = 'completed_season'
+    if not source_id and source_kind == 'episode':
+        source_id = str(source.get('episode_source_id') or '').strip()
+    if not source_kind or not source_id:
+        return {'enabled': True, 'ok': False, 'success': False, 'message': '中心源缺少 source_kind/source_id，无法秒传'}
+    event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
+    result = consume_device_event(event, ack=False)
+    result['success'] = bool(result.get('ok'))
+    result['count'] = int(result.get('success_count') or 0)
+    result['action_type'] = '共享资源秒传'
+    return result
+
+
+def consume_center_sources(source_ids: List[str] = None, mode: str = 'rapid', context: Dict[str, Any] = None, source: Dict[str, Any] = None) -> Dict[str, Any]:
+    if isinstance(source, dict) and source:
+        return consume_center_source_payload(source, mode=mode, context=context)
+    ids = [str(x or '').strip() for x in (source_ids or []) if str(x or '').strip()]
+    if not ids:
+        return {'enabled': True, 'success': False, 'ok': False, 'message': '缺少 Rapid v2 source payload'}
+    client = SharedCenterClient()
+    try:
+        resp = client.list_sources(source_ids=ids, limit=max(len(ids), 1))
+        sources = [x for x in (resp.get('items') or []) if isinstance(x, dict)]
+    except Exception as e:
+        return {'enabled': True, 'success': False, 'ok': False, 'message': f'按 source_id 查询中心源失败: {e}'}
+    return _consume_sources(sources, report_gap=False)

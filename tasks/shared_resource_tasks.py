@@ -58,6 +58,56 @@ def _safe_int(value, default=0):
         return default
 
 
+def _file_size_from_cache(file_info: Dict[str, Any]) -> int:
+    """登记源前补齐 size；中心端秒传必须依赖 size。"""
+    size = _safe_int(file_info.get('size') or file_info.get('file_size') or file_info.get('size_bytes') or file_info.get('fileSize'), 0)
+    if size > 0:
+        return size
+    sha1 = _norm_sha1(file_info.get('sha1'))
+    pc = str(file_info.get('pick_code') or file_info.get('pc') or '').strip()
+    try:
+        from handler.p115_service import P115CacheManager
+        row = None
+        if sha1 and hasattr(P115CacheManager, 'get_file_cache_by_sha1'):
+            row = P115CacheManager.get_file_cache_by_sha1(sha1)
+        if not row and pc and hasattr(P115CacheManager, 'get_file_cache_by_pickcode'):
+            row = P115CacheManager.get_file_cache_by_pickcode(pc)
+        if row:
+            row = dict(row)
+            size = _safe_int(row.get('size'), 0)
+            if size > 0:
+                file_info['size'] = size
+                if not file_info.get('file_name') and row.get('name'):
+                    file_info['file_name'] = row.get('name')
+                return size
+    except Exception:
+        pass
+    try:
+        clauses, args = [], []
+        if sha1:
+            clauses.append('UPPER(sha1)=%s')
+            args.append(sha1)
+        if pc:
+            clauses.append('pick_code=%s')
+            args.append(pc)
+        if clauses:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT size, name FROM p115_filesystem_cache WHERE {' OR '.join(clauses)} ORDER BY CASE WHEN COALESCE(size,0)>0 THEN 0 ELSE 1 END LIMIT 1", args)
+                    row = cur.fetchone()
+                    if row:
+                        row = dict(row)
+                        size = _safe_int(row.get('size'), 0)
+                        if size > 0:
+                            file_info['size'] = size
+                            if not file_info.get('file_name') and row.get('name'):
+                                file_info['file_name'] = row.get('name')
+                            return size
+    except Exception:
+        pass
+    return 0
+
+
 def _safe_int_or_none(value):
     try:
         if value in (None, ''):
@@ -264,7 +314,7 @@ def _prepare_raw_upload_entry(file_info: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     return {
         'sha1': sha1,
-        'size': _safe_int(file_info.get('size'), 0) or None,
+        'size': _file_size_from_cache(file_info) or None,
         'raw_ffprobe_json': raw,
     }
 
@@ -321,7 +371,7 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False) 
     sig = _media_signature(raw) if raw else {}
     return {
         'sha1': _norm_sha1(file_info.get('sha1')),
-        'size': _safe_int(file_info.get('size'), 0) or None,
+        'size': _file_size_from_cache(file_info) or None,
         'file_name': file_info.get('file_name') or file_info.get('name') or '',
         'quality': sig.get('resolution') or '',
         'has_raw_ffprobe': bool(raw_uploaded),
@@ -461,7 +511,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             raw = _raw_for_file(f)
             sig = _media_signature(raw) if raw else {}
             completed_files.append({
-                'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'size': _safe_int(f.get('size'), 0) or None,
+                'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'size': _file_size_from_cache(f) or None,
                 'file_name': f.get('file_name') or '', 'quality': sig.get('resolution') or '', 'media_signature_json': sig,
                 'rapid_meta_json': {'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path')},
             })

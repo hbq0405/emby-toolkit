@@ -385,7 +385,7 @@ def api_center_import():
         }), 400
 
     event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
-    result = consume_device_event(event)
+    result = consume_device_event(event, ack=False)
     status = 200 if result.get('ok') else 400
     message = result.get('message') or f"秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}"
     return jsonify({'success': bool(result.get('ok')), 'message': message, 'data': result}), status

@@ -554,22 +554,176 @@ class P115OpenAPIClient:
     def rapid_upload(self, payload=None, **kwargs):
         """按 SHA1/size 在目标目录执行 115 秒传。
 
-        Rapid v2 的中心端不保存 CK；这里仅在本机使用 OpenAPI 上传初始化接口。
-        说明：115 在部分资源上可能要求 preid/sign 二次校验。中心没有明文文件时无法
-        计算 sign_val，因此遇到 status=7 会返回明确失败，调用方可等待其他源或走原下载链路。
+        Rapid v2 只在本机使用 CK/Token，不把账号凭据上传中心。
+        这里允许调用方只传 SHA1 + 目标目录；缺失 size/file_name/preid 时，
+        会优先从 p115_filesystem_cache 按 sha1 / pick_code / fid 反查补齐。
         """
         payload = dict(payload or {})
         payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
-        target_cid = str(payload.get('cid') or payload.get('target_cid') or payload.get('target') or '').strip()
-        file_name = str(payload.get('file_name') or payload.get('name') or '').strip()
-        sha1 = str(payload.get('sha1') or payload.get('fileid') or payload.get('file_sha1') or '').strip().upper()
-        try:
-            size = int(float(payload.get('size') or payload.get('file_size') or payload.get('filesize') or 0))
-        except Exception:
-            size = 0
-        preid = str(payload.get('preid') or payload.get('pre_sha1') or payload.get('pre_sha1_128k') or '').strip().upper()
-        sign_key = payload.get('sign_key')
-        sign_val = payload.get('sign_val') or payload.get('sign_check_value')
+
+        def _as_dict(value):
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    try:
+                        parsed = json.loads(text)
+                        return parsed if isinstance(parsed, dict) else {}
+                    except Exception:
+                        return {}
+            return {}
+
+        rapid_meta = _as_dict(payload.get('rapid_meta_json') or payload.get('rapid_meta') or payload.get('meta'))
+        source_meta = _as_dict(payload.get('source') or payload.get('source_json'))
+
+        def _first(*values):
+            for value in values:
+                if value not in (None, '', [], {}):
+                    return value
+            return None
+
+        def _safe_size(value):
+            try:
+                if value in (None, '', [], {}):
+                    return 0
+                if isinstance(value, (int, float)):
+                    return int(value)
+                text = str(value).strip().replace(',', '')
+                if not text:
+                    return 0
+                if re.fullmatch(r'\d+(?:\.\d+)?', text):
+                    return int(float(text))
+                upper = text.upper()
+                multiplier = 1
+                if 'TB' in upper:
+                    multiplier = 1024 ** 4
+                elif 'GB' in upper:
+                    multiplier = 1024 ** 3
+                elif 'MB' in upper:
+                    multiplier = 1024 ** 2
+                elif 'KB' in upper:
+                    multiplier = 1024
+                match = re.search(r'([0-9]+(?:\.[0-9]+)?)', upper)
+                return int(float(match.group(1)) * multiplier) if match else 0
+            except Exception:
+                return 0
+
+        target_cid = str(_first(
+            payload.get('cid'), payload.get('target_cid'), payload.get('target'), payload.get('to_cid'),
+            rapid_meta.get('cid'), rapid_meta.get('target_cid'), rapid_meta.get('target'), rapid_meta.get('to_cid'),
+        ) or '').strip()
+
+        sha1 = str(_first(
+            payload.get('sha1'), payload.get('fileid'), payload.get('file_sha1'),
+            rapid_meta.get('sha1'), rapid_meta.get('fileid'), rapid_meta.get('file_sha1'),
+            source_meta.get('sha1'), source_meta.get('file_sha1'),
+        ) or '').strip().upper()
+
+        pick_code = str(_first(
+            payload.get('pick_code'), payload.get('pickcode'), payload.get('pc'),
+            rapid_meta.get('pick_code'), rapid_meta.get('pickcode'), rapid_meta.get('pc'),
+            source_meta.get('pick_code'), source_meta.get('pickcode'), source_meta.get('pc'),
+        ) or '').strip()
+
+        fid = str(_first(
+            payload.get('fid'), payload.get('file_id'), payload.get('id'),
+            rapid_meta.get('fid'), rapid_meta.get('file_id'), rapid_meta.get('id'),
+            source_meta.get('fid'), source_meta.get('file_id'), source_meta.get('id'),
+        ) or '').strip()
+
+        file_name = str(_first(
+            payload.get('file_name'), payload.get('filename'), payload.get('name'),
+            rapid_meta.get('file_name'), rapid_meta.get('filename'), rapid_meta.get('name'),
+            source_meta.get('file_name'), source_meta.get('filename'), source_meta.get('name'),
+        ) or '').strip()
+
+        size = _safe_size(_first(
+            payload.get('size'), payload.get('file_size'), payload.get('filesize'), payload.get('size_bytes'),
+            rapid_meta.get('size'), rapid_meta.get('file_size'), rapid_meta.get('filesize'), rapid_meta.get('size_bytes'),
+            source_meta.get('size'), source_meta.get('file_size'), source_meta.get('filesize'), source_meta.get('size_bytes'),
+        ))
+
+        preid = str(_first(
+            payload.get('preid'), payload.get('pre_sha1'), payload.get('pre_sha1_128k'),
+            rapid_meta.get('preid'), rapid_meta.get('pre_sha1'), rapid_meta.get('pre_sha1_128k'),
+            source_meta.get('preid'), source_meta.get('pre_sha1'), source_meta.get('pre_sha1_128k'),
+        ) or '').strip().upper()
+        sign_key = _first(payload.get('sign_key'), rapid_meta.get('sign_key'), source_meta.get('sign_key'))
+        sign_val = _first(
+            payload.get('sign_val'), payload.get('sign_check_value'),
+            rapid_meta.get('sign_val'), rapid_meta.get('sign_check_value'),
+            source_meta.get('sign_val'), source_meta.get('sign_check_value'),
+        )
+
+        cache_row = None
+        cache_mgr = globals().get('P115CacheManager')
+        if cache_mgr:
+            try:
+                if sha1 and hasattr(cache_mgr, 'get_file_cache_by_sha1'):
+                    cache_row = cache_mgr.get_file_cache_by_sha1(sha1)
+                if not cache_row and pick_code and hasattr(cache_mgr, 'get_file_cache_by_pickcode'):
+                    cache_row = cache_mgr.get_file_cache_by_pickcode(pick_code)
+                if not cache_row and fid and hasattr(cache_mgr, 'get_file_cache_by_id'):
+                    cache_row = cache_mgr.get_file_cache_by_id(fid)
+            except Exception as e:
+                logger.debug(f"  ➜ [Rapid秒传] 查询 p115_filesystem_cache 失败: {e}")
+
+        if cache_row:
+            try:
+                if not fid:
+                    fid = str(cache_row.get('id') or cache_row.get('fid') or '').strip()
+                if not pick_code:
+                    pick_code = str(cache_row.get('pick_code') or cache_row.get('pc') or '').strip()
+                if not sha1:
+                    sha1 = str(cache_row.get('sha1') or '').strip().upper()
+                if not file_name:
+                    file_name = str(cache_row.get('name') or cache_row.get('file_name') or '').strip()
+                if size <= 0:
+                    size = _safe_size(cache_row.get('size') or cache_row.get('file_size') or cache_row.get('size_bytes'))
+            except Exception:
+                pass
+
+        # 缓存仍缺 size 时，只要能定位 fid，就实时查 115 详情补齐。
+        if (size <= 0 or not file_name or not pick_code) and not fid and pick_code:
+            if cache_mgr and hasattr(cache_mgr, 'get_fid_by_pickcode'):
+                try:
+                    fid = str(cache_mgr.get_fid_by_pickcode(pick_code) or '').strip()
+                except Exception:
+                    fid = ''
+
+        if (size <= 0 or not file_name or not pick_code or not sha1) and fid:
+            try:
+                info_res = self.fs_get_info(fid)
+                data = info_res.get('data') if isinstance(info_res, dict) else {}
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+                if isinstance(data, dict):
+                    if not sha1:
+                        sha1 = str(data.get('sha1') or data.get('sha') or data.get('file_sha1') or '').strip().upper()
+                    if not pick_code:
+                        pick_code = str(data.get('pc') or data.get('pick_code') or data.get('pickcode') or '').strip()
+                    if not file_name:
+                        file_name = str(data.get('fn') or data.get('n') or data.get('file_name') or data.get('name') or '').strip()
+                    if size <= 0:
+                        size = _safe_size(data.get('size_byte') or data.get('fs') or data.get('size') or data.get('file_size'))
+
+                    parent_id = data.get('parent_id') or data.get('pid') or data.get('cid')
+                    if cache_mgr and fid and parent_id and file_name and hasattr(cache_mgr, 'save_file_cache'):
+                        try:
+                            cache_mgr.save_file_cache(
+                                fid=fid,
+                                parent_id=parent_id,
+                                name=file_name,
+                                sha1=sha1 or None,
+                                pick_code=pick_code or None,
+                                local_path=None,
+                                size=size or 0,
+                            )
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"  ➜ [Rapid秒传] 实时查询 115 文件详情失败 fid={fid}: {e}")
 
         if not target_cid:
             return {'state': False, 'error_msg': '缺少目标目录 cid，无法秒传'}
@@ -578,7 +732,22 @@ class P115OpenAPIClient:
         if not re.fullmatch(r'[A-F0-9]{40}', sha1 or ''):
             return {'state': False, 'error_msg': '缺少合法 SHA1，无法秒传'}
         if size <= 0:
-            return {'state': False, 'error_msg': '缺少文件大小，无法秒传'}
+            return {
+                'state': False,
+                'error_msg': '缺少文件大小，无法秒传：source 未携带 size，且本地 p115_filesystem_cache / 115 文件详情均未能补齐',
+                'debug': {
+                    'sha1': sha1,
+                    'fid': fid,
+                    'pick_code': pick_code,
+                    'file_name': file_name,
+                    'has_cache_row': bool(cache_row),
+                }
+            }
+
+        logger.info(
+            f"  ➜ [Rapid秒传] 准备秒传到 CID={target_cid}: "
+            f"{file_name} | sha1={sha1[:12]}... | size={size}"
+        )
 
         # 115 upload/init 要求 preid 字段；无 preid 时用 SHA1 兜底尝试。
         # 如果 115 要求二次校验，会返回 status=7，此时无法凭空计算 sign_val。
@@ -590,7 +759,6 @@ class P115OpenAPIClient:
         status = str(data.get('status') if data.get('status') is not None else init_res.get('status') if init_res.get('status') is not None else '')
 
         if init_res.get('state') and status in ('2', '1'):
-            # status=2 通常表示秒传完成；少数接口 status=1 可能表示需要直传，这里不能上传文件，按失败处理。
             if status == '2':
                 out = dict(init_res)
                 out['state'] = True
@@ -600,6 +768,7 @@ class P115OpenAPIClient:
                 out.setdefault('sha1', sha1)
                 out.setdefault('file_name', file_name)
                 out.setdefault('target_cid', target_cid)
+                out.setdefault('size', size)
                 return out
             return {
                 'state': False,
@@ -610,7 +779,7 @@ class P115OpenAPIClient:
         if status == '7':
             return {
                 'state': False,
-                'error_msg': '115 要求二次校验(status=7)，中心调度秒传无法计算 sign_val；需要源端补充 preid/sign 或等待其他资源',
+                'error_msg': '115 要求二次校验(status=7)，当前只靠 SHA1/size 无法计算 sign_val；需要源端补充 preid/sign 或等待其他资源',
                 'response': init_res,
             }
 
@@ -1976,7 +2145,11 @@ class P115Service:
 
 
             def rapid_upload(self, payload=None, **kwargs):
-                """Rapid v2 秒传入口：强制走本机 OpenAPI，不经过中心、不上传 CK。"""
+                """Rapid v2 秒传入口：强制走本机 OpenAPI，不经过中心、不上传 CK。
+
+                注意：这里不读 shared_share_records/shared_share_items 旧表；缺失 size/name
+                的补齐全部交给 P115OpenAPIClient.rapid_upload 从 p115_filesystem_cache / 115 详情完成。
+                """
                 self._check_openapi()
                 payload = dict(payload or {})
                 payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
