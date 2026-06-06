@@ -115,6 +115,8 @@ def _dict_size_candidates(data: Dict[str, Any]) -> List[Any]:
 
 
 def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
+    from database.connection import get_db_connection
+    from handler.p115_service import P115CacheManager
     sha1 = _norm_sha1((file_info or {}).get('sha1'))
     meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
     pick_code = str((file_info or {}).get('pick_code') or (file_info or {}).get('pc') or meta.get('pick_code') or meta.get('pc') or '').strip()
