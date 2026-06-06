@@ -3348,7 +3348,7 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
     if local_hit.get('hit'):
         msg = f'本地已入库，跳过中心推送事件：{title}'
         _ack_shared_device_event(client, event, 'skipped', msg)
-        logger.info("  ➜ [共享事件监听] %s event=%s source=%s reason=%s", msg, event_id, source_id, local_hit.get('reason'))
+        logger.debug("  ➜ [共享事件监听] %s event=%s source=%s reason=%s", msg, event_id, source_id, local_hit.get('reason'))
         result = {'success': False, 'skipped': True, 'message': msg, 'local_hit': local_hit}
         try:
             shared_credit_db.add_credit_ledger(
