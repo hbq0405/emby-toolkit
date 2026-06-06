@@ -777,10 +777,117 @@ class P115OpenAPIClient:
             }
 
         if status == '7':
+            def _status_from_upload_init(resp):
+                if not isinstance(resp, dict):
+                    return '', {}
+                resp_data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
+                resp_status = str(
+                    resp_data.get('status')
+                    if resp_data.get('status') is not None
+                    else resp.get('status')
+                    if resp.get('status') is not None
+                    else ''
+                )
+                return resp_status, resp_data
+
+            def _sign_probe_item(resp, index=1):
+                resp_status, resp_data = _status_from_upload_init(resp)
+                sign_key_text = str(resp_data.get('sign_key') or '')
+                return {
+                    'index': index,
+                    'status': resp_status,
+                    'sign_check': str(resp_data.get('sign_check') or ''),
+                    # sign_key 只用于本次重试，日志里保留前缀便于判断是否每次变化，不完整暴露。
+                    'sign_key_prefix': sign_key_text[:12],
+                    'sign_key_len': len(sign_key_text),
+                    'state': bool(resp.get('state')) if isinstance(resp, dict) else False,
+                    'message': (resp.get('message') or resp.get('error_msg') or resp.get('error') or '') if isinstance(resp, dict) else str(resp),
+                }
+
+            try:
+                probe_rounds = int(
+                    _first(
+                        payload.get('sign_probe_rounds'), payload.get('rapid_sign_probe_rounds'),
+                        rapid_meta.get('sign_probe_rounds'), rapid_meta.get('rapid_sign_probe_rounds'),
+                        source_meta.get('sign_probe_rounds'), source_meta.get('rapid_sign_probe_rounds'),
+                        (config_manager.APP_CONFIG or {}).get('p115_rapid_sign_probe_rounds'),
+                        os.environ.get('ETK_RAPID_SIGN_PROBE_ROUNDS'),
+                        10,
+                    )
+                )
+            except Exception:
+                probe_rounds = 10
+            probe_rounds = max(1, min(probe_rounds, 20))
+
+            sign_probe = [_sign_probe_item(init_res, 1)]
+            for idx in range(2, probe_rounds + 1):
+                try:
+                    time.sleep(0.35)
+                    retry_res = self.fs_upload_init(file_name, size, target_cid, sha1, preid or sha1)
+                    retry_status, _retry_data = _status_from_upload_init(retry_res)
+                    if retry_res.get('state') and retry_status == '2':
+                        logger.info(
+                            f"  ➜ [Rapid秒传] sign_check 探测第 {idx} 次直接秒传成功："
+                            f"sha1={sha1[:12]}..., preid={(preid or sha1)[:12]}..."
+                        )
+                        out = dict(retry_res)
+                        out['state'] = True
+                        out['success'] = True
+                        out['message'] = out.get('message') or '115 秒传成功'
+                        out.setdefault('rapid_upload', True)
+                        out.setdefault('sha1', sha1)
+                        out.setdefault('file_name', file_name)
+                        out.setdefault('target_cid', target_cid)
+                        out.setdefault('size', size)
+                        out['sign_probe'] = sign_probe
+                        return out
+                    sign_probe.append(_sign_probe_item(retry_res, idx))
+                except Exception as e:
+                    sign_probe.append({
+                        'index': idx,
+                        'status': 'exception',
+                        'sign_check': '',
+                        'sign_key_prefix': '',
+                        'sign_key_len': 0,
+                        'state': False,
+                        'message': str(e),
+                    })
+
+            sign_checks = [x.get('sign_check') for x in sign_probe if x.get('sign_check')]
+            unique_checks = []
+            for value in sign_checks:
+                if value not in unique_checks:
+                    unique_checks.append(value)
+            status_counts = {}
+            for item in sign_probe:
+                key = str(item.get('status') or 'unknown')
+                status_counts[key] = status_counts.get(key, 0) + 1
+
+            logger.warning(
+                f"  ➜ [Rapid秒传] 115 二次校验 sign_check 探测完成："
+                f"sha1={sha1[:12]}..., preid={(preid or sha1)[:12]}..., "
+                f"rounds={len(sign_probe)}, unique_sign_check={len(unique_checks)}, "
+                f"status_counts={status_counts}, sign_checks={unique_checks[:20]}"
+            )
+
             return {
                 'state': False,
-                'error_msg': '115 要求二次校验(status=7)，当前只靠 SHA1/size 无法计算 sign_val；需要源端补充 preid/sign 或等待其他资源',
+                'error_msg': (
+                    '115 要求二次校验(status=7)，已完成 sign_check 探测：'
+                    f'共 {len(sign_probe)} 次，唯一 sign_check={len(unique_checks)} 个'
+                ),
                 'response': init_res,
+                'sign_probe': {
+                    'rounds': len(sign_probe),
+                    'unique_sign_check_count': len(unique_checks),
+                    'unique_sign_checks': unique_checks,
+                    'status_counts': status_counts,
+                    'items': sign_probe,
+                    'sha1': sha1,
+                    'preid': preid or sha1,
+                    'size': size,
+                    'file_name': file_name,
+                },
             }
 
         return init_res
