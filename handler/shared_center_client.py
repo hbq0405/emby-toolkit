@@ -236,8 +236,11 @@ class SharedCenterClient:
             results.append({'query': item, 'sources': sources, 'hit': bool(sources)})
         return {'supported': True, 'items': results, 'hit_count': hit_count, 'gap_count': gap_count}
 
-    def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size: int | None = None) -> Dict[str, Any]:
-        return self._post('/api/v1/rawffprobe/upload', {'sha1': sha1, 'size': size, 'raw_ffprobe_json': raw_ffprobe_json or {}}, timeout=35)
+    def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size: int | None = None, summary_json: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        payload = {'sha1': sha1, 'size': size, 'raw_ffprobe_json': raw_ffprobe_json or {}}
+        if isinstance(summary_json, dict) and summary_json:
+            payload['summary_json'] = summary_json
+        return self._post('/api/v1/rawffprobe/upload', payload, timeout=35)
 
     def upload_raw_ffprobe_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload_items = []
@@ -248,7 +251,11 @@ class SharedCenterClient:
             raw = item.get('raw_ffprobe_json') or item.get('raw') or {}
             if not sha1 or not isinstance(raw, dict):
                 continue
-            payload_items.append({'sha1': sha1, 'size': item.get('size'), 'raw_ffprobe_json': raw})
+            entry = {'sha1': sha1, 'size': item.get('size'), 'raw_ffprobe_json': raw}
+            summary = item.get('summary_json') or item.get('summary') or {}
+            if isinstance(summary, dict) and summary:
+                entry['summary_json'] = summary
+            payload_items.append(entry)
         if not payload_items:
             return {'ok': True, 'items': [], 'errors': [], 'count': 0}
         return self._post('/api/v1/rawffprobe/upload-batch', {'items': payload_items}, timeout=max(60, min(300, 20 + len(payload_items) * 4)))

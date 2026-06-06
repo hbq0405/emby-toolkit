@@ -128,6 +128,38 @@ def _norm_preid(value: str) -> str:
     return _norm_sha1(value)
 
 
+def _rapid_size_to_int(value, default=0) -> int:
+    """把 size / file_size / 27.9 GB 这类值统一转成字节数。"""
+    try:
+        if value in (None, '', [], {}):
+            return default
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip().replace(',', '')
+        if not text:
+            return default
+        if re.fullmatch(r'\d+(?:\.0+)?', text):
+            return int(float(text))
+        match = re.search(r'([0-9]+(?:\.[0-9]+)?)\s*(TB|T|GB|G|MB|M|KB|K|B)?', text, re.I)
+        if not match:
+            return default
+        number = float(match.group(1))
+        unit = (match.group(2) or 'B').upper()
+        if unit in ('TB', 'T'):
+            number *= 1024 ** 4
+        elif unit in ('GB', 'G'):
+            number *= 1024 ** 3
+        elif unit in ('MB', 'M'):
+            number *= 1024 ** 2
+        elif unit in ('KB', 'K'):
+            number *= 1024
+        return int(number)
+    except Exception:
+        return default
+
+
 def _extract_p115_down_url(resp: Any) -> str:
     if isinstance(resp, str):
         return resp
@@ -546,6 +578,296 @@ def _media_signature(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _center_format_rate(value: Any) -> str:
+    """把 ffprobe 的 24000/1001 这类帧率转成前端友好格式。"""
+    try:
+        if value in [None, '', '0/0']:
+            return ''
+        text = str(value)
+        if '/' in text:
+            a, b = text.split('/', 1)
+            b_val = float(b)
+            if b_val == 0:
+                return ''
+            rate = float(a) / b_val
+        else:
+            rate = float(text)
+        if rate <= 0:
+            return ''
+        return f"{rate:.3f}".rstrip('0').rstrip('.') + ' fps'
+    except Exception:
+        return str(value or '')
+
+
+def _center_codec_label(codec: Any) -> str:
+    c = str(codec or '').lower()
+    return {
+        'hevc': 'HEVC', 'h265': 'HEVC', 'h264': 'AVC', 'avc': 'AVC',
+        'av1': 'AV1', 'mpeg2video': 'MPEG2', 'vc1': 'VC-1',
+        'eac3': 'DDP', 'ac3': 'AC3', 'truehd': 'TrueHD', 'dts': 'DTS',
+        'aac': 'AAC', 'flac': 'FLAC', 'opus': 'OPUS', 'subrip': 'SRT',
+        'ass': 'ASS', 'ssa': 'SSA', 'hdmv_pgs_subtitle': 'PGS', 'pgssub': 'PGS',
+        'webvtt': 'VTT', 'mov_text': 'MOV_TEXT',
+    }.get(c, c.upper() if c else '')
+
+
+def _center_resolution(width: int, height: int) -> str:
+    try:
+        width = int(width or 0)
+        height = int(height or 0)
+    except Exception:
+        width, height = 0, 0
+    if width >= 7600:
+        return '8K'
+    if width >= 3800:
+        return '4K'
+    if width >= 1900:
+        return '1080p'
+    if width >= 1200:
+        return '720p'
+    return f'{height}p' if height else ''
+
+
+def _center_video_effect(video: Dict[str, Any]) -> str:
+    if not video:
+        return ''
+    ev_type = str(video.get('ExtendedVideoType') or '')
+    ev_sub = str(video.get('ExtendedVideoSubType') or '')
+    ev_desc = str(video.get('ExtendedVideoSubTypeDescription') or '')
+    video_range = str(video.get('VideoRange') or '')
+    if ev_type.lower() == 'dolbyvision' or ev_sub.lower().startswith('dovi'):
+        profile = ''
+        m = re.search(r'DoviProfile(\d+)', ev_sub, re.IGNORECASE)
+        if m:
+            raw = m.group(1)
+            profile = f"P{raw[0]}.{raw[1:]}" if len(raw) > 1 else f"P{raw}"
+        elif ev_desc:
+            m = re.search(r'Profile\s*([0-9.]+)', ev_desc, re.IGNORECASE)
+            if m:
+                profile = f"P{m.group(1)}"
+        base = f"Dolby Vision {profile}".strip()
+        if 'HDR10' in video_range.upper() and 'HDR10' not in base:
+            base += ' / HDR10'
+        return base
+    vr = video_range.upper()
+    if 'HDR10+' in vr:
+        return 'HDR10+'
+    if 'HDR10' in vr:
+        return 'HDR10'
+    if vr == 'HDR':
+        return 'HDR'
+    return ''
+
+
+def _center_track_display(stream: Dict[str, Any], stream_type: str) -> str:
+    """优先使用 _build_emby_mediainfo_from_ffprobe 已经净化过的 DisplayTitle。"""
+    if not stream:
+        return ''
+    display = str(stream.get('DisplayTitle') or '').strip()
+    if display:
+        return display
+    parts = []
+    lang = stream.get('DisplayLanguage') or stream.get('Language') or ''
+    title = stream.get('Title') or ''
+    codec = _center_codec_label(stream.get('Codec'))
+    if lang and lang != '未知':
+        parts.append(str(lang))
+    if codec:
+        parts.append(codec)
+    if stream_type == 'Audio':
+        channels = stream.get('Channels')
+        if channels:
+            parts.append(f"{channels}ch")
+    if title and title not in parts:
+        parts.append(str(title))
+    return ' '.join([x for x in parts if x])
+
+
+_CENTER_MEDIAINFO_FORMATTER = None
+
+
+def _get_center_mediainfo_formatter():
+    """懒加载 formatter，复用 P115MediaAnalyzerMixin 的音轨/字幕格式化逻辑。"""
+    global _CENTER_MEDIAINFO_FORMATTER
+    if _CENTER_MEDIAINFO_FORMATTER is not None:
+        return _CENTER_MEDIAINFO_FORMATTER
+    from handler.p115_media_analyzer import P115MediaAnalyzerMixin
+
+    class _Formatter(P115MediaAnalyzerMixin):
+        def __init__(self):
+            try:
+                import utils
+                self.language_map = settings_db.get_setting('language_mapping') or utils.DEFAULT_LANGUAGE_MAPPING
+                self.stream_feature_map = settings_db.get_setting('stream_feature_mapping') or getattr(utils, 'DEFAULT_STREAM_FEATURE_MAPPING', [])
+            except Exception:
+                self.language_map = []
+                self.stream_feature_map = []
+
+    _CENTER_MEDIAINFO_FORMATTER = _Formatter()
+    return _CENTER_MEDIAINFO_FORMATTER
+
+
+def _infer_size_from_raw(raw: Dict[str, Any]) -> int:
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        fmt = raw.get('format') or {}
+        size = fmt.get('size')
+        if size is not None and str(size).strip():
+            return _rapid_size_to_int(size, 0)
+    except Exception:
+        pass
+    try:
+        msi = raw.get('MediaSourceInfo') if isinstance(raw.get('MediaSourceInfo'), dict) else {}
+        size = msi.get('Size') or raw.get('Size')
+        if size is not None and str(size).strip():
+            return _rapid_size_to_int(size, 0)
+    except Exception:
+        pass
+    return 0
+
+
+def _build_center_emby_info(raw: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    if raw.get('MediaSourceInfo'):
+        return raw.get('MediaSourceInfo') or {}
+    if raw.get('MediaStreams'):
+        return raw
+
+    size = _rapid_size_to_int(source.get('size') or (raw.get('format') or {}).get('size'), 0)
+    file_node = {
+        'fn': source.get('file_name') or source.get('title') or source.get('sha1') or 'unknown.mkv',
+        'n': source.get('file_name') or source.get('title') or source.get('sha1') or 'unknown.mkv',
+        'fs': size,
+        'size': size,
+        'sha1': source.get('sha1') or '',
+    }
+    try:
+        formatter = _get_center_mediainfo_formatter()
+        if not hasattr(formatter, '_build_emby_mediainfo_from_ffprobe'):
+            return {}
+        built = formatter._build_emby_mediainfo_from_ffprobe(raw, file_node, sha1=source.get('sha1') or '')
+        if isinstance(built, list) and built:
+            return (built[0] or {}).get('MediaSourceInfo') or {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] raw ffprobe 格式化失败，使用轻量兜底: {e}")
+    return {}
+
+
+def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict[str, Any]:
+    """中心资源库展示用：优先复用 _build_emby_mediainfo_from_ffprobe 得到标准化音轨/字幕标题。"""
+    source = source or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    media_info = _build_center_emby_info(raw, source)
+    streams = media_info.get('MediaStreams') or []
+    video = next((s for s in streams if str(s.get('Type') or '').lower() == 'video'), {})
+    audios = [s for s in streams if str(s.get('Type') or '').lower() == 'audio']
+    subs = [s for s in streams if str(s.get('Type') or '').lower() == 'subtitle']
+
+    size = source.get('size') or media_info.get('Size') or (raw.get('format') or {}).get('size') or 0
+    size = _rapid_size_to_int(size, 0)
+
+    if video:
+        width = int(video.get('Width') or 0)
+        height = int(video.get('Height') or 0)
+        codec = _center_codec_label(video.get('Codec'))
+        bit_depth = video.get('BitDepth') or ''
+        fps = video.get('AverageFrameRate') or video.get('RealFrameRate') or ''
+        fps_text = _center_format_rate(fps)
+        effect = _center_video_effect(video)
+        bitrate = video.get('BitRate') or media_info.get('Bitrate') or ''
+        video_display = ' · '.join([x for x in [
+            _center_resolution(width, height),
+            effect,
+            codec,
+            f"{bit_depth}bit" if bit_depth else '',
+            fps_text,
+        ] if x])
+    else:
+        raw_streams = raw.get('streams') or []
+        raw_video = next((s for s in raw_streams if str(s.get('codec_type')).lower() == 'video'), {})
+        width = int(raw_video.get('width') or 0) if raw_video else 0
+        height = int(raw_video.get('height') or 0) if raw_video else 0
+        codec = _center_codec_label(raw_video.get('codec_name')) if raw_video else ''
+        bit_depth = raw_video.get('bits_per_raw_sample') or raw_video.get('bits_per_sample') or ''
+        fps_text = _center_format_rate(raw_video.get('avg_frame_rate') or raw_video.get('r_frame_rate') or '') if raw_video else ''
+        effect = ''
+        bitrate = (raw.get('format') or {}).get('bit_rate') or ''
+        video_display = ' · '.join([x for x in [_center_resolution(width, height), codec, f"{bit_depth}bit" if bit_depth else '', fps_text] if x])
+
+    audio_list = [_center_track_display(s, 'Audio') for s in audios]
+    subtitle_list = [_center_track_display(s, 'Subtitle') for s in subs]
+    audio_list = [x for x in audio_list if x]
+    subtitle_list = [x for x in subtitle_list if x]
+
+    return {
+        'resolution': _center_resolution(width, height),
+        'width': width,
+        'height': height,
+        'video_codec': codec,
+        'codec': codec,
+        'effect': effect,
+        'bit_depth': bit_depth,
+        'fps': fps_text,
+        'bitrate': bitrate,
+        'container': media_info.get('Container') or '',
+        'video_display': video_display,
+        'size': size,
+        'size_gb': round(size / 1024 / 1024 / 1024, 2) if size else 0,
+        'audio_count': len(audios),
+        'subtitle_count': len(subs),
+        'audio_list': audio_list[:16],
+        'subtitle_list': subtitle_list[:24],
+        'audios': [{'display': x} for x in audio_list[:16]],
+        'subtitles': [{'display': x} for x in subtitle_list[:24]],
+        'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
+    }
+
+
+def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, Any], final_size: int = 0) -> Dict[str, Any]:
+    """上传 RAW 时同步生成中心列表页轻量 MediaInfo 摘要。"""
+    if not isinstance(raw, dict) or not raw:
+        return {}
+
+    source = {
+        'sha1': str((item or {}).get('sha1') or '').strip().upper(),
+        'file_name': (item or {}).get('file_name') or (item or {}).get('name') or (item or {}).get('title') or '',
+        'title': (item or {}).get('title') or (item or {}).get('file_name') or '',
+        'size': final_size or (item or {}).get('size') or _infer_size_from_raw(raw),
+        'tmdb_id': (item or {}).get('tmdb_id') or (raw.get('_etk') or {}).get('tmdb_id'),
+        'item_type': (item or {}).get('item_type') or (item or {}).get('share_type') or (raw.get('_etk') or {}).get('type'),
+    }
+
+    try:
+        summary = _summarize_raw_ffprobe(raw, source)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 生成中心轻量 MediaInfo 摘要失败: sha1={source.get('sha1')[:8]}, err={e}")
+        return {}
+
+    if not isinstance(summary, dict):
+        return {}
+
+    allowed_keys = {
+        'resolution', 'width', 'height', 'video_codec', 'codec', 'effect', 'bit_depth',
+        'fps', 'bitrate', 'container', 'video_display', 'size', 'size_gb',
+        'audio_count', 'subtitle_count', 'audio_list', 'subtitle_list',
+        'audios', 'subtitles', 'formatted_by',
+    }
+    compact = {k: summary.get(k) for k in allowed_keys if k in summary}
+    for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audios', 16), ('subtitles', 24)):
+        value = compact.get(key)
+        if isinstance(value, list):
+            compact[key] = value[:max_len]
+
+    try:
+        return json.loads(json.dumps(compact, ensure_ascii=False, default=str))
+    except Exception:
+        return {}
+
+
 def _prepare_raw_upload_entry(file_info: Dict[str, Any]) -> Dict[str, Any]:
     sha1 = _norm_sha1(file_info.get('sha1'))
     if not sha1:
@@ -553,10 +875,19 @@ def _prepare_raw_upload_entry(file_info: Dict[str, Any]) -> Dict[str, Any]:
     raw = _raw_for_file(file_info)
     if not raw:
         return {}
+    final_size = _file_size_from_cache(file_info) or _infer_size_from_raw(raw) or None
+    summary_json = _build_raw_ffprobe_summary_for_center(raw, file_info, final_size or 0)
+    if summary_json:
+        logger.debug(
+            f"  ➜ [共享资源] 已生成中心格式化 MediaInfo 摘要: "
+            f"sha1={sha1[:8]}..., formatted_by={summary_json.get('formatted_by') or '-'}, "
+            f"audio={summary_json.get('audio_count')}, subtitle={summary_json.get('subtitle_count')}"
+        )
     return {
         'sha1': sha1,
-        'size': _file_size_from_cache(file_info) or None,
+        'size': final_size,
         'raw_ffprobe_json': raw,
+        'summary_json': summary_json or None,
     }
 
 
@@ -592,7 +923,7 @@ def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -
     for entry in entries:
         sha = _norm_sha1(entry.get('sha1'))
         try:
-            client.upload_raw_ffprobe(sha, entry.get('raw_ffprobe_json') or {}, size=entry.get('size'))
+            client.upload_raw_ffprobe(sha, entry.get('raw_ffprobe_json') or {}, size=entry.get('size'), summary_json=entry.get('summary_json'))
             uploaded[sha] = True
         except Exception as e:
             errors.append({'sha1': sha, 'error': str(e)})
@@ -603,7 +934,7 @@ def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any])
     entry = _prepare_raw_upload_entry(file_info)
     if not entry:
         return False
-    client.upload_raw_ffprobe(entry['sha1'], entry['raw_ffprobe_json'], size=entry.get('size'))
+    client.upload_raw_ffprobe(entry['sha1'], entry['raw_ffprobe_json'], size=entry.get('size'), summary_json=entry.get('summary_json'))
     return True
 
 
