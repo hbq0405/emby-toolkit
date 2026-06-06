@@ -1019,8 +1019,11 @@ def _candidate_bool(candidate: Dict[str, Any], *keys: str) -> bool:
 def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider: str = '', files: List[Dict[str, Any]] = None) -> bool:
     """判断 Season 是否应该登记为“客户端完结季包”。
 
-    连载季只登记每集到公共 season_hub，不做一致性校验，也不生成 completed_season_source。
-    只有明确完结，或完结季专用任务入口，才尝试收藏季一致性校验。
+    普通手动/自动登记只信 media_metadata.watching_status：
+    - Completed：完结季，允许进入 completed_season_source 一致性校验；
+    - Watching / Paused / 空值：都视为连载季，只登记分集到公共 season_hub。
+
+    完结季专用入口仍通过 source_provider=rapid_completed_season 强制登记，避免影响追剧完结任务。
     """
     candidate = dict(candidate or {})
     if str(candidate.get('item_type') or '').strip() != 'Season':
@@ -1028,28 +1031,8 @@ def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider
     provider = str(source_provider or candidate.get('source_provider') or '').strip().lower()
     if provider == 'rapid_completed_season':
         return True
-    share_type = str(candidate.get('share_type') or '').strip().lower()
-    if share_type in ('completed_season', 'completed_season_pack', 'completed_pack'):
-        return True
-    if _candidate_bool(candidate, 'is_completed', 'season_completed', 'completed', 'force_ended', 'is_ended', 'ended'):
-        return True
-
-    status_text = ' '.join(str(candidate.get(k) or '') for k in (
-        'season_status', 'tmdb_status', 'status', 'watching_status', 'air_status', 'series_status'
-    )).strip().lower()
-    ongoing_words = ('ongoing', 'returning', 'in production', 'continuing', 'airing', 'updating', 'watching', 'paused', '连载', '追更', '更新中')
-    if any(w in status_text for w in ongoing_words):
-        return False
-    completed_words = ('completed', 'ended', 'complete', 'finished', '完结', '已完结')
-    if any(w in status_text for w in completed_words):
-        return True
-
-    expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes') or candidate.get('episode_count'), 0)
-    if expected > 0 and files:
-        eps = {_safe_int(f.get('episode_number'), 0) for f in files if _safe_int(f.get('episode_number'), 0) > 0}
-        if len(eps) >= expected:
-            return True
-    return False
+    watching_status = str(candidate.get('watching_status') or '').strip().lower()
+    return watching_status == 'completed'
 
 
 
@@ -1129,6 +1112,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 if season_no is None or ep_no is None:
                     errors.append({'file': f.get('file_name'), 'error': '缺少 season_number/episode_number'})
                     continue
+                expected_count = _safe_int_or_none(candidate.get('expected_episode_count') or candidate.get('total_episodes') or candidate.get('episode_count'))
                 payload = {
                     'tmdb_id': tmdb_id,
                     'item_type': 'Episode',
@@ -1136,6 +1120,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'episode_number': ep_no,
                     'title': candidate.get('title'),
                     'release_year': candidate.get('release_year'),
+                    'expected_episode_count': expected_count,
                     'source_provider': source_provider,
                     **common,
                 }
@@ -1277,6 +1262,9 @@ def trigger_shared_rapid_register_for_library_item(processor=None, **kwargs) -> 
         'episode_number': kwargs.get('episode_number') if kwargs.get('episode_number') not in (None, '') else db_row.get('episode_number'),
         'title': kwargs.get('title') or kwargs.get('name') or db_row.get('title'),
         'release_year': kwargs.get('year') or kwargs.get('release_year') or db_row.get('release_year'),
+        'watching_status': kwargs.get('watching_status') or db_row.get('watching_status'),
+        'total_episodes': kwargs.get('total_episodes') or db_row.get('total_episodes'),
+        'expected_episode_count': kwargs.get('expected_episode_count') or db_row.get('total_episodes'),
     }
     if candidate.get('item_type') == 'Episode' and db_row.get('tmdb_id'):
         candidate['tmdb_id'] = db_row.get('tmdb_id')

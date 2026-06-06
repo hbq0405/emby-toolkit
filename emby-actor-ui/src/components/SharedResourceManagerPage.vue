@@ -1,4 +1,4 @@
-<!-- src/components/SharedResourceManagerPage.vue -->
+<!-- emby-actor-ui/src/components/SharedResourceManagerPage.vue -->
 <template>
   <div class="shared-page">
     <n-space vertical :size="18">
@@ -238,7 +238,7 @@
         正在补充中心待补充资源：{{ appendYear(centerTitleText(activeCenterReplenishSource), activeCenterReplenishSource.release_year) }}。系统已按中心 SHA1 精确匹配本机完全相同资源，并自动填入下方手动共享表单；确认无误后点击“登记共享源”。
       </n-alert>
       <n-alert v-else-if="!activeLocalShareRequest" type="info" :bordered="false" style="margin-bottom: 12px;">
-        直接输入片名搜索本地 media_metadata，系统只返回电影和季目录候选。选择季目录时会把该季下所有集登记到中心公共连载包；只有明确完结季才做一致性校验并登记为客户端完结季包。
+        直接输入片名搜索本地 media_metadata，系统只返回电影和季候选。选择季时会把该季下所有集登记到中心公共连载包；只有 watching_status=Completed 的季才做一致性校验并登记为客户端完结季包。
       </n-alert>
       <n-alert v-if="activeLocalShareRequest" type="warning" :bordered="false" style="margin-bottom: 12px;">
         正在响应求共享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。系统会自动检索本地库并按求共享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。没有候选就是本地没有符合条件的资源。
@@ -409,7 +409,7 @@ const centerOrderOptions = [
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
   share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: '',
-  season_status: '', expected_episode_count: null, total_episodes: null, is_completed: false,
+  season_status: '', watching_status: '', expected_episode_count: null, total_episodes: null, is_completed: false,
   center_replenish_source_id: '', center_replenish_payload: null
 });
 const manualShareModalTitle = computed(() => activeCenterReplenishSource.value ? '补充中心待补充资源' : (activeLocalShareRequest.value ? '响应求共享' : '手动登记共享源'));
@@ -420,7 +420,7 @@ const isManualShareSeasonPack = computed(() => String(manualShareForm.share_type
 const rapidShareTypeText = (value) => {
   const text = String(value || '').toLowerCase();
   if (text === 'movie_file' || text === 'movie_folder') return '电影源';
-  if (text === 'season_pack') return '季目录源';
+  if (text === 'season_pack') return '季源';
   if (text === 'series_pack') return '全剧源';
   if (text === 'episode_file') return '历史单集源';
   return value || '-';
@@ -431,9 +431,9 @@ const manualShareValidationAlertType = computed(() => {
   return manualShareValidation.value.valid ? 'success' : 'error';
 });
 const manualShareValidationTitle = computed(() => {
-  if (manualShareValidationLoading.value) return isManualShareSeasonPack.value ? '正在预校验季目录源' : '正在预校验共享源';
+  if (manualShareValidationLoading.value) return isManualShareSeasonPack.value ? '正在预校验季源' : '正在预校验共享源';
   if (!manualShareValidation.value) return '';
-  if (isManualShareSeasonPack.value) return manualShareValidation.value.valid ? '季目录源预校验通过' : '季目录源预校验未通过';
+  if (isManualShareSeasonPack.value) return manualShareValidation.value.valid ? '季源预校验通过' : '季源预校验未通过';
   return manualShareValidation.value.valid ? '共享源预校验通过' : '共享源预校验未通过';
 });
 const manualShareValidationMessage = computed(() => {
@@ -497,18 +497,18 @@ const typeOptions = [
 const centerTypeOptions = [
   { label: '全部类型', value: 'all' },
   { label: '电影', value: 'Movie' },
-  { label: '季目录', value: 'Pack' },
+  { label: '季', value: 'Pack' },
 ];
 const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '季', value: 'Season' }, { label: '剧集', value: 'Series' },
 ];
 const shareTypeOptions = [
   { label: '电影目录', value: 'movie_folder' },
-  { label: '季目录', value: 'season_pack' },
+  { label: '季', value: 'season_pack' },
 ];
 const resourceTypeLabel = (value) => ({
   movie_file: '电影', movie_folder: '电影', Movie: '电影', movie: '电影', movies: '电影',
-  season_pack: '剧集包', series_pack: '全剧包', Season: '剧集包', Series: '全剧包', season: '剧集包', series: '全剧包', Pack: '剧集包', pack: '剧集包',
+  season_pack: '季', series_pack: '全剧包', Season: '季', Series: '全剧包', season: '季', series: '全剧包', Pack: '季', pack: '季',
   episode_file: '单集', Episode: '单集', episode: '单集', episodes: '单集',
 }[value] || value || '-');
 const shareTypeLabel = (value) => resourceTypeLabel(value) || shareTypeOptions.find(opt => opt.value === value)?.label || value || '-';
@@ -1041,7 +1041,7 @@ const withLedgerTooltip = (row, node, extraClass = '') => {
 
 const centerTypeLabel = (value) => ({
   Movie: '电影', movie: '电影', movies: '电影', movie_file: '电影', movie_folder: '电影',
-  Pack: '季目录', pack: '季目录', Season: '季目录', season: '季目录', Series: '季目录', series: '季目录', tv: '季目录', season_pack: '季目录', series_pack: '季目录',
+  Pack: '季', pack: '季', Season: '季', season: '季', Series: '季', series: '季', tv: '季', season_pack: '季', series_pack: '季',
   Episode: '单集', episode: '单集', episodes: '单集', episode_file: '单集',
 }[value] || value || '-');
 const centerRowType = centerRowTypeSafe;
@@ -1057,20 +1057,20 @@ const centerProgressText = (row) => {
 };
 const centerSeasonText = (row) => {
   const displayType = centerRowType(row);
+  const label = centerTypeLabel(displayType);
   const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
   const e = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
 
-  if (centerTypeLabel(displayType) === '电影') return '电影';
+  if (label === '电影') return '电影';
 
-  if (centerTypeLabel(displayType) === '剧集包') {
-    const state = centerIsCompletedPack(row) ? '已完结' : (centerIsOngoingHub(row) ? '连载中' : (row.season_status_label || '剧集包'));
+  if (label === '季') {
     const progress = centerProgressText(row);
-    return [s, state, progress].filter(Boolean).join(' · ');
+    return [s, progress].filter(Boolean).join(' · ') || '-';
   }
 
-  if (centerTypeLabel(displayType) === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
+  if (label === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
 
-  return [centerTypeLabel(displayType), s ? `${s}${e}` : '', centerProgressText(row)].filter(Boolean).join(' · ') || '-';
+  return [label, s ? `${s}${e}` : '', centerProgressText(row)].filter(Boolean).join(' · ') || '-';
 };
 const centerCleanVersionMeta = (row) => {
   const meta = row?.clean_version_meta_json || row?.clean_version_meta || row?.version_summary?.clean_version_meta_json || {};
@@ -1971,7 +1971,7 @@ const resetManualShareForm = () => {
   Object.assign(manualShareForm, {
     root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
     share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: manualShareForm.receive_code || '',
-    season_status: '', expected_episode_count: null, total_episodes: null, is_completed: false,
+    season_status: '', watching_status: '', expected_episode_count: null, total_episodes: null, is_completed: false,
     center_replenish_source_id: '', center_replenish_payload: null
   });
   selectedMedia.value = null;
@@ -2079,10 +2079,11 @@ const chooseMediaCandidate = (row) => {
     item_type: row.share_item_type || row.item_type || 'Season',
     season_number: row.season_number || null,
     release_year: row.release_year || null,
-    season_status: row.season_status || row.tmdb_status || row.status || row.watching_status || '',
-    expected_episode_count: row.expected_episode_count || row.total_episodes || row.episode_count || null,
+    season_status: row.watching_status || row.season_status || '',
+    watching_status: row.watching_status || '',
+    expected_episode_count: row.total_episodes || row.expected_episode_count || row.episode_count || null,
     total_episodes: row.total_episodes || row.expected_episode_count || row.episode_count || null,
-    is_completed: Boolean(row.is_completed || row.season_completed || row.force_ended || row.is_ended || /完结|completed|ended/i.test(String(row.season_status || row.tmdb_status || row.status || ''))),
+    is_completed: String(row.watching_status || '').trim().toLowerCase() === 'completed',
     center_replenish_source_id: row.center_replenish_source_id || '',
     center_replenish_payload: row.center_replenish_payload || null,
   });

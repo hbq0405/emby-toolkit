@@ -256,6 +256,63 @@ def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return out
 
 
+def _lookup_local_season_meta(tmdb_id: str, season_number) -> Dict[str, Any]:
+    """从本机 media_metadata 补齐季总集数和追剧状态。
+
+    中心端公共连载季只知道当前已聚合的集数；总集数应优先相信本机
+    media_metadata.total_episodes，追剧状态只看 watching_status。
+    """
+    tmdb_id = str(tmdb_id or '').strip()
+    season_no = _safe_int(season_number, 0)
+    if not tmdb_id or season_no <= 0:
+        return {}
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT tmdb_id, parent_series_tmdb_id, season_number, total_episodes, watching_status
+                    FROM media_metadata
+                    WHERE item_type='Season'
+                      AND season_number=%s
+                      AND (tmdb_id=%s OR parent_series_tmdb_id=%s)
+                    ORDER BY CASE WHEN parent_series_tmdb_id=%s THEN 0 ELSE 1 END,
+                             last_updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (season_no, tmdb_id, tmdb_id, tmdb_id),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询本机季元数据失败: tmdb_id={tmdb_id}, season={season_no}, err={e}")
+        return {}
+
+
+def _apply_local_season_meta(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(row or {})
+    item_type = str(row.get('item_type') or row.get('display_type') or '').strip().lower()
+    source_kind = str(row.get('source_kind') or '').strip().lower()
+    if item_type not in ('season', 'pack') and source_kind not in ('season_hub', 'completed_season'):
+        return row
+    meta = _lookup_local_season_meta(row.get('tmdb_id'), row.get('season_number'))
+    if not meta:
+        return row
+    total = _safe_int(meta.get('total_episodes'), 0)
+    if total > 0:
+        row['expected_episode_count'] = total
+        row['total_episodes'] = total
+        row['progress_total'] = total
+        current = _safe_int(row.get('progress_current') or row.get('pack_item_count') or row.get('file_count'), 0)
+        if current > 0:
+            row['progress_text'] = f"{current}/{total}"
+    watching_status = str(meta.get('watching_status') or '').strip()
+    if watching_status:
+        row['watching_status'] = watching_status
+    return row
+
+
 @shared_resource_bp.route('/config', methods=['GET', 'POST'])
 @admin_required
 def api_shared_resource_config():
@@ -381,6 +438,7 @@ def api_search_shareable_media():
     for row in rows or []:
         if not isinstance(row, dict):
             continue
+        row = _apply_local_season_meta(row)
         item_type = str(row.get('share_item_type') or row.get('item_type') or '').strip().lower()
         share_type = str(row.get('share_type') or '').strip().lower()
         if item_type in ('episode', 'episode_file') or share_type == 'episode_file' or row.get('episode_number') not in (None, '', 0):
@@ -545,6 +603,7 @@ def api_center_sources():
                 row['version_summary'] = _center_version_summary(row)
             if not row.get('size') and row.get('total_size'):
                 row['size'] = row.get('total_size')
+            row = _apply_local_season_meta(row)
             return row
 
         resp['items'] = [_decorate_center_row(row) for row in (resp.get('items') or []) if isinstance(row, dict)]
