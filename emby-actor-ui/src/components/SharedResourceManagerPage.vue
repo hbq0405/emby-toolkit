@@ -1150,7 +1150,7 @@ const centerSourceTag = (row) => {
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
 const versionSummaryText = (row) => {
-  const v = row.version_summary || {};
+  const v = centerVersionSummary(row) || {};
   const parts = [v.resolution, v.effect, v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : '', v.fps].filter(Boolean);
   return parts.length ? parts.join(' · ') : (row.quality || '未知版本');
 };
@@ -1160,7 +1160,7 @@ const formatCenterSize = (row) => {
   if (size > 0) return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
   
   // 兜底：如果外层没有，再尝试使用媒体信息里的单集大小
-  const gb = Number(row.version_summary?.size_gb || 0);
+  const gb = Number(centerVersionSummary(row)?.size_gb || row.version_summary?.size_gb || 0);
   if (gb > 0) return `${gb.toFixed(gb >= 10 ? 1 : 2)} GB`;
   
   return '-';
@@ -1193,39 +1193,66 @@ const centerReplenishActionNode = () => h(NTooltip, { trigger: 'hover', placemen
   trigger: () => h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '等待补充' }),
   default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源；本机没有完整相同资源时不能补充。'
 });
+
+const inferRapidSourceKind = (row) => {
+  const direct = String(row?.source_kind || row?.kind || '').trim();
+  if (direct) return direct;
+  const typeText = centerTypeLabel(centerRowType(row));
+  if (typeText === '电影') return 'movie';
+  if (typeText === '单集') return 'episode';
+  if (typeText === '剧集包') return 'completed_season';
+  return '';
+};
+
+const centerRapidSourceId = (row) => String(
+  row?.source_id || row?.source_ref_id || row?.episode_source_id || row?.center_source_id || ''
+).trim();
+
+const buildCenterImportSourcePayload = (row) => {
+  const sourceId = centerRapidSourceId(row);
+  const sourceKind = inferRapidSourceKind(row);
+  return {
+    ...row,
+    source_kind: sourceKind,
+    source_id: sourceId,
+    source_ref_id: row?.source_ref_id || sourceId,
+    title: row?.title || '',
+    tmdb_id: row?.tmdb_id || row?.share_tmdb_id || '',
+    parent_series_tmdb_id: row?.parent_series_tmdb_id || row?.series_tmdb_id || '',
+    item_type: row?.item_type || row?.share_item_type || centerRowType(row) || '',
+    display_type: centerRowType(row) || '',
+    season_number: row?.season_number ?? null,
+    episode_number: row?.episode_number ?? null,
+    year: row?.release_year || '',
+    share_type: row?.share_type || '',
+    status: row?.status || '',
+  };
+};
+
 const executeImport = async (row, mode) => {
   const modeText = '转存';
   if (isCenterReplenishRow(row)) {
     message.warning('该资源处于待补充状态，不能转存');
     return;
   }
-  // 标记该行正在 loading
-  importingMap[row.source_id] = mode;
+  const sourcePayload = buildCenterImportSourcePayload(row);
+  if (!sourcePayload.source_kind || !sourcePayload.source_id) {
+    message.error('中心源缺少 source_kind/source_id，刷新中心资源库后重试。');
+    return;
+  }
+  const loadingKey = sourcePayload.source_id || row?.group_key;
+  importingMap[loadingKey] = mode;
   try {
-    const sourceIds = Array.isArray(row.pack_source_ids) && row.pack_source_ids.length ? row.pack_source_ids : [row.source_id];
     const res = await axios.post('/api/shared/resources/center/import', {
-      source_ids: sourceIds,
       mode,
-      context: {
-        title: row.title || '',
-        tmdb_id: row.tmdb_id || row.share_tmdb_id || '',
-        parent_series_tmdb_id: row.parent_series_tmdb_id || row.series_tmdb_id || '',
-        item_type: row.item_type || row.share_item_type || centerRowType(row) || '',
-        display_type: centerRowType(row) || '',
-        season_number: row.season_number ?? null,
-        episode_number: row.episode_number ?? null,
-        year: row.release_year || '',
-        share_type: row.share_type || '',
-        status: row.status || '',
-      }
+      source: sourcePayload
     });
     message.success(res.data?.message || '已提交');
     await Promise.allSettled([loadCenterSources(), loadSummary(), loadLedger()]);
   } catch (e) {
     message.error(e.response?.data?.message || `${modeText}失败`);
   } finally {
-    // 请求结束，移除 loading 状态
-    delete importingMap[row.source_id];
+    delete importingMap[loadingKey];
   }
 };
 
@@ -1461,8 +1488,20 @@ const compactEffectText = (value) => {
   return text || '-';
 };
 
-const versionAudioTracks = (it) => it?.version_summary?.audio_list || it?.version_summary?.audios || it?.version_summary?.audio_tracks || it?.version_summary?.audio || [];
-const versionSubtitleTracks = (it) => it?.version_summary?.subtitle_list || it?.version_summary?.subtitles || it?.version_summary?.subtitle_tracks || it?.version_summary?.subtitle || [];
+const centerVersionSummary = (it) => {
+  const sig = it?.media_signature_json || it?.media_signature || {};
+  const raw = it?.summary_json || it?.raw_summary_json || {};
+  const v = { ...(raw || {}), ...(sig || {}), ...(it?.version_summary || {}) };
+  if (!v.resolution) v.resolution = sig.resolution_display || sig.resolution || raw.resolution || '';
+  if (!v.effect) v.effect = sig.effect_display || sig.effect_key || sig.effect || raw.effect || '';
+  if (!v.video_codec && !v.codec) v.video_codec = sig.video_codec || sig.codec_display || sig.codec || raw.video_codec || raw.codec || '';
+  if (!v.fps) v.fps = sig.fps || sig.frame_rate || raw.fps || raw.frame_rate || '';
+  if (!v.audio_list) v.audio_list = sig.audio_list || sig.audio_tracks || sig.audios || raw.audio_list || raw.audio_tracks || raw.audios || [];
+  if (!v.subtitle_list) v.subtitle_list = sig.subtitle_list || sig.subtitles || sig.subtitle_tracks || raw.subtitle_list || raw.subtitles || [];
+  return v;
+};
+const versionAudioTracks = (it) => centerVersionSummary(it).audio_list || centerVersionSummary(it).audios || centerVersionSummary(it).audio_tracks || centerVersionSummary(it).audio || [];
+const versionSubtitleTracks = (it) => centerVersionSummary(it).subtitle_list || centerVersionSummary(it).subtitles || centerVersionSummary(it).subtitle_tracks || centerVersionSummary(it).subtitle || [];
 const localLibraryInfo = (it) => it?.local_library || {};
 const localLibraryTag = (it) => {
   const info = localLibraryInfo(it);
@@ -1504,13 +1543,13 @@ const centerColumns = [
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
   { title: '类型', key: 'item_type', width: 170, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
-  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
+  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerVersionSummary(it).resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
-    const v = it.version_summary || {};
+    const v = centerVersionSummary(it) || {};
     return h('span', [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-');
   }) },
-  { title: 'HDR / 杜比', key: 'effect', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-effect-compact' }, compactEffectText(it.version_summary?.effect)), it => it.version_summary?.effect || '') },
-  { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
+  { title: 'HDR / 杜比', key: 'effect', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-effect-compact' }, compactEffectText(centerVersionSummary(it).effect)), it => centerVersionSummary(it).effect || '') },
+  { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', centerVersionSummary(it).fps || '-')) },
   { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => fullTrackTooltipLines(versionAudioTracks(it))) },
   { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => fullTrackTooltipLines(versionSubtitleTracks(it))) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
