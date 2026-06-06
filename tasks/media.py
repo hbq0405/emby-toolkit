@@ -1254,7 +1254,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating_json": rating_json_str,
                     "custom_rating": item.get('CustomRating'),
-                    "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None,
+                    # media_metadata.runtime_minutes 只保存 TMDb 官方片长；物理/Emby 时长在 asset_details_json.runtime_minutes。
+                    "runtime_minutes": tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None,
                     "tagline": tmdb_details.get('tagline') if tmdb_details else None
                 }
                 if tmdb_details:
@@ -1453,14 +1454,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             child_record['overview'] = tmdb_ep_info.get('overview')
                             child_record['poster_path'] = tmdb_ep_info.get('still_path')
                             child_record['backdrop_path'] = tmdb_ep_info.get('still_path')
-                            child_record['runtime_minutes'] = emby_ep_runtime if emby_ep_runtime else tmdb_ep_info.get('runtime')
+                            child_record['runtime_minutes'] = tmdb_ep_info.get('runtime')
                             if tmdb_ep_info.get('vote_average') is not None:
                                 child_record['rating'] = tmdb_ep_info.get('vote_average')
                         else:
                             child_record['tmdb_id'] = f"{tmdb_id_str}-S{s_n}E{e_n}"
                             child_record['title'] = versions[0].get('Name')
                             child_record['overview'] = versions[0].get('Overview')
-                            child_record['runtime_minutes'] = emby_ep_runtime
+                            child_record['runtime_minutes'] = None
                             child_record['poster_path'] = None   # ★★★ 兜底
                             child_record['backdrop_path'] = None # ★★★ 兜底
                         

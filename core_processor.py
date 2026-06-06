@@ -1611,12 +1611,18 @@ class MediaProcessor:
             source_lib_id = str(item_details_from_emby.get('_SourceLibraryId') or "")
             id_to_parent_map, lib_guid = self._get_realtime_ancestor_context(item_id, source_lib_id)
 
-        def get_representative_runtime(emby_items, tmdb_runtime):
-            if not emby_items: return tmdb_runtime
-            runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
-            return max(runtimes) if runtimes else tmdb_runtime
+        def normalize_tmdb_runtime(value):
+            """media_metadata.runtime_minutes 专用：只接受 TMDb 官方 runtime。"""
+            try:
+                if value in (None, '', 0, '0'):
+                    return None
+                minutes = int(round(float(value)))
+                return minutes if minutes > 0 else None
+            except Exception:
+                return None
 
         # 从真理之源 p115_mediainfo_cache 提取绝对准确的物理时长
+        # 注意：这个值只能进入 asset_details_json.runtime_minutes，不能覆盖 media_metadata.runtime_minutes。
         def get_physical_runtime_from_db(sha1_list):
             if not sha1_list: return None
             valid_sha1s = [s for s in sha1_list if s]
@@ -1885,15 +1891,9 @@ class MediaProcessor:
                     movie_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                     movie_record['in_library'] = True
 
-                # 应用物理时长 (真理之源)
-                if is_pending:
-                    movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
-                else:
-                    physical_rt = get_physical_runtime_from_db(all_sha1s)
-                    if physical_rt and physical_rt > 0:
-                        movie_record['runtime_minutes'] = physical_rt
-                    else:
-                        movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
+                # media_metadata.runtime_minutes 只保存 TMDb 官方片长。
+                # 实际文件时长已经由 parse_full_asset_details 写入 asset_details_json.runtime_minutes。
+                movie_record['runtime_minutes'] = normalize_tmdb_runtime(movie_record.get('runtime'))
 
                 movie_record['actors_json'] = json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")], ensure_ascii=False)
                 movie_record['subscription_status'] = 'NONE'
@@ -2110,7 +2110,7 @@ class MediaProcessor:
                         if not is_target:
                             continue # 不是本次入库的分集，直接跳过！
 
-                    final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
+                    final_runtime = normalize_tmdb_runtime(episode.get('runtime'))
                     # ★★★ 获取无头像过滤开关 ★★★
                     remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
                     # ★★★ 提取季(Season)元数据作为第一兜底 ★★★
@@ -2258,10 +2258,8 @@ class MediaProcessor:
                         episode_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                         episode_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                         episode_record['in_library'] = True
-                        # 应用物理时长 (真理之源) 
-                        physical_rt = get_physical_runtime_from_db(all_sha1s)
-                        if physical_rt and physical_rt > 0:
-                            episode_record['runtime_minutes'] = physical_rt
+                        # 不允许用物理/Emby 时长覆盖 media_metadata.runtime_minutes；
+                        # 物理时长只保存在 asset_details_json[*].runtime_minutes。
                             
                     else:
                         episode_record['in_library'] = False
@@ -2292,7 +2290,7 @@ class MediaProcessor:
                     logger.debug(f"  ➜ [入库兜底] 发现 Emby 本地分集 S{s_num}E{e_num} 在 TMDb 中不存在，生成内部 ID: {fallback_e_tmdb_id}")
 
                     emby_ep = versions[0]
-                    final_runtime = round(emby_ep['RunTimeTicks'] / 600000000) if emby_ep.get('RunTimeTicks') else None
+                    final_runtime = None  # TMDb 没有该分集时，media_metadata.runtime_minutes 必须留空
 
                     # ★ 提取季(Season)元数据作为兜底
                     current_season_info = next((s for s in seasons_details if s.get('season_number') == s_num), {})
@@ -2393,10 +2391,8 @@ class MediaProcessor:
                     episode_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                     episode_record['in_library'] = True
 
-                    # 应用物理时长 (真理之源)
-                    physical_rt = get_physical_runtime_from_db(all_sha1s)
-                    if physical_rt and physical_rt > 0:
-                        episode_record['runtime_minutes'] = physical_rt
+                    # 不允许用物理/Emby 时长覆盖 media_metadata.runtime_minutes；
+                    # 物理时长只保存在 asset_details_json[*].runtime_minutes。
 
                     records_to_upsert.append(episode_record)
 

@@ -610,9 +610,18 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
     视频流分析主函数 (神医融合版)
     优先读取神医插件生成的 -mediainfo.json，原文照搬并提取展示标签。
     """
-    # 提取并计算时长 (分钟)
-    runtime_ticks = item_details.get('RunTimeTicks')
-    runtime_min = round(runtime_ticks / 600000000) if runtime_ticks else None
+    # 提取并计算实际文件时长 (分钟)。
+    # 这里写入 asset_details_json.runtime_minutes，只代表物理视频/Emby MediaSource 时长，
+    # 不参与 media_metadata.runtime_minutes 的 TMDb 官方片长语义。
+    def _runtime_minutes_from_ticks(ticks):
+        try:
+            if ticks in (None, '', 0, '0'):
+                return None
+            return round(float(ticks) / 600000000)
+        except Exception:
+            return None
+
+    runtime_min = _runtime_minutes_from_ticks(item_details.get('RunTimeTicks'))
 
     item_id = str(item_details.get("Id"))
     ancestors = []
@@ -740,6 +749,13 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
 
     container = (primary_source.get("Container") if primary_source else None) or item_details.get("Container")
     size_bytes = (primary_source.get("Size") if primary_source else None) or item_details.get("Size")
+
+    # 如果神医/ffprobe 生成的 MediaSourceInfo 里带 RunTimeTicks，优先使用它；
+    # 没有时再退回 Emby item/MediaSource 的 RunTimeTicks。
+    if isinstance(primary_source, dict):
+        source_runtime_min = _runtime_minutes_from_ticks(primary_source.get("RunTimeTicks"))
+        if source_runtime_min is not None:
+            runtime_min = source_runtime_min
 
     date_added_to_library = item_details.get("DateCreated")
 

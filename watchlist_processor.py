@@ -536,6 +536,72 @@ class WatchlistProcessor:
         finally:
             self.progress_callback = None
 
+    @staticmethod
+    def _normalize_tmdb_runtime_minutes(value) -> Optional[int]:
+        """media_metadata.runtime_minutes 专用：只接受 TMDb 官方 runtime。"""
+        try:
+            if value in (None, '', 0, '0'):
+                return None
+            minutes = int(round(float(value)))
+            return minutes if minutes > 0 else None
+        except Exception:
+            return None
+
+    def _force_episode_tmdb_runtime_minutes(self, parent_tmdb_id: str, episodes: List[Dict[str, Any]]):
+        """
+        智能追剧刷新后强制校准分集 runtime_minutes：
+        - media_metadata.runtime_minutes 只保存 TMDb episode.runtime；
+        - TMDb 没有 runtime 时写 NULL；
+        - 本地物理/Emby 时长只允许留在 asset_details_json[*].runtime_minutes。
+        """
+        runtime_by_key = {}
+        for ep in episodes or []:
+            if not isinstance(ep, dict):
+                continue
+            try:
+                s_num = int(ep.get('season_number'))
+                e_num = int(ep.get('episode_number'))
+            except Exception:
+                continue
+            runtime_by_key[(s_num, e_num)] = self._normalize_tmdb_runtime_minutes(ep.get('runtime'))
+
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE media_metadata
+                        SET runtime_minutes = NULL,
+                            last_updated_at = NOW()
+                        WHERE parent_series_tmdb_id = %s
+                          AND item_type = 'Episode'
+                        """,
+                        (str(parent_tmdb_id),),
+                    )
+
+                    for (s_num, e_num), runtime_minutes in runtime_by_key.items():
+                        cursor.execute(
+                            """
+                            UPDATE media_metadata
+                            SET runtime_minutes = %s,
+                                last_updated_at = NOW()
+                            WHERE parent_series_tmdb_id = %s
+                              AND item_type = 'Episode'
+                              AND season_number = %s
+                              AND episode_number = %s
+                            """,
+                            (runtime_minutes, str(parent_tmdb_id), s_num, e_num),
+                        )
+
+                    conn.commit()
+
+            logger.debug(
+                f"  ➜ [智能追剧] 已校准 {len(runtime_by_key)} 集 TMDb runtime_minutes；"
+                "TMDb 缺失时保持为空，物理时长仅保存在 asset_details_json。"
+            )
+        except Exception as e:
+            logger.warning(f"  ➜ [智能追剧] 校准分集 TMDb runtime_minutes 失败: {e}")
+
     def _get_series_to_process(self, where_clause: str, tmdb_id: Optional[str] = None, include_all_series: bool = False) -> List[Dict[str, Any]]:
         """
         【V6 - 数据库统一版】
@@ -955,6 +1021,7 @@ class WatchlistProcessor:
                 episodes=all_tmdb_episodes,
                 local_in_library_info=emby_seasons_state
             )
+            self._force_episode_tmdb_runtime_minutes(tmdb_id, all_tmdb_episodes)
             logger.debug(f"  ➜ 已同步 '{item_name}' 的季/集元数据到数据库。")
         except Exception as e_sync:
             logger.error(f"  ➜ 同步 '{item_name}' 子项目数据库时出错: {e_sync}", exc_info=True)
