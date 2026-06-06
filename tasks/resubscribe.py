@@ -29,6 +29,7 @@ from .helpers import (
     _get_standardized_effect, 
     _extract_quality_tag_from_filename,
     build_exclusion_regex_from_groups,
+    check_season_consistency,
     AUDIO_SUBTITLE_KEYWORD_MAP,
     AUDIO_DISPLAY_MAP,            
     SUB_DISPLAY_MAP
@@ -383,15 +384,35 @@ def task_update_resubscribe_cache(processor):
                                 status_calculated = 'needed'
                                 reason_calculated = upgrade_reason
 
-                        # 3. 一致性检查
+                        # 3. 一致性检查：统一调用 helpers.check_season_consistency
                         is_airing = series.get('watchlist_is_airing', False)
                         
                         if status_calculated == 'ok' and rule.get('consistency_check_enabled'):
                             if not is_airing:
-                                needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
-                                if needs_fix:
+                                expected_episode_count = 0
+                                try:
+                                    if season_total_episodes_locked and season_total_episodes:
+                                        expected_episode_count = int(season_total_episodes)
+                                except Exception:
+                                    expected_episode_count = 0
+
+                                consistency_result = check_season_consistency(
+                                    tmdb_id=tmdb_id,
+                                    season_number=int(season_num),
+                                    expected_episode_count=expected_episode_count,
+                                    series_name=series.get('title') or '',
+                                    rows=eps_in_season,
+                                    log_result=True,
+                                    processor=processor,
+                                    repair_missing_fingerprints=True,
+                                )
+
+                                if not consistency_result.get('ok'):
                                     status_calculated = 'needed'
-                                    reason_calculated = fix_reason
+                                    reason_calculated = (
+                                        consistency_result.get('message')
+                                        or '季包一致性校验未通过'
+                                    )
                             else:
                                 # 可选：打印调试日志
                                 # logger.debug(f"  ➜ [一致性检查] 《{series['title']}》正在连载中，跳过一致性检查。")
@@ -732,65 +753,6 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     else:
         logger.trace(f"  ➜ 《{item_name}》质量达标。")
         return False, ""
-
-def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, str]:
-    """
-    检查整季的一致性。
-    """
-    # 如果规则没开启一致性检查，直接通过
-    if not rule.get('consistency_check_enabled'):
-        return False, ""
-
-    # 收集该季所有集的属性
-    stats = {
-        "resolution": set(),
-        "group": set(),
-        "codec": set()
-    }
-    
-    # 忽略只有一集的情况（无法比较一致性）
-    if len(episodes) < 2:
-        return False, ""
-
-    for ep in episodes:
-        assets = ep.get('asset_details_json')
-        if not assets: continue
-        asset = assets[0] # 取主文件
-
-        # 1. 分辨率
-        if rule.get('consistency_must_match_resolution'):
-            res = asset.get('resolution_display', 'Unknown')
-            stats["resolution"].add(res)
-
-        # 2. 制作组 (取第一个识别到的组)
-        if rule.get('consistency_must_match_group'):
-            groups = asset.get('release_group_raw', [])
-            group = groups[0] if groups else 'Unknown'
-            # 忽略 Unknown，避免因为识别失败导致的误报
-            if group != 'Unknown':
-                stats["group"].add(group)
-
-        # 3. 编码
-        if rule.get('consistency_must_match_codec'):
-            codec = asset.get('codec_display', 'Unknown')
-            stats["codec"].add(codec)
-
-    reasons = []
-    
-    # 判定逻辑
-    if len(stats["resolution"]) > 1:
-        reasons.append(f"分辨率混杂({','.join(stats['resolution'])})")
-    
-    if len(stats["group"]) > 1:
-        reasons.append(f"发布组混杂({','.join(stats['group'])})")
-        
-    if len(stats["codec"]) > 1:
-        reasons.append(f"编码混杂({','.join(stats['codec'])})")
-
-    if reasons:
-        return True, "; ".join(reasons)
-    
-    return False, ""
 
 def _is_exempted_from_language_check(media_metadata: Optional[dict], language_code_to_check: str) -> bool:
     """
