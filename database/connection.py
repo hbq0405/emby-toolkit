@@ -451,6 +451,7 @@ def init_db():
                         local_path TEXT,               -- 本地映射路径 (如果已同步到本地)
                         sha1 TEXT,
                         pick_code TEXT,
+                        preid TEXT,               -- 文件前 128KB SHA1，用于 115 秒传 upload/init
                         size BIGINT DEFAULT 0,
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), -- 最后同步时间
                         
@@ -551,6 +552,7 @@ def init_db():
                             "local_path": "TEXT",
                             "sha1": "TEXT",
                             "pick_code": "TEXT",
+                            "preid": "TEXT",
                             "size": "BIGINT DEFAULT 0"
                         },
                         'p115_mediainfo_cache': {
@@ -685,6 +687,7 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_sha1_upper ON p115_filesystem_cache (UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
                     # 指纹修复任务会按 PC / local_path 从目录树缓存反查文件身份。
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_pick_code ON p115_filesystem_cache (pick_code) WHERE pick_code IS NOT NULL AND pick_code <> '';")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_preid ON p115_filesystem_cache (preid) WHERE preid IS NOT NULL AND preid <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_local_path ON p115_filesystem_cache (local_path) WHERE local_path IS NOT NULL AND local_path <> '';")
 
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_shared_credit_ledger_created ON shared_credit_ledger_local (created_at DESC);")
@@ -778,6 +781,7 @@ def init_db():
                             title TEXT,
                             release_year INTEGER,
                             sha1 TEXT,
+                            preid TEXT,
                             size BIGINT DEFAULT 0,
                             file_name TEXT,
                             root_fid TEXT,
@@ -809,6 +813,7 @@ def init_db():
                             fid TEXT,
                             pick_code TEXT,
                             sha1 TEXT NOT NULL,
+                            preid TEXT,
                             size BIGINT DEFAULT 0,
                             file_name TEXT NOT NULL,
                             relative_path TEXT,
@@ -825,6 +830,8 @@ def init_db():
                             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                         )
                     """)
+                    cursor.execute("ALTER TABLE shared_rapid_sources ADD COLUMN IF NOT EXISTS preid TEXT;")
+                    cursor.execute("ALTER TABLE shared_rapid_source_files ADD COLUMN IF NOT EXISTS preid TEXT;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_status_updated ON shared_rapid_sources(status, updated_at DESC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_center_source ON shared_rapid_sources(source_kind, center_source_id);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_media ON shared_rapid_sources(tmdb_id, item_type, season_number, episode_number);")

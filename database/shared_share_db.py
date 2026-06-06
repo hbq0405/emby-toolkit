@@ -129,17 +129,18 @@ def upsert_local_source(data: Dict[str, Any]) -> Dict[str, Any]:
                 """
                 INSERT INTO shared_rapid_sources(
                     source_key, source_kind, center_source_id, tmdb_id, item_type, parent_series_tmdb_id,
-                    season_number, episode_number, title, release_year, sha1, size, file_name, root_fid, root_name,
+                    season_number, episode_number, title, release_year, sha1, preid, size, file_name, root_fid, root_name,
                     source_provider, status, center_status, manifest_hash, manifest_version, file_count, total_size,
                     is_clean_version, clean_version_confidence, clean_version_meta_json, media_signature_json,
                     rapid_meta_json, raw_json, reported_at, updated_at
-                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,CASE WHEN %s IS NOT NULL THEN NOW() ELSE NULL END,NOW())
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,CASE WHEN %s IS NOT NULL THEN NOW() ELSE NULL END,NOW())
                 ON CONFLICT(source_key)
                 DO UPDATE SET
                     center_source_id=COALESCE(EXCLUDED.center_source_id, shared_rapid_sources.center_source_id),
                     title=COALESCE(EXCLUDED.title, shared_rapid_sources.title),
                     release_year=COALESCE(EXCLUDED.release_year, shared_rapid_sources.release_year),
                     sha1=COALESCE(EXCLUDED.sha1, shared_rapid_sources.sha1),
+                    preid=COALESCE(EXCLUDED.preid, shared_rapid_sources.preid),
                     size=COALESCE(EXCLUDED.size, shared_rapid_sources.size),
                     file_name=COALESCE(EXCLUDED.file_name, shared_rapid_sources.file_name),
                     root_fid=COALESCE(EXCLUDED.root_fid, shared_rapid_sources.root_fid),
@@ -163,7 +164,7 @@ def upsert_local_source(data: Dict[str, Any]) -> Dict[str, Any]:
                 (
                     source_key, kind, center_source_id, tmdb_id, data.get('item_type'), data.get('parent_series_tmdb_id'),
                     season, episode, data.get('title'), _nullable_int(data.get('release_year')), sha1 or None,
-                    _safe_int(data.get('size'), 0) or None, data.get('file_name'), data.get('root_fid'), data.get('root_name'),
+                    _norm_sha1(data.get('preid')) or None, _safe_int(data.get('size'), 0) or None, data.get('file_name'), data.get('root_fid'), data.get('root_name'),
                     provider, data.get('status') or 'active', data.get('center_status') or ('reported' if center_source_id else 'local'),
                     data.get('manifest_hash'), _safe_int(data.get('manifest_version'), 1), _safe_int(data.get('file_count'), 0),
                     _safe_int(data.get('total_size'), 0), bool(data.get('is_clean_version', False)), data.get('clean_version_confidence'),
@@ -188,14 +189,15 @@ def replace_source_files(local_source_id: int, files: List[Dict[str, Any]]) -> i
                 cur.execute(
                     """
                     INSERT INTO shared_rapid_source_files(
-                        local_source_id, fid, pick_code, sha1, size, file_name, relative_path,
+                        local_source_id, fid, pick_code, sha1, preid, size, file_name, relative_path,
                         tmdb_id, item_type, season_number, episode_number, center_file_id,
                         raw_ffprobe_uploaded, media_signature_json, rapid_meta_json, raw_json
-                    ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb)
+                    ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb)
                     """,
                     (
                         local_source_id, item.get('fid') or item.get('file_id'), item.get('pick_code') or item.get('pickcode') or item.get('pc'),
-                        sha1, _safe_int(item.get('size'), 0), item.get('file_name') or item.get('name') or '', item.get('relative_path') or '',
+                        sha1, _norm_sha1(item.get('preid') or (item.get('rapid_meta_json') or {}).get('preid') if isinstance(item.get('rapid_meta_json'), dict) else item.get('preid')) or None,
+                        _safe_int(item.get('size'), 0), item.get('file_name') or item.get('name') or '', item.get('relative_path') or '',
                         item.get('tmdb_id'), item.get('item_type'), _nullable_int(item.get('season_number')), _nullable_int(item.get('episode_number')),
                         item.get('center_file_id'), bool(item.get('raw_ffprobe_uploaded', False)), _as_jsonb(item.get('media_signature_json') or {}),
                         _as_jsonb(item.get('rapid_meta_json') or {}), _as_jsonb(item.get('raw_json') or item),
@@ -209,7 +211,7 @@ def replace_source_files(local_source_id: int, files: List[Dict[str, Any]]) -> i
 
 def update_local_source(local_source_id: int, **fields):
     allowed = {
-        'status', 'center_status', 'center_source_id', 'last_error', 'manifest_hash', 'manifest_version',
+        'status', 'center_status', 'center_source_id', 'last_error', 'preid', 'manifest_hash', 'manifest_version',
         'file_count', 'total_size', 'is_clean_version', 'clean_version_confidence', 'clean_version_meta_json',
         'media_signature_json', 'rapid_meta_json', 'reported_at', 'disabled_at', 'raw_json'
     }
@@ -442,6 +444,7 @@ def _files_for_media_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:
             'parent_id': str(f.get('parent_id') or ''),
             'pick_code': f.get('pick_code') or '',
             'sha1': sha1,
+            'preid': _norm_sha1(f.get('preid')) or '',
             'size': _safe_int(f.get('size'), 0),
             'file_name': f.get('name') or '',
             'relative_path': f.get('local_path') or f.get('name') or '',

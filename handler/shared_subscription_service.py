@@ -122,15 +122,16 @@ def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
     pick_code = str((file_info or {}).get('pick_code') or (file_info or {}).get('pc') or meta.get('pick_code') or meta.get('pc') or '').strip()
     if not sha1 and not pick_code:
         return {}
+    manager_row = {}
     try:
         if pick_code and hasattr(P115CacheManager, 'get_file_cache_by_pickcode'):
             row = P115CacheManager.get_file_cache_by_pickcode(pick_code)
             if row:
-                return dict(row)
-        if sha1 and hasattr(P115CacheManager, 'get_file_cache_by_sha1'):
+                manager_row = dict(row)
+        if not manager_row and sha1 and hasattr(P115CacheManager, 'get_file_cache_by_sha1'):
             row = P115CacheManager.get_file_cache_by_sha1(sha1)
             if row:
-                return dict(row)
+                manager_row = dict(row)
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 查询 P115CacheManager 补 size 失败: {e}")
     try:
@@ -147,7 +148,7 @@ def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT id, parent_id, name, local_path, sha1, pick_code, size, updated_at
+                    SELECT id, parent_id, name, local_path, sha1, pick_code, preid, size, updated_at
                     FROM p115_filesystem_cache
                     WHERE {' OR '.join(clauses)}
                     ORDER BY CASE WHEN COALESCE(size,0) > 0 THEN 0 ELSE 1 END,
@@ -157,18 +158,29 @@ def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
                     args,
                 )
                 row = cur.fetchone()
-                return dict(row) if row else {}
+                sql_row = dict(row) if row else {}
+                if manager_row:
+                    merged = dict(manager_row)
+                    merged.update({k: v for k, v in sql_row.items() if v not in (None, '')})
+                    return merged
+                return sql_row
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 直接查询 p115_filesystem_cache 补 size 失败: {e}")
-    return {}
+        logger.debug(f"  ➜ [共享资源] 直接查询 p115_filesystem_cache 补 size/preid 失败: {e}")
+    return manager_row or {}
 
 
 def _normalize_rapid_file_info(file_info: Dict[str, Any]) -> Dict[str, Any]:
     info = dict(file_info or {})
     meta = info.get('rapid_meta_json') if isinstance(info.get('rapid_meta_json'), dict) else {}
+    preid = _norm_sha1(info.get('preid') or meta.get('preid') or meta.get('pre_sha1') or meta.get('pre_sha1_128k'))
     sha1 = _norm_sha1(info.get('sha1') or info.get('file_sha1') or meta.get('sha1') or meta.get('file_sha1'))
     if sha1:
         info['sha1'] = sha1
+    if preid:
+        info['preid'] = preid
+        meta = dict(meta)
+        meta.setdefault('preid', preid)
+        info['rapid_meta_json'] = meta
     file_name = str(info.get('file_name') or info.get('name') or meta.get('file_name') or meta.get('name') or '').strip()
     if file_name:
         info['file_name'] = file_name
@@ -177,7 +189,8 @@ def _normalize_rapid_file_info(file_info: Dict[str, Any]) -> Dict[str, Any]:
         size = _rapid_size_to_int(candidate, 0)
         if size > 0:
             break
-    if size <= 0:
+    cache_row = None
+    if size <= 0 or not preid:
         cache_row = _lookup_p115_cache_for_file(info)
         if cache_row:
             size = _rapid_size_to_int(cache_row.get('size'), 0)
@@ -186,8 +199,12 @@ def _normalize_rapid_file_info(file_info: Dict[str, Any]) -> Dict[str, Any]:
             meta = dict(meta)
             if cache_row.get('id') and not meta.get('fid'):
                 meta['fid'] = str(cache_row.get('id'))
+            cache_preid = _norm_sha1(cache_row.get('preid'))
             if cache_row.get('pick_code') and not meta.get('pick_code'):
                 meta['pick_code'] = str(cache_row.get('pick_code'))
+            if cache_preid and not info.get('preid'):
+                info['preid'] = cache_preid
+                meta.setdefault('preid', cache_preid)
             if meta:
                 info['rapid_meta_json'] = meta
     if size > 0:
@@ -222,7 +239,7 @@ def _call_rapid_method(p115, *, target_cid: str, sha1: str, size: int, file_name
     """适配不同 115 客户端的秒传方法名。CK 只在本机使用，不上传中心。"""
     rapid_meta = dict(rapid_meta or {})
     candidates = [
-        ('rapid_upload', ({'cid': target_cid, 'target_cid': target_cid, 'sha1': sha1, 'size': size, 'file_size': size, 'file_name': file_name, **rapid_meta},)),
+        ('rapid_upload', ({'cid': target_cid, 'target_cid': target_cid, 'sha1': sha1, 'size': size, 'file_size': size, 'file_name': file_name, 'preid': rapid_meta.get('preid') or rapid_meta.get('pre_sha1') or '', **rapid_meta},)),
         ('upload_file_by_sha1', (target_cid, sha1, size, file_name)),
         ('fs_rapid_upload', (target_cid, sha1, size, file_name)),
         ('fs_upload_by_sha1', (target_cid, sha1, size, file_name)),
@@ -266,7 +283,12 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
             f'中心源缺少文件大小，无法秒传：{file_name}；'
             f'请源端重新登记该资源，或先修复 p115_filesystem_cache.size 后再登记。'
         )
-    logger.info(f"  ➜ [共享资源] 准备执行 115 秒传：{file_name}, sha1={sha1[:8]}..., size={size}, target_cid={target_cid}")
+    rapid_meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
+    rapid_meta = dict(rapid_meta or {})
+    preid = _norm_sha1(file_info.get('preid') or rapid_meta.get('preid') or rapid_meta.get('pre_sha1') or rapid_meta.get('pre_sha1_128k'))
+    if preid:
+        rapid_meta.setdefault('preid', preid)
+    logger.info(f"  ➜ [共享资源] 准备执行 115 秒传：{file_name}, sha1={sha1[:8]}..., preid={(preid[:8] + '...') if preid else '-'}, size={size}, target_cid={target_cid}")
     resp = _call_rapid_method(
         p115,
         target_cid=target_cid,
@@ -274,7 +296,7 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
         size=size,
         file_name=file_name,
         pick_code=str(file_info.get('pick_code') or ''),
-        rapid_meta=file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {},
+        rapid_meta=rapid_meta,
     )
     return {'ok': _rapid_success(resp), 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
 

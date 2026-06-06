@@ -1,5 +1,6 @@
 # tasks/shared_resource_tasks.py
 # Rapid v2 共享资源任务：登记本地媒体库索引、长轮询消费中心事件。
+import hashlib
 import json
 import logging
 import re
@@ -7,6 +8,7 @@ import threading
 import time
 from typing import Any, Dict, List
 
+import requests
 import task_manager
 from database import shared_credit_db, shared_share_db, settings_db
 from database.connection import get_db_connection
@@ -120,6 +122,173 @@ def _safe_int_or_none(value):
 def _norm_sha1(value: str) -> str:
     text = str(value or '').strip().upper()
     return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+
+def _norm_preid(value: str) -> str:
+    return _norm_sha1(value)
+
+
+def _extract_p115_down_url(resp: Any) -> str:
+    if isinstance(resp, str):
+        return resp
+    if not isinstance(resp, dict):
+        return ''
+    data = resp.get('data')
+    if isinstance(data, dict):
+        for item in data.values():
+            if not isinstance(item, dict):
+                continue
+            url_obj = item.get('url')
+            if isinstance(url_obj, dict) and url_obj.get('url'):
+                return str(url_obj.get('url'))
+            if isinstance(url_obj, str) and url_obj:
+                return url_obj
+            for key in ('downurl', 'download_url', 'url'):
+                if isinstance(item.get(key), str) and item.get(key):
+                    return str(item.get(key))
+    for key in ('url', 'downurl', 'download_url'):
+        if isinstance(resp.get(key), str) and resp.get(key):
+            return str(resp.get(key))
+    return ''
+
+
+def _p115_range_bytes_by_pick_code(pick_code: str, start: int, end: int) -> bytes:
+    pick_code = str(pick_code or '').strip()
+    if not pick_code:
+        return b''
+    try:
+        from handler.p115_service import P115Service
+        p115 = P115Service.get_client()
+        if not p115:
+            return b''
+        down_url = ''
+        for method_name in ('openapi_downurl', 'download_url'):
+            method = getattr(p115, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                down_url = _extract_p115_down_url(method(pick_code))
+                if down_url:
+                    break
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源] 获取 115 直链失败({method_name}): {e}")
+        if not down_url:
+            return b''
+        headers = {'Range': f'bytes={int(start)}-{int(end)}'}
+        try:
+            # 115 直链通常要求常见 UA；不强依赖 get_115_ua，避免引入更多耦合。
+            from handler.p115_service import get_115_ua
+            headers['User-Agent'] = get_115_ua('web')
+        except Exception:
+            headers['User-Agent'] = 'Mozilla/5.0'
+        r = requests.get(down_url, headers=headers, timeout=45)
+        if r.status_code != 206:
+            logger.warning(f"  ➜ [共享资源] 读取 preid Range 失败，HTTP={r.status_code}，跳过 preid 计算: pc={pick_code[:8]}...")
+            return b''
+        return r.content or b''
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 读取 115 文件 Range 计算 preid 失败: pc={pick_code[:8]}..., err={e}")
+        return b''
+
+
+def _save_preid_to_p115_cache(file_info: Dict[str, Any], preid: str) -> None:
+    preid = _norm_preid(preid)
+    if not preid:
+        return
+    sha1 = _norm_sha1(file_info.get('sha1'))
+    fid = str(file_info.get('fid') or file_info.get('file_id') or '').strip()
+    pc = str(file_info.get('pick_code') or file_info.get('pc') or '').strip()
+    clauses, args = [], []
+    if fid:
+        clauses.append('id=%s')
+        args.append(fid)
+    if pc:
+        clauses.append('pick_code=%s')
+        args.append(pc)
+    if sha1:
+        clauses.append('UPPER(sha1)=%s')
+        args.append(sha1)
+    if not clauses:
+        return
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE p115_filesystem_cache
+                    SET preid=%s, updated_at=NOW()
+                    WHERE {' OR '.join(clauses)}
+                    """,
+                    [preid, *args],
+                )
+            conn.commit()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 回写 p115_filesystem_cache.preid 失败: {e}")
+
+
+def _lookup_preid_from_p115_cache(file_info: Dict[str, Any]) -> str:
+    meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
+    preid = _norm_preid(file_info.get('preid') or meta.get('preid') or meta.get('pre_sha1') or meta.get('pre_sha1_128k'))
+    if preid:
+        return preid
+    sha1 = _norm_sha1(file_info.get('sha1'))
+    fid = str(file_info.get('fid') or file_info.get('file_id') or '').strip()
+    pc = str(file_info.get('pick_code') or file_info.get('pc') or meta.get('pick_code') or meta.get('pc') or '').strip()
+    clauses, args = [], []
+    if fid:
+        clauses.append('id=%s')
+        args.append(fid)
+    if pc:
+        clauses.append('pick_code=%s')
+        args.append(pc)
+    if sha1:
+        clauses.append('UPPER(sha1)=%s')
+        args.append(sha1)
+    if not clauses:
+        return ''
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT preid
+                    FROM p115_filesystem_cache
+                    WHERE {' OR '.join(clauses)}
+                      AND preid IS NOT NULL AND preid <> ''
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    args,
+                )
+                row = cur.fetchone()
+                return _norm_preid((row or {}).get('preid')) if row else ''
+    except Exception:
+        return ''
+
+
+def _ensure_file_preid(file_info: Dict[str, Any]) -> str:
+    """确保单个 115 文件拥有 preid。
+
+    preid = 文件前 128KB SHA1，是 115 upload/init 的基础秒传参数。
+    只读取 128KB，不读取完整文件；计算结果写回 p115_filesystem_cache，后续登记中心一同带上。
+    """
+    if not isinstance(file_info, dict):
+        return ''
+    preid = _lookup_preid_from_p115_cache(file_info)
+    if not preid:
+        pc = str(file_info.get('pick_code') or file_info.get('pc') or '').strip()
+        chunk = _p115_range_bytes_by_pick_code(pc, 0, 131071)
+        if chunk:
+            preid = hashlib.sha1(chunk).hexdigest().upper()
+            _save_preid_to_p115_cache(file_info, preid)
+            logger.info(f"  ➜ [共享资源] 已计算并缓存 preid: {file_info.get('file_name') or file_info.get('name') or file_info.get('sha1')} -> {preid[:12]}...")
+    if preid:
+        file_info['preid'] = preid
+        meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
+        meta = dict(meta or {})
+        meta.setdefault('preid', preid)
+        file_info['rapid_meta_json'] = meta
+    return preid
 
 
 def _json_obj(value):
@@ -369,8 +538,10 @@ def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any])
 def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False) -> Dict[str, Any]:
     raw = _raw_for_file(file_info) if raw_uploaded else {}
     sig = _media_signature(raw) if raw else {}
+    preid = _ensure_file_preid(file_info)
     return {
         'sha1': _norm_sha1(file_info.get('sha1')),
+        'preid': preid or None,
         'size': _file_size_from_cache(file_info) or None,
         'file_name': file_info.get('file_name') or file_info.get('name') or '',
         'quality': sig.get('resolution') or '',
@@ -380,6 +551,7 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False) 
             'fid': file_info.get('fid') or file_info.get('file_id') or '',
             'pick_code': file_info.get('pick_code') or file_info.get('pc') or '',
             'relative_path': file_info.get('relative_path') or '',
+            'preid': preid or '',
         },
     }
 
@@ -425,6 +597,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             'fingerprint_repair': repair_result or {},
         }
 
+    for _f in files:
+        _ensure_file_preid(_f)
     root = shared_share_db.candidate_root_from_files(files)
     client = SharedCenterClient()
     raw_batch_result = _upload_raw_batch(client, files)
@@ -460,7 +634,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 center_item = resp.get('item') or {}
                 local = shared_share_db.upsert_local_source({
                     'source_kind': 'movie', 'center_source_id': center_item.get('source_id'), 'tmdb_id': tmdb_id, 'item_type': 'Movie',
-                    'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'),
+                    'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'), 'preid': common.get('preid'),
                     'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': source_provider,
                     'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
                     'status': 'active', 'center_status': 'reported', 'media_signature_json': common.get('media_signature_json'),
@@ -489,7 +663,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 local = shared_share_db.upsert_local_source({
                     'source_kind': 'episode', 'center_source_id': center_item.get('source_id'), 'tmdb_id': tmdb_id,
                     'item_type': 'Episode', 'season_number': season_no, 'episode_number': ep_no,
-                    'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'),
+                    'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'), 'preid': common.get('preid'),
                     'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': source_provider,
                     'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
                     'status': 'active', 'center_status': 'reported', 'media_signature_json': common.get('media_signature_json'),
@@ -510,10 +684,11 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 continue
             raw = _raw_for_file(f)
             sig = _media_signature(raw) if raw else {}
+            preid = _ensure_file_preid(f)
             completed_files.append({
-                'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'size': _file_size_from_cache(f) or None,
+                'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'preid': preid or None, 'size': _file_size_from_cache(f) or None,
                 'file_name': f.get('file_name') or '', 'quality': sig.get('resolution') or '', 'media_signature_json': sig,
-                'rapid_meta_json': {'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path')},
+                'rapid_meta_json': {'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path'), 'preid': preid or ''},
             })
         expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes'), 0)
         consistency = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
