@@ -552,7 +552,31 @@ def _track_display(stream: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _media_signature(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _media_signature(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict[str, Any]:
+    """生成中心源表里的轻量媒体签名。
+
+    这里不能再直接从 ffprobe raw 抽 codec_name，否则字幕会变成
+    HDMV_PGS_SUBTITLE 这类原始值。优先走和 summary_json 相同的
+    _build_emby_mediainfo_from_ffprobe 格式化链路；失败时才退回旧的
+    raw 轻量抽取。
+    """
+    source = source or {}
+    if isinstance(raw, dict) and raw:
+        try:
+            summary = _summarize_raw_ffprobe(raw, source)
+            if isinstance(summary, dict) and summary:
+                effect = summary.get('effect') or ''
+                codec = summary.get('codec') or summary.get('video_codec') or ''
+                resolution = summary.get('resolution') or ''
+                # 兼容旧的洗版/一致性字段命名。
+                summary.setdefault('resolution_display', resolution)
+                summary.setdefault('effect_key', effect)
+                summary.setdefault('codec_display', codec)
+                summary.setdefault('frame_rate', summary.get('fps') or '')
+                return summary
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 生成格式化媒体签名失败，退回 raw 轻量签名: {e}")
+
     streams = _raw_streams(raw)
     video = next((s for s in streams if _stream_type(s) == 'video'), {}) or {}
     audio_list = [_track_display(s) for s in streams if _stream_type(s) == 'audio']
@@ -810,8 +834,12 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         'video_codec': codec,
         'codec': codec,
         'effect': effect,
+        'effect_key': effect,
+        'resolution_display': _center_resolution(width, height),
+        'codec_display': codec,
         'bit_depth': bit_depth,
         'fps': fps_text,
+        'frame_rate': fps_text,
         'bitrate': bitrate,
         'container': media_info.get('Container') or '',
         'video_display': video_display,
@@ -855,6 +883,7 @@ def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, A
         'fps', 'bitrate', 'container', 'video_display', 'size', 'size_gb',
         'audio_count', 'subtitle_count', 'audio_list', 'subtitle_list',
         'audios', 'subtitles', 'formatted_by',
+        'resolution_display', 'codec_display', 'effect_key', 'frame_rate',
     }
     compact = {k: summary.get(k) for k in allowed_keys if k in summary}
     for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audios', 16), ('subtitles', 24)):
@@ -940,7 +969,7 @@ def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any])
 
 def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False) -> Dict[str, Any]:
     raw = _raw_for_file(file_info) if raw_uploaded else {}
-    sig = _media_signature(raw) if raw else {}
+    sig = _media_signature(raw, file_info) if raw else {}
     preid = _ensure_file_preid(file_info)
     return {
         'sha1': _norm_sha1(file_info.get('sha1')),
@@ -1086,7 +1115,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             if not sha1:
                 continue
             raw = _raw_for_file(f)
-            sig = _media_signature(raw) if raw else {}
+            sig = _media_signature(raw, f) if raw else {}
             preid = _ensure_file_preid(f)
             completed_files.append({
                 'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'preid': preid or None, 'size': _file_size_from_cache(f) or None,
