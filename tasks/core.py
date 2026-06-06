@@ -27,7 +27,7 @@ from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
 from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events
 from .hdhive import task_hdhive_auto_checkin
-from .shared_resource_tasks import task_shared_resource_maintenance, task_shared_share_status_sync_high_freq
+from .shared_resource_tasks import task_shared_resource_maintenance
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +323,6 @@ def get_task_registry(context: str = 'all'):
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', False),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
         'fill-studio-images': (task_fill_studio_images, "补全工作室图标", 'media', False),
-        'shared-share-status-sync': (task_shared_share_status_sync_high_freq, "共享分享状态同步", 'media', False),
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', False),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', False),
     }
