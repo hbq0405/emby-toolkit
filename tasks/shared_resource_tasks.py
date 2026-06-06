@@ -1432,6 +1432,27 @@ def ensure_shared_device_event_listener() -> bool:
         return True
 
 
+def stop_shared_device_event_listener(timeout: float = 3.0) -> bool:
+    """停止 Rapid v2 中心事件监听线程。
+
+    web_app.py 在共享开关关闭、配置重载和应用退出时会调用这个函数。
+    旧版任务文件没有导出该函数，导致启动阶段导入失败。
+    """
+    global _LISTENER_THREAD
+    with _LISTENER_LOCK:
+        thread = _LISTENER_THREAD
+        _LISTENER_STOP.set()
+    if thread and thread.is_alive():
+        try:
+            thread.join(timeout=max(0.1, float(timeout or 0)))
+        except Exception:
+            pass
+    with _LISTENER_LOCK:
+        if _LISTENER_THREAD and not _LISTENER_THREAD.is_alive():
+            _LISTENER_THREAD = None
+        return _LISTENER_THREAD is None
+
+
 def ensure_share_request_event_listener() -> bool:
     return ensure_shared_device_event_listener()
 

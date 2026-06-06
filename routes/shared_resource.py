@@ -5,7 +5,7 @@ import logging
 import socket
 import threading
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -124,11 +124,16 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
     row['share_code'] = row.get('center_source_id') or row.get('source_key') or ''
     row.setdefault('receive_code', '')
     row.setdefault('share_url', '')
-    row['share_type'] = row.get('source_kind')
+    row['share_type'] = row.get('share_type') or row.get('source_kind')
     row['review_status'] = row.get('status')
-    row['root_is_dir'] = row.get('source_kind') == 'completed_season'
-    row['raw_uploaded_count'] = row.get('file_count') or (1 if row.get('center_status') == 'reported' else 0)
-    row['center_reported_count'] = row.get('file_count') or (1 if row.get('center_status') == 'reported' else 0)
+    row['root_is_dir'] = row.get('source_kind') == 'completed_season' or row.get('is_aggregated_season')
+    item_count = _safe_int(row.get('item_count') or row.get('file_count'), 0)
+    if item_count <= 0:
+        item_count = 1 if row.get('center_status') == 'reported' else 0
+    row['item_count'] = item_count
+    row['raw_uploaded_count'] = _safe_int(row.get('raw_uploaded_count'), 0) if row.get('raw_uploaded_count') is not None else item_count
+    row['center_reported_count'] = _safe_int(row.get('center_reported_count'), 0) if row.get('center_reported_count') is not None else (item_count if row.get('center_status') == 'reported' else 0)
+    row['reported_count'] = _safe_int(row.get('reported_count'), row.get('center_reported_count') or 0)
     row['source_provider_label'] = {
         'manual_rapid': '手动登记',
         'rapid_auto_library': '入库自动登记',
@@ -136,6 +141,119 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         'rapid_completed_season': '完结季收藏源',
     }.get(row.get('source_provider'), row.get('source_provider') or '本地秒传源')
     return row
+
+
+def _safe_int(value, default=0):
+    try:
+        if value in (None, ''):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _max_text(values: List[Any]) -> str:
+    vals = [str(v) for v in values if v not in (None, '')]
+    return max(vals) if vals else ''
+
+
+def _min_text(values: List[Any]) -> str:
+    vals = [str(v) for v in values if v not in (None, '')]
+    return min(vals) if vals else ''
+
+
+def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """我的共享源展示聚合。
+
+    Rapid v2 里本机登记到中心的是电影源/分集源/完结季包源。
+    UI 不应该把同一季的分集散铺成几十行，否则停用只能一集集点。
+    这里只改变本机管理页展示口径：同一 tmdb_id + season_number 的 episode 源聚合为一个季行，
+    真正停用时仍按 source_ids 批量停用每个本机源。
+    """
+    decorated = [_decorate_local_source(r) for r in (rows or []) if isinstance(r, dict)]
+    groups: Dict[str, Dict[str, Any]] = {}
+    singles: List[Dict[str, Any]] = []
+
+    for row in decorated:
+        source_kind = str(row.get('source_kind') or '').strip().lower()
+        item_type = str(row.get('item_type') or '').strip().lower()
+        season = row.get('season_number')
+        tmdb_id = str(row.get('tmdb_id') or '').strip()
+        is_episode = source_kind == 'episode' or item_type == 'episode'
+        if is_episode and tmdb_id and season not in (None, ''):
+            key = f"episode-season:{tmdb_id}:{season}"
+            g = groups.get(key)
+            if not g:
+                g = dict(row)
+                g.update({
+                    'id': row.get('id'),
+                    'source_ids': [],
+                    'source_kind': 'episode_group',
+                    'share_type': 'season_pack',
+                    'item_type': 'Season',
+                    'episode_number': None,
+                    'center_source_id': '',
+                    'source_key': '',
+                    'is_aggregated_season': True,
+                    'aggregated_source_count': 0,
+                    'episode_numbers': [],
+                    'item_count': 0,
+                    'reported_count': 0,
+                    'center_reported_count': 0,
+                    'raw_uploaded_count': 0,
+                    'size_missing_count': 0,
+                    'status_values': [],
+                    'center_status_values': [],
+                    'created_at_values': [],
+                    'updated_at_values': [],
+                })
+                groups[key] = g
+            sid = row.get('id')
+            if sid not in g['source_ids']:
+                g['source_ids'].append(sid)
+            ep_no = row.get('episode_number')
+            if ep_no not in (None, ''):
+                g['episode_numbers'].append(_safe_int(ep_no, 0))
+            count = max(1, _safe_int(row.get('item_count') or row.get('file_count'), 1))
+            g['item_count'] += count
+            g['reported_count'] += _safe_int(row.get('reported_count') or row.get('center_reported_count'), 0)
+            g['center_reported_count'] = g['reported_count']
+            g['raw_uploaded_count'] += _safe_int(row.get('raw_uploaded_count'), count)
+            g['size_missing_count'] += _safe_int(row.get('size_missing_count'), 0)
+            g['aggregated_source_count'] += 1
+            g['status_values'].append(str(row.get('status') or ''))
+            g['center_status_values'].append(str(row.get('center_status') or ''))
+            g['created_at_values'].append(row.get('created_at'))
+            g['updated_at_values'].append(row.get('updated_at') or row.get('created_at'))
+            continue
+        singles.append(row)
+
+    out: List[Dict[str, Any]] = []
+    for g in groups.values():
+        statuses = [s for s in g.pop('status_values', []) if s]
+        center_statuses = [s for s in g.pop('center_status_values', []) if s]
+        created_values = g.pop('created_at_values', [])
+        updated_values = g.pop('updated_at_values', [])
+        if statuses and all(s == 'disabled' for s in statuses):
+            g['status'] = 'disabled'
+        elif any(s == 'active' for s in statuses):
+            g['status'] = 'active'
+        if center_statuses and all(s == 'reported' for s in center_statuses):
+            g['center_status'] = 'reported'
+        elif any(s == 'reported' for s in center_statuses):
+            g['center_status'] = 'partial'
+        elif center_statuses and all(s == 'disabled' for s in center_statuses):
+            g['center_status'] = 'disabled'
+        g['episode_numbers'] = sorted({x for x in g.get('episode_numbers') or [] if x})
+        g['file_count'] = g['item_count']
+        g['created_at'] = _min_text(created_values) or g.get('created_at')
+        g['updated_at'] = _max_text(updated_values) or g.get('updated_at')
+        g['share_remark'] = f"聚合显示：{g.get('aggregated_source_count') or len(g.get('source_ids') or [])} 个本机分集源"
+        out.append(_decorate_local_source(g))
+
+    out.extend(singles)
+    out.sort(key=lambda r: str(r.get('updated_at') or r.get('created_at') or ''), reverse=True)
+    return out
 
 
 @shared_resource_bp.route('/config', methods=['GET', 'POST'])
@@ -158,10 +276,16 @@ def api_shared_resource_summary():
 def api_list_local_sources():
     status = request.args.get('status') or 'all'
     keyword = request.args.get('keyword') or request.args.get('q') or ''
-    page = int(request.args.get('page') or 1)
-    page_size = int(request.args.get('page_size') or 30)
-    rows, total = shared_share_db.list_local_sources(status=status, keyword=keyword, page=page, page_size=page_size)
-    return jsonify({'success': True, 'items': [_decorate_local_source(r) for r in rows], 'total': total})
+    page = max(1, int(request.args.get('page') or 1))
+    page_size = max(1, min(int(request.args.get('page_size') or 30), 200))
+
+    # 先取本机匹配源再聚合，避免同一季 30 多集被分页拆成多页重复季。
+    # 这是本机管理页，不是中心资源库；中心资源库仍由中心端 display-list 做分页/筛选/聚合。
+    rows, _raw_total = shared_share_db.list_local_sources(status=status, keyword=keyword, page=1, page_size=100000)
+    aggregated = _aggregate_local_sources(rows)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return jsonify({'success': True, 'items': aggregated[start:end], 'total': len(aggregated)})
 
 
 @shared_resource_bp.route('/shares/<int:source_id>/check', methods=['POST'])
@@ -201,6 +325,48 @@ def api_disable_local_source(source_id: int):
             center_resp = {'ok': False, 'message': str(e)}
     saved = shared_share_db.update_local_source(source_id, status='disabled', center_status='disabled', disabled_at='NOW()', raw_json={'center_response': center_resp})
     return jsonify({'success': True, 'message': '已停用本地共享源；不会再主动供给该资源', 'item': _decorate_local_source(saved), 'center': center_resp})
+
+
+@shared_resource_bp.route('/shares/cancel-batch', methods=['POST'])
+@admin_required
+def api_disable_local_sources_batch():
+    data = _request_json()
+    raw_ids = data.get('ids') or data.get('source_ids') or []
+    ids = []
+    for value in raw_ids if isinstance(raw_ids, list) else []:
+        sid = _safe_int(value, 0)
+        if sid > 0 and sid not in ids:
+            ids.append(sid)
+    if not ids:
+        return jsonify({'success': False, 'message': '缺少要停用的本地源 ID'}), 400
+
+    disabled = []
+    missing = []
+    center_results = []
+    for sid in ids:
+        row = shared_share_db.get_local_source(sid)
+        if not row:
+            missing.append(sid)
+            continue
+        center_resp = {}
+        if row.get('center_source_id'):
+            try:
+                center_resp = SharedCenterClient().disable_source(row.get('source_kind'), row.get('center_source_id'), message='local disabled batch')
+            except Exception as e:
+                center_resp = {'ok': False, 'message': str(e)}
+        saved = shared_share_db.update_local_source(
+            sid, status='disabled', center_status='disabled', disabled_at='NOW()', raw_json={'center_response': center_resp}
+        )
+        disabled.append(_decorate_local_source(saved))
+        center_results.append({'id': sid, 'center': center_resp})
+
+    return jsonify({
+        'success': True,
+        'message': f'已停用 {len(disabled)} 个本地共享源' + (f'，{len(missing)} 个不存在' if missing else ''),
+        'items': disabled,
+        'center': center_results,
+        'missing': missing,
+    })
 
 
 @shared_resource_bp.route('/media/search', methods=['GET'])

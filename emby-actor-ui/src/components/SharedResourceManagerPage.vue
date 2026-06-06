@@ -316,8 +316,6 @@ import {
   TrashOutline as TrashIcon,
   CloudUploadOutline as PromoteIcon,
   ShareSocialOutline as ShareIcon,
-  CheckmarkCircleOutline as CheckIcon,
-  CloudDoneOutline as ReportIcon,
   CloseCircleOutline as CancelIcon
 } from '@vicons/ionicons5';
 import ShareRequestCreateModal from './ShareRequestCreateModal.vue';
@@ -686,16 +684,16 @@ const statCards = computed(() => {
 });
 
 const shareColumns = [
-  { title: '标题', key: 'title', minWidth: 240, render: row => {
+  { title: '标题', key: 'title', minWidth: 280, render: row => {
     const seasonText = row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '';
     const episodeText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
+    const aggregateText = Number(row.aggregated_source_count || 0) > 1 ? ` · ${row.aggregated_source_count} 个源` : '';
     return h('div', [
-      h('div', { class: 'main-title' }, standardTitleText(row, row.root_name || row.center_source_id)),
-      metaLine(row, [` · ${shareTypeLabel(row.share_type)}`, seasonText, episodeText])
+      h('div', { class: 'main-title' }, standardTitleText(row, row.root_name || row.file_name || row.title)),
+      metaLine(row, [` · ${shareTypeLabel(row.share_type)}`, seasonText, episodeText, aggregateText])
     ]);
   } },
   { title: '中心', key: 'center_status', width: 110, render: row => tag(row.center_status) },
-  { title: '中心源ID', key: 'center_source_id', width: 140, ellipsis: { tooltip: true } },
   { title: '文件数', key: 'item_count', width: 90, render: row => `${row.reported_count || 0}/${row.item_count || 0}` },
   { title: '媒体信息', key: 'raw_uploaded_count', width: 110, render: row => {
     const missingSize = Number(row.size_missing_count || 0);
@@ -706,12 +704,9 @@ const shareColumns = [
     ]);
   } },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
-  { title: '检查时间', key: 'last_checked_at', width: 170, render: row => fmtDate(row.last_checked_at) },
   { title: '备注', key: 'share_remark', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareRemarkNode(row) },
-  { title: '操作', key: 'actions', width: 300, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
-    h(NButton, { size: 'small', type: 'info', ghost: true, onClick: () => checkShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CheckIcon) }), default: () => '检查' }),
-    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: row.center_status === 'reported' || row.status === 'disabled', onClick: () => reportShare(row) }, { icon: () => h(NIcon, null, { default: () => h(ReportIcon) }), default: () => '登记' }),
-    h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'cancelled', onClick: () => cancelShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '取消' }),
+  { title: '操作', key: 'actions', width: 110, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
+    h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'cancelled' || row.status === 'disabled', onClick: () => cancelShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '停用' }),
   ]}) },
 ];
 
@@ -2141,9 +2136,31 @@ const manualCreateShare = async () => {
   } finally { manualCreating.value = false; }
 };
 
-const checkShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/check`); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { message.error(e.response?.data?.message || '检查失败'); } };
-const reportShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/report-center`); message.success(res.data?.message || '已登记'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '登记失败'); } };
-const cancelShare = (row) => { dialog.warning({ title: '停用共享源', content: `确定停用《${row.title || row.root_name || row.file_name}》的共享源吗？停用后不会再向中心供给该资源。`, positiveText: '停用共享', negativeText: '保留', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/shares/${row.id}/cancel`); message.success('已停用共享源'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '停用失败'); } } }); };
+const cancelShare = (row) => {
+  const ids = Array.isArray(row.source_ids) ? row.source_ids.filter(Boolean) : [];
+  const isBatch = ids.length > 1;
+  const title = row.title || row.root_name || row.file_name || '该资源';
+  const countText = isBatch ? `该聚合项下 ${ids.length} 个本机源` : '该本机源';
+  dialog.warning({
+    title: '停用共享源',
+    content: `确定停用《${title}》的${countText}吗？停用后不会再向中心供给这些资源。`,
+    positiveText: '停用共享',
+    negativeText: '保留',
+    onPositiveClick: async () => {
+      try {
+        if (isBatch) {
+          await axios.post('/api/shared/resources/shares/cancel-batch', { ids });
+        } else {
+          await axios.post(`/api/shared/resources/shares/${row.id}/cancel`);
+        }
+        message.success('已停用共享源');
+        await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '停用失败');
+      }
+    }
+  });
+};
 
 
 watch(
