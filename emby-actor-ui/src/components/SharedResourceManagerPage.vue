@@ -83,7 +83,7 @@
           <n-tab-pane name="center" tab="中心资源库">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
               这里展示共享中心已收录的资源版本。
-“转存”会把资源转存到你的 115 网盘。
+“秒传”会把资源秒传到你的 115 网盘。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadCenterSources">
@@ -377,7 +377,7 @@ const shareRequestQuote = ref(null);
 const shareRequestEpisodeText = ref('');
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
-const centerFilters = reactive({ keyword: '', status: 'alive,pending,replenish', item_type: 'all', order_by: 'latest' });
+const centerFilters = reactive({ keyword: '', status: 'alive,available,pending,replenish', item_type: 'all', order_by: 'latest' });
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const requestStatusOptions = [
   { label: '求共享中', value: 'open' },
@@ -486,7 +486,7 @@ const shareStatusOptions = [
 ];
 
 const centerStatusOptions = [
-  { label: '全部', value: 'alive,pending,replenish' },
+  { label: '全部', value: 'alive,available,pending,replenish' },
   { label: '仅可用', value: 'alive' },
   { label: '仅待验证', value: 'pending' },
   { label: '仅待补充', value: 'replenish' },
@@ -631,7 +631,7 @@ const tmdbMediaKind = (row) => {
   if (type.includes('movie') || type === 'film' || type === '电影') return 'movie';
   return 'tv';
 };
-const centerRowTypeSafe = (row) => row?.display_type || (row?.is_collapsed_pack || row?.pack_item_count ? 'Pack' : row?.item_type);
+const centerRowTypeSafe = (row) => row?.display_type || (row?.source_kind === 'season_hub' ? 'Pack' : (row?.is_collapsed_pack || row?.pack_item_count ? 'Pack' : row?.item_type));
 const tmdbHref = (row) => {
   const id = tmdbIdForRow(row);
   if (!id) return '';
@@ -1054,6 +1054,15 @@ const centerTypeLabel = (value) => ({
 }[value] || value || '-');
 const centerRowType = centerRowTypeSafe;
 const centerTitleText = (row) => standardTitleText(row);
+const centerIsOngoingHub = (row) => Boolean(row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing');
+const centerIsCompletedPack = (row) => Boolean(row?.source_kind === 'completed_season' || row?.season_status === 'completed');
+const centerProgressText = (row) => {
+  if (row?.progress_text) return String(row.progress_text);
+  const current = Number(row?.progress_current || row?.pack_item_count || row?.file_count || 0);
+  const total = Number(row?.progress_total || row?.expected_episode_count || current || 0);
+  if (current > 0 && total > 0) return `${current}/${total}`;
+  return current > 0 ? String(current) : '';
+};
 const centerSeasonText = (row) => {
   const displayType = centerRowType(row);
   const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
@@ -1062,22 +1071,14 @@ const centerSeasonText = (row) => {
   if (centerTypeLabel(displayType) === '电影') return '电影';
 
   if (centerTypeLabel(displayType) === '剧集包') {
-    const count = row.pack_item_count ? `${row.pack_item_count}集` : '';
-    let range = '';
-    // 如果有具体的集数列表，提取出范围 (例如 E01-E20)
-    if (row.pack_episode_numbers && row.pack_episode_numbers.length > 1) {
-      const nums = row.pack_episode_numbers;
-      range = `E${String(nums[0]).padStart(2, '0')}-E${String(nums[nums.length - 1]).padStart(2, '0')}`;
-    } else if (row.pack_episode_numbers && row.pack_episode_numbers.length === 1) {
-      range = `E${String(row.pack_episode_numbers[0]).padStart(2, '0')}`;
-    }
-    const packDesc = [count, range ? `(${range})` : ''].filter(Boolean).join(' ');
-    return [s, packDesc || '剧集包'].filter(Boolean).join(' · ');
+    const state = centerIsCompletedPack(row) ? '已完结' : (centerIsOngoingHub(row) ? '连载中' : (row.season_status_label || '剧集包'));
+    const progress = centerProgressText(row);
+    return [s, state, progress].filter(Boolean).join(' · ');
   }
 
   if (centerTypeLabel(displayType) === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
 
-  return [centerTypeLabel(displayType), s ? `${s}${e}` : '', row.pack_item_count ? `${row.pack_item_count}集包` : ''].filter(Boolean).join(' · ') || '-';
+  return [centerTypeLabel(displayType), s ? `${s}${e}` : '', centerProgressText(row)].filter(Boolean).join(' · ') || '-';
 };
 const centerCleanVersionMeta = (row) => {
   const meta = row?.clean_version_meta_json || row?.clean_version_meta || row?.version_summary?.clean_version_meta_json || {};
@@ -1211,10 +1212,14 @@ const centerRapidSourceId = (row) => String(
 const buildCenterImportSourcePayload = (row) => {
   const sourceId = centerRapidSourceId(row);
   const sourceKind = inferRapidSourceKind(row);
+  const childSourceIds = (row?.children || row?.pack_items || [])
+    .map(x => centerRapidSourceId(x) || x?.source_id || x?.source_ref_id)
+    .filter(Boolean);
   return {
     ...row,
     source_kind: sourceKind,
     source_id: sourceId,
+    source_ids: sourceKind === 'season_hub' ? childSourceIds : undefined,
     source_ref_id: row?.source_ref_id || sourceId,
     title: row?.title || '',
     tmdb_id: row?.tmdb_id || row?.share_tmdb_id || '',
@@ -1230,9 +1235,9 @@ const buildCenterImportSourcePayload = (row) => {
 };
 
 const executeImport = async (row, mode) => {
-  const modeText = '转存';
+  const modeText = '秒传';
   if (isCenterReplenishRow(row)) {
-    message.warning('该资源处于待补充状态，不能转存');
+    message.warning('该资源处于待补充状态，不能秒传');
     return;
   }
   const sourcePayload = buildCenterImportSourcePayload(row);
@@ -1243,10 +1248,17 @@ const executeImport = async (row, mode) => {
   const loadingKey = sourcePayload.source_id || row?.group_key;
   importingMap[loadingKey] = mode;
   try {
-    const res = await axios.post('/api/shared/resources/center/import', {
+    const requestBody = {
       mode,
-      source: sourcePayload
-    });
+      source: sourcePayload,
+      context: sourcePayload,
+    };
+    if (Array.isArray(sourcePayload.source_ids) && sourcePayload.source_ids.length) {
+      requestBody.source_ids = sourcePayload.source_ids;
+    } else {
+      requestBody.source_id = sourcePayload.source_id;
+    }
+    const res = await axios.post('/api/shared/resources/center/import', requestBody);
     message.success(res.data?.message || '已提交');
     await Promise.allSettled([loadCenterSources(), loadSummary(), loadLedger()]);
   } catch (e) {
@@ -1257,9 +1269,9 @@ const executeImport = async (row, mode) => {
 };
 
 const importCenterSource = (row, mode) => {
-  const modeText = '转存';
+  const modeText = '秒传';
   if (isCenterReplenishRow(row)) {
-    message.warning('该资源处于待补充状态，不能转存');
+    message.warning('该资源处于待补充状态，不能秒传');
     return;
   }
   dialog.info({
@@ -1340,6 +1352,25 @@ const groupCenterSources = (items, orderBy = 'latest') => {
         pack_item_count: item.pack_item_count,
         pack_episode_numbers: item.pack_episode_numbers,
         is_collapsed_pack: item.is_collapsed_pack,
+        is_ongoing_hub: item.is_ongoing_hub,
+        season_status: item.season_status,
+        season_status_label: item.season_status_label,
+        progress_current: item.progress_current,
+        progress_total: item.progress_total,
+        progress_text: item.progress_text,
+        children: Array.isArray(item.children) ? item.children.map(child => ({
+          group_key: centerGroupKey(child),
+          title: child.title || item.title,
+          media_title: child.media_title || item.media_title,
+          tmdb_id: child.tmdb_id || item.tmdb_id,
+          share_tmdb_id: child.share_tmdb_id || item.share_tmdb_id,
+          parent_series_tmdb_id: child.parent_series_tmdb_id || item.parent_series_tmdb_id,
+          release_year: child.release_year || item.release_year,
+          season_number: child.season_number || item.season_number,
+          episode_number: child.episode_number,
+          display_type: centerRowType(child),
+          versions: [child],
+        })) : undefined,
         versions: [],
       };
       byKey.set(key, group);
@@ -1536,6 +1567,9 @@ const localLibraryTooltipLines = (it) => {
   return lines;
 };
 
+const hideCenterPackParams = (it) => centerIsOngoingHub(it);
+const centerParamText = (it, value = '') => hideCenterPackParams(it) ? '-' : (value || '-');
+
 const centerColumns = [
   { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
     h('div', { class: 'main-title' }, centerTitleText(row)),
@@ -1543,20 +1577,20 @@ const centerColumns = [
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
   { title: '类型', key: 'item_type', width: 170, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
-  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerVersionSummary(it).resolution || '-')) },
+  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).resolution))) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = centerVersionSummary(it) || {};
-    return h('span', [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-');
+    return h('span', centerParamText(it, [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ')));
   }) },
-  { title: 'HDR / 杜比', key: 'effect', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-effect-compact' }, compactEffectText(centerVersionSummary(it).effect)), it => centerVersionSummary(it).effect || '') },
-  { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', centerVersionSummary(it).fps || '-')) },
-  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => fullTrackTooltipLines(versionAudioTracks(it))) },
-  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => fullTrackTooltipLines(versionSubtitleTracks(it))) },
-  { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
+  { title: 'HDR / 杜比', key: 'effect', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-effect-compact' }, hideCenterPackParams(it) ? '-' : compactEffectText(centerVersionSummary(it).effect)), it => hideCenterPackParams(it) ? '' : (centerVersionSummary(it).effect || '')) },
+  { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).fps))) },
+  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionAudioTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionAudioTracks(it))) },
+  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionSubtitleTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionSubtitleTracks(it))) },
+  { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', hideCenterPackParams(it) ? '-' : formatCenterSize(it))) },
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '资源数', key: 'version_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${centerUsableResourceCount(it)} 个`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
-  { title: '转存', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
+  { title: '秒传', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
   { title: '操作', key: 'actions', width: 120, fixed: 'right', render: row => lineStack(row.versions, it => {
     const isImportingPermanent = importingMap[it.source_id] === 'permanent';
     const isPreparingReplenish = importingMap[it.source_id] === 'replenish';
@@ -1580,7 +1614,7 @@ const centerColumns = [
       loading: isImportingPermanent,
       disabled: Boolean(importingMap[it.source_id]) && !isImportingPermanent,
       onClick: () => importCenterSource(it, 'permanent')
-    }, { default: () => '转存' });
+    }, { default: () => centerIsOngoingHub(it) ? '秒传已收录' : '秒传' });
   }) },
 ];
 
