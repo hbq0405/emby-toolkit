@@ -284,6 +284,21 @@ class SharedCenterClient:
         payload.update({k: v for k, v in kwargs.items() if v is not None})
         return self._post('/api/v1/transfers/report', payload, timeout=20)
 
+    def register_rapid_sign_holder(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/rapid-sign/holders/register', payload or {}, timeout=15)
+
+    def create_rapid_sign_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/rapid-sign/jobs', payload or {}, timeout=15)
+
+    def wait_rapid_sign_job(self, job_id: str, timeout: int = 45) -> Dict[str, Any]:
+        return self._get(f"/api/v1/rapid-sign/jobs/{urllib.parse.quote(str(job_id))}/wait", {'timeout': max(1, min(int(timeout or 45), 55))}, timeout=max(10, int(timeout or 45) + 10))
+
+    def poll_rapid_sign_jobs(self, *, timeout: int = 1, limit: int = 3) -> Dict[str, Any]:
+        return self._get('/api/v1/rapid-sign/jobs/poll', {'timeout': max(0, min(int(timeout or 1), 55)), 'limit': max(1, min(int(limit or 3), 20))}, timeout=max(8, int(timeout or 1) + 8))
+
+    def submit_rapid_sign_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post(f"/api/v1/rapid-sign/jobs/{urllib.parse.quote(str(job_id))}/submit", payload or {}, timeout=15)
+
     def poll_device_events(self, *, timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
         return self._get('/api/v1/device-events/poll', {'timeout': max(1, min(int(timeout or 25), 55)), 'limit': max(1, min(int(limit or 5), 50))}, timeout=max(10, int(timeout or 25) + 10))
 

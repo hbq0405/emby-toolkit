@@ -171,6 +171,70 @@ def _p115_try_local_holder_sign(*, pick_code, sign_check, downurl_getter, user_a
         'pick_code': pc,
     }
 
+
+def _p115_lookup_local_holder_file_for_sign(*, sha1='', size=0, pick_code='', file_name=''):
+    """按 sha1/pc 在本地 p115_filesystem_cache 找 holder 文件，不向中心暴露 CK/PC。"""
+    sha1 = str(sha1 or '').strip().upper()
+    pc = str(pick_code or '').strip()
+    out = {'sha1': sha1, 'pick_code': pc, 'file_name': str(file_name or '').strip(), 'size': size or 0}
+    cache_mgr = globals().get('P115CacheManager')
+    try:
+        row = None
+        if pc and cache_mgr and hasattr(cache_mgr, 'get_file_cache_by_pickcode'):
+            row = cache_mgr.get_file_cache_by_pickcode(pc)
+        if not row and sha1 and cache_mgr and hasattr(cache_mgr, 'get_file_cache_by_sha1'):
+            row = cache_mgr.get_file_cache_by_sha1(sha1)
+        if row:
+            row = dict(row)
+            out['fid'] = str(row.get('id') or row.get('fid') or '')
+            out['pick_code'] = out.get('pick_code') or str(row.get('pick_code') or '').strip()
+            out['file_name'] = out.get('file_name') or str(row.get('name') or row.get('file_name') or '').strip()
+            out['sha1'] = out.get('sha1') or str(row.get('sha1') or '').strip().upper()
+            try:
+                out['size'] = int(row.get('size') or out.get('size') or 0)
+            except Exception:
+                pass
+            return out
+    except Exception as e:
+        logger.debug(f"  ➜ [Rapid签名闭环] 查询 P115CacheManager holder 文件失败: {e}")
+
+    try:
+        clauses, args = [], []
+        if pc:
+            clauses.append('pick_code=%s')
+            args.append(pc)
+        if sha1:
+            clauses.append('UPPER(sha1)=%s')
+            args.append(sha1)
+        if not clauses:
+            return out
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                    FROM p115_filesystem_cache
+                    WHERE {' OR '.join(clauses)}
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    args,
+                )
+                row = cur.fetchone()
+                if row:
+                    row = dict(row)
+                    out['fid'] = str(row.get('id') or '')
+                    out['pick_code'] = out.get('pick_code') or str(row.get('pick_code') or '').strip()
+                    out['file_name'] = out.get('file_name') or str(row.get('name') or '').strip()
+                    out['sha1'] = out.get('sha1') or str(row.get('sha1') or '').strip().upper()
+                    try:
+                        out['size'] = int(row.get('size') or out.get('size') or 0)
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.debug(f"  ➜ [Rapid签名闭环] 直接查询 p115_filesystem_cache holder 文件失败: {e}")
+    return out
+
 class LimitedCache(OrderedDict):
     """带容量限制的内存缓存，防止内存泄漏撑爆服务器"""
     def __init__(self, maxsize=1000, *args, **kwds):
@@ -876,7 +940,7 @@ class P115OpenAPIClient:
         data = init_res.get('data') if isinstance(init_res.get('data'), dict) else {}
         status = str(data.get('status') if data.get('status') is not None else init_res.get('status') if init_res.get('status') is not None else '')
 
-        if init_res.get('state') and status in ('2', '1'):
+        if status in ('2', '1') and (init_res.get('state') or status == '2'):
             if status == '2':
                 out = dict(init_res)
                 out['state'] = True
@@ -913,6 +977,12 @@ class P115OpenAPIClient:
                     '_rapid_sign_closed_loop': False,
                     '_rapid_sign_backend': 'openapi',
                     '_rapid_sign_stage': 'missing_sign_key_or_check',
+                    '_rapid_sign_required': True,
+                    '_rapid_sign_key': sign_key_text,
+                    '_rapid_sign_check': sign_check_text,
+                    '_rapid_sign_sha1': sha1,
+                    '_rapid_sign_size': size,
+                    '_rapid_sign_file_name': file_name,
                 }
 
             try:
@@ -963,7 +1033,7 @@ class P115OpenAPIClient:
                     f"state={bool(isinstance(signed_res, dict) and signed_res.get('state'))}, status={signed_status or '-'}, "
                     f"new_sign_check={signed_data.get('sign_check') or '-'}"
                 )
-                if isinstance(signed_res, dict) and signed_res.get('state') and signed_status == '2':
+                if isinstance(signed_res, dict) and signed_status == '2':
                     out = dict(signed_res)
                     out['state'] = True
                     out['success'] = True
@@ -991,6 +1061,12 @@ class P115OpenAPIClient:
                     '_rapid_sign_closed_loop': False,
                     '_rapid_sign_backend': 'openapi',
                     '_rapid_sign_stage': 'signed_retry_not_success',
+                    '_rapid_sign_required': True,
+                    '_rapid_sign_key': sign_key_text,
+                    '_rapid_sign_check': sign_check_text,
+                    '_rapid_sign_sha1': sha1,
+                    '_rapid_sign_size': size,
+                    '_rapid_sign_file_name': file_name,
                     '_rapid_sign_holder': {
                         'pick_code_prefix': pick_code[:8] if pick_code else '',
                         'byte_len': sign_result.get('byte_len'),
@@ -1006,6 +1082,12 @@ class P115OpenAPIClient:
                     '_rapid_sign_closed_loop': False,
                     '_rapid_sign_backend': 'openapi',
                     '_rapid_sign_stage': 'local_holder_sign_failed',
+                    '_rapid_sign_required': True,
+                    '_rapid_sign_key': sign_key_text,
+                    '_rapid_sign_check': sign_check_text,
+                    '_rapid_sign_sha1': sha1,
+                    '_rapid_sign_size': size,
+                    '_rapid_sign_file_name': file_name,
                     'debug': {
                         'sha1': sha1,
                         'preid': preid or sha1,
@@ -1562,6 +1644,12 @@ class P115CookieClient:
             rapid_meta.get('size'), rapid_meta.get('file_size'), rapid_meta.get('filesize'), rapid_meta.get('size_bytes'),
             source_meta.get('size'), source_meta.get('file_size'), source_meta.get('filesize'), source_meta.get('size_bytes'),
         ))
+        sign_key = _first(payload.get('sign_key'), rapid_meta.get('sign_key'), source_meta.get('sign_key'))
+        sign_val = _first(
+            payload.get('sign_val'), payload.get('sign_check_value'),
+            rapid_meta.get('sign_val'), rapid_meta.get('sign_check_value'),
+            source_meta.get('sign_val'), source_meta.get('sign_check_value'),
+        )
 
         cache_mgr = globals().get('P115CacheManager')
         if cache_mgr and (not pick_code or not file_name or size <= 0):
@@ -1606,6 +1694,9 @@ class P115CookieClient:
             'target': target,
             'topupload': 'true',
         }
+        if sign_key and sign_val:
+            init_payload['sign_key'] = str(sign_key)
+            init_payload['sign_val'] = str(sign_val).upper()
 
         logger.info(
             f"  ➜ [Cookie秒传] 尝试 Cookie initupload: {file_name} | "
@@ -1669,6 +1760,12 @@ class P115CookieClient:
                 out['_rapid_sign_closed_loop'] = False
                 out['_rapid_sign_backend'] = 'cookie'
                 out['_rapid_sign_stage'] = 'missing_sign_key_or_check'
+                out['_rapid_sign_required'] = True
+                out['_rapid_sign_key'] = sign_key_text
+                out['_rapid_sign_check'] = sign_check_text
+                out['_rapid_sign_sha1'] = sha1
+                out['_rapid_sign_size'] = size
+                out['_rapid_sign_file_name'] = file_name
                 return out
 
             try:
@@ -1736,6 +1833,12 @@ class P115CookieClient:
                 out['_rapid_sign_closed_loop'] = False
                 out['_rapid_sign_backend'] = 'cookie'
                 out['_rapid_sign_stage'] = 'signed_retry_not_success'
+                out['_rapid_sign_required'] = True
+                out['_rapid_sign_key'] = sign_key_text
+                out['_rapid_sign_check'] = sign_check_text
+                out['_rapid_sign_sha1'] = sha1
+                out['_rapid_sign_size'] = size
+                out['_rapid_sign_file_name'] = file_name
                 out['_rapid_sign_holder'] = {
                     'pick_code_prefix': pick_code[:8] if pick_code else '',
                     'byte_len': sign_result.get('byte_len'),
@@ -1749,6 +1852,12 @@ class P115CookieClient:
                 out['_rapid_sign_closed_loop'] = False
                 out['_rapid_sign_backend'] = 'cookie'
                 out['_rapid_sign_stage'] = 'local_holder_sign_failed'
+                out['_rapid_sign_required'] = True
+                out['_rapid_sign_key'] = sign_key_text
+                out['_rapid_sign_check'] = sign_check_text
+                out['_rapid_sign_sha1'] = sha1
+                out['_rapid_sign_size'] = size
+                out['_rapid_sign_file_name'] = file_name
                 out['_rapid_sign_debug'] = {
                     'sha1': sha1,
                     'pick_code': pick_code,
@@ -2679,6 +2788,67 @@ class P115Service:
                 payload = dict(payload or {})
                 payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
                 return self._call_api('rapid_upload', payload, normalizer=_p115_normalize_common_response)
+
+            def rapid_sign_value(self, payload=None, **kwargs):
+                """Holder 端签名任务：本机按 sha1 找 pick_code，读取 sign_check Range 计算 sign_val。
+
+                只返回 sign_val，不上传 CK/pick_code 到中心。
+                """
+                payload = dict(payload or {})
+                payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
+
+                def _first(*values):
+                    for value in values:
+                        if value not in (None, '', [], {}):
+                            return value
+                    return None
+
+                sha1 = str(_first(payload.get('sha1'), payload.get('file_sha1'), payload.get('fileid')) or '').strip().upper()
+                sign_check = str(_first(payload.get('sign_check'), payload.get('range')) or '').strip()
+                pick_code = str(_first(payload.get('pick_code'), payload.get('pickcode'), payload.get('pc')) or '').strip()
+                file_name = str(_first(payload.get('file_name'), payload.get('filename'), payload.get('name')) or '').strip()
+                try:
+                    size = int(float(_first(payload.get('size'), payload.get('file_size'), payload.get('filesize')) or 0))
+                except Exception:
+                    size = 0
+
+                local = _p115_lookup_local_holder_file_for_sign(sha1=sha1, size=size, pick_code=pick_code, file_name=file_name)
+                pc = str(local.get('pick_code') or pick_code or '').strip()
+                if not pc:
+                    raise RuntimeError(f'本机不是可签名 holder：未找到 sha1={sha1[:12]}... 对应 pick_code')
+                if not file_name:
+                    file_name = local.get('file_name') or sha1
+
+                try:
+                    _, _, _, app_type = get_115_tokens()
+                except Exception:
+                    app_type = 'web'
+                sign_ua = str(_first(payload.get('sign_user_agent'), payload.get('user_agent'), payload.get('ua'), get_115_ua(app_type)) or get_115_ua('web'))
+                priority = get_115_api_priority()
+                order = [('download_url', 'Cookie蜂群Holder'), ('openapi_downurl', 'OpenAPI蜂群Holder')] if priority == 'cookie' else [('openapi_downurl', 'OpenAPI蜂群Holder'), ('download_url', 'Cookie蜂群Holder')]
+                last_error = None
+                for method_name, label in order:
+                    method = getattr(self, method_name, None)
+                    if not callable(method):
+                        continue
+                    try:
+                        sign_result = _p115_try_local_holder_sign(
+                            pick_code=pc,
+                            sign_check=sign_check,
+                            downurl_getter=lambda _pc, _ua, _m=method: _m(_pc, user_agent=_ua),
+                            user_agent=sign_ua,
+                            label=label,
+                            sha1=sha1,
+                            file_name=file_name,
+                        )
+                        if sign_result and sign_result.get('sign_val'):
+                            out = dict(sign_result)
+                            out.update({'state': True, 'success': True, 'sha1': sha1, 'file_name': file_name, 'backend': label})
+                            return out
+                    except Exception as e:
+                        last_error = e
+                        logger.warning(f"  ➜ [Rapid签名闭环] {label} 计算 sign_val 失败，尝试备用接口: {e}")
+                raise RuntimeError(f'本机 holder 计算 sign_val 失败: {last_error}')
 
             def fs_rapid_upload(self, target_cid, sha1, size, file_name, preid=None, **kwargs):
                 payload = {'cid': target_cid, 'sha1': sha1, 'size': size, 'file_name': file_name}

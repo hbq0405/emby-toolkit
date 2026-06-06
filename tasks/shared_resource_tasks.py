@@ -932,6 +932,64 @@ def share_all_library(max_items: int = 100000) -> Dict[str, Any]:
         _FULL_SHARE_LOCK.release()
 
 
+
+def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> Dict[str, Any]:
+    """Holder 端处理中心下发的 sign_job。CK/PC 只在本机使用，只回传 sign_val。"""
+    if not _enabled():
+        return {'ok': False, 'message': '共享资源未启用'}
+    client = SharedCenterClient()
+    if not client.ready:
+        return {'ok': False, 'message': '共享中心未配置'}
+    resp = client.poll_rapid_sign_jobs(timeout=timeout, limit=limit)
+    jobs = resp.get('items') or []
+    if not jobs:
+        return {'ok': True, 'count': 0, 'items': []}
+    results = []
+    for job in jobs:
+        job_id = str(job.get('job_id') or '').strip()
+        sha1 = _norm_sha1(job.get('sha1'))
+        sign_check = str(job.get('sign_check') or '').strip()
+        file_name = str(job.get('file_name') or sha1 or '').strip()
+        logger.info(
+            f"  ➜ [Rapid蜂群签名] 收到中心 sign_job：job_id={job_id}, "
+            f"sha1={sha1[:12]}..., sign_check={sign_check}, requester={job.get('requester_id') or '-'}, file={file_name}"
+        )
+        try:
+            from handler.p115_service import P115Service
+            p115 = P115Service.get_client()
+            if not p115 or not hasattr(p115, 'rapid_sign_value'):
+                raise RuntimeError('当前 115 客户端不支持 rapid_sign_value')
+            sign_res = p115.rapid_sign_value(job)
+            sign_val = _norm_sha1((sign_res or {}).get('sign_val'))
+            if not sign_val:
+                raise RuntimeError(f'未计算出合法 sign_val: {sign_res}')
+            submit_payload = {
+                'status': 'done',
+                'sign_val': sign_val,
+                'message': 'holder sign ok',
+                'byte_len': (sign_res or {}).get('byte_len'),
+                'range_start': (sign_res or {}).get('start'),
+                'range_end': (sign_res or {}).get('end'),
+                'result_meta_json': {
+                    'backend': (sign_res or {}).get('backend') or '',
+                    'file_name': file_name,
+                },
+            }
+            submit = client.submit_rapid_sign_job(job_id, submit_payload)
+            logger.info(
+                f"  ➜ [Rapid蜂群签名] sign_job 已回传 sign_val：job_id={job_id}, "
+                f"sign_val={sign_val[:12]}..., bytes={(sign_res or {}).get('byte_len')}"
+            )
+            results.append({'job_id': job_id, 'ok': True, 'submit': submit})
+        except Exception as e:
+            logger.warning(f"  ➜ [Rapid蜂群签名] 处理 sign_job 失败：job_id={job_id}, err={e}")
+            try:
+                submit = client.submit_rapid_sign_job(job_id, {'status': 'failed', 'message': str(e)[:1000]})
+            except Exception as submit_err:
+                submit = {'ok': False, 'error': str(submit_err)}
+            results.append({'job_id': job_id, 'ok': False, 'error': str(e), 'submit': submit})
+    return {'ok': True, 'count': len(jobs), 'items': results}
+
 def _event_listener_loop():
     logger.info('  ➜ [共享事件监听] Rapid v2 长轮询监听已启动。')
     while not _LISTENER_STOP.is_set():
@@ -939,6 +997,8 @@ def _event_listener_loop():
             if not _enabled():
                 time.sleep(15)
                 continue
+            # 先处理蜂群签名任务，再处理资源事件；避免接收端等待 sign_val 超时。
+            poll_and_process_rapid_sign_jobs_once(timeout=1, limit=3)
             poll_and_consume_once(timeout=25, limit=10)
         except Exception as e:
             logger.warning(f"  ➜ [共享事件监听] 本轮处理失败: {e}")

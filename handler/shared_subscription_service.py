@@ -267,6 +267,119 @@ def _call_rapid_method(p115, *, target_cid: str, sha1: str, size: int, file_name
     raise RuntimeError('当前 P115Service 客户端未提供秒传方法，请补充 rapid_upload/upload_file_by_sha1 等接口')
 
 
+
+def _rapid_sign_request_from_response(resp: Any) -> Dict[str, Any]:
+    """从 p115_service 的 status=7 响应里提取 sign_key/sign_check。"""
+    if not isinstance(resp, dict):
+        return {}
+    candidates = [resp]
+    for key in ('response', 'signed_response'):
+        if isinstance(resp.get(key), dict):
+            candidates.append(resp.get(key))
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        sign_key = item.get('_rapid_sign_key') or item.get('sign_key')
+        sign_check = item.get('_rapid_sign_check') or item.get('sign_check')
+        data = item.get('data') if isinstance(item.get('data'), dict) else {}
+        sign_key = sign_key or data.get('sign_key')
+        sign_check = sign_check or data.get('sign_check')
+        if sign_key and sign_check:
+            return {
+                'sign_key': str(sign_key),
+                'sign_check': str(sign_check),
+                'backend': str(item.get('_rapid_sign_backend') or item.get('_rapid_upload_backend') or item.get('backend') or ''),
+                'stage': str(item.get('_rapid_sign_stage') or ''),
+                'required': bool(item.get('_rapid_sign_required', True)),
+            }
+    return {}
+
+
+def _register_local_rapid_holder(client: SharedCenterClient, *, source_kind: str, source_id: str, file_info: Dict[str, Any], message_prefix: str = '') -> None:
+    try:
+        meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
+        sha1 = _norm_sha1(file_info.get('sha1') or meta.get('sha1'))
+        if not sha1:
+            return
+        client.register_rapid_sign_holder({
+            'sha1': sha1,
+            'size': _rapid_size_to_int(file_info.get('size') or file_info.get('file_size') or meta.get('size'), 0) or None,
+            'source_kind': source_kind or file_info.get('source_kind') or '',
+            'source_id': source_id or file_info.get('source_id') or file_info.get('source_ref_id') or '',
+            'file_name': file_info.get('file_name') or file_info.get('name') or meta.get('file_name') or '',
+            'preid': file_info.get('preid') or meta.get('preid') or '',
+            'meta_json': {'from': 'rapid_transfer_success'},
+        })
+        logger.info(f"  ➜ [Rapid蜂群签名] 已登记本机为 holder：sha1={sha1[:12]}..., source={source_kind}:{source_id}")
+    except Exception as e:
+        logger.debug(f"  ➜ [Rapid蜂群签名] 登记本机 holder 失败: {e}")
+
+
+def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info: Dict[str, Any], target_cid: str, sha1: str, size: int, file_name: str, rapid_meta: Dict[str, Any], first_resp: Any) -> Dict[str, Any]:
+    sign_req = _rapid_sign_request_from_response(first_resp)
+    if not sign_req:
+        return {'ok': False, 'response': first_resp, 'skipped': True, 'message': '未发现 sign_key/sign_check'}
+    source_kind = str(file_info.get('source_kind') or rapid_meta.get('source_kind') or '').strip()
+    source_id = str(file_info.get('source_id') or file_info.get('source_ref_id') or rapid_meta.get('source_id') or rapid_meta.get('source_ref_id') or '').strip()
+    if not source_kind or not source_id:
+        logger.warning(
+            f"  ➜ [Rapid蜂群签名] 秒传需要签名但缺少 source_kind/source_id，无法向中心创建 sign_job: "
+            f"sha1={sha1[:12]}..., file={file_name}"
+        )
+        return {'ok': False, 'response': first_resp, 'skipped': True, 'message': '缺少 source_kind/source_id'}
+
+    logger.warning(
+        f"  ➜ [Rapid蜂群签名] 秒传返回 status=7，准备请求中心调度在线 holder："
+        f"source={source_kind}:{source_id}, sha1={sha1[:12]}..., backend={sign_req.get('backend') or '-'}, "
+        f"sign_check={sign_req.get('sign_check')}"
+    )
+    create_resp = client.create_rapid_sign_job({
+        'source_kind': source_kind,
+        'source_id': source_id,
+        'sha1': sha1,
+        'size': size,
+        'file_name': file_name,
+        'preid': rapid_meta.get('preid') or file_info.get('preid') or '',
+        'backend': sign_req.get('backend') or '',
+        'sign_key': sign_req.get('sign_key'),
+        'sign_check': sign_req.get('sign_check'),
+        'request_meta_json': {'stage': sign_req.get('stage') or '', 'target_cid': target_cid},
+    })
+    job_id = str(create_resp.get('job_id') or (create_resp.get('job') or {}).get('job_id') or '').strip()
+    holder_id = str(create_resp.get('holder_id') or (create_resp.get('job') or {}).get('holder_id') or '').strip()
+    if not job_id:
+        raise RuntimeError(f'中心未返回 sign_job id: {create_resp}')
+    logger.info(f"  ➜ [Rapid蜂群签名] sign_job 已创建：job_id={job_id}, holder={holder_id or '-'}，等待 sign_val...")
+    wait_resp = client.wait_rapid_sign_job(job_id, timeout=45)
+    status = str(wait_resp.get('status') or (wait_resp.get('job') or {}).get('status') or '')
+    sign_val = str(wait_resp.get('sign_val') or (wait_resp.get('job') or {}).get('sign_val') or '').strip().upper()
+    if status != 'done' or not _norm_sha1(sign_val):
+        logger.warning(f"  ➜ [Rapid蜂群签名] sign_job 未完成：job_id={job_id}, status={status}, resp={str(wait_resp)[:500]}")
+        return {'ok': False, 'response': first_resp, 'sign_job': wait_resp, 'message': f'sign_job 未完成: {status}'}
+
+    signed_meta = dict(rapid_meta or {})
+    signed_meta['sign_key'] = sign_req.get('sign_key')
+    signed_meta['sign_val'] = sign_val
+    logger.info(
+        f"  ➜ [Rapid蜂群签名] 已收到 sign_val，准备带签名重试秒传："
+        f"job_id={job_id}, sign_val={sign_val[:12]}..., file={file_name}"
+    )
+    signed_resp = _call_rapid_method(
+        p115,
+        target_cid=target_cid,
+        sha1=sha1,
+        size=size,
+        file_name=file_name,
+        pick_code=str(file_info.get('pick_code') or ''),
+        rapid_meta=signed_meta,
+    )
+    ok = _rapid_success(signed_resp)
+    logger.info(
+        f"  ➜ [Rapid蜂群签名] 带中心 sign_val 重试完成：ok={ok}, "
+        f"source={source_kind}:{source_id}, sha1={sha1[:12]}..."
+    )
+    return {'ok': ok, 'response': signed_resp, 'sign_job': wait_resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
+
 def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[str, Any]:
     p115 = P115Service.get_client()
     if not p115:
@@ -298,7 +411,24 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
         pick_code=str(file_info.get('pick_code') or ''),
         rapid_meta=rapid_meta,
     )
-    return {'ok': _rapid_success(resp), 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
+    if _rapid_success(resp):
+        return {'ok': True, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
+
+    sign_req = _rapid_sign_request_from_response(resp)
+    if sign_req and shared_center_enabled():
+        try:
+            client = SharedCenterClient()
+            retry = _retry_rapid_with_center_sign(
+                client=client, p115=p115, file_info=file_info, target_cid=target_cid,
+                sha1=sha1, size=size, file_name=file_name, rapid_meta=rapid_meta, first_resp=resp,
+            )
+            if retry.get('ok'):
+                return retry
+            resp = retry.get('response') or resp
+        except Exception as e:
+            logger.warning(f"  ➜ [Rapid蜂群签名] 中心 holder 签名闭环失败：{e}")
+
+    return {'ok': False, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
 
 
 def _event_payload(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -376,9 +506,13 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     errors = []
     for f in files:
         try:
+            f.setdefault('source_kind', source_kind)
+            f.setdefault('source_id', source_id)
+            f.setdefault('source_ref_id', source_id)
             result = rapid_save_file(f, target_cid=target_cid)
             if result.get('ok'):
                 ok_count += 1
+                _register_local_rapid_holder(client, source_kind=source_kind, source_id=source_id, file_info=f)
             else:
                 errors.append({'file': f.get('file_name') or f.get('sha1'), 'response': result.get('response')})
         except Exception as e:
