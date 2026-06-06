@@ -208,7 +208,21 @@ def api_disable_local_source(source_id: int):
 def api_search_shareable_media():
     keyword = request.args.get('keyword') or request.args.get('q') or ''
     limit = int(request.args.get('limit') or 100)
-    items = shared_share_db.search_shareable_media(keyword, search_limit=max(limit * 3, 100), result_limit=limit)
+    # 手动添加共享源的最小粒度是“电影 / 季”。
+    # 单集可作为连载季公共包下的子项登记，但不再出现在搜索候选里，避免用户选择单集后无法追踪整季。
+    rows = shared_share_db.search_shareable_media(keyword, search_limit=max(limit * 6, 200), result_limit=max(limit * 4, 100))
+    items = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        item_type = str(row.get('share_item_type') or row.get('item_type') or '').strip().lower()
+        share_type = str(row.get('share_type') or '').strip().lower()
+        if item_type in ('episode', 'episode_file') or share_type == 'episode_file' or row.get('episode_number') not in (None, '', 0):
+            continue
+        if item_type in ('movie', 'season', 'series') or share_type in ('movie_file', 'movie_folder', 'season_pack', 'series_pack'):
+            items.append(row)
+        if len(items) >= limit:
+            break
     return jsonify({'success': True, 'items': items})
 
 
@@ -339,27 +353,35 @@ def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
 def api_center_sources():
     try:
         client = SharedCenterClient()
-        resp = client.list_sources(
+        resp = client.list_display_sources(
             q=request.args.get('q') or request.args.get('keyword') or '',
             status=request.args.get('status') or 'alive,available,updating,inconsistent,incomplete',
-            mine_only=_boolish(request.args.get('mine_only'), False),
-            source_kind=request.args.get('source_kind') or '',
             item_type=request.args.get('item_type') or '',
             tmdb_id=request.args.get('tmdb_id') or '',
+            order_by=request.args.get('order_by') or 'latest',
             limit=int(request.args.get('limit') or request.args.get('page_size') or 200),
             offset=int(request.args.get('offset') or 0),
         )
-        items = []
-        for row in resp.get('items') or []:
+
+        def _decorate_center_row(row):
             if not isinstance(row, dict):
-                continue
+                return {}
             row = dict(row)
-            row['version_summary'] = _center_version_summary(row)
-            # 兼容旧前端按 size 读取大小；completed season 用 total_size。
+            for key in ('versions', 'children', 'pack_items'):
+                if isinstance(row.get(key), list):
+                    row[key] = [_decorate_center_row(x) for x in row.get(key) if isinstance(x, dict)]
+            # 连载季公共包没有统一版本参数；完结季包/电影/展开后的集才展示。
+            if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
+                row['version_summary'] = {}
+                row['summary_json'] = {}
+                row['media_signature_json'] = {}
+            else:
+                row['version_summary'] = _center_version_summary(row)
             if not row.get('size') and row.get('total_size'):
                 row['size'] = row.get('total_size')
-            items.append(row)
-        resp['items'] = items
+            return row
+
+        resp['items'] = [_decorate_center_row(row) for row in (resp.get('items') or []) if isinstance(row, dict)]
         return jsonify({'success': True, **resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500

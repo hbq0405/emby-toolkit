@@ -1003,6 +1003,55 @@ def _completed_status_from_files(files: List[Dict[str, Any]], expected_count: in
         return {'status': 'incomplete', 'message': '没有可登记的视频文件'}
     return {'status': 'available', 'message': '完结季一致性校验通过'}
 
+def _candidate_bool(candidate: Dict[str, Any], *keys: str) -> bool:
+    for key in keys:
+        value = (candidate or {}).get(key)
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        text = str(value or '').strip().lower()
+        if text in ('1', 'true', 'yes', 'y', 'on', 'completed', 'complete', 'ended', 'end', '完结', '已完结'):
+            return True
+    return False
+
+
+def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider: str = '', files: List[Dict[str, Any]] = None) -> bool:
+    """判断 Season 是否应该登记为“客户端完结季包”。
+
+    连载季只登记每集到公共 season_hub，不做一致性校验，也不生成 completed_season_source。
+    只有明确完结，或完结季专用任务入口，才尝试收藏季一致性校验。
+    """
+    candidate = dict(candidate or {})
+    if str(candidate.get('item_type') or '').strip() != 'Season':
+        return False
+    provider = str(source_provider or candidate.get('source_provider') or '').strip().lower()
+    if provider == 'rapid_completed_season':
+        return True
+    share_type = str(candidate.get('share_type') or '').strip().lower()
+    if share_type in ('completed_season', 'completed_season_pack', 'completed_pack'):
+        return True
+    if _candidate_bool(candidate, 'is_completed', 'season_completed', 'completed', 'force_ended', 'is_ended', 'ended'):
+        return True
+
+    status_text = ' '.join(str(candidate.get(k) or '') for k in (
+        'season_status', 'tmdb_status', 'status', 'watching_status', 'air_status', 'series_status'
+    )).strip().lower()
+    ongoing_words = ('ongoing', 'returning', 'in production', 'continuing', 'airing', 'updating', 'watching', 'paused', '连载', '追更', '更新中')
+    if any(w in status_text for w in ongoing_words):
+        return False
+    completed_words = ('completed', 'ended', 'complete', 'finished', '完结', '已完结')
+    if any(w in status_text for w in completed_words):
+        return True
+
+    expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes') or candidate.get('episode_count'), 0)
+    if expected > 0 and files:
+        eps = {_safe_int(f.get('episode_number'), 0) for f in files if _safe_int(f.get('episode_number'), 0) > 0}
+        if len(eps) >= expected:
+            return True
+    return False
+
+
 
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid') -> Dict[str, Any]:
     """把本地媒体库中的电影/分集/季登记到 Rapid v2 中心。
@@ -1010,7 +1059,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
     规则：
     - Movie：登记 movie_sources；
     - Episode：登记 season_episode_sources，追更池不做版本一致性要求；
-    - Season：先把每集登记到追更池，再尝试登记 completed_season_source。完结收藏季才做一致性校验。
+    - Season：先把每集登记到追更池，锚定中心公共 season_hub；只有明确完结才登记 completed_season_source。
     """
     if not _enabled():
         return {'ok': False, 'message': '共享资源未启用或中心未配置'}
@@ -1108,7 +1157,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             errors.append({'file': f.get('file_name') or f.get('sha1'), 'error': str(e)})
 
     completed_resp = None
-    if item_type == 'Season':
+    should_register_completed = _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
+    if item_type == 'Season' and should_register_completed:
         completed_files = []
         for f in files:
             sha1 = _norm_sha1(f.get('sha1'))
@@ -1184,7 +1234,10 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         'errors': errors,
         'root': root,
         'fingerprint_repair': repair_result or {},
-        'message': f"已登记 {len(results)} 个分集/电影源" + ("，已更新完结季源" if completed_resp else ''),
+        'message': (
+            f"已登记 {len(results)} 个分集/电影源"
+            + ("，已更新完结季源" if completed_resp else ("，连载季已聚合到中心公共包" if item_type == 'Season' else ''))
+        ),
     }
 
 

@@ -466,6 +466,34 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
             f.setdefault('tmdb_id', payload.get('tmdb_id'))
             f.setdefault('item_type', 'Episode')
             f.setdefault('season_number', payload.get('season_number'))
+            f.setdefault('source_kind', 'completed_season')
+            f.setdefault('source_id', source_id)
+            f.setdefault('source_ref_id', source_id)
+        return source_kind, source_id, files
+
+    # 公共连载季包：中心 display-list 返回 season_hub，真正可秒传文件在 pack_items/children 中。
+    # 每个子项仍然是 episode 源；转存和贡献流水按 episode 上报，不把 season_hub 当作某个设备的源。
+    if source_kind == 'season_hub':
+        raw_files = []
+        for key in ('pack_items', 'children', 'files', 'items'):
+            value = payload.get(key)
+            if isinstance(value, list) and value:
+                raw_files = value
+                break
+        files = []
+        for item in raw_files or []:
+            if not isinstance(item, dict):
+                continue
+            f = dict(item)
+            f.setdefault('tmdb_id', payload.get('tmdb_id'))
+            f.setdefault('item_type', 'Episode')
+            f.setdefault('season_number', payload.get('season_number'))
+            f.setdefault('title', payload.get('title'))
+            f.setdefault('release_year', payload.get('release_year'))
+            f['source_kind'] = 'episode'
+            f['source_id'] = f.get('source_id') or f.get('source_ref_id') or f.get('episode_source_id') or ''
+            f['source_ref_id'] = f.get('source_ref_id') or f.get('source_id') or ''
+            files.append(f)
         return source_kind, source_id, files
 
     file_info = dict(payload or {})
@@ -504,31 +532,45 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     target_cid = _target_cid()
     ok_count = 0
     errors = []
+    success_sources = []
     for f in files:
         try:
             f.setdefault('source_kind', source_kind)
             f.setdefault('source_id', source_id)
             f.setdefault('source_ref_id', source_id)
+            file_source_kind = str(f.get('source_kind') or source_kind or '').strip()
+            file_source_id = str(f.get('source_id') or f.get('source_ref_id') or source_id or '').strip()
             result = rapid_save_file(f, target_cid=target_cid)
             if result.get('ok'):
                 ok_count += 1
-                _register_local_rapid_holder(client, source_kind=source_kind, source_id=source_id, file_info=f)
+                success_sources.append((file_source_kind, file_source_id, f))
+                _register_local_rapid_holder(client, source_kind=file_source_kind, source_id=file_source_id, file_info=f)
             else:
                 errors.append({'file': f.get('file_name') or f.get('sha1'), 'response': result.get('response')})
         except Exception as e:
             errors.append({'file': f.get('file_name') or f.get('sha1'), 'error': str(e)})
 
     if ok_count:
-        try:
-            client.report_transfer(source_kind, source_id, 'success', message=f'本机秒传成功 {ok_count}/{len(files)} 个文件')
-        except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 上报秒传成功失败: {e}")
+        reported = set()
+        for report_kind, report_id, report_file in success_sources:
+            if report_kind not in ('movie', 'episode', 'completed_season') or not report_id:
+                continue
+            key = (report_kind, report_id)
+            if key in reported:
+                continue
+            reported.add(key)
+            try:
+                client.report_transfer(report_kind, report_id, 'success', message=f'本机秒传成功：{report_file.get("file_name") or report_file.get("sha1") or report_id}')
+            except Exception as e:
+                logger.warning(f"  ➜ [共享资源] 上报秒传成功失败: {e}")
         _kick_115_organize_detached(reason=f'rapid:{source_kind}:{source_id}')
     else:
-        try:
-            client.report_transfer(source_kind, source_id, 'failed', message=json.dumps(errors, ensure_ascii=False)[:1000])
-        except Exception:
-            pass
+        fail_kind = source_kind if source_kind in ('movie', 'episode', 'completed_season') else ''
+        if fail_kind and source_id:
+            try:
+                client.report_transfer(fail_kind, source_id, 'failed', message=json.dumps(errors, ensure_ascii=False)[:1000])
+            except Exception:
+                pass
 
     if ack and event_id:
         try:

@@ -205,15 +205,48 @@ class SharedCenterClient:
             'offset': max(0, int(offset or 0)),
         }, timeout=25)
 
+    def list_display_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent,incomplete',
+                             item_type: str = '', tmdb_id: str = '', order_by: str = 'latest',
+                             limit: int = 200, offset: int = 0, **_ignored) -> Dict[str, Any]:
+        """中心资源库展示口径：由中心端分页、筛选、聚合。
+
+        默认只返回电影和季容器；连载季返回公共 season_hub，单集只作为 children/pack_items。
+        """
+        return self._get('/api/v1/sources/display-list', {
+            'q': q or '',
+            'status': status or 'alive,available,updating,inconsistent,incomplete',
+            'item_type': item_type or '',
+            'tmdb_id': tmdb_id or '',
+            'order_by': order_by or 'latest',
+            'limit': max(1, min(int(limit or 200), 1000)),
+            'offset': max(0, int(offset or 0)),
+        }, timeout=30)
+
     def list_hubs(self, *, q: str = '', status: str = '', tmdb_id: str = '', limit: int = 200, offset: int = 0) -> Dict[str, Any]:
         return self._get('/api/v1/hubs/list', {'q': q or '', 'status': status or '', 'tmdb_id': tmdb_id or '', 'limit': limit, 'offset': offset}, timeout=20)
 
     def search_sources(self, items: List[Dict[str, Any]], limit_per_item: int = 20) -> Dict[str, Any]:
-        # Rapid v2 中心没有独立 search endpoint；客户端逐项用 list 组合结果。
+        # Rapid v2：订阅命中也走中心展示口径。
+        # Season 查询返回“完结客户端包”或“公共连载季包”，而不是把单集散铺给客户端。
         results = []
         for item in _dedupe_gap_items_for_center(items):
             kind = str(item.get('item_type') or '').strip()
-            resp = self.list_sources(tmdb_id=item.get('tmdb_id') or '', item_type=kind, limit=limit_per_item)
+            if kind == 'Season':
+                resp = self.list_display_sources(
+                    tmdb_id=item.get('tmdb_id') or '',
+                    item_type='Pack',
+                    status='alive,available,updating,inconsistent,incomplete',
+                    limit=limit_per_item,
+                )
+            elif kind == 'Movie':
+                resp = self.list_display_sources(
+                    tmdb_id=item.get('tmdb_id') or '',
+                    item_type='Movie',
+                    status='alive,available',
+                    limit=limit_per_item,
+                )
+            else:
+                resp = self.list_sources(tmdb_id=item.get('tmdb_id') or '', item_type=kind, limit=limit_per_item)
             sources = resp.get('items') or []
             if kind == 'Season' and item.get('season_number') is not None:
                 sn = int(item.get('season_number'))

@@ -238,7 +238,7 @@
         正在补充中心待补充资源：{{ appendYear(centerTitleText(activeCenterReplenishSource), activeCenterReplenishSource.release_year) }}。系统已按中心 SHA1 精确匹配本机完全相同资源，并自动填入下方手动共享表单；确认无误后点击“登记共享源”。
       </n-alert>
       <n-alert v-else-if="!activeLocalShareRequest" type="info" :bordered="false" style="margin-bottom: 12px;">
-        直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可登记的 115 目录或文件。连载分集直接进入追更池，完结季通过一致性校验后登记收藏季源。
+        直接输入片名搜索本地 media_metadata，系统只返回电影和季目录候选。选择季目录时会把该季下所有集登记到中心公共连载包；只有明确完结季才做一致性校验并登记为客户端完结季包。
       </n-alert>
       <n-alert v-if="activeLocalShareRequest" type="warning" :bordered="false" style="margin-bottom: 12px;">
         正在响应求共享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。系统会自动检索本地库并按求共享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。没有候选就是本地没有符合条件的资源。
@@ -411,6 +411,7 @@ const centerOrderOptions = [
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
   share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: '',
+  season_status: '', expected_episode_count: null, total_episodes: null, is_completed: false,
   center_replenish_source_id: '', center_replenish_payload: null
 });
 const manualShareModalTitle = computed(() => activeCenterReplenishSource.value ? '补充中心待补充资源' : (activeLocalShareRequest.value ? '响应求共享' : '手动登记共享源'));
@@ -1197,7 +1198,7 @@ const inferRapidSourceKind = (row) => {
   const typeText = centerTypeLabel(centerRowType(row));
   if (typeText === '电影') return 'movie';
   if (typeText === '单集') return 'episode';
-  if (typeText === '剧集包') return 'completed_season';
+  if (typeText === '季目录' || typeText === '剧集包') return row?.source_kind === 'season_hub' ? 'season_hub' : 'completed_season';
   return '';
 };
 
@@ -1322,12 +1323,25 @@ const centerGroupKey = (row) => {
   const episode = row.episode_number || '';
   const baseType = centerTypeLabel(type);
   if (baseType === '电影') return `movie:${tmdb || title}`;
-  if (baseType === '剧集包') return `pack:${tmdb || title}:S${season || ''}`;
+  if (baseType === '季目录' || baseType === '剧集包') return `pack:${tmdb || title}:S${season || ''}`;
   if (baseType === '单集') return `ep:${tmdb || title}:S${season || ''}:E${episode || ''}`;
   return `${baseType}:${tmdb || title}:${season}:${episode}`;
 };
 
 const groupCenterSources = (items, orderBy = 'latest') => {
+  // 新中心端已经完成分页/筛选/聚合；这里仅兼容旧中心端返回的散行数据。
+  if ((items || []).some(item => Array.isArray(item?.versions))) {
+    return (items || []).map(item => ({
+      ...item,
+      group_key: item.group_key || item.display_group_key || centerGroupKey(item),
+      versions: Array.isArray(item.versions) && item.versions.length ? item.versions : [item],
+      children: Array.isArray(item.children) ? item.children.map(child => ({
+        ...child,
+        group_key: child.group_key || centerGroupKey(child),
+        versions: Array.isArray(child.versions) && child.versions.length ? child.versions : [child],
+      })) : undefined,
+    }));
+  }
   const groups = [];
   const byKey = new Map();
   for (const item of (items || [])) {
@@ -1962,6 +1976,7 @@ const resetManualShareForm = () => {
   Object.assign(manualShareForm, {
     root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
     share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: manualShareForm.receive_code || '',
+    season_status: '', expected_episode_count: null, total_episodes: null, is_completed: false,
     center_replenish_source_id: '', center_replenish_payload: null
   });
   selectedMedia.value = null;
@@ -1987,7 +2002,11 @@ const searchShareableMedia = async () => {
     const params = { keyword, limit: requestRow ? 100 : 30 };
     if (requestRow) Object.assign(params, shareRequestSearchFilterParams(requestRow));
     const res = await axios.get('/api/shared/resources/media/search', { params });
-    mediaCandidates.value = res.data?.items || [];
+    mediaCandidates.value = (res.data?.items || []).filter(row => {
+      const itemType = String(row?.share_item_type || row?.item_type || '').toLowerCase();
+      const shareType = String(row?.share_type || '').toLowerCase();
+      return !row?.episode_number && itemType !== 'episode' && shareType !== 'episode_file';
+    });
     if (!mediaCandidates.value.length) {
       message.info(requestRow ? '本地没有符合该求共享参数的可共享资源' : '没有搜索到本地媒体记录');
     }
@@ -2065,6 +2084,10 @@ const chooseMediaCandidate = (row) => {
     item_type: row.share_item_type || row.item_type || 'Season',
     season_number: row.season_number || null,
     release_year: row.release_year || null,
+    season_status: row.season_status || row.tmdb_status || row.status || row.watching_status || '',
+    expected_episode_count: row.expected_episode_count || row.total_episodes || row.episode_count || null,
+    total_episodes: row.total_episodes || row.expected_episode_count || row.episode_count || null,
+    is_completed: Boolean(row.is_completed || row.season_completed || row.force_ended || row.is_ended || /完结|completed|ended/i.test(String(row.season_status || row.tmdb_status || row.status || ''))),
     center_replenish_source_id: row.center_replenish_source_id || '',
     center_replenish_payload: row.center_replenish_payload || null,
   });
