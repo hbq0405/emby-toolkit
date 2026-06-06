@@ -421,9 +421,9 @@ const isManualShareSeasonPack = computed(() => String(manualShareForm.share_type
 const rapidShareTypeText = (value) => {
   const text = String(value || '').toLowerCase();
   if (text === 'movie_file' || text === 'movie_folder') return '电影源';
-  if (text === 'season_pack') return '完结季源';
+  if (text === 'season_pack') return '季目录源';
   if (text === 'series_pack') return '全剧源';
-  if (text === 'episode_file') return '追更单集源';
+  if (text === 'episode_file') return '历史单集源';
   return value || '-';
 };
 const manualShareValidationAlertType = computed(() => {
@@ -432,13 +432,13 @@ const manualShareValidationAlertType = computed(() => {
   return manualShareValidation.value.valid ? 'success' : 'error';
 });
 const manualShareValidationTitle = computed(() => {
-  if (manualShareValidationLoading.value) return isManualShareSeasonPack.value ? '正在校验完结季源一致性' : '正在预校验共享源';
+  if (manualShareValidationLoading.value) return isManualShareSeasonPack.value ? '正在预校验季目录源' : '正在预校验共享源';
   if (!manualShareValidation.value) return '';
-  if (isManualShareSeasonPack.value) return manualShareValidation.value.valid ? '完结季源一致性校验通过' : '完结季源一致性校验未通过';
+  if (isManualShareSeasonPack.value) return manualShareValidation.value.valid ? '季目录源预校验通过' : '季目录源预校验未通过';
   return manualShareValidation.value.valid ? '共享源预校验通过' : '共享源预校验未通过';
 });
 const manualShareValidationMessage = computed(() => {
-  if (manualShareValidationLoading.value) return '正在读取 115 文件列表、检查 RAW 媒体信息；完结季源会执行集数/分辨率/编码/杜比版本一致性校验……';
+  if (manualShareValidationLoading.value) return '正在读取 115 文件列表、检查 RAW 媒体信息；完结季会执行一致性校验，连载季只按目录登记。';
   if (!manualShareValidation.value) return '';
   const fileCount = manualShareValidation.value.file_count;
   const prefix = fileCount ? `已定位 ${fileCount} 个视频文件。` : '';
@@ -498,18 +498,14 @@ const typeOptions = [
 const centerTypeOptions = [
   { label: '全部类型', value: 'all' },
   { label: '电影', value: 'Movie' },
-  { label: '剧集包', value: 'Pack' },
-  { label: '单集', value: 'Episode' },
+  { label: '季目录', value: 'Pack' },
 ];
 const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '季', value: 'Season' }, { label: '剧集', value: 'Series' },
 ];
 const shareTypeOptions = [
-  { label: '电影', value: 'movie_folder' },
-  { label: '电影', value: 'movie_file' },
-  { label: '剧集包', value: 'season_pack' },
-  { label: '全剧包', value: 'series_pack' },
-  { label: '单集', value: 'episode_file' },
+  { label: '电影目录', value: 'movie_folder' },
+  { label: '季目录', value: 'season_pack' },
 ];
 const resourceTypeLabel = (value) => ({
   movie_file: '电影', movie_folder: '电影', Movie: '电影', movie: '电影', movies: '电影',
@@ -1049,7 +1045,7 @@ const withLedgerTooltip = (row, node, extraClass = '') => {
 
 const centerTypeLabel = (value) => ({
   Movie: '电影', movie: '电影', movies: '电影', movie_file: '电影', movie_folder: '电影',
-  Pack: '剧集包', pack: '剧集包', Season: '剧集包', season: '剧集包', Series: '剧集包', series: '剧集包', tv: '剧集包', season_pack: '剧集包', series_pack: '剧集包',
+  Pack: '季目录', pack: '季目录', Season: '季目录', season: '季目录', Series: '季目录', series: '季目录', tv: '季目录', season_pack: '季目录', series_pack: '季目录',
   Episode: '单集', episode: '单集', episodes: '单集', episode_file: '单集',
 }[value] || value || '-');
 const centerRowType = centerRowTypeSafe;

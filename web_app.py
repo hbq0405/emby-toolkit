@@ -97,6 +97,21 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _shared_boolish(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'on', 'enabled', '启用', '开启', '是'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'off', 'disabled', '停用', '关闭', '否'):
+        return False
+    return default
+
+
 def _refresh_shared_device_event_listener(reason: str = "startup"):
     """根据共享资源开关启动/停止中心通用事件监听。
 
@@ -108,7 +123,7 @@ def _refresh_shared_device_event_listener(reason: str = "startup"):
             stop_shared_device_event_listener,
         )
         cfg = settings_db.get_shared_resource_config() or {}
-        enabled = bool(cfg.get('p115_shared_resource_enabled', False))
+        enabled = _shared_boolish(cfg.get('p115_shared_resource_enabled', False), False)
         if enabled:
             started = ensure_shared_device_event_listener()
             if started:
@@ -479,17 +494,6 @@ def health_check():
     """一个简单的健康检查端点，用于 Docker healthcheck。"""
     return jsonify({"status": "ok"}), 200
 
-# --- 兜底路由，必须放最后 ---
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve(path):
-    static_folder_path = app.static_folder 
-
-    if path != "" and os.path.exists(os.path.join(static_folder_path, path)):
-        return send_from_directory(static_folder_path, path)
-    else:
-        return send_from_directory(static_folder_path, 'index.html')
-    
 # +++ 在应用对象上注册所有蓝图 +++
 app.register_blueprint(watchlist_bp)
 app.register_blueprint(collections_bp)
@@ -513,6 +517,17 @@ app.register_blueprint(discover_bp)
 app.register_blueprint(p115_bp)
 app.register_blueprint(subscription_bp)
 app.register_blueprint(shared_resource_bp)
+
+# --- 兜底路由，必须放在所有 API 蓝图注册之后 ---
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve(path):
+    static_folder_path = app.static_folder
+
+    if path != "" and os.path.exists(os.path.join(static_folder_path, path)):
+        return send_from_directory(static_folder_path, path)
+    return send_from_directory(static_folder_path, 'index.html')
+
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""
     global monitor_service_instance # 声明使用全局变量
