@@ -843,6 +843,27 @@ def _shared_subscription_probe_key(prepared: Dict[str, Any]) -> str:
         return f'Season|{sid}|{season if season is not None else ""}|'
     return ''
 
+
+def _is_shared_rapid_action(action_type: str) -> bool:
+    """统一判断共享中心 Rapid v2 秒传动作。
+
+    旧分享模式里 action_type 可能是“共享资源/共享永久转存/共享虚拟”；
+    Rapid v2 统一使用“共享资源秒传”，这里集中兼容展示与状态更新判断，
+    防止订阅成功后因为 action_type 不在旧白名单里而漏更新数据库。
+    """
+    text = str(action_type or '').strip()
+    return text in {
+        '共享资源',
+        '共享资源秒传',
+        '共享秒传',
+        'Rapid秒传',
+        '中心秒传',
+    }
+
+
+def _shared_rapid_action_tag(action_type: str) -> str:
+    return '共享秒传' if _is_shared_rapid_action(action_type) else str(action_type or '')
+
 # ★★★ 内部辅助函数：处理整部剧集的精细化订阅 ★★★
 # ==============================================================================
 def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Dict, tmdb_api_key: str, source: Dict = None) -> bool:
@@ -1754,8 +1775,8 @@ def task_auto_subscribe(processor):
             tg_channel_tracking = watchlist_config.get('tg_channel_tracking', False)
 
             # ==========================================
-            # 共享资源优先：本轮统一订阅已提前批量向中心 probe；这里只消费批量结果。
-            # 旧中心不支持批量接口时，自动回退原逐条查询。
+            # 共享资源优先：Rapid v2 只查询中心索引，命中后本机 CK 执行秒传。
+            # 中心不保存 CK，也不再返回 share_code/receive_code。
             # ==========================================
             if item_type in ['Movie', 'Series', 'Season', 'Episode']:
                 try:
@@ -1797,16 +1818,16 @@ def task_auto_subscribe(processor):
 
                     if shared_result.get('success'):
                         success = True
-                        action_type = shared_result.get('action_type') or '共享资源'
+                        action_type = shared_result.get('action_type') or '共享资源秒传'
                         logger.info(
-                            f"  ➜ [共享资源] 《{title}》命中中心共享池，"
-                            f"处理方式: {shared_result.get('mode')}, 数量: {shared_result.get('count', 0)}"
+                            f"  ➜ [共享秒传] 《{title}》命中中心 Rapid 资源池，"
+                            f"处理方式: {shared_result.get('mode') or 'rapid'}, 数量: {shared_result.get('count', 0)}"
                         )
                     elif shared_result.get('enabled') and shared_result.get('reported_gap'):
                         if item_type == 'Season':
-                            logger.info(f"  ➜ [共享资源] 《{title}》S{int(season_number or 0):02d} 中心未命中，已登记季缺口，继续原有订阅链路。")
+                            logger.info(f"  ➜ [共享秒传] 《{title}》S{int(season_number or 0):02d} 中心未命中，已登记 Rapid 季缺口，继续原有订阅链路。")
                         else:
-                            logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记缺口，继续原有订阅链路。")
+                            logger.info(f"  ➜ [共享秒传] 《{title}》中心未命中，已登记 Rapid 缺口，继续原有订阅链路。")
                 except Exception as e:
                     logger.error(f"  ➜ [共享资源] 处理《{title}》时异常，自动降级原有订阅链路: {e}", exc_info=True)
 
@@ -1967,7 +1988,7 @@ def task_auto_subscribe(processor):
                 # WANTED 成功后更新为 SUBSCRIBED；SUBSCRIBED 补库成功只保持原状态，不能重复消耗订阅配额。
                 # Series 走 MP 整剧逻辑时仍由 _subscribe_full_series_with_logic 内部逐季处理；
                 # Series 走云资源时没有逐季订阅流程，需要直接更新当前 Series，避免下次任务重复处理。
-                if is_wanted_subscription and (item_type != 'Series' or action_type in ["影巢", "频道", "云资源", "共享资源", "共享虚拟", "共享永久转存"]):
+                if is_wanted_subscription and (item_type != 'Series' or action_type in ["影巢", "频道", "云资源"] or _is_shared_rapid_action(action_type)):
                     request_db.set_media_status_subscribed(
                         tmdb_ids=item['tmdb_id'],
                         item_type=item_type,
@@ -2073,8 +2094,8 @@ def task_auto_subscribe(processor):
                 source = detail.get('source', '`[未知来源]`')
                 item = telegram.escape_markdown(detail['item'])
 
-                if detail.get('action') in ['共享资源', '共享虚拟', '共享永久转存']:
-                    action_tag = detail.get('action')
+                if _is_shared_rapid_action(detail.get('action')):
+                    action_tag = _shared_rapid_action_tag(detail.get('action'))
                 elif detail.get('action') == '影巢':
                     action_tag = "影巢转存"
                 elif detail.get('action') == '频道':

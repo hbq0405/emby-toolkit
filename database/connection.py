@@ -471,64 +471,6 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  ➜ 正在创建 'shared_share_records' 表 (我的共享资源记录)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS shared_share_records (
-                        id SERIAL PRIMARY KEY,
-                        share_code TEXT UNIQUE,
-                        receive_code TEXT,
-                        share_url TEXT,
-                        share_type TEXT NOT NULL DEFAULT 'season_pack',
-                        root_fid TEXT NOT NULL,
-                        root_name TEXT,
-                        root_is_dir BOOLEAN NOT NULL DEFAULT TRUE,
-                        tmdb_id TEXT,
-                        item_type TEXT,
-                        parent_series_tmdb_id TEXT,
-                        season_number INTEGER,
-                        episode_number INTEGER,
-                        title TEXT,
-                        release_year INTEGER,
-                        status TEXT NOT NULL DEFAULT 'pending_review',
-                        review_status TEXT NOT NULL DEFAULT 'pending_review',
-                        center_status TEXT NOT NULL DEFAULT 'not_reported',
-                        center_source_id TEXT,
-                        item_count INTEGER NOT NULL DEFAULT 0,
-                        reported_count INTEGER NOT NULL DEFAULT 0,
-                        last_checked_at TIMESTAMP WITH TIME ZONE,
-                        reported_at TIMESTAMP WITH TIME ZONE,
-                        cancelled_at TIMESTAMP WITH TIME ZONE,
-                        last_error TEXT,
-                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                    )
-                """)
-
-                logger.trace("  ➜ 正在创建 'shared_share_items' 表 (我的共享资源文件明细)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS shared_share_items (
-                        id SERIAL PRIMARY KEY,
-                        share_record_id INTEGER NOT NULL REFERENCES shared_share_records(id) ON DELETE CASCADE,
-                        fid TEXT,
-                        sha1 TEXT,
-                        size BIGINT DEFAULT 0,
-                        file_name TEXT NOT NULL,
-                        relative_path TEXT,
-                        tmdb_id TEXT,
-                        item_type TEXT,
-                        season_number INTEGER,
-                        episode_number INTEGER,
-                        center_source_id TEXT,
-                        center_reported BOOLEAN NOT NULL DEFAULT FALSE,
-                        raw_ffprobe_uploaded BOOLEAN NOT NULL DEFAULT FALSE,
-                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        CONSTRAINT uniq_shared_share_item UNIQUE (share_record_id, fid)
-                    )
-                """)
-
                 logger.trace("  ➜ 正在创建 'shared_credit_snapshot' 表 (共享资源贡献值快照)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS shared_credit_snapshot (
@@ -652,9 +594,6 @@ def init_db():
                             "config_main_role_only": "BOOLEAN NOT NULL DEFAULT FALSE",
                             "config_min_vote_count": "INTEGER NOT NULL DEFAULT 10",
                             "last_scanned_tmdb_ids_json": "JSONB"
-                        },
-                        'shared_share_records': {
-                            "episode_number": "INTEGER"
                         }
                     }
 
@@ -748,22 +687,6 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_pick_code ON p115_filesystem_cache (pick_code) WHERE pick_code IS NOT NULL AND pick_code <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_local_path ON p115_filesystem_cache (local_path) WHERE local_path IS NOT NULL AND local_path <> '';")
 
-                    # 12.5 【共享资源】加速我的共享和贡献值页面
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_status_updated ON shared_share_records (status, updated_at DESC);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_media ON shared_share_records (tmdb_id, item_type, season_number);")
-                    # 完结汇总：快速找到某父剧某季下仍活动的单集分享。
-                    cursor.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_ssr_completed_rollup_lookup
-                        ON shared_share_records (parent_series_tmdb_id, season_number, status, share_type)
-                        WHERE season_number IS NOT NULL
-                          AND (
-                                episode_number IS NOT NULL
-                                OR item_type = 'Episode'
-                                OR share_type = 'episode_file'
-                          );
-                    """)
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssi_record ON shared_share_items (share_record_id);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssi_sha1 ON shared_share_items (sha1) WHERE sha1 IS NOT NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_shared_credit_ledger_created ON shared_credit_ledger_local (created_at DESC);")
 
 
@@ -786,7 +709,10 @@ def init_db():
                         'watchlist',
                         'tracked_actor_media',
                         'shared_virtual_items',
-                        'shared_maintenance_state'
+                        'shared_maintenance_state',
+                        # Rapid v2 全量推倒 115 分享模式，本地旧分享表直接废弃。
+                        'shared_share_items',
+                        'shared_share_records'
                     ]
                     for table in deprecated_tables:
                         logger.trace(f"    ➜ [数据库清理] 正在尝试移除废弃的表: '{table}'...")
@@ -831,6 +757,84 @@ def init_db():
 
                 except Exception as e_cleanup:
                     logger.error(f"  ➜ [数据库清理] 清理废弃对象时发生错误: {e_cleanup}", exc_info=True)
+
+
+                # ======================================================================
+                # ★★★ Rapid v2 共享资源本地表：秒传索引 / manifest，不再保存 115 分享码 ★★★
+                # ======================================================================
+                logger.trace("  ➜ [Rapid v2] 正在创建共享资源秒传索引表...")
+                try:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS shared_rapid_sources (
+                            id SERIAL PRIMARY KEY,
+                            source_key TEXT NOT NULL UNIQUE,
+                            source_kind TEXT NOT NULL, -- movie / episode / completed_season
+                            center_source_id TEXT,
+                            tmdb_id TEXT NOT NULL,
+                            item_type TEXT NOT NULL,
+                            parent_series_tmdb_id TEXT,
+                            season_number INTEGER,
+                            episode_number INTEGER,
+                            title TEXT,
+                            release_year INTEGER,
+                            sha1 TEXT,
+                            size BIGINT DEFAULT 0,
+                            file_name TEXT,
+                            root_fid TEXT,
+                            root_name TEXT,
+                            source_provider TEXT NOT NULL DEFAULT 'local',
+                            status TEXT NOT NULL DEFAULT 'active', -- active / available / updating / inconsistent / incomplete / disabled / error
+                            center_status TEXT NOT NULL DEFAULT 'local', -- local / reported / failed / disabled
+                            manifest_hash TEXT,
+                            manifest_version INTEGER NOT NULL DEFAULT 1,
+                            file_count INTEGER NOT NULL DEFAULT 0,
+                            total_size BIGINT NOT NULL DEFAULT 0,
+                            is_clean_version BOOLEAN NOT NULL DEFAULT FALSE,
+                            clean_version_confidence REAL,
+                            clean_version_meta_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            media_signature_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            rapid_meta_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            last_error TEXT,
+                            reported_at TIMESTAMP WITH TIME ZONE,
+                            disabled_at TIMESTAMP WITH TIME ZONE,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        )
+                    """)
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS shared_rapid_source_files (
+                            id SERIAL PRIMARY KEY,
+                            local_source_id INTEGER NOT NULL REFERENCES shared_rapid_sources(id) ON DELETE CASCADE,
+                            fid TEXT,
+                            pick_code TEXT,
+                            sha1 TEXT NOT NULL,
+                            size BIGINT DEFAULT 0,
+                            file_name TEXT NOT NULL,
+                            relative_path TEXT,
+                            tmdb_id TEXT,
+                            item_type TEXT,
+                            season_number INTEGER,
+                            episode_number INTEGER,
+                            center_file_id TEXT,
+                            raw_ffprobe_uploaded BOOLEAN NOT NULL DEFAULT FALSE,
+                            media_signature_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            rapid_meta_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        )
+                    """)
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_status_updated ON shared_rapid_sources(status, updated_at DESC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_center_source ON shared_rapid_sources(source_kind, center_source_id);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_media ON shared_rapid_sources(tmdb_id, item_type, season_number, episode_number);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_sha1 ON shared_rapid_sources(UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_source ON shared_rapid_source_files(local_source_id);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_sha1 ON shared_rapid_source_files(UPPER(sha1));")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_episode ON shared_rapid_source_files(tmdb_id, season_number, episode_number);")
+                except Exception as e_rapid_schema:
+                    logger.error(f"  ➜ [Rapid v2] 创建共享资源秒传表失败: {e_rapid_schema}", exc_info=True)
+
                 # ======================================================================
 
             conn.commit()

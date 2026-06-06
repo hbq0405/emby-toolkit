@@ -368,25 +368,25 @@ def _shared_resource_auto_share_enabled() -> bool:
             return value.strip().lower() in ('1', 'true', 'yes', 'on', '启用', '开启')
         return bool(value)
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 读取共享资源总开关失败，跳过自动分享探测: {e}")
+        logger.debug(f"  ➜ [共享资源] 读取共享资源总开关失败，跳过自动登记探测: {e}")
         return False
 
 
 def _run_shared_auto_share_detached(task_name: str, **kwargs):
-    """共享供给侧探测/创建分享必须脱离 task_manager 单线程队列。
+    """共享供给侧登记必须脱离 task_manager 单线程队列。
 
     Webhook 本身已经运行在 task_manager 的单 worker + task_lock 中。
     如果这里再 submit_task，会在同一线程内二次获取 task_lock，导致 Webhook 任务假死。
     """
     if not _shared_resource_auto_share_enabled():
-        logger.debug(f"  ➜ [共享资源] 共享资源未启用，跳过自动分享探测: {task_name}")
+        logger.debug(f"  ➜ [共享资源] 共享资源未启用，跳过自动登记探测: {task_name}")
         return
 
     def _runner():
         try:
-            from tasks.shared_resource_tasks import trigger_shared_auto_share_for_library_item
-            logger.debug(f"  ➜ [共享资源] 检查是否需要分享: {task_name}")
-            result = trigger_shared_auto_share_for_library_item(None, **kwargs)
+            from tasks.shared_resource_tasks import trigger_shared_rapid_register_for_library_item
+            logger.debug(f"  ➜ [共享资源] 检查是否需要登记: {task_name}")
+            result = trigger_shared_rapid_register_for_library_item(None, **kwargs)
             logger.debug(
                 "  ➜ [共享资源] 检查完成: %s，created=%s，message=%s",
                 task_name,
@@ -394,37 +394,53 @@ def _run_shared_auto_share_detached(task_name: str, **kwargs):
                 result.get('message', '') if isinstance(result, dict) else '',
             )
         except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 自动分享探测失败: {task_name} -> {e}", exc_info=True)
+            logger.warning(f"  ➜ [共享资源] 自动登记探测失败: {task_name} -> {e}", exc_info=True)
 
     threading.Thread(
         target=_runner,
-        name=f"shared-auto-share-{str(task_name)[:40]}",
+        name=f"shared-rapid-register-{str(task_name)[:40]}",
         daemon=True,
     ).start()
 
 
 def _submit_shared_auto_share_after_library_ready(item_details: dict, item_id: str, item_type: str, tmdb_id: str):
-    """Movie 入库完成后，异步询问共享中心是否需要本机创建分享。
+    """媒体入库完成后，异步登记 Rapid v2 共享源。
 
-    Webhook 只保留电影分享入口。剧集不管是单集追更还是完结季包，
-    都交给 watchlist_processor 在完成最终追更/完结判定后处理，避免整季入库时
-    webhook 只看到 new_episode_ids 就误把整季拆成单集分享。
-    Movie 的备份分享由任务内部在“正常分享不需要创建且中心可用分享数=1”时额外补充。
+    Rapid v2 不创建 115 分享，也没有审核窗口。Movie 和 Episode 都可以在入库后
+    直接把 SHA1/size/RAW/媒体身份登记到中心；完结季收藏源仍由 watchlist_processor
+    在完结一致性校验通过后统一登记。
     """
     try:
-        if item_type != 'Movie' or not tmdb_id:
+        if item_type not in ('Movie', 'Episode') or not tmdb_id:
             return
 
+        parent_series_tmdb_id = ''
+        season_number = None
+        episode_number = None
+        if item_type == 'Episode':
+            try:
+                providers = item_details.get('ProviderIds') if isinstance(item_details.get('ProviderIds'), dict) else {}
+                parent_series_tmdb_id = (
+                    item_details.get('SeriesProviderIds', {}).get('Tmdb') if isinstance(item_details.get('SeriesProviderIds'), dict) else ''
+                ) or item_details.get('SeriesTmdbId') or item_details.get('ParentSeriesTmdbId') or ''
+                season_number = item_details.get('ParentIndexNumber') or item_details.get('SeasonNumber')
+                episode_number = item_details.get('IndexNumber') or item_details.get('EpisodeNumber')
+            except Exception:
+                pass
+
         _run_shared_auto_share_detached(
-            f"共享电影入库探测: {item_details.get('Name') or tmdb_id}",
-            item_type='Movie',
+            f"Rapid共享源登记: {item_details.get('Name') or tmdb_id}",
+            item_type=item_type,
             tmdb_id=str(tmdb_id),
+            parent_series_tmdb_id=str(parent_series_tmdb_id or ''),
+            season_number=season_number,
+            episode_number=episode_number,
             emby_item_id=str(item_id),
             title=item_details.get('Name') or '',
             year=item_details.get('ProductionYear') or '',
         )
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 提交 webhook 电影自动分享探测失败: {e}", exc_info=True)
+        logger.warning(f"  ➜ [共享资源] 提交 webhook Rapid 共享源登记失败: {e}", exc_info=True)
 
 def _get_processor_local_strm_root(processor) -> str:
     """从 MediaProcessor / 配置中提取本地 STRM 根目录，用于补齐 p115_filesystem_cache.local_path。"""
@@ -599,8 +615,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
 
-    # 2. 电影入库后先做 115 指纹体检，再进入共享资源探测。
-    # 共享电影创建分享依赖 PC/SHA1/FID/缓存字段，体检要放在分享探测前。
+    # 2. 媒体入库后先做 115 指纹体检，再登记 Rapid 共享源。
+    # Rapid 登记依赖 PC/SHA1/FID/缓存字段，体检要放在登记前。
     if item_type == "Movie":
         _repair_webhook_p115_fingerprints_for_emby_ids(
             processor,

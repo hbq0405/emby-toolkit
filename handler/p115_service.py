@@ -550,6 +550,94 @@ class P115OpenAPIClient:
             data["sign_val"] = sign_val
         return self._do_request("POST", url, data=data)
 
+
+    def rapid_upload(self, payload=None, **kwargs):
+        """按 SHA1/size 在目标目录执行 115 秒传。
+
+        Rapid v2 的中心端不保存 CK；这里仅在本机使用 OpenAPI 上传初始化接口。
+        说明：115 在部分资源上可能要求 preid/sign 二次校验。中心没有明文文件时无法
+        计算 sign_val，因此遇到 status=7 会返回明确失败，调用方可等待其他源或走原下载链路。
+        """
+        payload = dict(payload or {})
+        payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
+        target_cid = str(payload.get('cid') or payload.get('target_cid') or payload.get('target') or '').strip()
+        file_name = str(payload.get('file_name') or payload.get('name') or '').strip()
+        sha1 = str(payload.get('sha1') or payload.get('fileid') or payload.get('file_sha1') or '').strip().upper()
+        try:
+            size = int(float(payload.get('size') or payload.get('file_size') or payload.get('filesize') or 0))
+        except Exception:
+            size = 0
+        preid = str(payload.get('preid') or payload.get('pre_sha1') or payload.get('pre_sha1_128k') or '').strip().upper()
+        sign_key = payload.get('sign_key')
+        sign_val = payload.get('sign_val') or payload.get('sign_check_value')
+
+        if not target_cid:
+            return {'state': False, 'error_msg': '缺少目标目录 cid，无法秒传'}
+        if not file_name:
+            file_name = f'{sha1}.mkv' if sha1 else 'rapid-file.mkv'
+        if not re.fullmatch(r'[A-F0-9]{40}', sha1 or ''):
+            return {'state': False, 'error_msg': '缺少合法 SHA1，无法秒传'}
+        if size <= 0:
+            return {'state': False, 'error_msg': '缺少文件大小，无法秒传'}
+
+        # 115 upload/init 要求 preid 字段；无 preid 时用 SHA1 兜底尝试。
+        # 如果 115 要求二次校验，会返回 status=7，此时无法凭空计算 sign_val。
+        init_res = self.fs_upload_init(file_name, size, target_cid, sha1, preid or sha1, sign_key=sign_key, sign_val=sign_val)
+        if not isinstance(init_res, dict):
+            return {'state': False, 'error_msg': str(init_res)}
+
+        data = init_res.get('data') if isinstance(init_res.get('data'), dict) else {}
+        status = str(data.get('status') if data.get('status') is not None else init_res.get('status') if init_res.get('status') is not None else '')
+
+        if init_res.get('state') and status in ('2', '1'):
+            # status=2 通常表示秒传完成；少数接口 status=1 可能表示需要直传，这里不能上传文件，按失败处理。
+            if status == '2':
+                out = dict(init_res)
+                out['state'] = True
+                out['success'] = True
+                out['message'] = out.get('message') or '115 秒传成功'
+                out.setdefault('rapid_upload', True)
+                out.setdefault('sha1', sha1)
+                out.setdefault('file_name', file_name)
+                out.setdefault('target_cid', target_cid)
+                return out
+            return {
+                'state': False,
+                'error_msg': '115 返回需要普通上传(status=1)，Rapid v2 不上传明文文件',
+                'response': init_res,
+            }
+
+        if status == '7':
+            return {
+                'state': False,
+                'error_msg': '115 要求二次校验(status=7)，中心调度秒传无法计算 sign_val；需要源端补充 preid/sign 或等待其他资源',
+                'response': init_res,
+            }
+
+        return init_res
+
+    def fs_rapid_upload(self, target_cid, sha1, size, file_name, preid=None, **kwargs):
+        payload = {'cid': target_cid, 'sha1': sha1, 'size': size, 'file_name': file_name}
+        if preid:
+            payload['preid'] = preid
+        payload.update(kwargs)
+        return self.rapid_upload(payload)
+
+    def upload_file_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+        return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+    def fs_upload_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+        return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+    def upload_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+        return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+    def add_file_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+        return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+    def rapid_save(self, target_cid, sha1, size, file_name, **kwargs):
+        return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
     def fs_upload_get_token(self):
         """获取上传凭证"""
         url = f"{self.base_url}/open/upload/get_token"
@@ -1886,6 +1974,36 @@ class P115Service:
                 self._check_openapi()
                 return self._call_api('upload_file_stream', file_stream, file_name, target_cid, force_openapi=True)
 
+
+            def rapid_upload(self, payload=None, **kwargs):
+                """Rapid v2 秒传入口：强制走本机 OpenAPI，不经过中心、不上传 CK。"""
+                self._check_openapi()
+                payload = dict(payload or {})
+                payload.update({k: v for k, v in kwargs.items() if v not in (None, '')})
+                return self._call_api('rapid_upload', payload, normalizer=_p115_normalize_common_response, force_openapi=True)
+
+            def fs_rapid_upload(self, target_cid, sha1, size, file_name, preid=None, **kwargs):
+                payload = {'cid': target_cid, 'sha1': sha1, 'size': size, 'file_name': file_name}
+                if preid:
+                    payload['preid'] = preid
+                payload.update(kwargs)
+                return self.rapid_upload(payload)
+
+            def upload_file_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+                return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+            def fs_upload_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+                return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+            def upload_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+                return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+            def add_file_by_sha1(self, target_cid, sha1, size, file_name, **kwargs):
+                return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
+            def rapid_save(self, target_cid, sha1, size, file_name, **kwargs):
+                return self.fs_rapid_upload(target_cid, sha1, size, file_name, **kwargs)
+
             def download_url(self, pick_code, user_agent=None):
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法获取播放直链")
@@ -3008,13 +3126,7 @@ class P115CacheManager:
 
     @staticmethod
     def mark_shared_raw_dirty_for_sha1(sha1, *, reason='raw_ffprobe_etk_context_fixed', tmdb_id=None, media_type=None):
-        """本地 RAW 被修正后，标记已分享到中心的同 SHA1 资源需要重新上传 RAW。
-
-        手动重组通常就是为了纠正识别错误；如果旧 RAW 已经登记到中心，中心对象存储
-        会继续保存污染的 _etk。这里不直接依赖路由层上传逻辑，只把本地分享项置为
-        raw_ffprobe_uploaded=FALSE / center_reported=FALSE，并把分享记录改成 not_reported，
-        交给共享高频同步任务强制重传并重新登记中心。
-        """
+        """本地 RAW 被修正后，标记 Rapid v2 本地共享索引需要重新上传 RAW。"""
         sha1 = str(sha1 or '').strip().upper()
         if not sha1:
             return 0
@@ -3022,57 +3134,56 @@ class P115CacheManager:
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    dirty_payload = {
+                        'raw_etk_dirty': {
+                            'pending': True,
+                            'reason': reason,
+                            'sha1': sha1,
+                            'tmdb_id': str(tmdb_id or '').strip() or None,
+                            'type': str(media_type or '').strip() or None,
+                            'marked_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                        }
+                    }
                     cursor.execute(
                         """
-                        UPDATE shared_share_items
+                        UPDATE shared_rapid_source_files
                         SET raw_ffprobe_uploaded = FALSE,
-                            center_reported = FALSE,
+                            raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
                             updated_at = NOW()
                         WHERE UPPER(COALESCE(sha1, '')) = %s
-                        RETURNING share_record_id
+                        RETURNING local_source_id
                         """,
-                        (sha1,)
+                        (json.dumps(dirty_payload, ensure_ascii=False), sha1),
                     )
-                    record_ids = sorted({r.get('share_record_id') for r in cursor.fetchall() if r.get('share_record_id') is not None})
+                    local_source_ids = sorted({r.get('local_source_id') for r in cursor.fetchall() if r.get('local_source_id') is not None})
 
-                    if record_ids:
-                        dirty_payload = {
-                            'raw_etk_dirty': {
-                                'pending': True,
-                                'reason': reason,
-                                'sha1': sha1,
-                                'tmdb_id': str(tmdb_id or '').strip() or None,
-                                'type': str(media_type or '').strip() or None,
-                                'marked_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                            }
-                        }
+                    if local_source_ids:
                         cursor.execute(
                             """
-                            UPDATE shared_share_records
-                            SET center_status = 'not_reported',
+                            UPDATE shared_rapid_sources
+                            SET center_status = 'dirty_raw',
                                 last_error = %s,
                                 raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
                                 updated_at = NOW()
                             WHERE id = ANY(%s)
-                              AND COALESCE(status, '') NOT IN ('cancelled', 'deleted', 'dead', 'blocked', 'violation')
+                              AND COALESCE(status, '') NOT IN ('disabled', 'deleted')
                             """,
                             (
                                 f'本地 RAW _etk 已修复，等待覆盖中心 RAW：{sha1[:12]}...',
                                 json.dumps(dirty_payload, ensure_ascii=False),
-                                record_ids,
-                            )
+                                local_source_ids,
+                            ),
                         )
                     conn.commit()
 
-            if record_ids:
+            if local_source_ids:
                 logger.info(
-                    f"  ➜ [raw_ffprobe缓存] 已标记 {len(record_ids)} 个共享记录重新上传 RAW："
+                    f"  ➜ [raw_ffprobe缓存] 已标记 {len(local_source_ids)} 个 Rapid 共享源重新上传 RAW："
                     f"sha1={sha1[:12]}..., reason={reason}"
                 )
-            return len(record_ids)
+            return len(local_source_ids)
         except Exception as e:
-            # 没启用共享资源或旧库缺表时不能影响 115 整理主流程。
-            logger.debug(f"  ➜ 标记共享 RAW 重传失败: sha1={sha1[:12]}... -> {e}")
+            logger.debug(f"  ➜ 标记 Rapid 共享 RAW 重传失败: sha1={sha1[:12]}... -> {e}")
             return 0
 
 # ======================================================================
@@ -7241,11 +7352,10 @@ _SHARED_RAW_REUPLOAD_LOCK = threading.Lock()
 _LAST_SHARED_RAW_REUPLOAD_AT = 0
 
 def _kick_shared_raw_reupload_detached(reason: str = '', delay: float = 8.0):
-    """手动重组修复 RAW 后，异步触发一次共享高频同步。
+    """手动重组修复 RAW 后，异步触发一次 Rapid 共享维护。
 
-    这里只触发同步任务，不在整理链路里直接请求中心，避免重组接口被网络波动拖死。
-    高频同步会读取 mark_shared_raw_dirty_for_sha1 写下的 not_reported/dirty 标记，
-    调用 _upload_share_raw_ffprobe_to_center(..., force=True) 覆盖中心 RAW。
+    Rapid v2 已废弃 115 分享状态同步；这里只唤醒共享维护线程，避免重组接口
+    被中心网络波动拖死。后续需要强制重登记时，由共享资源维护任务扫描 dirty_raw。
     """
     global _LAST_SHARED_RAW_REUPLOAD_AT
 
@@ -7259,18 +7369,18 @@ def _kick_shared_raw_reupload_detached(reason: str = '', delay: float = 8.0):
         if delay and delay > 0:
             time.sleep(delay)
         try:
-            from tasks.shared_resource_tasks import task_shared_share_status_sync_high_freq
-            logger.info(f"  ➜ [批量重组] 异步触发共享 RAW 覆盖上传：{reason or 'manual-reorganize-raw-fix'}")
-            task_shared_share_status_sync_high_freq(maintenance_silent=True)
+            from tasks.shared_resource_tasks import task_shared_resource_maintenance
+            logger.info(f"  ➜ [批量重组] 异步触发 Rapid 共享维护：{reason or 'manual-reorganize-raw-fix'}")
+            task_shared_resource_maintenance(maintenance_silent=True)
         except Exception as e:
-            logger.warning(f"  ➜ [批量重组] 触发共享 RAW 覆盖上传失败: {e}", exc_info=True)
+            logger.warning(f"  ➜ [批量重组] 触发 Rapid 共享维护失败: {e}", exc_info=True)
 
     threading.Thread(
         target=_runner,
-        name='shared-raw-reupload-after-manual-correct',
+        name='shared-rapid-maintenance-after-manual-correct',
         daemon=True,
     ).start()
-    return {'started': True, 'message': '已异步触发共享 RAW 覆盖上传'}
+    return {'started': True, 'message': '已异步触发 Rapid 共享维护'}
 
 # ======================================================================
 # ★★★ 手动纠错缓冲队列 (实现批量重组与一次性刷新) ★★★

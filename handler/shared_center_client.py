@@ -1,7 +1,8 @@
 # handler/shared_center_client.py
-# ETK 共享资源中心客户端：缺口登记、共享源查询、raw_ffprobe 批量拉取、转存结果上报。
+# ETK 共享资源中心客户端（Rapid v2）：中心只保存资源索引/manifest，不保存 CK、不创建 115 分享。
 import logging
-from typing import Any, Dict, List, Optional
+import urllib.parse
+from typing import Any, Dict, List
 
 import requests
 
@@ -17,32 +18,26 @@ def _app_version() -> str:
 
 
 def _client_user_agent() -> str:
-    return f"ETK/{_app_version()}"
+    return f"ETK/{_app_version()} RapidV2"
 
 
 def _raise_for_center_error(resp):
     if resp.ok:
         return
+    try:
+        body = resp.json() if resp.text else {}
+    except Exception:
+        body = {}
     if resp.status_code == 426:
-        try:
-            body = resp.json()
-        except Exception:
-            body = {}
         min_version = body.get('min_client_version') if isinstance(body, dict) else ''
         client_version = body.get('client_version') if isinstance(body, dict) else ''
         message = body.get('message') if isinstance(body, dict) else ''
-        raise RuntimeError(
-            message or f"共享中心拒绝服务：当前客户端版本 {client_version or _app_version()} 低于中心要求 {min_version or '未知'}，请升级 ETK 后再使用共享资源。"
-        )
-    raise RuntimeError(f"共享中心请求失败: {resp.status_code} {resp.text[:200]}")
+        raise RuntimeError(message or f"共享中心拒绝服务：当前客户端版本 {client_version or _app_version()} 低于中心要求 {min_version or '未知'}")
+    detail = body.get('detail') or body.get('message') if isinstance(body, dict) else ''
+    raise RuntimeError(f"共享中心请求失败: {resp.status_code} {detail or resp.text[:300]}")
 
 
 def _request_kwargs(timeout: int) -> Dict[str, Any]:
-    """共享中心 HTTP 请求参数。
-
-    复用全局 Network 代理配置，只影响共享中心相关 requests。
-    未开启代理时不传 proxies，保持原行为。
-    """
     kwargs = {'timeout': timeout}
     getter = getattr(config_manager, 'get_proxies_for_requests', None)
     if callable(getter):
@@ -53,16 +48,16 @@ def _request_kwargs(timeout: int) -> Dict[str, Any]:
 
 
 def _shared_cfg() -> Dict[str, Any]:
-    return settings_db.get_shared_resource_config()
+    return settings_db.get_shared_resource_config() or {}
 
 
 def shared_center_enabled() -> bool:
-    return bool(_shared_cfg().get('p115_shared_resource_enabled'))
+    cfg = _shared_cfg()
+    return bool(cfg.get('p115_shared_resource_enabled')) and bool(cfg.get('p115_shared_center_url'))
 
 
 def shared_resource_mode() -> str:
-    # 虚拟入库已移除，共享池消费统一走永久转存。
-    return 'permanent'
+    return 'rapid'
 
 
 def _safe_int_or_none(value):
@@ -74,31 +69,42 @@ def _safe_int_or_none(value):
         return None
 
 
-def _normalize_gap_item_for_center(item: Dict[str, Any]) -> Dict[str, Any]:
-    """归一化中心缺口粒度。
+def _canonical_item_type(value: str) -> str:
+    text = str(value or '').strip().lower()
+    if text in ('movie', 'movie_file', 'movie_folder', 'film'):
+        return 'Movie'
+    if text in ('episode', 'episode_file', 'single'):
+        return 'Episode'
+    if text in ('season', 'season_pack', 'tv_pack'):
+        return 'Season'
+    if text in ('series', 'show', 'tv'):
+        return 'Series'
+    return str(value or '').strip() or 'Movie'
 
-    普通共享池只登记 Movie / Season / Series 缺口；Episode 只作为客户端本地
-    缺失明细存在。这样长篇动漫不会因为几百上千集把中心 wanted_gaps 撑爆。
-    """
+
+def _normalize_gap_item_for_center(item: Dict[str, Any]) -> Dict[str, Any]:
     item = dict(item or {})
-    item_type = str(item.get('item_type') or '').strip()
+    item_type = _canonical_item_type(item.get('item_type') or item.get('target_type'))
     season = _safe_int_or_none(item.get('season_number'))
     episode = _safe_int_or_none(item.get('episode_number'))
-    if item_type.lower() in ('episode', 'episode_file', 'single') and season is not None:
-        item['item_type'] = 'Season'
-        item['season_number'] = season
-        item['episode_number'] = None
-    elif item_type.lower() in ('season', 'season_pack', 'tv_pack'):
-        item['item_type'] = 'Season'
-        item['season_number'] = season
-        item['episode_number'] = None
-    elif item_type.lower() in ('movie', 'movie_file', 'movie_folder'):
-        item['item_type'] = 'Movie'
-        item['episode_number'] = None
-    elif item_type.lower() in ('series', 'show', 'tv'):
-        item['item_type'] = 'Series'
-        item['episode_number'] = None
-    return item
+    # Rapid v2：中心缺口仍按电影/季聚合。分集只是追更池资源，不把 wanted_gaps 打爆。
+    if item_type == 'Episode' and season is not None:
+        item_type = 'Season'
+        episode = None
+    if item_type in ('Movie', 'Series'):
+        episode = None
+        if item_type == 'Movie':
+            season = None
+    if item_type == 'Season':
+        episode = None
+    return {
+        'tmdb_id': str(item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or item.get('tmdb_id') or '').strip(),
+        'item_type': item_type,
+        'season_number': season,
+        'episode_number': episode,
+        'title': item.get('title') or item.get('name') or item.get('file_name') or None,
+        'release_year': _safe_int_or_none(item.get('release_year') or item.get('year')),
+    }
 
 
 def _dedupe_gap_items_for_center(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -110,12 +116,7 @@ def _dedupe_gap_items_for_center(items: List[Dict[str, Any]]) -> List[Dict[str, 
         item = _normalize_gap_item_for_center(raw)
         if not item.get('tmdb_id') or not item.get('item_type'):
             continue
-        key = (
-            str(item.get('tmdb_id') or ''),
-            str(item.get('item_type') or ''),
-            _safe_int_or_none(item.get('season_number')),
-            _safe_int_or_none(item.get('episode_number')),
-        )
+        key = (item.get('tmdb_id'), item.get('item_type'), item.get('season_number'), item.get('episode_number'))
         if key in seen:
             continue
         seen.add(key)
@@ -143,60 +144,43 @@ class SharedCenterClient:
             'User-Agent': _client_user_agent(),
         }
 
-    def _post(self, path: str, payload: Dict[str, Any], timeout: int = 20) -> Dict[str, Any]:
+    def _post(self, path: str, payload: Dict[str, Any] | None = None, timeout: int = 20) -> Dict[str, Any]:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        resp = requests.post(url, headers=self._headers(), json=payload, **_request_kwargs(timeout))
+        resp = requests.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
-    def _get(self, path: str, timeout: int = 15) -> Dict[str, Any]:
+    def _get(self, path: str, params: Dict[str, Any] | None = None, timeout: int = 15) -> Dict[str, Any]:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        resp = requests.get(url, headers=self._headers(), **_request_kwargs(timeout))
+        resp = requests.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
-
 
     def register_device(self, name: str = '', install_id: str = '', admin_token: str = '') -> Dict[str, Any]:
-        """向共享中心注册本机设备，返回 device_id / device_token。
-
-        首选公开自助注册接口 /api/v1/devices/register。
-        如果中心尚未升级且传入 admin_token，则回退到旧的管理员注册接口。
-        注意：该方法不依赖现有 device_token，专门用于首次生成共享中心 device_token。
-        """
         if not self.base_url:
             raise RuntimeError('共享中心地址未配置')
-        payload = {
-            'name': str(name or '').strip() or 'ETK Device',
-            'install_id': str(install_id or '').strip(),
-        }
-        headers = {
-            'X-Client-Version': _app_version(),
-            'X-ETK-Version': _app_version(),
-            'Content-Type': 'application/json',
-            'User-Agent': _client_user_agent(),
-        }
-        url = f"{self.base_url}/api/v1/devices/register"
-        resp = requests.post(url, headers=headers, json=payload, **_request_kwargs(20))
+        payload = {'name': str(name or '').strip() or 'ETK Device', 'install_id': str(install_id or '').strip()}
+        headers = {'X-Client-Version': _app_version(), 'X-ETK-Version': _app_version(), 'Content-Type': 'application/json', 'User-Agent': _client_user_agent()}
+        resp = requests.post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
         if resp.status_code == 404 and admin_token:
-            # 兼容未升级的私有中心：使用管理员接口注册，但这种方式无法按 install_id 幂等。
-            admin_url = f"{self.base_url}/api/v1/admin/devices/register"
             admin_headers = dict(headers)
             admin_headers['X-Admin-Token'] = str(admin_token)
-            resp = requests.post(
-                admin_url,
-                headers=admin_headers,
-                json={'name': payload['name']},
-                **_request_kwargs(20),
-            )
-        if not resp.ok:
-            if resp.status_code == 426:
-                _raise_for_center_error(resp)
-            raise RuntimeError(f"共享中心设备注册失败: {resp.status_code} {resp.text[:300]}")
+            resp = requests.post(f"{self.base_url}/api/v1/admin/devices/register", headers=admin_headers, json={'name': payload['name']}, **_request_kwargs(20))
+        _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
+
+    def me(self) -> Dict[str, Any]:
+        return self._get('/api/v1/me', timeout=12)
+
+    def stats(self) -> Dict[str, Any]:
+        return self._get('/api/v1/stats', timeout=12)
+
+    def credit_ledger(self, limit: int = 200) -> Dict[str, Any]:
+        return self._get('/api/v1/credit/ledger', {'limit': max(1, min(int(limit or 200), 1000))}, timeout=15)
 
     def report_gaps(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         items = _dedupe_gap_items_for_center(items)
@@ -204,275 +188,103 @@ class SharedCenterClient:
             return {'count': 0, 'items': []}
         return self._post('/api/v1/gaps/batch', {'items': items}, timeout=20)
 
+    def list_open_gaps(self, limit: int = 200) -> Dict[str, Any]:
+        return self._get('/api/v1/gaps/open', {'limit': max(1, min(int(limit or 200), 1000))}, timeout=15)
+
+    def list_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent', mine_only: bool = False,
+                     source_kind: str = '', item_type: str = '', tmdb_id: str = '', limit: int = 200, offset: int = 0,
+                     **_ignored) -> Dict[str, Any]:
+        return self._get('/api/v1/sources/list', {
+            'q': q or '',
+            'status': status or 'alive,available,updating,inconsistent',
+            'mine_only': 1 if mine_only else 0,
+            'source_kind': source_kind or '',
+            'item_type': item_type or '',
+            'tmdb_id': tmdb_id or '',
+            'limit': max(1, min(int(limit or 200), 1000)),
+            'offset': max(0, int(offset or 0)),
+        }, timeout=25)
+
+    def list_hubs(self, *, q: str = '', status: str = '', tmdb_id: str = '', limit: int = 200, offset: int = 0) -> Dict[str, Any]:
+        return self._get('/api/v1/hubs/list', {'q': q or '', 'status': status or '', 'tmdb_id': tmdb_id or '', 'limit': limit, 'offset': offset}, timeout=20)
+
     def search_sources(self, items: List[Dict[str, Any]], limit_per_item: int = 20) -> Dict[str, Any]:
-        if not items:
-            return {'results': []}
-        return self._post('/api/v1/sources/search', {'items': items, 'limit_per_item': limit_per_item}, timeout=25)
+        # Rapid v2 中心没有独立 search endpoint；客户端逐项用 list 组合结果。
+        results = []
+        for item in _dedupe_gap_items_for_center(items):
+            kind = str(item.get('item_type') or '').strip()
+            resp = self.list_sources(tmdb_id=item.get('tmdb_id') or '', item_type=kind, limit=limit_per_item)
+            sources = resp.get('items') or []
+            if kind == 'Season' and item.get('season_number') is not None:
+                sn = int(item.get('season_number'))
+                sources = [s for s in sources if int(s.get('season_number') or -999) == sn]
+            results.append({'query': item, 'sources': sources})
+        return {'results': results}
 
     def probe_subscriptions_batch(self, items: List[Dict[str, Any]], limit_per_item: int = 200) -> Dict[str, Any]:
-        """统一订阅批量探测：一次请求完成共享源查询与未命中缺口登记。"""
-        items = _dedupe_gap_items_for_center(items)
-        if not items:
-            return {'supported': True, 'items': [], 'hit_count': 0, 'gap_count': 0}
-        payload = {'items': items, 'limit_per_item': max(1, min(int(limit_per_item or 200), 200))}
-        try:
-            resp = self._post('/api/v1/subscriptions/probe-batch', payload, timeout=60)
-            resp['supported'] = True
-            return resp
-        except RuntimeError as e:
-            text = str(e)
-            if '404' in text or 'Not Found' in text:
-                return {'supported': False, 'items': [], 'message': 'center_subscription_probe_batch_not_supported'}
-            raise
+        results = []
+        hit_count = 0
+        gap_count = 0
+        for item in _dedupe_gap_items_for_center(items):
+            search = self.search_sources([item], limit_per_item=limit_per_item)
+            sources = ((search.get('results') or [{}])[0].get('sources') or [])
+            if sources:
+                hit_count += 1
+            else:
+                self.report_gaps([item])
+                gap_count += 1
+            results.append({'query': item, 'sources': sources, 'hit': bool(sources)})
+        return {'supported': True, 'items': results, 'hit_count': hit_count, 'gap_count': gap_count}
 
-    def probe_share_needed(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """询问中心端本机刚入库的资源是否需要创建共享。
+    def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size: int | None = None) -> Dict[str, Any]:
+        return self._post('/api/v1/rawffprobe/upload', {'sha1': sha1, 'size': size, 'raw_ffprobe_json': raw_ffprobe_json or {}}, timeout=35)
 
-        新中心会实现 /api/v1/share/probe-needed；旧中心返回 404 时，
-        调用方可回退到 open gaps + sources/search 的本地判断。
-        """
-        try:
-            return self._post('/api/v1/share/probe-needed', {'item': item or {}}, timeout=20)
-        except RuntimeError as e:
-            text = str(e)
-            if '404' in text or 'Not Found' in text:
-                return {'supported': False, 'need_share': False, 'message': 'center_probe_endpoint_not_supported'}
-            raise
+    def raw_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
+        return self._post('/api/v1/rawffprobe/batch', {'sha1_list': list(sha1_list or [])}, timeout=25)
 
+    def get_raw_ffprobe(self, sha1: str) -> Dict[str, Any]:
+        return self._get(f"/api/v1/rawffprobe/{urllib.parse.quote(str(sha1 or '').strip())}", timeout=25)
 
+    def register_movie_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/sources/movie/register', payload or {}, timeout=35)
 
+    def register_episode_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/sources/episode/register', payload or {}, timeout=35)
 
-    def check_resource_blacklist(self, item: Dict[str, Any] = None, items: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """创建 115 分享/登记缺口前检查中心资源黑名单。"""
-        if items is not None:
-            payload = {'items': [dict(x) for x in (items or []) if isinstance(x, dict)]}
-        else:
-            payload = {'item': dict(item or {})}
-        return self._post('/api/v1/blacklist/check', payload, timeout=15)
+    def register_completed_season_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/sources/completed-season/register', payload or {}, timeout=60)
 
-    def report_resource_blacklist(self, item: Dict[str, Any], *, reason: str = 'violation', message: str = '', source: str = 'auto_report') -> Dict[str, Any]:
-        """确认资源级违规后上报中心黑名单。账号 24 小时限制不要调用。"""
-        payload = dict(item or {})
-        payload['reason'] = reason or payload.get('reason') or 'violation'
-        payload['message'] = message or payload.get('message') or ''
-        payload['source'] = source or payload.get('source') or 'auto_report'
-        return self._post('/api/v1/blacklist/report', payload, timeout=20)
+    def update_completed_season_status(self, source_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post(f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/status", payload or {}, timeout=25)
 
-    def list_share_requests(self, *, status: str = 'open', keyword: str = '', media_type: str = '', target_type: str = '', limit: int = 100, offset: int = 0) -> Dict[str, Any]:
-        """拉取共享中心求分享列表。维护任务用于自动响应别人发布的求分享。"""
-        import urllib.parse
-        params = {
-            'status': status or 'open',
-            'keyword': keyword or '',
-            'media_type': media_type or '',
-            'target_type': target_type or '',
-            'limit': max(1, min(int(limit or 100), 200)),
-            'offset': max(0, int(offset or 0)),
-        }
-        return self._get(f"/api/v1/share-requests?{urllib.parse.urlencode(params)}", timeout=25)
+    def disable_source(self, source_kind: str, source_id: str, message: str = '') -> Dict[str, Any]:
+        source_kind = str(source_kind or '').strip()
+        source_id = str(source_id or '').strip()
+        return self._post(f"/api/v1/sources/{urllib.parse.quote(source_kind)}/{urllib.parse.quote(source_id)}/disable", {'message': message}, timeout=25)
+
+    def completed_season_manifest(self, source_id: str) -> Dict[str, Any]:
+        return self._get(f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/manifest", timeout=30)
+
+    def report_transfer(self, source_kind: str, source_id: str, result: str, **kwargs) -> Dict[str, Any]:
+        payload = {'source_kind': source_kind, 'source_id': source_id, 'result': result}
+        payload.update({k: v for k, v in kwargs.items() if v is not None})
+        return self._post('/api/v1/transfers/report', payload, timeout=20)
 
     def poll_device_events(self, *, timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
-        """长轮询领取中心按 device_id 下发的通用事件。"""
-        import urllib.parse
-        timeout = max(1, min(int(timeout or 25), 55))
-        limit = max(1, min(int(limit or 5), 20))
-        query = urllib.parse.urlencode({'timeout': timeout, 'limit': limit})
-        try:
-            resp = self._get(f'/api/v1/device-events/poll?{query}', timeout=timeout + 10)
-            resp['supported'] = True
-            return resp
-        except RuntimeError as e:
-            text = str(e)
-            if '404' in text or 'Not Found' in text:
-                return {'supported': False, 'items': [], 'message': 'center_device_events_not_supported'}
-            raise
+        return self._get('/api/v1/device-events/poll', {'timeout': max(1, min(int(timeout or 25), 55)), 'limit': max(1, min(int(limit or 5), 50))}, timeout=max(10, int(timeout or 25) + 10))
 
-    def ack_device_event(self, event_id: str, result: str = 'success', message: str = '') -> Dict[str, Any]:
-        event_id = str(event_id or '').strip()
-        if not event_id:
-            return {'ok': False, 'message': 'missing event_id'}
-        return self._post(
-            f'/api/v1/device-events/{event_id}/ack',
-            {'result': result or 'success', 'message': message or ''},
-            timeout=15,
-        )
+    def ack_device_events(self, event_ids: List[str], result: str = 'ok', message: str = '') -> Dict[str, Any]:
+        return self._post('/api/v1/device-events/ack', {'event_ids': event_ids or [], 'result': result or 'ok', 'message': message or ''}, timeout=15)
 
-    def poll_share_request_events(self, *, timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
-        """兼容旧中心：长轮询领取求分享命中事件。新中心请使用 poll_device_events。"""
-        import urllib.parse
-        timeout = max(1, min(int(timeout or 25), 55))
-        limit = max(1, min(int(limit or 5), 20))
-        query = urllib.parse.urlencode({'timeout': timeout, 'limit': limit})
-        return self._get(f'/api/v1/share-requests/events/poll?{query}', timeout=timeout + 10)
+    # Rapid v2 已移除 115 分享、小黑屋、分享撤销、求分享中心端接口。保留空实现，避免旧调用点炸进程。
+    def cancel_sources(self, *args, **kwargs):
+        return {'ok': True, 'skipped': True, 'message': 'Rapid v2 无 115 分享源需要撤销'}
 
-    def ack_share_request_event(self, event_id: str, result: str = 'success', message: str = '') -> Dict[str, Any]:
-        event_id = str(event_id or '').strip()
-        if not event_id:
-            return {'ok': False, 'message': 'missing event_id'}
-        return self._post(
-            f'/api/v1/share-requests/events/{event_id}/ack',
-            {'result': result or 'success', 'message': message or ''},
-            timeout=15,
-        )
+    def check_resource_blacklist(self, *args, **kwargs):
+        return {'ok': True, 'blacklisted': False, 'items': []}
 
-    def list_open_gaps(self, limit: int = 100) -> Dict[str, Any]:
-        limit = max(1, min(int(limit or 100), 500))
-        return self._get(f'/api/v1/gaps/open?limit={limit}', timeout=20)
+    def report_resource_blacklist(self, *args, **kwargs):
+        return {'ok': True, 'skipped': True, 'message': 'Rapid v2 不使用中心资源黑名单'}
 
-    def list_sources(self, *, q: str = '', tmdb_id: str = '', item_type: str = '', status: str = 'alive,pending',
-                     source_ids: List[str] = None, mine_only: bool = False,
-                     order_by: str = 'latest', limit: int = 100, offset: int = 0, include_raw: bool = True) -> Dict[str, Any]:
-        """列出中心已有共享源。用于前端展示版本列表，也用于按 source_id 手动入库。"""
-        import urllib.parse
-        source_ids = [str(x).strip() for x in (source_ids or []) if str(x or '').strip()]
-        params = {
-            'q': q or '',
-            'tmdb_id': tmdb_id or '',
-            'item_type': item_type or '',
-            'status': status or '',
-            'mine_only': '1' if mine_only else '0',
-            'order_by': order_by or 'latest',
-            'limit': max(1, min(int(limit or 100), 500)),
-            'offset': max(0, int(offset or 0)),
-            'include_raw': '1' if include_raw else '0',
-        }
-        if source_ids:
-            params['source_ids'] = ','.join(source_ids)
-        query = urllib.parse.urlencode(params)
-        return self._get(f'/api/v1/sources/list?{query}', timeout=60 if include_raw else 25)
-    def fetch_raw_ffprobe_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
-        sha1_list = [str(x or '').strip().upper() for x in sha1_list if x]
-        if not sha1_list:
-            return {'items': []}
-        return self._post('/api/v1/rawffprobe/batch', {'sha1_list': sha1_list}, timeout=60)
-
-
-
-    def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size=None, summary_json: Dict[str, Any] = None) -> Dict[str, Any]:
-        """上传 raw_ffprobe_json 到共享中心，供其他设备复用媒体信息。
-
-        完整 RAW 仍然上传保存；summary_json 只给中心资源库列表页减小传输体积。
-        """
-        sha1 = str(sha1 or '').strip().upper()
-        if not sha1 or not raw_ffprobe_json:
-            return {'ok': False, 'message': '缺少 sha1 或 raw_ffprobe_json'}
-        payload = {
-            'sha1': sha1,
-            'size': size,
-            'raw_ffprobe_json': raw_ffprobe_json,
-            'summary_json': summary_json or None,
-        }
-        return self._post('/api/v1/rawffprobe/upload', payload, timeout=60)
-
-    def upload_raw_ffprobe_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """批量上传 raw_ffprobe_json。用于季包；失败项由调用方单条重传。"""
-        payload_items = []
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            sha1 = str(item.get('sha1') or '').strip().upper()
-            raw = item.get('raw_ffprobe_json')
-            if not sha1 or not raw:
-                continue
-            payload_items.append({
-                'sha1': sha1,
-                'size': item.get('size'),
-                'raw_ffprobe_json': raw,
-                'summary_json': item.get('summary_json') or None,
-            })
-        if not payload_items:
-            return {'ok': True, 'ok_count': 0, 'fail_count': 0, 'items': []}
-        return self._post('/api/v1/rawffprobe/upload-batch', {'items': payload_items}, timeout=120)
-
-    def register_source(self, *, tmdb_id, item_type, sha1, file_name, share_code,
-                        receive_code='', season_number=None, episode_number=None,
-                        title='', release_year=None, size=None, quality='',
-                        has_raw_ffprobe=True, source_provider='user_share',
-                        share_request_group_id: str = '',
-                        is_clean_version: bool = False,
-                        clean_version_confidence=None,
-                        clean_version_meta_json: Dict[str, Any] = None) -> Dict[str, Any]:
-        """登记一个可被共享中心消费的 115 分享源。
-
-        中心端按“当前设备 + SHA1”幂等计分：首次登记 +1，重复登记只更新分享码/元数据。
-        """
-        payload = {
-            'tmdb_id': str(tmdb_id or ''),
-            'item_type': str(item_type or ''),
-            'season_number': season_number,
-            'episode_number': episode_number,
-            'title': title or None,
-            'release_year': release_year,
-            'sha1': str(sha1 or '').strip().upper(),
-            'size': size,
-            'file_name': file_name or '',
-            'quality': quality or '',
-            'source_provider': str(source_provider or 'user_share').strip(),
-            'share_code': str(share_code or '').strip(),
-            'receive_code': str(receive_code or '').strip() or None,
-            'has_raw_ffprobe': bool(has_raw_ffprobe),
-            'is_clean_version': bool(is_clean_version),
-            'clean_version_confidence': clean_version_confidence,
-            'clean_version_meta_json': clean_version_meta_json or None,
-        }
-        if str(share_request_group_id or '').strip():
-            payload['share_request_group_id'] = str(share_request_group_id).strip()
-        return self._post('/api/v1/sources/register', payload, timeout=25)
-
-    def register_sources_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """批量登记共享源。中心端任一条失败会整包回滚。"""
-        payload_items = [dict(x) for x in (items or []) if isinstance(x, dict)]
-        if not payload_items:
-            return {'ok': True, 'ok_count': 0, 'fail_count': 0, 'items': []}
-        return self._post('/api/v1/sources/register-batch', {'items': payload_items}, timeout=90)
-
-    def cancel_sources(self, share_code: str = '', source_ids: List[str] = None, sha1_list: List[str] = None, reason: str = 'share_cancelled', delete_raw_ffprobe: bool = True) -> Dict[str, Any]:
-        """从共享中心撤销当前设备登记的共享源，并同步删除对应媒体信息。
-
-        中心端按当前 device_token 校验归属，只会删除本设备贡献的 source。
-        share_code 可一次撤销同一个 115 分享包下登记的所有源；source_ids 用于精确兜底；
-        sha1_list 用于清理“源已删但 raw_ffprobe 仍残留”的历史媒体信息。
-        """
-        source_ids = [str(x).strip() for x in (source_ids or []) if str(x or '').strip()]
-        sha1_list = [str(x).strip().upper() for x in (sha1_list or []) if str(x or '').strip()]
-        payload = {
-            'share_code': str(share_code or '').strip() or None,
-            'source_ids': source_ids,
-            'sha1_list': sha1_list,
-            'delete_raw_ffprobe': bool(delete_raw_ffprobe),
-            'reason': reason or 'share_cancelled',
-        }
-        return self._post('/api/v1/sources/cancel', payload, timeout=25)
-
-    def get_me(self) -> Dict[str, Any]:
-        """实时读取中心端当前设备信息。贡献值以中心端为准，本地只做缓存。"""
-        return self._get('/api/v1/me', timeout=15)
-
-    def precheck_transfer(self, source_id: str) -> Dict[str, Any]:
-        """转存前余额预检；旧中心不支持时返回 supported=False，由中心 report 继续兜底。"""
-        source_id = str(source_id or '').strip()
-        if not source_id:
-            return {'supported': True, 'ok': False, 'allowed': False, 'message': 'missing source_id'}
-        try:
-            resp = self._post('/api/v1/transfers/precheck', {'source_id': source_id}, timeout=15)
-            resp['supported'] = True
-            return resp
-        except RuntimeError as e:
-            text = str(e)
-            if '404' in text or 'Not Found' in text:
-                return {'supported': False, 'ok': True, 'allowed': True, 'message': 'center_transfer_precheck_not_supported'}
-            raise
-
-    def report_transfer(self, source_id: str, result: str, expected_sha1: str = '', actual_sha1: str = '', expected_size=None, actual_size=None, message: str = ''):
-        if not source_id:
-            return None
-        payload = {
-            'source_id': source_id,
-            'result': result,
-            'expected_sha1': expected_sha1 or None,
-            'actual_sha1': actual_sha1 or None,
-            'expected_size': expected_size,
-            'actual_size': actual_size,
-            'message': message or None,
-        }
-        return self._post('/api/v1/transfers/report', payload, timeout=20)
+    def list_share_requests(self, *args, **kwargs):
+        return {'items': [], 'total': 0, 'message': 'Rapid v2 暂未启用求分享接口'}
