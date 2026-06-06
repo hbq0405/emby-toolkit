@@ -196,6 +196,13 @@
             </n-switch>
             <template #feedback>仅影响共享池中心源消费；开启后会过滤 `Episode` 单集资源，电影和季包不受影响。</template>
           </n-form-item>
+          <n-form-item label="共享池纯净版">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_block_clean_version_transfer">
+              <template #checked>不转存纯净版</template>
+              <template #unchecked>允许转存</template>
+            </n-switch>
+            <template #feedback>仅检测季包资源：当包内多数集实际视频时长比 TMDb 官方单集时长短约 3 分钟时，自动/手动转存都会跳过该季包；单集资源不做纯净版检测。</template>
+          </n-form-item>
           <n-form-item label="最大活跃分享数">
             <n-input-number v-model:value="sharedConfigForm.p115_shared_max_active_shares" :min="0" :max="10000" :step="10" style="width: 180px;">
               <template #suffix>条</template>
@@ -346,6 +353,7 @@ const sharedConfigForm = reactive({
   p115_shared_device_token: '',
   p115_shared_resource_mode: 'permanent',
   p115_shared_disable_episode_transfer: false,
+  p115_shared_block_clean_version_transfer: false,
   p115_shared_max_active_shares: 0,
   p115_shared_auto_share_requests_enabled: false,
 });
@@ -1068,6 +1076,32 @@ const centerSeasonText = (row) => {
 
   return [centerTypeLabel(displayType), s ? `${s}${e}` : '', row.pack_item_count ? `${row.pack_item_count}集包` : ''].filter(Boolean).join(' · ') || '-';
 };
+const centerCleanVersionMeta = (row) => {
+  const meta = row?.clean_version_meta_json || row?.clean_version_meta || row?.version_summary?.clean_version_meta_json || {};
+  return meta && typeof meta === 'object' ? meta : {};
+};
+const isCenterCleanVersion = (row) => Boolean(row?.is_clean_version || centerCleanVersionMeta(row).is_clean_version);
+const centerCleanVersionTooltip = (row) => {
+  const meta = centerCleanVersionMeta(row);
+  const hit = meta.hit_count;
+  const comparable = meta.comparable_count;
+  const avgDelta = meta.avg_delta_minutes;
+  const confidence = row?.clean_version_confidence ?? meta.clean_version_confidence;
+  const parts = ['疑似纯净版'];
+  if (hit != null && comparable != null) parts.push(`命中 ${hit}/${comparable} 集`);
+  if (avgDelta != null) parts.push(`平均短 ${avgDelta} 分钟`);
+  if (confidence != null && confidence !== '') parts.push(`置信度 ${Math.round(Number(confidence) * 100)}%`);
+  return parts.join(' · ');
+};
+const centerTypeCell = (row) => {
+  const textNode = h('span', centerSeasonText(row));
+  if (!isCenterCleanVersion(row)) return textNode;
+  const tagNode = h(NTag, { size: 'small', round: true, type: 'warning', class: 'center-clean-version-tag' }, { default: () => '纯净版' });
+  return h(NTooltip, { trigger: 'hover' }, {
+    trigger: () => h('span', { class: 'center-type-with-flags' }, [textNode, tagNode]),
+    default: () => centerCleanVersionTooltip(row),
+  });
+};
 const centerStatusTag = (row) => {
   const text = row.status_label || statusMap[row.status]?.text || row.status || '未知';
   const type = row.status_type || statusMap[row.status]?.type || 'default';
@@ -1466,7 +1500,7 @@ const centerColumns = [
     metaLine(row)
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
-  { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
+  { title: '类型', key: 'item_type', width: 170, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = it.version_summary || {};
@@ -1528,6 +1562,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_device_token: data.p115_shared_device_token || '',
     p115_shared_resource_mode: 'permanent',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
+    p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
     p115_shared_max_active_shares: Number(data.p115_shared_max_active_shares ?? 0),
     p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
   });
@@ -2304,6 +2339,18 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
   font-size: 12px;
   opacity: .72;
   word-break: break-all;
+}
+
+
+.center-type-with-flags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.center-clean-version-tag {
+  transform: scale(.92);
+  transform-origin: left center;
 }
 
 </style>

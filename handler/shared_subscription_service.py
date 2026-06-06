@@ -448,6 +448,340 @@ def _filter_sources_by_episode_transfer_policy(sources: List[Dict[str, Any]]) ->
     if blocked:
         logger.info(f"  ➜ [共享资源] 已按配置过滤中心单集资源 {blocked} 条。")
     return filtered
+
+# 纯净版识别：只在共享池消费“季包”前执行，单集资源永不拦截。
+# 判定口径：media_metadata.runtime_minutes 只认 TMDb 官方时长；中心 RAW/ffprobe 只认物理视频时长。
+_CLEAN_VERSION_MIN_DELTA_MINUTES = 2.5
+_CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.94
+_CLEAN_VERSION_MIN_COMPARABLE_EPISODES = 2
+_CLEAN_VERSION_HIT_RATIO = 0.70
+
+def _block_clean_version_transfer_enabled() -> bool:
+    try:
+        return bool(settings_db.get_shared_resource_config().get('p115_shared_block_clean_version_transfer', False))
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 读取纯净版转存过滤开关失败，按关闭处理: {e}")
+        return False
+
+def _runtime_minutes_from_ticks(value) -> float:
+    try:
+        if value in (None, '', 0, '0'):
+            return 0.0
+        return float(value) / 600000000.0
+    except Exception:
+        return 0.0
+
+def _runtime_minutes_from_seconds(value) -> float:
+    try:
+        if value in (None, '', 0, '0'):
+            return 0.0
+        return float(value) / 60.0
+    except Exception:
+        return 0.0
+
+def _physical_runtime_minutes_from_raw(raw: Dict[str, Any]) -> float:
+    if not isinstance(raw, dict):
+        return 0.0
+
+    # Emby/神医结构优先：MediaSourceInfo.RunTimeTicks 是实际文件时长。
+    msi = raw.get('MediaSourceInfo') if isinstance(raw.get('MediaSourceInfo'), dict) else {}
+    runtime = _runtime_minutes_from_ticks(msi.get('RunTimeTicks'))
+    if runtime > 0:
+        return runtime
+
+    runtime = _runtime_minutes_from_ticks(raw.get('RunTimeTicks'))
+    if runtime > 0:
+        return runtime
+
+    # ffprobe 原始 RAW。
+    fmt = raw.get('format') if isinstance(raw.get('format'), dict) else {}
+    runtime = _runtime_minutes_from_seconds(fmt.get('duration'))
+    if runtime > 0:
+        return runtime
+
+    for stream in raw.get('streams') or []:
+        if not isinstance(stream, dict):
+            continue
+        runtime = _runtime_minutes_from_seconds(stream.get('duration'))
+        if runtime > 0:
+            return runtime
+
+    return 0.0
+
+def _source_episode_number(src: Dict[str, Any], raw: Dict[str, Any]) -> int | None:
+    for value in (
+        (raw.get('_etk') or {}).get('episode_number') if isinstance(raw, dict) and isinstance(raw.get('_etk'), dict) else None,
+        (src or {}).get('episode_number'),
+    ):
+        try:
+            if value not in (None, ''):
+                ep = int(float(value))
+                return ep if ep > 0 else None
+        except Exception:
+            pass
+
+    text = str((src or {}).get('file_name') or (src or {}).get('title') or '')
+    for pat in (r'[Ss]\d{1,3}[. _-]*[Ee](\d{1,4})', r'第\s*(\d{1,4})\s*[集话]'):
+        m = re.search(pat, text, re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            ep = int(m.group(1))
+            return ep if ep > 0 else None
+        except Exception:
+            pass
+    return None
+
+def _source_season_number(src: Dict[str, Any], raw: Dict[str, Any], context: Dict[str, Any]) -> int | None:
+    for value in (
+        (raw.get('_etk') or {}).get('season_number') if isinstance(raw, dict) and isinstance(raw.get('_etk'), dict) else None,
+        (src or {}).get('season_number'),
+        (context or {}).get('season_number'),
+    ):
+        try:
+            if value not in (None, ''):
+                season = int(float(value))
+                return season if season >= 0 else None
+        except Exception:
+            pass
+
+    text = str((src or {}).get('file_name') or (src or {}).get('title') or '')
+    m = re.search(r'[Ss](\d{1,3})[. _-]*[Ee]\d{1,4}', text, re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+    return None
+
+def _source_parent_series_tmdb_id(src: Dict[str, Any], context: Dict[str, Any]) -> str:
+    for value in (
+        (context or {}).get('parent_series_tmdb_id'),
+        (context or {}).get('parent_tmdb_id'),
+        (src or {}).get('parent_series_tmdb_id'),
+        (src or {}).get('series_tmdb_id'),
+        (src or {}).get('parent_tmdb_id'),
+        (context or {}).get('tmdb_id'),
+        (src or {}).get('tmdb_id'),
+    ):
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+def _load_tmdb_runtime_map_for_season(parent_series_tmdb_id: str, season_number) -> Dict[int, float]:
+    parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
+    try:
+        season = int(float(season_number))
+    except Exception:
+        return {}
+    if not parent_series_tmdb_id:
+        return {}
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT episode_number, runtime_minutes
+                    FROM media_metadata
+                    WHERE parent_series_tmdb_id = %s
+                      AND item_type = 'Episode'
+                      AND season_number = %s
+                      AND episode_number IS NOT NULL
+                      AND runtime_minutes IS NOT NULL
+                      AND runtime_minutes > 0
+                    """,
+                    (parent_series_tmdb_id, season),
+                )
+                rows = cur.fetchall() or []
+        result = {}
+        for row in rows:
+            try:
+                ep = int(row.get('episode_number'))
+                runtime = float(row.get('runtime_minutes') or 0)
+                if ep > 0 and runtime > 0:
+                    result[ep] = runtime
+            except Exception:
+                continue
+        return result
+    except Exception as e:
+        logger.debug(
+            f"  ➜ [共享资源] 读取 TMDb 分集时长失败: parent={parent_series_tmdb_id}, "
+            f"season={season_number}, err={e}"
+        )
+        return {}
+
+def _share_group_code(src: Dict[str, Any]) -> str:
+    return str((src or {}).get('share_code') or (src or {}).get('source_id') or '').strip()
+
+def _is_season_pack_source_group(rows: List[Dict[str, Any]], context: Dict[str, Any]) -> bool:
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    if not rows:
+        return False
+    item_types = {str((r or {}).get('item_type') or '').strip().lower() for r in rows}
+    if item_types & {'season', 'season_pack', 'tv_pack', 'series'}:
+        return True
+    # 手动中心资源库可能传入整包 source_ids；如果上下文明确是 Season 且一个分享码包含多行，也按季包处理。
+    return str((context or {}).get('item_type') or '').strip().lower() == 'season' and len(rows) > 1
+
+def _detect_clean_version_for_season_group(
+    rows: List[Dict[str, Any]],
+    context: Dict[str, Any],
+    raw_map: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    if not rows or not _is_season_pack_source_group(rows, context):
+        return {'is_clean_version': False, 'reason': 'not_season_pack'}
+
+    # 新中心会直接下发客户端登记时计算好的季包纯净版标记。
+    # 先相信中心字段，缺失时再用中心 RAW + 本地 TMDb runtime 兜底实时计算，兼容旧中心。
+    flagged = [r for r in rows if bool(r.get('is_clean_version'))]
+    if flagged:
+        first_flag = flagged[0]
+        meta = first_flag.get('clean_version_meta_json') or first_flag.get('clean_version_meta') or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        result = dict(meta)
+        result.setdefault('is_clean_version', True)
+        result.setdefault('reason', 'center_flagged_clean_version')
+        result.setdefault('clean_version_confidence', first_flag.get('clean_version_confidence'))
+        result.setdefault('season_number', first_flag.get('season_number') or (context or {}).get('season_number'))
+        result.setdefault('parent_series_tmdb_id', first_flag.get('parent_series_tmdb_id') or first_flag.get('tmdb_id') or (context or {}).get('tmdb_id'))
+        result.setdefault('source', 'center_shared_sources')
+        return result
+
+    first = rows[0]
+    first_raw = raw_map.get(_norm_sha1(first.get('sha1'))) or {}
+    parent = _source_parent_series_tmdb_id(first, context)
+    season = _source_season_number(first, first_raw, context)
+    if not parent or season is None:
+        return {'is_clean_version': False, 'reason': 'missing_identity'}
+
+    tmdb_runtime_map = _load_tmdb_runtime_map_for_season(parent, season)
+    if not tmdb_runtime_map:
+        return {'is_clean_version': False, 'reason': 'missing_tmdb_runtime', 'parent_series_tmdb_id': parent, 'season_number': season}
+
+    by_episode: Dict[int, Dict[str, Any]] = {}
+    for src in rows:
+        sha1 = _norm_sha1(src.get('sha1'))
+        raw = raw_map.get(sha1) or {}
+        ep = _source_episode_number(src, raw)
+        if ep is None or ep not in tmdb_runtime_map:
+            continue
+        actual = _physical_runtime_minutes_from_raw(raw)
+        tmdb_runtime = float(tmdb_runtime_map.get(ep) or 0)
+        if actual <= 0 or tmdb_runtime <= 0:
+            continue
+        # 同一集异常出现多份文件时，取最短实际时长。季包判断宁可保守，只要明显短才命中。
+        current = by_episode.get(ep)
+        if current is None or actual < current.get('actual_runtime_minutes', 0):
+            by_episode[ep] = {
+                'episode_number': ep,
+                'tmdb_runtime_minutes': round(tmdb_runtime, 2),
+                'actual_runtime_minutes': round(actual, 2),
+                'delta_minutes': round(tmdb_runtime - actual, 2),
+                'file_name': src.get('file_name') or '',
+                'sha1': sha1,
+            }
+
+    episode_rows = sorted(by_episode.values(), key=lambda x: x.get('episode_number') or 0)
+    comparable = len(episode_rows)
+    if comparable < _CLEAN_VERSION_MIN_COMPARABLE_EPISODES:
+        return {
+            'is_clean_version': False,
+            'reason': 'not_enough_comparable_episodes',
+            'parent_series_tmdb_id': parent,
+            'season_number': season,
+            'comparable_count': comparable,
+        }
+
+    hits = []
+    for ep in episode_rows:
+        tmdb_runtime = float(ep.get('tmdb_runtime_minutes') or 0)
+        actual = float(ep.get('actual_runtime_minutes') or 0)
+        delta = float(ep.get('delta_minutes') or 0)
+        ratio = (actual / tmdb_runtime) if tmdb_runtime > 0 else 1.0
+        ep['runtime_ratio'] = round(ratio, 4)
+        ep['clean_hit'] = bool(delta >= _CLEAN_VERSION_MIN_DELTA_MINUTES and ratio <= _CLEAN_VERSION_MAX_RUNTIME_RATIO)
+        if ep['clean_hit']:
+            hits.append(ep)
+
+    required_hits = max(2, int(comparable * _CLEAN_VERSION_HIT_RATIO + 0.999999))
+    avg_delta = sum(float(ep.get('delta_minutes') or 0) for ep in episode_rows) / comparable if comparable else 0
+    is_clean = len(hits) >= required_hits
+    return {
+        'is_clean_version': bool(is_clean),
+        'reason': 'majority_runtime_shorter' if is_clean else 'runtime_not_short_enough',
+        'parent_series_tmdb_id': parent,
+        'season_number': season,
+        'comparable_count': comparable,
+        'hit_count': len(hits),
+        'required_hits': required_hits,
+        'avg_delta_minutes': round(avg_delta, 2),
+        'min_delta_minutes': _CLEAN_VERSION_MIN_DELTA_MINUTES,
+        'max_runtime_ratio': _CLEAN_VERSION_MAX_RUNTIME_RATIO,
+        'hit_ratio': _CLEAN_VERSION_HIT_RATIO,
+        'episodes': episode_rows[:80],
+    }
+
+def _filter_clean_season_packs_by_policy(
+    sources: List[Dict[str, Any]],
+    context: Dict[str, Any],
+    raw_map: Dict[str, Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not _block_clean_version_transfer_enabled():
+        return list(sources or []), {'enabled': False, 'blocked': []}
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    order: List[str] = []
+    for src in sources or []:
+        if not isinstance(src, dict):
+            continue
+        code = _share_group_code(src) or f"source:{len(order)}"
+        if code not in groups:
+            groups[code] = []
+            order.append(code)
+        groups[code].append(src)
+
+    blocked_codes = set()
+    blocked = []
+    for code in order:
+        rows = groups.get(code) or []
+        if not _is_season_pack_source_group(rows, context):
+            continue
+        detection = _detect_clean_version_for_season_group(rows, context, raw_map)
+        if not detection.get('is_clean_version'):
+            continue
+        blocked_codes.add(code)
+        title = (context or {}).get('title') or rows[0].get('title') or rows[0].get('file_name') or code
+        blocked.append({
+            'share_code': code,
+            'title': title,
+            'season_number': detection.get('season_number'),
+            'comparable_count': detection.get('comparable_count'),
+            'hit_count': detection.get('hit_count'),
+            'avg_delta_minutes': detection.get('avg_delta_minutes'),
+            'reason': detection.get('reason'),
+            'detection': detection,
+        })
+
+    if not blocked_codes:
+        return list(sources or []), {'enabled': True, 'blocked': []}
+
+    filtered = [src for src in (sources or []) if (_share_group_code(src) or '') not in blocked_codes]
+    for item in blocked[:10]:
+        logger.info(
+            "  ➜ [共享资源] 已按配置跳过疑似纯净版季包：%s S%s share=%s，"
+            "命中 %s/%s 集，平均短 %.1f 分钟",
+            item.get('title') or '-',
+            item.get('season_number'),
+            item.get('share_code') or '-',
+            item.get('hit_count'),
+            item.get('comparable_count'),
+            float(item.get('avg_delta_minutes') or 0),
+        )
+    return filtered, {'enabled': True, 'blocked': blocked}
 def _guess_se_from_source(src: Dict[str, Any], context: Dict[str, Any]):
     s_num = src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number')
     # ★ 核心修复：补充从 context 兜底获取 episode_number
@@ -961,6 +1295,31 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
 
     raw_map = _load_center_raw_map(client, sources)
 
+    sources, clean_filter = _filter_clean_season_packs_by_policy(sources, context, raw_map)
+    if clean_filter.get('blocked'):
+        blocked = clean_filter.get('blocked') or []
+        logger.info(
+            f"  ➜ [共享资源] 纯净版过滤完成：跳过 {len(blocked)} 个季包，剩余中心源 {len(sources)} 条。"
+        )
+        if not sources:
+            first = blocked[0] if blocked else {}
+            message = (
+                f"已按配置跳过疑似纯净版季包：{first.get('title') or ''}"
+                f" S{first.get('season_number') or ''}，"
+                f"命中 {first.get('hit_count')}/{first.get('comparable_count')} 集，"
+                f"平均短 {first.get('avg_delta_minutes')} 分钟"
+            )
+            return {
+                'success': False,
+                'mode': 'permanent',
+                'count': 0,
+                'action_type': '共享永久转存',
+                'message': message,
+                'errors': [message],
+                'clean_version_rejected': True,
+                'clean_version_filter': clean_filter,
+            }
+
     # ★ 核心修复：解决重复写入缓存的问题
     # 永久转存前预检：
     # - replace：提前调用洗版模块裁决，洗版模块内部会负责写入缓存；
@@ -1147,6 +1506,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         'failed_resources': failed_resources,
         'action_type': '共享永久转存',
         'errors': errors,
+        'clean_version_filter': locals().get('clean_filter', {'enabled': False, 'blocked': []}),
     }
 
 def _subscription_probe_request_key(query: Dict[str, Any]) -> str:

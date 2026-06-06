@@ -388,7 +388,10 @@ class SharedCenterClient:
                         receive_code='', season_number=None, episode_number=None,
                         title='', release_year=None, size=None, quality='',
                         has_raw_ffprobe=True, source_provider='user_share',
-                        share_request_group_id: str = '') -> Dict[str, Any]:
+                        share_request_group_id: str = '',
+                        is_clean_version: bool = False,
+                        clean_version_confidence=None,
+                        clean_version_meta_json: Dict[str, Any] = None) -> Dict[str, Any]:
         """登记一个可被共享中心消费的 115 分享源。
 
         中心端按“当前设备 + SHA1”幂等计分：首次登记 +1，重复登记只更新分享码/元数据。
@@ -408,6 +411,9 @@ class SharedCenterClient:
             'share_code': str(share_code or '').strip(),
             'receive_code': str(receive_code or '').strip() or None,
             'has_raw_ffprobe': bool(has_raw_ffprobe),
+            'is_clean_version': bool(is_clean_version),
+            'clean_version_confidence': clean_version_confidence,
+            'clean_version_meta_json': clean_version_meta_json or None,
         }
         if str(share_request_group_id or '').strip():
             payload['share_request_group_id'] = str(share_request_group_id).strip()
