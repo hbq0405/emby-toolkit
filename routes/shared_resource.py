@@ -133,8 +133,6 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         'manual_rapid': '手动登记',
         'rapid_auto_library': '入库自动登记',
         'rapid_all_library': '一键全库登记',
-        'auto_library': '入库自动登记',
-        'share_all_library': '一键全库登记',
         'rapid_completed_season': '完结季收藏源',
     }.get(row.get('source_provider'), row.get('source_provider') or '本地秒传源')
     return row
