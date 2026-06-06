@@ -133,12 +133,45 @@ def _looks_share_source_missing(resp: Any) -> bool:
     ))
 
 def _looks_share_alive(resp: Dict[str, Any]) -> bool:
+    """宽松兜底判断分享是否可用。
+
+    只能在 _parse_share_status 不可用或解析失败时兜底使用。
+    注意：115 的 share_info 在“审核中/处理中”时也可能 state=True，
+    所以这里必须显式排除审核态，不能把 state=True 直接视为 alive。
+    """
     if not _parse_share_ok(resp):
         return False
+
     text = _share_resp_text(resp)
+
     if _looks_share_blocked(resp):
         return False
-    return not any(k in text for k in ['已取消', '已失效', '不存在', '取消分享', 'expired', 'cancelled', 'not found'])
+
+    if any(k in text for k in (
+        '处理中',
+        '审核中',
+        '待审核',
+        '等待审核',
+        '审核',
+        'pending_review',
+        'pending review',
+        'pending',
+        'processing',
+        'reviewing',
+        'under review',
+    )):
+        return False
+
+    return not any(k in text for k in (
+        '已取消',
+        '已失效',
+        '不存在',
+        '取消分享',
+        'expired',
+        'cancelled',
+        'canceled',
+        'not found',
+    ))
 
 def _record_reportable(record: Dict[str, Any]) -> bool:
     return (record.get('status') in ('alive', 'reported') or record.get('review_status') == 'alive') and record.get('center_status') not in ('reported', 'partial')
@@ -992,14 +1025,20 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
             snap = p115.share_info(share_code, record.get('receive_code'), cid=0, limit=1)
             checked += 1
             review = {}
+            review_parsed = False
             if sr is not None and hasattr(sr, '_parse_share_status'):
                 try:
                     review = sr._parse_share_status(snap) or {}
+                    review_parsed = bool(review)
                 except Exception:
                     review = {}
-            alive = (review.get('status') == 'alive') or _looks_share_alive(snap)
-            if not alive and review.get('status') == 'pending_review':
-                # 115 审核中不等于死链。维护任务只更新本地状态，不能撤销中心源/删除分享。
+                    review_parsed = False
+
+            review_status = str(review.get('status') or '').strip()
+
+            if review_status == 'pending_review':
+                # 115 审核中不等于可用，也不等于死链。
+                # 不能再让 _looks_share_alive 用 state=True 把它兜底成 alive。
                 old_raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
                 shared_share_db.update_share_record(
                     record['id'],
@@ -1010,6 +1049,14 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     raw_json={**old_raw_json, 'last_snap': snap},
                 )
                 continue
+
+            if review_status in ('rejected', 'blocked', 'violation'):
+                alive = False
+            elif review_status == 'alive':
+                alive = True
+            else:
+                # 只有 _parse_share_status 不可用/解析失败/没有明确状态时，才允许宽松兜底。
+                alive = _looks_share_alive(snap) if not review_parsed else False
             if alive:
                 old_raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
                 raw_etk_dirty = _record_raw_etk_dirty(record)
