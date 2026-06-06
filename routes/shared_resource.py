@@ -221,7 +221,9 @@ def api_manual_validate():
     只确认本地能定位到可秒传文件，并检查 RAW 媒体信息是否可用于中心展示/匹配。
     """
     data = _request_json()
+    consistency = shared_share_db.repair_candidate_fingerprints(data, log_result=True)
     files = shared_share_db.collect_files_for_candidate(data)
+    root = shared_share_db.candidate_root_from_files(files)
     missing_raw = []
     for f in files:
         sha1 = str(f.get('sha1') or '').upper()
@@ -244,6 +246,9 @@ def api_manual_validate():
         'file_count': len(files),
         'missing_raw': missing_raw,
         'files': files,
+        'root': root,
+        'root_fid': root.get('root_fid') or '',
+        'consistency': consistency or {},
     }
     return jsonify({
         'success': True,

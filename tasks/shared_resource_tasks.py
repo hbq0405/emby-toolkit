@@ -216,9 +216,19 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
     candidate = dict(candidate or {})
     item_type = str(candidate.get('item_type') or '').strip()
     files = shared_share_db.collect_files_for_candidate(candidate)
+    if not files and item_type in ('Season', 'Episode'):
+        repair_result = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
+        files = shared_share_db.collect_files_for_candidate(candidate)
+    else:
+        repair_result = {}
     if not files:
-        return {'ok': False, 'message': '未找到可共享的视频文件，请先确认 p115_filesystem_cache / media_metadata 已补齐 SHA1、PC 和大小'}
+        return {
+            'ok': False,
+            'message': '未找到可共享的视频文件，请先确认 p115_filesystem_cache / media_metadata 已补齐 SHA1、PC 和大小',
+            'fingerprint_repair': repair_result or {},
+        }
 
+    root = shared_share_db.candidate_root_from_files(files)
     client = SharedCenterClient()
     results = []
     uploaded = 0
@@ -254,6 +264,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'source_kind': 'movie', 'center_source_id': center_item.get('source_id'), 'tmdb_id': tmdb_id, 'item_type': 'Movie',
                     'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'),
                     'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': source_provider,
+                    'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
                     'status': 'active', 'center_status': 'reported', 'media_signature_json': common.get('media_signature_json'),
                     'rapid_meta_json': common.get('rapid_meta_json'), 'raw_json': {'candidate': candidate, 'center_response': resp},
                 })
@@ -282,6 +293,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'item_type': 'Episode', 'season_number': season_no, 'episode_number': ep_no,
                     'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'),
                     'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': source_provider,
+                    'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
                     'status': 'active', 'center_status': 'reported', 'media_signature_json': common.get('media_signature_json'),
                     'rapid_meta_json': common.get('rapid_meta_json'), 'raw_json': {'candidate': candidate, 'center_response': resp},
                 })
@@ -306,7 +318,18 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'rapid_meta_json': {'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path')},
             })
         expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes'), 0)
+        consistency = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
         status = _completed_status_from_files(completed_files, expected)
+        if isinstance(consistency, dict) and consistency:
+            reason = consistency.get('reason')
+            if consistency.get('ok'):
+                status = {'status': 'available', 'message': consistency.get('message') or '完结季一致性校验通过'}
+            elif reason == 'episode_count_insufficient':
+                status = {'status': 'incomplete', 'message': consistency.get('message') or '完结季本地集数不足'}
+            elif reason in ('season_asset_inconsistent', 'asset_details_missing'):
+                status = {'status': 'inconsistent', 'message': consistency.get('message') or '完结季一致性校验失败'}
+            elif reason not in ('not_season', None):
+                status = {'status': 'inconsistent', 'message': consistency.get('message') or '完结季一致性校验异常'}
         try:
             payload = {
                 'tmdb_id': tmdb_id,
@@ -330,10 +353,11 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'source_kind': 'completed_season', 'center_source_id': center_item.get('source_id'), 'tmdb_id': tmdb_id,
                 'item_type': 'Season', 'season_number': candidate.get('season_number'), 'title': candidate.get('title'),
                 'release_year': candidate.get('release_year'), 'source_provider': 'rapid_completed_season',
+                'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
                 'status': status['status'], 'center_status': 'reported', 'manifest_hash': payload['manifest_hash'],
                 'file_count': len(completed_files), 'total_size': sum(_safe_int(x.get('size'), 0) for x in completed_files),
                 'is_clean_version': payload['is_clean_version'], 'clean_version_confidence': payload['clean_version_confidence'],
-                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status},
+                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'root': root},
             })
             shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': bool(_raw_for_file(f))} for f in files])
         except Exception as e:
@@ -346,6 +370,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         'raw_uploaded_count': uploaded,
         'completed_season': completed_resp,
         'errors': errors,
+        'root': root,
+        'fingerprint_repair': repair_result or {},
         'message': f"已登记 {len(results)} 个分集/电影源" + ("，已更新完结季源" if completed_resp else ''),
     }
 
@@ -373,7 +399,7 @@ def _candidate_from_emby_item_id(emby_item_id: str) -> Dict[str, Any]:
         logger.debug(f"  ➜ [共享资源] 按 Emby ID 查询媒体行失败: {emby_item_id} -> {e}")
         return {}
 
-def trigger_shared_auto_share_for_library_item(processor=None, **kwargs) -> Dict[str, Any]:
+def trigger_shared_rapid_register_for_library_item(processor=None, **kwargs) -> Dict[str, Any]:
     if not _enabled():
         return {'ok': False, 'created': 0, 'message': '共享资源未启用'}
     db_row = _candidate_from_emby_item_id(kwargs.get('emby_item_id'))
@@ -390,8 +416,40 @@ def trigger_shared_auto_share_for_library_item(processor=None, **kwargs) -> Dict
     if candidate.get('item_type') == 'Episode' and db_row.get('tmdb_id'):
         candidate['tmdb_id'] = db_row.get('tmdb_id')
         candidate['parent_series_tmdb_id'] = candidate.get('parent_series_tmdb_id') or kwargs.get('parent_series_tmdb_id')
-    result = register_candidate_to_center(candidate, source_provider='auto_library')
+    result = register_candidate_to_center(candidate, source_provider='rapid_auto_library')
     result['created'] = result.get('registered_count', 0)
+    return result
+
+
+def trigger_shared_auto_share_for_library_item(processor=None, **kwargs) -> Dict[str, Any]:
+    """兼容旧调用名：Rapid v2 不创建 115 分享，只登记本地秒传源。"""
+    return trigger_shared_rapid_register_for_library_item(processor, **kwargs)
+
+
+def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tmdb_id: str = '', season_number=None, title: str = '', year: str = '', **kwargs) -> Dict[str, Any]:
+    """兼容旧调用名：完结季不再创建分享包，只更新 completed_season_source manifest。"""
+    parent = str(parent_series_tmdb_id or kwargs.get('tmdb_id') or '').strip()
+    if not parent:
+        return {'ok': False, 'created': 0, 'message': '缺少父剧 TMDb ID'}
+    try:
+        season_no = int(float(season_number))
+    except Exception:
+        return {'ok': False, 'created': 0, 'message': f'无效季号: {season_number}'}
+    candidate = {
+        'tmdb_id': parent,
+        'parent_series_tmdb_id': parent,
+        'item_type': 'Season',
+        'season_number': season_no,
+        'title': title or kwargs.get('series_name') or kwargs.get('name') or parent,
+        'release_year': year or kwargs.get('release_year'),
+        'expected_episode_count': kwargs.get('expected_episode_count') or kwargs.get('total_episodes'),
+        'is_clean_version': kwargs.get('is_clean_version', False),
+        'clean_version_confidence': kwargs.get('clean_version_confidence'),
+        'clean_version_meta_json': kwargs.get('clean_version_meta_json') or {},
+    }
+    result = register_candidate_to_center(candidate, source_provider='rapid_completed_season')
+    result['created'] = result.get('registered_count', 0) + (1 if result.get('completed_season') else 0)
+    result.setdefault('episode_cancelled', 0)
     return result
 
 
@@ -399,24 +457,24 @@ def share_all_library(max_items: int = 100000) -> Dict[str, Any]:
     if not _enabled():
         return {'ok': False, 'message': '共享资源未启用'}
     if not _FULL_SHARE_LOCK.acquire(blocking=False):
-        return {'ok': False, 'message': '全库共享任务正在运行'}
+        return {'ok': False, 'message': '全库登记任务正在运行'}
     try:
         candidates = shared_share_db.all_library_share_candidates(limit=max_items)
         total = len(candidates)
         ok = failed = 0
         for idx, cand in enumerate(candidates, 1):
             try:
-                res = register_candidate_to_center(cand, source_provider='share_all_library')
+                res = register_candidate_to_center(cand, source_provider='rapid_all_library')
                 if res.get('ok'):
                     ok += 1
                 else:
                     failed += 1
                 if idx % 20 == 0:
-                    logger.info(f"  ➜ [共享资源] 一键共享媒体库进度：{idx}/{total}，成功 {ok}，失败 {failed}")
+                    logger.info(f"  ➜ [共享资源] 一键登记媒体库进度：{idx}/{total}，成功 {ok}，失败 {failed}")
             except Exception as e:
                 failed += 1
-                logger.warning(f"  ➜ [共享资源] 一键共享媒体库失败: {cand.get('title') or cand.get('tmdb_id')} -> {e}")
-        logger.info(f"  ➜ [共享资源] 一键共享媒体库完成：候选 {total}，成功 {ok}，失败 {failed}")
+                logger.warning(f"  ➜ [共享资源] 一键登记媒体库失败: {cand.get('title') or cand.get('tmdb_id')} -> {e}")
+        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}")
         return {'ok': True, 'total': total, 'success': ok, 'failed': failed}
     finally:
         _FULL_SHARE_LOCK.release()
@@ -501,7 +559,12 @@ def trigger_shared_resource_maintenance_task() -> bool:
 
 def trigger_share_all_library_task() -> bool:
     try:
-        return bool(task_manager.submit_task(lambda processor=None: share_all_library(), task_name='一键共享媒体库', processor_type='media'))
+        return bool(task_manager.submit_task(lambda processor=None: share_all_library(), task_name='一键登记媒体库', processor_type='media'))
     except Exception:
         threading.Thread(target=share_all_library, name='shared-rapid-share-all', daemon=True).start()
         return True
+
+
+def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: bool = True):
+    """兼容旧任务名：Rapid v2 没有 115 分享状态同步，转为共享资源维护。"""
+    return task_shared_resource_maintenance(processor=processor, maintenance_silent=maintenance_silent)

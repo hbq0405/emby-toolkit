@@ -3,10 +3,13 @@
 import json
 import re
 import hashlib
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from database.connection import get_db_connection
+
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTS = {'.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.webm', '.iso'}
 
@@ -335,19 +338,68 @@ def p115_file_rows_by_sha1_or_pc(sha1s: List[str] = None, pickcodes: List[str] =
 
 
 def _media_rows_for_search(keyword: str = '', limit: int = 200) -> List[Dict[str, Any]]:
-    where = ["in_library=TRUE", "item_type IN ('Movie','Series','Season','Episode')"]
+    """搜索可手动登记的本地媒体。
+
+    Rapid v2 不需要 115 分享码，真正需要的是：media_metadata 里能定位到
+    已入库文件的 PC/SHA1，并能反查到 p115_filesystem_cache。Season 自身
+    经常是占位行/未入库，真实文件在 Episode 行里，所以这里不能只看
+    Season.in_library；只要该父剧该季存在已入库 Episode，就允许返回季候选。
+    """
+    keyword = str(keyword or '').strip()
     args = []
+    where = ["m.item_type IN ('Movie','Series','Season','Episode')"]
     if keyword:
         kw = f"%{keyword}%"
-        where.append('(title ILIKE %s OR tmdb_id ILIKE %s OR parent_series_tmdb_id ILIKE %s)')
-        args.extend([kw, kw, kw])
+        where.append("""
+            (
+                m.title ILIKE %s OR m.original_title ILIKE %s OR m.tmdb_id ILIKE %s OR m.parent_series_tmdb_id ILIKE %s
+             OR p.title ILIKE %s OR p.original_title ILIKE %s OR p.tmdb_id ILIKE %s
+            )
+        """)
+        args.extend([kw, kw, kw, kw, kw, kw, kw])
+
+    # 电影/单集必须自身入库；Series/Season 可以是未入库占位，只要旗下有已入库 Episode。
+    where.append("""
+        (
+            COALESCE(m.in_library, FALSE) = TRUE
+         OR (
+                m.item_type = 'Series'
+            AND EXISTS (
+                SELECT 1 FROM media_metadata e
+                WHERE e.item_type = 'Episode'
+                  AND COALESCE(e.in_library, FALSE) = TRUE
+                  AND e.parent_series_tmdb_id = m.tmdb_id
+            )
+         )
+         OR (
+                m.item_type = 'Season'
+            AND EXISTS (
+                SELECT 1 FROM media_metadata e
+                WHERE e.item_type = 'Episode'
+                  AND COALESCE(e.in_library, FALSE) = TRUE
+                  AND e.parent_series_tmdb_id = COALESCE(NULLIF(m.parent_series_tmdb_id, ''), m.tmdb_id)
+                  AND (m.season_number IS NULL OR e.season_number = m.season_number)
+            )
+         )
+        )
+    """)
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT * FROM media_metadata
+                SELECT
+                    m.*,
+                    p.title AS series_title,
+                    p.original_title AS series_original_title,
+                    p.release_year AS series_release_year
+                FROM media_metadata m
+                LEFT JOIN media_metadata p
+                  ON p.item_type = 'Series'
+                 AND p.tmdb_id = COALESCE(NULLIF(m.parent_series_tmdb_id, ''), CASE WHEN m.item_type='Series' THEN m.tmdb_id ELSE NULL END)
                 WHERE {' AND '.join(where)}
-                ORDER BY CASE item_type WHEN 'Movie' THEN 0 WHEN 'Series' THEN 1 WHEN 'Season' THEN 2 ELSE 3 END,
-                         COALESCE(date_added, created_at, last_updated_at) DESC NULLS LAST
+                ORDER BY
+                    CASE m.item_type WHEN 'Movie' THEN 0 WHEN 'Series' THEN 1 WHEN 'Season' THEN 2 ELSE 3 END,
+                    COALESCE(m.date_added, m.created_at, m.last_updated_at) DESC NULLS LAST
                 LIMIT %s
             """, args + [max(1, min(int(limit or 200), 2000))])
             return _rows(cur.fetchall())
@@ -360,7 +412,7 @@ def _episode_rows(parent_tmdb_id: str, season_number=None) -> List[Dict[str, Any
             cur.execute(
                 """
                 SELECT * FROM media_metadata
-                WHERE item_type='Episode' AND in_library=TRUE
+                WHERE item_type='Episode' AND COALESCE(in_library, FALSE)=TRUE
                   AND parent_series_tmdb_id=%s
                   AND (%s IS NULL OR season_number=%s)
                 ORDER BY season_number ASC, episode_number ASC
@@ -387,6 +439,7 @@ def _files_for_media_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:
         key = f.get('id') or sha1
         by_key[key] = {
             'fid': str(f.get('id') or ''),
+            'parent_id': str(f.get('parent_id') or ''),
             'pick_code': f.get('pick_code') or '',
             'sha1': sha1,
             'size': _safe_int(f.get('size'), 0),
@@ -401,23 +454,262 @@ def _files_for_media_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     return list(by_key.values())
 
 
+
+def _get_cache_node(fid: str) -> Dict[str, Any]:
+    fid = str(fid or '').strip()
+    if not fid:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, parent_id, name, local_path
+                    FROM p115_filesystem_cache
+                    WHERE id=%s
+                    LIMIT 1
+                    """,
+                    (fid,),
+                )
+                return _row(cur.fetchone()) or {}
+    except Exception:
+        return {}
+
+
+def _ancestor_chain(fid: str, max_depth: int = 30) -> List[Dict[str, Any]]:
+    """返回从当前节点到根的祖先链，第一项是当前节点。"""
+    chain = []
+    seen = set()
+    current = str(fid or '').strip()
+    for _ in range(max_depth):
+        if not current or current in seen or current == '0':
+            break
+        seen.add(current)
+        node = _get_cache_node(current)
+        if not node:
+            # 没有缓存行时至少保留 id，避免调用方完全丢失 root_fid。
+            chain.append({'id': current, 'parent_id': '', 'name': current})
+            break
+        node_id = str(node.get('id') or current)
+        node['id'] = node_id
+        chain.append(node)
+        parent_id = str(node.get('parent_id') or '').strip()
+        if not parent_id or parent_id == current:
+            break
+        current = parent_id
+    return chain
+
+
+def _common_ancestor_for_parents(parent_ids: List[str]) -> Dict[str, Any]:
+    """多个文件父目录不同时，推导最深公共祖先，尽量回到季目录 root_fid。"""
+    parents = [str(x or '').strip() for x in parent_ids if str(x or '').strip()]
+    if not parents:
+        return {}
+    if len(set(parents)) == 1:
+        node = _get_cache_node(parents[0])
+        return node or {'id': parents[0], 'name': parents[0]}
+
+    chains = []
+    for pid in parents:
+        chain = _ancestor_chain(pid)
+        if not chain:
+            return {}
+        # 从根到叶子比较。
+        chains.append(list(reversed(chain)))
+
+    common = None
+    min_len = min(len(c) for c in chains)
+    for idx in range(min_len):
+        ids = {str(c[idx].get('id') or '') for c in chains}
+        if len(ids) != 1:
+            break
+        common = chains[0][idx]
+    return common or {}
+
+
+def _series_title_for_consistency(parent_tmdb_id: str) -> str:
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT title
+                    FROM media_metadata
+                    WHERE tmdb_id=%s AND item_type='Series'
+                    LIMIT 1
+                    """,
+                    (str(parent_tmdb_id or ''),),
+                )
+                row = cur.fetchone()
+                return str((row or {}).get('title') or '').strip() if row else ''
+    except Exception:
+        return ''
+
+
+def repair_candidate_fingerprints(data: Dict[str, Any], *, log_result: bool = True) -> Dict[str, Any]:
+    """手动登记/登记中心前的季级指纹体检。
+
+    旧分享模式在季包分享前会走 helpers.check_season_consistency，顺手补齐
+    file_pickcode_json / file_sha1_json / p115_filesystem_cache。Rapid v2 手动登记如果
+    只按现有 PC/SHA1 反查，就会在旧数据缺缓存时显示 0 个文件。这里把同一套体检逻辑
+    接回手动登记链路：不因为一致性失败而阻止追更分集入池，只负责尽量补齐 root_fid
+    所需的文件缓存。
+    """
+    data = dict(data or {})
+    item_type = str(data.get('item_type') or data.get('share_item_type') or '').strip()
+    if item_type not in ('Season', 'Episode'):
+        return {'ok': True, 'skipped': True, 'reason': 'not_season'}
+
+    parent_tmdb_id = str(data.get('parent_series_tmdb_id') or data.get('series_tmdb_id') or data.get('tmdb_id') or '').strip()
+    season_number = _nullable_int(data.get('season_number'))
+    if not parent_tmdb_id or season_number is None:
+        return {'ok': False, 'reason': 'missing_identity', 'message': '缺少父剧 TMDb ID 或季号，无法执行季级指纹体检'}
+
+    expected = _safe_int(data.get('expected_episode_count') or data.get('total_episodes'), 0)
+    series_name = str(data.get('series_title') or data.get('title') or '').strip()
+    if not series_name or re.search(r'\bS\d{1,3}(?:E\d{1,4})?\b|第\s*\d+\s*季', series_name, re.IGNORECASE):
+        series_name = _series_title_for_consistency(parent_tmdb_id) or series_name
+
+    try:
+        from tasks import helpers
+        return helpers.check_season_consistency(
+            parent_tmdb_id,
+            season_number,
+            expected_episode_count=expected,
+            series_name=series_name,
+            rows=None,
+            log_result=log_result,
+            processor=None,
+            repair_missing_fingerprints=True,
+        )
+    except Exception as e:
+        logger.warning(
+            "  ➜ [共享资源] 手动登记前执行季级指纹体检失败: tmdb=%s, season=%s, err=%s",
+            parent_tmdb_id,
+            season_number,
+            e,
+            exc_info=True,
+        )
+        return {'ok': False, 'reason': 'repair_error', 'message': str(e)}
+
+def _candidate_root_from_files(files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    files = [f for f in (files or []) if isinstance(f, dict)]
+    if not files:
+        return {'root_fid': '', 'root_name': '', 'root_is_dir': True}
+    if len(files) == 1:
+        f = files[0]
+        parent_id = str(f.get('parent_id') or '').strip()
+        # 单文件 Movie/Episode 的 root_fid 用文件自身；同时把父目录放进 raw，后续追踪可用。
+        return {
+            'root_fid': str(f.get('fid') or ''),
+            'root_name': f.get('file_name') or f.get('relative_path') or str(f.get('fid') or ''),
+            'root_is_dir': False,
+            'parent_fid': parent_id,
+        }
+
+    parents = [str(f.get('parent_id') or '').strip() for f in files if str(f.get('parent_id') or '').strip()]
+    common = _common_ancestor_for_parents(parents)
+    if common and common.get('id'):
+        root_id = str(common.get('id'))
+        root_name = str(common.get('name') or '').strip()
+        if not root_name:
+            rel = str(files[0].get('relative_path') or '').replace('\\', '/')
+            root_name = rel.split('/')[-2] if '/' in rel else f'{len(files)} 个文件公共目录'
+        return {'root_fid': root_id, 'root_name': root_name, 'root_is_dir': True}
+
+    return {'root_fid': '', 'root_name': f'{len(files)} 个已定位文件', 'root_is_dir': True}
+
+
+def candidate_root_from_files(files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return _candidate_root_from_files(files)
+
+
+def _candidate_title(row: Dict[str, Any], item_type: str, tmdb_id: str, season=None, episode=None) -> str:
+    row = row or {}
+    series_title = row.get('series_title') or row.get('series_original_title')
+    base = series_title if item_type in ('Season', 'Episode') and series_title else (row.get('title') or row.get('original_title') or tmdb_id)
+    if item_type == 'Season' and season not in (None, ''):
+        try:
+            return f"{base} S{int(season):02d}"
+        except Exception:
+            return f"{base} S{season}"
+    if item_type == 'Episode' and season not in (None, '') and episode not in (None, ''):
+        try:
+            return f"{base} S{int(season):02d}E{int(episode):02d}"
+        except Exception:
+            return base
+    return base
+
+
 def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(row or {})
     item_type = str(row.get('item_type') or '')
-    if item_type == 'Episode':
+    season = row.get('season_number')
+    episode = row.get('episode_number')
+
+    if item_type in ('Season', 'Episode'):
         tmdb_id = str(row.get('parent_series_tmdb_id') or row.get('tmdb_id') or '')
     else:
         tmdb_id = str(row.get('tmdb_id') or '')
+
+    files: List[Dict[str, Any]] = []
+    consistency = None
+    share_item_type = item_type
+    share_type = 'movie_file'
+    if item_type == 'Movie':
+        files = _files_for_media_row(row)
+        share_type = 'movie_file' if len(files) <= 1 else 'movie_folder'
+    elif item_type == 'Episode':
+        files = _files_for_media_row(row)
+        share_type = 'episode_file'
+    elif item_type == 'Season':
+        files = []
+        ep_rows = _episode_rows(tmdb_id, season)
+        for ep_row in ep_rows:
+            files.extend(_files_for_media_row(ep_row))
+        consistency = None
+        if not files and ep_rows:
+            consistency = repair_candidate_fingerprints({**row, 'parent_series_tmdb_id': tmdb_id, 'item_type': 'Season', 'season_number': season}, log_result=True)
+            files = []
+            for ep_row in _episode_rows(tmdb_id, season):
+                files.extend(_files_for_media_row(ep_row))
+        share_type = 'season_pack'
+        share_item_type = 'Season'
+    elif item_type == 'Series':
+        # Series 行只用于展开季候选；不直接登记整剧。
+        files = []
+        share_type = 'series_pack'
+
+    root = _candidate_root_from_files(files)
+    title = _candidate_title(row, share_item_type, tmdb_id, season, episode)
+    resolvable = bool(files)
+    message = f'已定位 {len(files)} 个可登记视频文件' if resolvable else '未定位到已入库视频文件；需要 media_metadata 中有 PC/SHA1 且 p115_filesystem_cache 能反查到文件'
+    if consistency and isinstance(consistency, dict) and consistency.get('message'):
+        message = f"{message}；{consistency.get('message')}"
+    in_library = bool(resolvable or row.get('in_library'))
+
     return {
         'tmdb_id': tmdb_id,
+        'share_tmdb_id': tmdb_id,
         'item_type': item_type,
-        'parent_series_tmdb_id': row.get('parent_series_tmdb_id'),
-        'season_number': row.get('season_number'),
-        'episode_number': row.get('episode_number'),
-        'title': row.get('title') or row.get('original_title') or tmdb_id,
-        'release_year': row.get('release_year'),
-        'root_fid': '',
-        'root_name': row.get('title') or row.get('original_title') or tmdb_id,
+        'share_item_type': share_item_type,
+        'parent_series_tmdb_id': row.get('parent_series_tmdb_id') or (tmdb_id if share_item_type in ('Season', 'Episode') else ''),
+        'season_number': season,
+        'episode_number': episode,
+        'title': title,
+        'standard_title': title,
+        'display_title': title,
+        'release_year': row.get('release_year') or row.get('series_release_year'),
+        'in_library': in_library,
+        'source_in_library': bool(row.get('in_library')),
+        'share_type': share_type,
+        'root_fid': root.get('root_fid') or '',
+        'root_name': root.get('root_name') or title,
+        'root_is_dir': root.get('root_is_dir') is not False,
+        'file_count': len(files),
+        'resolvable': resolvable,
+        'message': message,
+        'consistency': consistency or {},
         'source_provider': 'manual_rapid',
         'raw_json': row,
     }
@@ -434,16 +726,17 @@ def search_shareable_media(keyword='', search_limit=300, result_limit=500) -> Li
             eps = _episode_rows(row.get('tmdb_id'))
             seasons = sorted({e.get('season_number') for e in eps if e.get('season_number') is not None})
             for sn in seasons:
-                key = (row.get('tmdb_id'), 'Season', sn)
+                key = (row.get('tmdb_id'), 'Season', sn, None)
                 if key in seen:
                     continue
-                seen.add(key)
                 cand = build_shareable_candidate({**row, 'item_type': 'Season', 'season_number': sn, 'parent_series_tmdb_id': row.get('tmdb_id')})
-                cand['title'] = f"{row.get('title') or row.get('tmdb_id')} S{int(sn):02d}"
+                if not cand.get('resolvable'):
+                    continue
+                seen.add(key)
                 result.append(cand)
         else:
             cand = build_shareable_candidate(row)
-            key = (cand.get('tmdb_id'), cand.get('item_type'), cand.get('season_number'), cand.get('episode_number'))
+            key = (cand.get('share_tmdb_id') or cand.get('tmdb_id'), cand.get('share_item_type') or cand.get('item_type'), cand.get('season_number'), cand.get('episode_number'))
             if key in seen:
                 continue
             seen.add(key)
@@ -460,6 +753,10 @@ def collect_files_for_candidate(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     season = _nullable_int(data.get('season_number'))
     episode = _nullable_int(data.get('episode_number'))
     files = []
+    if item_type in ('Season', 'Episode'):
+        # 先复用完结季一致性检查里的指纹体检逻辑，确保旧库里 root_fid/parent_id 缺失时也能补齐。
+        repair_candidate_fingerprints(data, log_result=True)
+
     if item_type == 'Movie':
         with get_db_connection() as conn:
             with conn.cursor() as cur:
