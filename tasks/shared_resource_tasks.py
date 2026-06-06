@@ -671,7 +671,7 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
     for page in range(max(1, int(max_pages or 1))):
         try:
             resp = client.list_sources(
-                status='alive,pending,replenish,dead,reported,cancelled,expired,rejected',
+                status='alive,pending,replenish,superseded,dead,reported,cancelled,expired,rejected',
                 mine_only=True,
                 include_raw=False,
                 order_by='latest',
@@ -710,6 +710,7 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
                 'healthy_sha1s': set(),
                 'summary_missing_sha1s': set(),
                 'replenish_sha1s': set(),
+                'superseded_sha1s': set(),
                 'dead_sha1s': set(),
                 'statuses': set(),
             })
@@ -732,6 +733,8 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
                     group['summary_missing_sha1s'].add(sha1)
             if sha1 and status == 'replenish':
                 group['replenish_sha1s'].add(sha1)
+            if sha1 and status == 'superseded':
+                group['superseded_sha1s'].add(sha1)
             if sha1 and status in ('dead', 'cancelled', 'expired', 'rejected'):
                 group['dead_sha1s'].add(sha1)
 
@@ -761,8 +764,11 @@ def _center_share_sync_reason(center_snapshot: Dict[str, Dict[str, Any]] | None,
     healthy_sha1s = set(center.get('healthy_sha1s') or set())
     summary_missing_sha1s = set(center.get('summary_missing_sha1s') or set())
     replenish_sha1s = set(center.get('replenish_sha1s') or set())
+    superseded_sha1s = set(center.get('superseded_sha1s') or set())
     dead_sha1s = set(center.get('dead_sha1s') or set())
 
+    if local_sha1s & superseded_sha1s:
+        return 'center_superseded'
     if local_sha1s & replenish_sha1s:
         return 'center_replenish'
     if local_sha1s & dead_sha1s:
@@ -783,7 +789,172 @@ def _center_share_sync_reason_text(reason: str) -> str:
         'center_summary_missing': '中心服务器该分享码缺少轻量媒体摘要',
         'center_replenish': '中心服务器该分享码处于待补充',
         'center_dead': '中心服务器该分享码被标记为失效',
+        'center_superseded': '中心服务器已由同季季包接管该单集分享',
     }.get(str(reason or ''), str(reason or ''))
+
+
+def _record_episode_like(record: Dict[str, Any]) -> bool:
+    share_type = str((record or {}).get('share_type') or '').strip().lower()
+    item_type = str((record or {}).get('item_type') or '').strip().lower()
+    return share_type in ('episode_file', 'episode', 'single') or item_type in ('episode', 'episode_file', 'single')
+
+
+def _event_payload_value(event: Dict[str, Any], key: str, default=None):
+    event = event or {}
+    payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+    return event.get(key) if event.get(key) not in (None, '') else payload.get(key, default)
+
+
+def _local_share_record_matches_superseded_event(record: Dict[str, Any], items: List[Dict[str, Any]], event: Dict[str, Any]) -> bool:
+    record = record or {}
+    items = items or []
+    source_id = str(_event_payload_value(event, 'source_id', '') or '').strip()
+    share_code = str(_event_payload_value(event, 'share_code', '') or '').strip()
+    sha1 = str(_event_payload_value(event, 'sha1', '') or '').strip().upper()
+    tmdb_id = str(_event_payload_value(event, 'tmdb_id', '') or '').strip()
+    season = _safe_int(_event_payload_value(event, 'season_number', None), None)
+    episode = _safe_int(_event_payload_value(event, 'episode_number', None), None)
+
+    record_source_id = str(record.get('center_source_id') or '').strip()
+    if source_id and record_source_id == source_id:
+        return True
+    for item in items:
+        if source_id and str((item or {}).get('center_source_id') or '').strip() == source_id:
+            return True
+
+    record_share_code = str(record.get('share_code') or '').strip()
+    if share_code and record_share_code == share_code:
+        if sha1:
+            for item in items:
+                if str((item or {}).get('sha1') or '').strip().upper() == sha1:
+                    return True
+        if _record_episode_like(record):
+            r_season = _safe_int(record.get('season_number'), None)
+            r_episode = _safe_int(record.get('episode_number'), None)
+            if season is None or r_season is None or r_season == season:
+                if episode is None or r_episode is None or r_episode == episode:
+                    return True
+        # source_superseded 事件只会下发给源设备；share_code 命中时保守认为是同一个单集分享。
+        return True
+
+    if sha1:
+        for item in items:
+            if str((item or {}).get('sha1') or '').strip().upper() == sha1:
+                if _record_episode_like(record):
+                    return True
+
+    if tmdb_id and _record_episode_like(record):
+        record_parent = str(record.get('parent_series_tmdb_id') or record.get('tmdb_id') or '').strip()
+        record_season = _safe_int(record.get('season_number'), None)
+        record_episode = _safe_int(record.get('episode_number'), None)
+        if record_parent == tmdb_id and record_season == season and (episode is None or record_episode == episode):
+            return True
+    return False
+
+
+def _find_local_share_records_for_superseded_event(event: Dict[str, Any], max_pages: int = 20) -> List[Dict[str, Any]]:
+    """根据中心 source_superseded 事件定位本机需要删除的单集分享记录。"""
+    matches = []
+    seen = set()
+    active_statuses = set(_active_share_statuses())
+    page_size = 200
+    for page in range(1, max(1, int(max_pages or 20)) + 1):
+        try:
+            records, total = shared_share_db.list_share_records(status='all', keyword='', page=page, page_size=page_size)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享事件监听] 查询本地分享记录失败，无法处理 source_superseded: {e}")
+            break
+        records = records or []
+        if not records:
+            break
+        for record in records:
+            record_id = record.get('id')
+            if record_id in seen:
+                continue
+            status = str(record.get('status') or '').strip()
+            review_status = str(record.get('review_status') or '').strip()
+            if active_statuses and status not in active_statuses and review_status not in ('alive', 'pending_review'):
+                continue
+            try:
+                items = shared_share_db.list_share_items(record_id) or []
+            except Exception:
+                items = []
+            if _local_share_record_matches_superseded_event(record, items, event):
+                seen.add(record_id)
+                matches.append(record)
+        try:
+            if page * page_size >= int(total or 0):
+                break
+        except Exception:
+            if len(records) < page_size:
+                break
+    return matches
+
+
+def _cancel_superseded_local_share_record(
+    client: SharedCenterClient,
+    p115,
+    record: Dict[str, Any],
+    *,
+    event: Dict[str, Any] | None = None,
+    reason: str = 'source_superseded_by_season_pack',
+) -> tuple[bool, str]:
+    """删除已被中心季包接管的本机单集分享，并撤销中心历史源。"""
+    record = record or {}
+    record_id = record.get('id')
+    share_code = str(record.get('share_code') or '').strip()
+    title = record.get('title') or record.get('root_name') or share_code or str(record_id)
+    p115_ok, p115_resp = _delete_115_share(p115, share_code)
+    if not p115_ok:
+        old_raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+        try:
+            shared_share_db.update_share_record(
+                record_id,
+                status='cancel_failed',
+                last_error=f'中心同季季包已接管该单集，但取消 115 分享失败：{p115_resp}',
+                raw_json={
+                    **dict(old_raw or {}),
+                    'source_superseded_cancel_failed': {
+                        'reason': reason,
+                        'event': event or {},
+                        'p115_response': p115_resp,
+                        'failed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    },
+                },
+            )
+        except Exception:
+            pass
+        return False, f'取消 115 分享失败：{p115_resp}'
+
+    center_ok, center_resp = _cancel_center_sources_for_record(client, record_id, share_code, reason)
+    _mark_share_deleted(
+        record,
+        p115_resp=p115_resp,
+        center_resp=center_resp,
+        center_ok=center_ok,
+        reason=reason,
+        last_error='中心已有同剧同季季包源，单集分享已被接管并自动清理',
+        status='cancelled',
+        review_status='superseded',
+    )
+    try:
+        shared_credit_db.add_credit_ledger(
+            'share_episode_cancelled_after_season_superseded',
+            0,
+            f'中心季包接管后取消单集分享：{title}',
+            ref_id=str(record_id),
+            title=title,
+            raw_json={
+                'share_code': share_code,
+                'event': event or {},
+                'center_ok': center_ok,
+                'center_response': center_resp,
+                'p115_response': p115_resp,
+            },
+        )
+    except Exception:
+        pass
+    return True, '已删除本机 115 单集分享并撤销中心历史源' if center_ok else f'115 分享已删除，但中心撤销失败：{center_resp}'
 
 def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records: int = 80) -> Dict[str, int]:
     """自动同步 115 分享状态；可用后上传 raw 并登记中心；失效时撤销中心源。
@@ -857,6 +1028,21 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                 items = shared_share_db.list_share_items(record['id']) or []
                 raw_etk_dirty = _record_raw_etk_dirty(record)
                 sync_reason = _center_share_sync_reason(center_snapshot, share_code, items)
+                if sync_reason == 'center_superseded':
+                    ok, msg = _cancel_superseded_local_share_record(
+                        client,
+                        p115,
+                        record,
+                        event={'source': 'center_snapshot', 'sync_reason': sync_reason, 'share_code': share_code},
+                        reason='center_snapshot_source_superseded',
+                    )
+                    if ok:
+                        cancelled += 1
+                        logger.info(f"  ➜ [共享资源维护] 中心季包已接管，已清理本地单集分享: share={share_code}")
+                    else:
+                        logger.warning(f"  ➜ [共享资源维护] 中心季包已接管，但清理本地单集分享失败: share={share_code}, {msg}")
+                    continue
+
                 need_report = _record_reportable(record) or bool(sync_reason) or raw_etk_dirty
 
                 if need_report and sr is not None:
@@ -978,6 +1164,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                     group['healthy_sha1s'].update(local_sha1s)
                                     group.setdefault('summary_missing_sha1s', set()).difference_update(local_sha1s)
                                     group.setdefault('replenish_sha1s', set()).difference_update(local_sha1s)
+                                    group.setdefault('superseded_sha1s', set()).difference_update(local_sha1s)
                                     group['dead_sha1s'].difference_update(local_sha1s)
                                     group['statuses'].add('pending')
                         elif errors:
@@ -3319,6 +3506,58 @@ def _auto_respond_open_share_requests(client: SharedCenterClient, max_requests: 
     }
 
 
+
+
+def _handle_source_superseded_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
+    """中心通知：本机贡献的单集源已被同季季包接管，需要删除真实 115 分享。"""
+    event = dict(event or {})
+    payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+    event_id = str(event.get('event_id') or '').strip()
+    title = event.get('title') or payload.get('title') or payload.get('file_name') or payload.get('source_id') or event_id
+    if not event_id:
+        return {'success': False, 'message': '事件缺少 event_id'}
+
+    records = _find_local_share_records_for_superseded_event(event)
+    if not records:
+        msg = f'本地未找到需清理的单集分享，可能已删除：{title}'
+        _ack_shared_device_event(client, event, 'skipped', msg)
+        logger.info(f"  ➜ [共享事件监听] {msg}")
+        return {'success': False, 'skipped': True, 'message': msg}
+
+    p115 = P115Service.get_client()
+    if not p115:
+        msg = '115 客户端未初始化，无法删除被季包接管的单集分享'
+        _ack_shared_device_event(client, event, 'failed', msg)
+        return {'success': False, 'message': msg, 'matched': len(records)}
+
+    cancelled = failed = 0
+    messages = []
+    for record in records:
+        ok, msg = _cancel_superseded_local_share_record(
+            client,
+            p115,
+            record,
+            event=event,
+            reason='source_superseded_by_season_pack',
+        )
+        messages.append(msg)
+        if ok:
+            cancelled += 1
+        else:
+            failed += 1
+        time.sleep(0.2)
+
+    if failed:
+        message = f'单集分享被季包接管，已清理 {cancelled} 个，失败 {failed} 个：' + '；'.join(messages[:3])
+        _ack_shared_device_event(client, event, 'failed', message)
+        logger.warning(f"  ➜ [共享事件监听] {message}")
+        return {'success': False, 'message': message, 'cancelled': cancelled, 'failed': failed}
+
+    message = f'同季季包已入池，已清理本机单集分享 {cancelled} 个：{title}'
+    _ack_shared_device_event(client, event, 'success', message)
+    logger.info(f"  ➜ [共享事件监听] {message}")
+    return {'success': True, 'message': message, 'cancelled': cancelled, 'failed': 0}
+
 def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
     event = dict(event or {})
     payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
@@ -3332,6 +3571,9 @@ def _handle_shared_device_event(client: SharedCenterClient, event: Dict[str, Any
 
     if event_type in ('share_request_created', 'share_request_updated', 'share_request_opened'):
         return _handle_share_request_auto_response_event(client, event)
+
+    if event_type == 'source_superseded':
+        return _handle_source_superseded_event(client, event)
 
     if event_type not in ('resource_available', 'request_matched'):
         msg = f'暂不支持的事件类型：{event_type}'
