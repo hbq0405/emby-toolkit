@@ -703,6 +703,10 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'standard_title': title,
         'display_title': title,
         'release_year': row.get('release_year') or row.get('series_release_year'),
+        'watching_status': row.get('watching_status') or '',
+        'season_status': row.get('watching_status') or '',
+        'total_episodes': _safe_int(row.get('total_episodes'), 0) or None,
+        'expected_episode_count': _safe_int(row.get('total_episodes'), 0) or None,
         'in_library': in_library,
         'source_in_library': bool(row.get('in_library')),
         'share_type': share_type,
@@ -716,6 +720,33 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'source_provider': 'manual_rapid',
         'raw_json': row,
     }
+
+
+def season_metadata_row(parent_tmdb_id: str, season_number=None) -> Dict[str, Any]:
+    """读取某父剧某季的 Season 元数据行，用于手动共享候选补齐 watching_status / total_episodes。"""
+    parent_tmdb_id = str(parent_tmdb_id or '').strip()
+    season = _nullable_int(season_number)
+    if not parent_tmdb_id or season is None:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM media_metadata
+                    WHERE item_type='Season'
+                      AND season_number=%s
+                      AND COALESCE(NULLIF(parent_series_tmdb_id, ''), tmdb_id)=%s
+                    ORDER BY last_updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (season, parent_tmdb_id),
+                )
+                return _row(cur.fetchone()) or {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询季元数据失败: tmdb={parent_tmdb_id}, season={season}, err={e}")
+        return {}
 
 
 def search_shareable_media(keyword='', search_limit=300, result_limit=500) -> List[Dict[str, Any]]:
@@ -732,7 +763,18 @@ def search_shareable_media(keyword='', search_limit=300, result_limit=500) -> Li
                 key = (row.get('tmdb_id'), 'Season', sn, None)
                 if key in seen:
                     continue
-                cand = build_shareable_candidate({**row, 'item_type': 'Season', 'season_number': sn, 'parent_series_tmdb_id': row.get('tmdb_id')})
+                season_row = season_metadata_row(row.get('tmdb_id'), sn)
+                season_candidate_row = {
+                    **(season_row or {}),
+                    'item_type': 'Season',
+                    'season_number': sn,
+                    'parent_series_tmdb_id': row.get('tmdb_id'),
+                    'tmdb_id': (season_row or {}).get('tmdb_id') or row.get('tmdb_id'),
+                    'series_title': row.get('title') or row.get('original_title'),
+                    'series_original_title': row.get('original_title'),
+                    'series_release_year': row.get('release_year'),
+                }
+                cand = build_shareable_candidate(season_candidate_row)
                 if not cand.get('resolvable'):
                     continue
                 seen.add(key)

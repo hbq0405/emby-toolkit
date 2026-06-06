@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -10,10 +11,13 @@ from typing import Any, Dict, List
 
 import requests
 import task_manager
+import config_manager
+import constants
 from database import shared_credit_db, shared_share_db, settings_db
 from database.connection import get_db_connection
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled
 from handler.shared_subscription_service import poll_and_consume_once
+from handler import tmdb as tmdb_handler
 
 logger = logging.getLogger(__name__)
 
@@ -988,6 +992,269 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False) 
     }
 
 
+# 完结季纯净版识别：只在登记 completed_season_source 时执行。
+# 秒传消费端不再现场兜底识别，只信中心端保存的 is_clean_version 标签。
+_CLEAN_VERSION_MIN_DELTA_MINUTES = 2.5
+_CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.94
+_CLEAN_VERSION_MIN_COMPARABLE_EPISODES = 2
+_CLEAN_VERSION_HIT_RATIO = 0.70
+
+
+def _runtime_minutes_from_ticks(value) -> float:
+    try:
+        if value in (None, '', 0, '0'):
+            return 0.0
+        return float(value) / 600000000.0
+    except Exception:
+        return 0.0
+
+
+def _runtime_minutes_from_seconds(value) -> float:
+    try:
+        if value in (None, '', 0, '0'):
+            return 0.0
+        return float(value) / 60.0
+    except Exception:
+        return 0.0
+
+
+def _physical_runtime_minutes_from_raw(raw: Dict[str, Any]) -> float:
+    if not isinstance(raw, dict):
+        return 0.0
+    msi = raw.get('MediaSourceInfo') if isinstance(raw.get('MediaSourceInfo'), dict) else {}
+    runtime = _runtime_minutes_from_ticks(msi.get('RunTimeTicks'))
+    if runtime > 0:
+        return runtime
+    runtime = _runtime_minutes_from_ticks(raw.get('RunTimeTicks'))
+    if runtime > 0:
+        return runtime
+    fmt = raw.get('format') if isinstance(raw.get('format'), dict) else {}
+    runtime = _runtime_minutes_from_seconds(fmt.get('duration'))
+    if runtime > 0:
+        return runtime
+    for stream in raw.get('streams') or []:
+        if not isinstance(stream, dict):
+            continue
+        runtime = _runtime_minutes_from_seconds(stream.get('duration'))
+        if runtime > 0:
+            return runtime
+    return 0.0
+
+
+def _load_local_runtime_map_for_season(parent_series_tmdb_id: str, season_number) -> Dict[int, float]:
+    parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
+    season = _safe_int_or_none(season_number)
+    if not parent_series_tmdb_id or season is None:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT episode_number, runtime_minutes
+                    FROM media_metadata
+                    WHERE item_type='Episode'
+                      AND parent_series_tmdb_id=%s
+                      AND season_number=%s
+                      AND runtime_minutes IS NOT NULL
+                      AND runtime_minutes > 0
+                    ORDER BY episode_number ASC
+                    """,
+                    (parent_series_tmdb_id, season),
+                )
+                out = {}
+                for row in cur.fetchall() or []:
+                    ep = _safe_int(row.get('episode_number'), 0)
+                    runtime = float(row.get('runtime_minutes') or 0)
+                    if ep > 0 and runtime > 0:
+                        out[ep] = runtime
+                return out
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 读取本地 TMDb 分集时长失败: tmdb={parent_series_tmdb_id}, S{season}, err={e}")
+        return {}
+
+
+def _tmdb_api_key_for_clean_detect() -> str:
+    candidates = []
+    for attr in (
+        'CONFIG_OPTION_TMDB_API_KEY', 'CONFIG_OPTION_TMDB_APIKEY', 'CONFIG_OPTION_TMDB_KEY',
+        'CONFIG_OPTION_TMDB_V3_API_KEY', 'CONFIG_OPTION_TMDB_API_TOKEN',
+    ):
+        key = getattr(constants, attr, None)
+        if key:
+            candidates.append(key)
+    candidates.extend(['tmdb_api_key', 'tmdb_key', 'TMDB_API_KEY', 'themoviedb_api_key'])
+    for key in candidates:
+        val = (config_manager.APP_CONFIG or {}).get(key)
+        if val:
+            return str(val).strip()
+    return ''
+
+
+def _load_tmdb_runtime_map_for_season(parent_series_tmdb_id: str, season_number) -> Dict[int, float]:
+    parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
+    try:
+        series_id = int(float(parent_series_tmdb_id))
+        season = int(float(season_number))
+    except Exception:
+        return {}
+    api_key = _tmdb_api_key_for_clean_detect()
+    if not api_key:
+        logger.warning("  ➜ [共享资源] 未配置 TMDb API Key，手动完结季无法实时识别纯净版。")
+        return {}
+    try:
+        data = tmdb_handler.get_season_details_tmdb(
+            tv_id=series_id,
+            season_number=season,
+            api_key=api_key,
+            append_to_response=None,
+        )
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 手动完结季实时查询 TMDb 时长失败: tv={series_id}, S{season}, err={e}")
+        return {}
+    out: Dict[int, float] = {}
+    for ep in (data or {}).get('episodes') or []:
+        if not isinstance(ep, dict):
+            continue
+        try:
+            ep_no = int(ep.get('episode_number'))
+            runtime = float(ep.get('runtime') or 0)
+            if ep_no > 0 and runtime > 0:
+                out[ep_no] = runtime
+        except Exception:
+            continue
+    return out
+
+
+def _is_manual_clean_detect_source(source_provider: str, candidate: Dict[str, Any]) -> bool:
+    text = ' '.join([
+        str(source_provider or ''),
+        str((candidate or {}).get('source_provider') or ''),
+        str((candidate or {}).get('register_source') or ''),
+    ]).lower()
+    return 'manual' in text or '手动' in text
+
+
+def _detect_clean_version_for_completed_season(
+    candidate: Dict[str, Any],
+    completed_files: List[Dict[str, Any]],
+    source_files: List[Dict[str, Any]],
+    *,
+    source_provider: str = '',
+) -> Dict[str, Any]:
+    """登记完结季时识别纯净版。
+
+    口径：
+    - 连载季不调用本函数；
+    - 自动/完结任务使用本地 media_metadata.runtime_minutes；
+    - 手动共享完结季实时查询 TMDb 季详情；
+    - 只生成中心端标签，消费端不再二次兜底识别。
+    """
+    candidate = dict(candidate or {})
+    parent = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    season = _safe_int_or_none(candidate.get('season_number'))
+    if not parent or season is None:
+        return {'is_clean_version': False, 'clean_version_checked': False, 'reason': 'missing_identity'}
+
+    manual = _is_manual_clean_detect_source(source_provider, candidate)
+    runtime_map = _load_tmdb_runtime_map_for_season(parent, season) if manual else _load_local_runtime_map_for_season(parent, season)
+    runtime_source = 'tmdb_realtime' if manual else 'local_media_metadata'
+    if not runtime_map:
+        return {
+            'is_clean_version': False,
+            'clean_version_checked': False,
+            'reason': 'missing_official_runtime',
+            'runtime_source': runtime_source,
+            'parent_series_tmdb_id': parent,
+            'season_number': season,
+        }
+
+    raw_by_sha1 = {}
+    for f in source_files or []:
+        sha1 = _norm_sha1(f.get('sha1'))
+        if sha1 and sha1 not in raw_by_sha1:
+            raw_by_sha1[sha1] = _raw_for_file(f)
+
+    by_episode: Dict[int, Dict[str, Any]] = {}
+    for item in completed_files or []:
+        ep_no = _safe_int(item.get('episode_number'), 0)
+        if ep_no <= 0 or ep_no not in runtime_map:
+            continue
+        sha1 = _norm_sha1(item.get('sha1'))
+        raw = raw_by_sha1.get(sha1) or {}
+        actual = _physical_runtime_minutes_from_raw(raw)
+        official = float(runtime_map.get(ep_no) or 0)
+        if actual <= 0 or official <= 0:
+            continue
+        current = by_episode.get(ep_no)
+        if current is None or actual < float(current.get('actual_runtime_minutes') or 0):
+            by_episode[ep_no] = {
+                'episode_number': ep_no,
+                'official_runtime_minutes': round(official, 2),
+                'actual_runtime_minutes': round(actual, 2),
+                'delta_minutes': round(official - actual, 2),
+                'file_name': item.get('file_name') or '',
+                'sha1': sha1,
+            }
+
+    episode_rows = sorted(by_episode.values(), key=lambda x: x.get('episode_number') or 0)
+    comparable = len(episode_rows)
+    if comparable < _CLEAN_VERSION_MIN_COMPARABLE_EPISODES:
+        return {
+            'is_clean_version': False,
+            'clean_version_checked': False,
+            'reason': 'not_enough_comparable_episodes',
+            'runtime_source': runtime_source,
+            'parent_series_tmdb_id': parent,
+            'season_number': season,
+            'comparable_count': comparable,
+        }
+
+    hits = []
+    for ep in episode_rows:
+        official = float(ep.get('official_runtime_minutes') or 0)
+        actual = float(ep.get('actual_runtime_minutes') or 0)
+        delta = float(ep.get('delta_minutes') or 0)
+        ratio = (actual / official) if official > 0 else 1.0
+        ep['runtime_ratio'] = round(ratio, 4)
+        ep['clean_hit'] = bool(delta >= _CLEAN_VERSION_MIN_DELTA_MINUTES and ratio <= _CLEAN_VERSION_MAX_RUNTIME_RATIO)
+        if ep['clean_hit']:
+            hits.append(ep)
+
+    required_hits = max(2, int(math.ceil(comparable * _CLEAN_VERSION_HIT_RATIO)))
+    avg_delta = sum(float(ep.get('delta_minutes') or 0) for ep in episode_rows) / comparable if comparable else 0.0
+    is_clean = len(hits) >= required_hits
+    confidence = round(len(hits) / comparable, 4) if comparable else 0.0
+    result = {
+        'is_clean_version': bool(is_clean),
+        'clean_version_checked': True,
+        'reason': 'majority_runtime_shorter' if is_clean else 'runtime_not_short_enough',
+        'runtime_source': runtime_source,
+        'parent_series_tmdb_id': parent,
+        'season_number': season,
+        'comparable_count': comparable,
+        'hit_count': len(hits),
+        'required_hits': required_hits,
+        'avg_delta_minutes': round(avg_delta, 2),
+        'min_delta_minutes': _CLEAN_VERSION_MIN_DELTA_MINUTES,
+        'max_runtime_ratio': _CLEAN_VERSION_MAX_RUNTIME_RATIO,
+        'hit_ratio': _CLEAN_VERSION_HIT_RATIO,
+        'clean_version_confidence': confidence,
+        'episodes': episode_rows[:80],
+    }
+    if is_clean:
+        logger.info(
+            f"  ➜ [共享资源] 完结季识别为疑似纯净版: {candidate.get('title') or parent} "
+            f"S{season:02d}, 命中 {len(hits)}/{comparable} 集, 来源={runtime_source}, 平均短 {avg_delta:.1f} 分钟"
+        )
+    else:
+        logger.debug(
+            f"  ➜ [共享资源] 完结季纯净版识别未命中: {candidate.get('title') or parent} "
+            f"S{season:02d}, 命中 {len(hits)}/{comparable} 集, 来源={runtime_source}"
+        )
+    return result
+
+
 def _completed_status_from_files(files: List[Dict[str, Any]], expected_count: int = 0) -> Dict[str, Any]:
     eps = sorted({_safe_int(f.get('episode_number'), 0) for f in files if _safe_int(f.get('episode_number'), 0) > 0})
     if expected_count and len(eps) < expected_count:
@@ -1176,6 +1443,16 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 status = {'status': 'inconsistent', 'message': consistency.get('message') or '完结季一致性校验失败'}
             elif reason not in ('not_season', None):
                 status = {'status': 'inconsistent', 'message': consistency.get('message') or '完结季一致性校验异常'}
+        clean_detection = {'is_clean_version': False, 'clean_version_checked': False, 'reason': 'status_not_available'}
+        if status.get('status') == 'available':
+            clean_detection = _detect_clean_version_for_completed_season(
+                candidate,
+                completed_files,
+                files,
+                source_provider=source_provider,
+            )
+        is_clean_version = bool(clean_detection.get('is_clean_version'))
+        clean_confidence = clean_detection.get('clean_version_confidence') if clean_detection.get('clean_version_checked') else None
         try:
             payload = {
                 'tmdb_id': tmdb_id,
@@ -1188,9 +1465,9 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'status_message': status['message'],
                 'manifest_hash': shared_share_db.manifest_hash(completed_files),
                 'source_provider': 'rapid_completed_season',
-                'is_clean_version': bool(candidate.get('is_clean_version', False)),
-                'clean_version_confidence': candidate.get('clean_version_confidence'),
-                'clean_version_meta_json': candidate.get('clean_version_meta_json') or {},
+                'is_clean_version': is_clean_version,
+                'clean_version_confidence': clean_confidence,
+                'clean_version_meta_json': clean_detection,
                 'media_signature_json': common_signature,
                 'files': completed_files,
             }
@@ -1204,7 +1481,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'status': status['status'], 'center_status': 'reported', 'manifest_hash': payload['manifest_hash'],
                 'file_count': len(completed_files), 'total_size': sum(_safe_int(x.get('size'), 0) for x in completed_files),
                 'is_clean_version': payload['is_clean_version'], 'clean_version_confidence': payload['clean_version_confidence'],
-                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'root': root},
+                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'clean_detection': clean_detection, 'root': root},
             })
             shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': bool(_raw_for_file(f))} for f in files])
         except Exception as e:

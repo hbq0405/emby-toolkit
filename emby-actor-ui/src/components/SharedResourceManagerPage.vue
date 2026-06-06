@@ -1193,7 +1193,7 @@ const inferRapidSourceKind = (row) => {
   const typeText = centerTypeLabel(centerRowType(row));
   if (typeText === '电影') return 'movie';
   if (typeText === '单集') return 'episode';
-  if (typeText === '季目录' || typeText === '剧集包') return row?.source_kind === 'season_hub' ? 'season_hub' : 'completed_season';
+  if (typeText === '季') return row?.source_kind === 'season_hub' ? 'season_hub' : 'completed_season';
   return '';
 };
 
@@ -1318,7 +1318,7 @@ const centerGroupKey = (row) => {
   const episode = row.episode_number || '';
   const baseType = centerTypeLabel(type);
   if (baseType === '电影') return `movie:${tmdb || title}`;
-  if (baseType === '季目录' || baseType === '剧集包') return `pack:${tmdb || title}:S${season || ''}`;
+  if (baseType === '季') return `pack:${tmdb || title}:S${season || ''}`;
   if (baseType === '单集') return `ep:${tmdb || title}:S${season || ''}:E${episode || ''}`;
   return `${baseType}:${tmdb || title}:${season}:${episode}`;
 };

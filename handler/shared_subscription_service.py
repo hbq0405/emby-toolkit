@@ -2,6 +2,7 @@
 # Rapid v2 共享资源消费入口：中心调度，本机 CK 执行秒传/入库。
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -10,13 +11,20 @@ from typing import Any, Dict, List, Tuple
 import config_manager
 import constants
 from database import settings_db
-from handler.p115_service import P115Service
+from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
+from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled
 
 logger = logging.getLogger(__name__)
 
 _ORGANIZE_KICK_LOCK = threading.Lock()
 _LAST_ORGANIZE_KICK_AT = 0
+
+VIDEO_EXTS = {'.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.webm', '.iso'}
+
+
+class _MediainfoBuilder(P115MediaAnalyzerMixin):
+    pass
 
 
 def _kick_115_organize_detached(reason: str = '', delay: float = 3.0) -> Dict[str, Any]:
@@ -380,6 +388,406 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     )
     return {'ok': ok, 'response': signed_resp, 'sign_job': wait_resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
 
+
+def _json_obj(value) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _load_center_raw_map(client: SharedCenterClient, files: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """转存/秒传前把中心 RAW 拉到本地，用于洗版预检和本地 MediaInfo 缓存。"""
+    raw_map: Dict[str, Dict[str, Any]] = {}
+    missing = []
+    for item in files or []:
+        sha1 = _norm_sha1((item or {}).get('sha1'))
+        if not sha1:
+            continue
+        raw = (item or {}).get('raw_ffprobe_json') or (item or {}).get('raw_json') or (item or {}).get('raw')
+        if isinstance(raw, dict) and raw:
+            raw_map[sha1] = raw
+            continue
+        if sha1 not in missing:
+            missing.append(sha1)
+
+    for sha1 in missing:
+        if sha1 in raw_map:
+            continue
+        try:
+            resp = client.get_raw_ffprobe(sha1)
+            raw = (resp or {}).get('raw_ffprobe_json') or (resp or {}).get('raw') or {}
+            if isinstance(raw, dict) and raw:
+                raw_map[sha1] = raw
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 拉取中心 RAW 失败: sha1={sha1[:12]}..., err={e}")
+    return raw_map
+
+
+def _cache_center_raw_as_local_mediainfo(file_info: Dict[str, Any], raw: Dict[str, Any]) -> bool:
+    sha1 = _norm_sha1((file_info or {}).get('sha1'))
+    if not sha1 or not isinstance(raw, dict) or not raw:
+        return False
+    file_node = {
+        'fn': (file_info or {}).get('file_name') or (file_info or {}).get('name') or sha1,
+        'file_name': (file_info or {}).get('file_name') or (file_info or {}).get('name') or sha1,
+        'sha1': sha1,
+        'fs': _rapid_size_to_int((file_info or {}).get('size') or (file_info or {}).get('file_size'), 0),
+        'size': _rapid_size_to_int((file_info or {}).get('size') or (file_info or {}).get('file_size'), 0),
+    }
+    try:
+        builder = _MediainfoBuilder()
+        emby_obj = builder._build_emby_mediainfo_from_ffprobe(raw, file_node, sha1=sha1)
+        if not emby_obj:
+            return False
+        P115CacheManager.save_mediainfo_cache(sha1, emby_obj, raw)
+        return True
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 中心 RAW 转本地 MediaInfo 失败: {file_node.get('file_name')} -> {e}")
+        return False
+
+
+def _guess_se_from_source(src: Dict[str, Any], context: Dict[str, Any] = None):
+    context = context or {}
+    s_num = (src or {}).get('season_number') if (src or {}).get('season_number') not in (None, '') else context.get('season_number')
+    e_num = (src or {}).get('episode_number') if (src or {}).get('episode_number') not in (None, '') else context.get('episode_number')
+    try:
+        s_num = int(float(s_num)) if s_num not in (None, '') else None
+    except Exception:
+        s_num = None
+    try:
+        e_num = int(float(e_num)) if e_num not in (None, '') else None
+    except Exception:
+        e_num = None
+    if s_num is None or e_num is None:
+        name = str((src or {}).get('file_name') or (src or {}).get('name') or '')
+        m = re.search(r'[Ss](\d{1,3})[. _-]*[Ee](\d{1,4})', name)
+        if m:
+            if s_num is None:
+                s_num = int(m.group(1))
+            if e_num is None:
+                e_num = int(m.group(2))
+    return s_num, e_num
+
+
+def _source_parent_series_tmdb_id(src: Dict[str, Any], context: Dict[str, Any] = None) -> str:
+    context = context or {}
+    for value in (
+        context.get('parent_series_tmdb_id'), context.get('parent_tmdb_id'),
+        (src or {}).get('parent_series_tmdb_id'), (src or {}).get('series_tmdb_id'), (src or {}).get('parent_tmdb_id'),
+        context.get('tmdb_id'), (src or {}).get('tmdb_id'),
+    ):
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: str,
+                       media_type: str, original_lang: str = '', has_external_subtitle: bool = False):
+    try:
+        from handler.resubscribe_service import WashingService
+        raw_info = WashingService._get_raw_info_by_sha1(sha1)
+        if isinstance(raw_info, list) and raw_info:
+            new_info = dict(raw_info[0])
+        elif isinstance(raw_info, dict):
+            new_info = dict(raw_info)
+        else:
+            return 999, '无法读取本地 MediaInfo'
+        new_info['filename'] = file_name
+        new_info['_file_size'] = file_size
+        new_info['_original_lang'] = original_lang
+        new_info['has_external_subtitle'] = has_external_subtitle
+        norm_new = WashingService._normalize_info(new_info)
+        db_media_type = 'Movie' if str(media_type).lower() == 'movie' else 'Series'
+        priorities = WashingService._load_priorities(db_media_type, target_cid)
+        if not priorities:
+            return 999, '未配置优先级规则'
+        return WashingService.get_level(norm_new, priorities)
+    except Exception as e:
+        return 999, f'读取洗版优先级失败: {e}'
+
+
+def _raw_quality_score(src: Dict[str, Any], raw: Dict[str, Any]) -> int:
+    text = f"{(src or {}).get('file_name') or ''} {json.dumps(raw or {}, ensure_ascii=False)[:4000]}".upper()
+    score = 0
+    if '2160' in text or '3840' in text or '4K' in text:
+        score += 40
+    elif '1080' in text or '1920' in text:
+        score += 20
+    elif '720' in text:
+        score += 10
+    if 'REMUX' in text:
+        score += 30
+    elif 'WEB-DL' in text or 'WEBDL' in text:
+        score += 18
+    elif 'WEBRIP' in text:
+        score += 10
+    if 'DOLBY' in text or 'DOVI' in text or re.search(r'\bDV\b', text):
+        score += 12
+    elif 'HDR10+' in text:
+        score += 10
+    elif 'HDR10' in text or 'HDR' in text:
+        score += 6
+    if 'HEVC' in text or 'H.265' in text or 'H265' in text:
+        score += 5
+    size_gb = (_rapid_size_to_int((src or {}).get('size'), 0) or 0) / 1024 / 1024 / 1024
+    score += min(int(size_gb), 30)
+    return score
+
+
+def _block_clean_version_transfer_enabled() -> bool:
+    try:
+        return bool((settings_db.get_shared_resource_config() or {}).get('p115_shared_block_clean_version_transfer', False))
+    except Exception:
+        return False
+
+
+def _center_clean_version_flagged(source_kind: str, payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """消费端只信中心端标签，不再根据 RAW/TMDb 现场识别纯净版。"""
+    if str(source_kind or '').strip() != 'completed_season':
+        return {'blocked': False}
+    candidates = [payload] + [f for f in (files or []) if isinstance(f, dict)]
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        meta = _json_obj(item.get('clean_version_meta_json') or item.get('clean_version_meta'))
+        if bool(item.get('is_clean_version') or meta.get('is_clean_version')):
+            return {'blocked': True, 'source': item, 'meta': meta}
+    return {'blocked': False}
+
+
+def _preflight_context(source_kind: str, source_id: str, payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    first = next((f for f in (files or []) if isinstance(f, dict)), {}) or {}
+    return {
+        'source_kind': source_kind,
+        'source_id': source_id,
+        'title': payload.get('title') or first.get('title') or first.get('file_name') or '',
+        'tmdb_id': payload.get('tmdb_id') or first.get('tmdb_id') or '',
+        'parent_series_tmdb_id': payload.get('parent_series_tmdb_id') or payload.get('series_tmdb_id') or first.get('parent_series_tmdb_id') or first.get('series_tmdb_id') or '',
+        'parent_tmdb_id': payload.get('parent_tmdb_id') or payload.get('parent_series_tmdb_id') or first.get('parent_series_tmdb_id') or '',
+        'item_type': payload.get('item_type') or first.get('item_type') or '',
+        'season_number': payload.get('season_number') if payload.get('season_number') not in (None, '') else first.get('season_number'),
+        'episode_number': payload.get('episode_number') if payload.get('episode_number') not in (None, '') else first.get('episode_number'),
+        'release_year': payload.get('release_year') or first.get('release_year') or '',
+    }
+
+
+def _prepare_files_before_rapid_transfer(
+    client: SharedCenterClient,
+    *,
+    source_kind: str,
+    source_id: str,
+    payload: Dict[str, Any],
+    files: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """秒传前预处理：缓存中心 RAW；replace 模式下执行洗版预检。
+
+    纯净版不在这里识别，只根据中心 is_clean_version 标签做策略拦截。
+    """
+    files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
+    raw_map = _load_center_raw_map(client, files)
+    cached = 0
+    cache_errors = []
+    for f in files:
+        sha1 = _norm_sha1(f.get('sha1'))
+        raw = raw_map.get(sha1)
+        if not raw:
+            continue
+        if _cache_center_raw_as_local_mediainfo(f, raw):
+            cached += 1
+        else:
+            cache_errors.append(f.get('file_name') or sha1)
+
+    rename_config = settings_db.get_setting('p115_rename_config') or {}
+    conflict_mode = str(rename_config.get('conflict_mode') or '').strip().lower()
+    if conflict_mode != 'replace':
+        return files, {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'washing_checked': False,
+            'message': f'当前覆盖模式为 {conflict_mode or "未配置"}，跳过洗版预检',
+        }
+
+    p115 = P115Service.get_client()
+    if not p115:
+        return [], {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'washing_checked': True,
+            'washing_rejected': True,
+            'errors': ['115 客户端未初始化，无法执行洗版预检'],
+        }
+
+    try:
+        from handler.resubscribe_service import WashingService
+    except Exception as e:
+        return [], {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'washing_checked': True,
+            'washing_rejected': True,
+            'errors': [f'导入 WashingService 失败，拒绝秒传: {e}'],
+        }
+
+    context = _preflight_context(source_kind, source_id, payload, files)
+    candidates = []
+    errors = []
+    hard_reject = False
+    is_completed_pack = str(source_kind or '') == 'completed_season'
+    is_ongoing_hub = str(source_kind or '') == 'season_hub'
+
+    for idx, src in enumerate(files):
+        file_name = src.get('file_name') or src.get('name') or _norm_sha1(src.get('sha1'))
+        ext = os.path.splitext(str(file_name or ''))[1].lower()
+        if ext and ext not in VIDEO_EXTS:
+            candidates.append({'file': src, 'score': 0, 'index': idx, 'episode': None, 'reason': 'non_video'})
+            continue
+
+        sha1 = _norm_sha1(src.get('sha1'))
+        raw = raw_map.get(sha1)
+        if not raw:
+            msg = f"{file_name}: 中心缺少 RAW，洗版预检拒绝秒传"
+            errors.append(msg)
+            if is_completed_pack:
+                hard_reject = True
+            continue
+        if file_name in cache_errors or sha1 in cache_errors:
+            msg = f"{file_name}: RAW 无法转换为本地 MediaInfo，洗版预检拒绝秒传"
+            errors.append(msg)
+            if is_completed_pack:
+                hard_reject = True
+            continue
+
+        source_item_type = str(src.get('item_type') or context.get('item_type') or '')
+        media_type = 'movie' if source_item_type == 'Movie' else 'tv'
+        if media_type == 'movie':
+            tmdb_for_washing = str(src.get('tmdb_id') or context.get('tmdb_id') or '')
+        else:
+            tmdb_for_washing = str(_source_parent_series_tmdb_id(src, context) or '')
+        if not tmdb_for_washing:
+            msg = f"{file_name}: 缺少 TMDb ID，洗版预检拒绝秒传"
+            errors.append(msg)
+            if is_completed_pack:
+                hard_reject = True
+            continue
+
+        s_num, e_num = _guess_se_from_source(src, context)
+        try:
+            organizer = SmartOrganizer(
+                p115,
+                int(tmdb_for_washing),
+                media_type,
+                context.get('title') or src.get('title') or file_name,
+                None,
+                False,
+            )
+            if media_type == 'tv' and s_num is not None:
+                organizer.forced_season = int(s_num)
+            target_cid_for_washing = organizer.get_target_cid(season_num=s_num if media_type == 'tv' else None)
+            original_lang = (organizer.raw_metadata or {}).get('lang_code')
+        except Exception as e:
+            msg = f"{file_name}: 无法计算洗版目标目录，拒绝秒传 -> {e}"
+            errors.append(msg)
+            if is_completed_pack:
+                hard_reject = True
+            continue
+
+        file_size = _rapid_size_to_int(src.get('size') or src.get('file_size'), 0)
+        action, reason = WashingService.decide_washing_action(
+            sha1=sha1,
+            file_name=file_name,
+            file_size=file_size,
+            target_cid=str(target_cid_for_washing),
+            media_type=media_type,
+            tmdb_id=str(tmdb_for_washing),
+            season_num=s_num,
+            episode_num=e_num,
+            original_lang=original_lang,
+            is_active_washing=False,
+            has_external_subtitle=False,
+        )
+        if action in ('REJECT', 'SKIP'):
+            msg = f"{file_name}: 洗版预检 [{action}] {reason}"
+            errors.append(msg)
+            if is_completed_pack:
+                hard_reject = True
+            continue
+
+        level, level_reason = _washing_new_level(
+            sha1,
+            file_name,
+            file_size,
+            str(target_cid_for_washing),
+            media_type,
+            original_lang=original_lang,
+            has_external_subtitle=False,
+        )
+        level_score = (1000 - min(level, 999)) * 100000
+        action_score = 20000 if action == 'REPLACE' else 10000
+        quality_score = _raw_quality_score(src, raw)
+        candidates.append({
+            'file': src,
+            'score': level_score + action_score + quality_score,
+            'index': idx,
+            'episode': e_num,
+            'action': action,
+            'reason': reason or level_reason,
+        })
+
+    if hard_reject:
+        return [], {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'washing_checked': True,
+            'washing_rejected': True,
+            'errors': errors[:50],
+        }
+
+    if not candidates:
+        return [], {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'washing_checked': True,
+            'washing_rejected': True,
+            'errors': errors[:50] or ['所有中心源均未通过洗版预检'],
+        }
+
+    if is_ongoing_hub:
+        best_by_episode: Dict[Any, Dict[str, Any]] = {}
+        for cand in sorted(candidates, key=lambda x: (x.get('score') or 0, -(x.get('index') or 0)), reverse=True):
+            key = cand.get('episode') if cand.get('episode') is not None else f"idx:{cand.get('index')}"
+            if key not in best_by_episode:
+                best_by_episode[key] = cand
+        selected = [best_by_episode[k] for k in sorted(best_by_episode, key=lambda x: _safe_int(x, 999999) if not str(x).startswith('idx:') else 999999)]
+        logger.info(
+            f"  ➜ [共享资源] 连载公共包洗版预检按集选源：原始 {len(files)} 个，选中 {len(selected)} 个，"
+            f"跳过/拒绝 {len(errors)} 个。"
+        )
+        return [c['file'] for c in selected], {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'washing_checked': True,
+            'washing_rejected': False,
+            'selected_count': len(selected),
+            'errors': errors[:50],
+        }
+
+    # 电影/单集/完结季：预检通过的文件全部进入秒传；完结季如果任一视频被拒绝，前面已 hard_reject。
+    return [c['file'] for c in sorted(candidates, key=lambda x: x.get('index') or 0)], {
+        'raw_cached_count': cached,
+        'raw_cache_errors': cache_errors[:20],
+        'washing_checked': True,
+        'washing_rejected': False,
+        'selected_count': len(candidates),
+        'errors': errors[:50],
+    }
+
 def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[str, Any]:
     p115 = P115Service.get_client()
     if not p115:
@@ -455,6 +863,8 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
     # 如果 manifest 为空，不能再显示“秒传完成 0/0”，这属于 manifest 缺失/旧数据，需要重新登记该季。
     if source_kind == 'completed_season':
         manifest = client.completed_season_manifest(source_id)
+        manifest_item = (manifest.get('item') if isinstance(manifest, dict) and isinstance(manifest.get('item'), dict) else {}) or {}
+        source_payload = {**manifest_item, **payload}
         files = (manifest.get('files') or manifest.get('items') or []) if isinstance(manifest, dict) else []
         if not files and isinstance(manifest, dict):
             data = manifest.get('data') if isinstance(manifest.get('data'), dict) else {}
@@ -463,9 +873,14 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
             files = payload.get('files') or []
         files = [dict(f or {}) for f in files if isinstance(f, dict)]
         for f in files:
-            f.setdefault('tmdb_id', payload.get('tmdb_id'))
+            f.setdefault('tmdb_id', source_payload.get('tmdb_id'))
             f.setdefault('item_type', 'Episode')
-            f.setdefault('season_number', payload.get('season_number'))
+            f.setdefault('season_number', source_payload.get('season_number'))
+            f.setdefault('title', source_payload.get('title'))
+            f.setdefault('release_year', source_payload.get('release_year'))
+            f.setdefault('is_clean_version', bool(source_payload.get('is_clean_version')))
+            f.setdefault('clean_version_confidence', source_payload.get('clean_version_confidence'))
+            f.setdefault('clean_version_meta_json', source_payload.get('clean_version_meta_json') or {})
             f.setdefault('source_kind', 'completed_season')
             f.setdefault('source_id', source_id)
             f.setdefault('source_ref_id', source_id)
@@ -530,6 +945,61 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         }
 
     target_cid = _target_cid()
+
+    clean_flag = _center_clean_version_flagged(source_kind, payload, files)
+    if _block_clean_version_transfer_enabled() and clean_flag.get('blocked'):
+        meta = clean_flag.get('meta') or {}
+        message = (
+            f"已按配置跳过中心标记的纯净版完结季：{payload.get('title') or source_id}"
+            + (f"，命中 {meta.get('hit_count')}/{meta.get('comparable_count')} 集" if meta.get('hit_count') is not None and meta.get('comparable_count') is not None else '')
+        )
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='ok', message=message)
+            except Exception:
+                pass
+        return {
+            'ok': False,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'success_count': 0,
+            'total': len(files),
+            'errors': [message],
+            'clean_version_rejected': True,
+            'clean_version_filter': {'enabled': True, 'blocked': clean_flag},
+        }
+
+    files, preflight = _prepare_files_before_rapid_transfer(
+        client,
+        source_kind=source_kind,
+        source_id=source_id,
+        payload=payload,
+        files=files,
+    )
+    if not files:
+        message = '共享资源未通过转存前预检'
+        if preflight.get('errors'):
+            message = str((preflight.get('errors') or [message])[0])
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='ok', message=message[:500])
+            except Exception:
+                pass
+        return {
+            'ok': False,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'success_count': 0,
+            'total': 0,
+            'errors': preflight.get('errors') or [message],
+            'preflight': preflight,
+            'washing_rejected': bool(preflight.get('washing_rejected')),
+        }
+
     ok_count = 0
     errors = []
     success_sources = []
@@ -582,7 +1052,8 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     return {
         'ok': ok_count > 0, 'message': message, 'event_id': event_id,
         'source_kind': source_kind, 'source_id': source_id,
-        'success_count': ok_count, 'total': len(files), 'errors': errors
+        'success_count': ok_count, 'total': len(files), 'errors': errors,
+        'preflight': locals().get('preflight', {}),
     }
 
 
