@@ -153,39 +153,111 @@ def _extract_p115_down_url(resp: Any) -> str:
 
 
 def _p115_range_bytes_by_pick_code(pick_code: str, start: int, end: int) -> bytes:
+    """按用户配置的 115 API 优先级读取文件 Range。
+
+    这里是为了计算 preid（文件前 128KB SHA1）。它只是读取源文件直链，
+    不属于 upload/init 秒传调度，所以必须尊重 p115_api_priority：
+    - cookie 优先：先 Cookie download_url，再 OpenAPI downurl；
+    - openapi 优先：先 OpenAPI downurl，再 Cookie download_url。
+
+    取直链和 Range GET 必须使用同一个 User-Agent，否则 115 可能返回 403。
+    """
     pick_code = str(pick_code or '').strip()
     if not pick_code:
         return b''
+
     try:
-        from handler.p115_service import P115Service
+        from handler.p115_service import P115Service, get_115_api_priority, get_115_tokens, get_115_ua
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 导入 115 客户端失败，无法计算 preid: {e}")
+        return b''
+
+    try:
         p115 = P115Service.get_client()
         if not p115:
             return b''
-        down_url = ''
-        for method_name in ('openapi_downurl', 'download_url'):
+
+        priority = get_115_api_priority()
+        try:
+            _, _, _, app_type = get_115_tokens()
+        except Exception:
+            app_type = 'web'
+
+        ua_candidates = []
+        for ua in (
+            get_115_ua(app_type or 'web'),
+            get_115_ua('web'),
+            get_115_ua('mac'),
+        ):
+            ua = str(ua or '').strip()
+            if ua and ua not in ua_candidates:
+                ua_candidates.append(ua)
+        if not ua_candidates:
+            ua_candidates.append('Mozilla/5.0')
+
+        if priority == 'cookie':
+            method_order = [('download_url', 'Cookie'), ('openapi_downurl', 'OpenAPI')]
+        else:
+            method_order = [('openapi_downurl', 'OpenAPI'), ('download_url', 'Cookie')]
+
+        range_header = f'bytes={int(start)}-{int(end)}'
+        last_status = None
+
+        for method_name, label in method_order:
             method = getattr(p115, method_name, None)
             if not callable(method):
                 continue
-            try:
-                down_url = _extract_p115_down_url(method(pick_code))
-                if down_url:
-                    break
-            except Exception as e:
-                logger.debug(f"  ➜ [共享资源] 获取 115 直链失败({method_name}): {e}")
-        if not down_url:
-            return b''
-        headers = {'Range': f'bytes={int(start)}-{int(end)}'}
-        try:
-            # 115 直链通常要求常见 UA；不强依赖 get_115_ua，避免引入更多耦合。
-            from handler.p115_service import get_115_ua
-            headers['User-Agent'] = get_115_ua('web')
-        except Exception:
-            headers['User-Agent'] = 'Mozilla/5.0'
-        r = requests.get(down_url, headers=headers, timeout=45)
-        if r.status_code != 206:
-            logger.warning(f"  ➜ [共享资源] 读取 preid Range 失败，HTTP={r.status_code}，跳过 preid 计算: pc={pick_code[:8]}...")
-            return b''
-        return r.content or b''
+
+            for ua in ua_candidates:
+                down_url = ''
+                try:
+                    # 关键：获取直链和后续 Range GET 必须使用同一个 UA。
+                    down_url = _extract_p115_down_url(method(pick_code, user_agent=ua))
+                except TypeError:
+                    try:
+                        down_url = _extract_p115_down_url(method(pick_code, ua))
+                    except Exception as e:
+                        logger.debug(f"  ➜ [共享资源] 获取 115 直链失败({label}, positional-ua): {e}")
+                except Exception as e:
+                    logger.debug(f"  ➜ [共享资源] 获取 115 直链失败({label}): {e}")
+
+                if not down_url:
+                    continue
+
+                try:
+                    headers = {
+                        'Range': range_header,
+                        'User-Agent': ua,
+                        'Accept': '*/*',
+                        'Connection': 'close',
+                    }
+                    r = requests.get(down_url, headers=headers, timeout=45, allow_redirects=True)
+                    last_status = r.status_code
+                    if r.status_code == 206 and r.content:
+                        logger.debug(
+                            f"  ➜ [共享资源] preid Range 读取成功: api={label}, "
+                            f"range={range_header}, bytes={len(r.content)}, pc={pick_code[:8]}..."
+                        )
+                        return r.content or b''
+
+                    # 必须拒绝 200，避免服务端忽略 Range 后拉完整大文件。
+                    logger.warning(
+                        f"  ➜ [共享资源] 读取 preid Range 失败: api={label}, "
+                        f"HTTP={r.status_code}, range={range_header}, pc={pick_code[:8]}..."
+                    )
+                except Exception as e:
+                    logger.debug(
+                        f"  ➜ [共享资源] Range GET 异常: api={label}, "
+                        f"range={range_header}, pc={pick_code[:8]}..., err={e}"
+                    )
+
+        if last_status:
+            logger.warning(
+                f"  ➜ [共享资源] 已按 {priority} 优先级尝试读取 preid Range，仍失败，"
+                f"最后 HTTP={last_status}: pc={pick_code[:8]}..."
+            )
+        return b''
+
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 读取 115 文件 Range 计算 preid 失败: pc={pick_code[:8]}..., err={e}")
         return b''
