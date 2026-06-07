@@ -863,6 +863,8 @@ class P115OpenAPIClient:
                     file_name = str(cache_row.get('name') or cache_row.get('file_name') or '').strip()
                 if size <= 0:
                     size = _safe_size(cache_row.get('size') or cache_row.get('file_size') or cache_row.get('size_bytes'))
+                if not preid:
+                    preid = str(cache_row.get('preid') or '').strip().upper()
             except Exception:
                 pass
 
@@ -926,9 +928,17 @@ class P115OpenAPIClient:
                 }
             }
 
+        if not re.fullmatch(r'[A-F0-9]{40}', preid or '') and pick_code:
+            try:
+                preid = P115CacheManager.ensure_file_preid({
+                    'fid': fid, 'pick_code': pick_code, 'sha1': sha1, 'file_name': file_name, 'size': size,
+                }) or preid
+            except Exception as e:
+                logger.debug(f"  ➜ [Rapid秒传] 秒传前补齐 preid 失败: sha1={sha1[:12]}..., err={e}")
+
         logger.info(
             f"  ➜ [Rapid秒传] 准备秒传到 CID={target_cid}: "
-            f"{file_name} | sha1={sha1[:12]}... | size={size}"
+            f"{file_name} | sha1={sha1[:12]}... | preid={(preid[:12] + '...') if preid else '-'} | size={size}"
         )
 
         # 115 upload/init 要求 preid 字段；无 preid 时用 SHA1 兜底尝试。
@@ -3236,35 +3246,41 @@ class P115CacheManager:
             logger.error(f"  ➜ 清理 115 DB 缓存失败: {e}")
 
     @staticmethod
-    def save_file_cache(fid, parent_id, name, sha1=None, pick_code=None, local_path=None, size=0):
-        """专门将文件(fc=1)的 SHA1、PC码、本地相对路径和大小存入本地数据库缓存"""
+    def save_file_cache(fid, parent_id, name, sha1=None, pick_code=None, local_path=None, size=0, preid=None):
+        """专门将文件(fc=1)的 SHA1、PC码、本地相对路径、大小和 preid 存入本地数据库缓存"""
         if not fid or not parent_id or not name: return
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    P115CacheManager._ensure_preid_column()
                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (str(fid),))
-                    
+
+                    preid = P115CacheManager._norm_preid(preid)
                     cursor.execute("""
-                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path, size)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path, size, preid)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (parent_id, name)
-                        DO UPDATE SET 
-                            sha1 = CASE 
-                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.sha1 
-                                ELSE COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1) 
+                        DO UPDATE SET
+                            sha1 = CASE
+                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.sha1
+                                ELSE COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1)
                             END,
-                            pick_code = CASE 
-                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.pick_code 
-                                ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code) 
+                            pick_code = CASE
+                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.pick_code
+                                ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code)
                             END,
                             local_path = COALESCE(EXCLUDED.local_path, p115_filesystem_cache.local_path),
-                            size = CASE 
-                                WHEN EXCLUDED.size > 0 THEN EXCLUDED.size 
-                                ELSE p115_filesystem_cache.size 
+                            size = CASE
+                                WHEN EXCLUDED.size > 0 THEN EXCLUDED.size
+                                ELSE p115_filesystem_cache.size
+                            END,
+                            preid = CASE
+                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid)
+                                ELSE COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid)
                             END,
                             id = EXCLUDED.id,
                             updated_at = NOW()
-                    """, (str(fid), str(parent_id), str(name), sha1, pick_code, local_path, size))
+                    """, (str(fid), str(parent_id), str(name), sha1, pick_code, local_path, size, preid or None))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ➜ 写入 115 文件缓存失败: {e}")
@@ -3289,7 +3305,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid
                         FROM p115_filesystem_cache
                         WHERE id = %s
                         LIMIT 1
@@ -3308,7 +3324,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid
                         FROM p115_filesystem_cache
                         WHERE pick_code = %s
                         LIMIT 1
@@ -3327,7 +3343,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid
                         FROM p115_filesystem_cache
                         WHERE UPPER(sha1) = UPPER(%s)
                         ORDER BY updated_at DESC NULLS LAST
@@ -3353,7 +3369,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid
                         FROM p115_filesystem_cache
                         WHERE local_path = %s
                         LIMIT 1
@@ -3558,6 +3574,190 @@ class P115CacheManager:
         return raw_ffprobe_json
 
     @staticmethod
+    def _norm_preid(value):
+        text = str(value or '').strip().upper()
+        return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+    @staticmethod
+    def _ensure_preid_column():
+        """兼容旧库：确保 p115_filesystem_cache 有 preid 字段。"""
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS preid TEXT")
+                    conn.commit()
+        except Exception as e:
+            logger.debug(f"  ➜ [115缓存] 确认 preid 字段失败: {e}")
+
+    @staticmethod
+    def _extract_preid_range_bytes(pick_code, start=0, end=131071):
+        """只读取文件前 128KB，用于计算 115 upload/init 的 preid。"""
+        pick_code = str(pick_code or '').strip()
+        if not pick_code:
+            return b''
+        try:
+            client = P115Service.get_client()
+            if not client:
+                return b''
+            try:
+                _, _, _, app_type = get_115_tokens()
+            except Exception:
+                app_type = 'web'
+            ua_candidates = []
+            for ua in (get_115_ua(app_type or 'web'), get_115_ua('web'), get_115_ua('mac')):
+                ua = str(ua or '').strip()
+                if ua and ua not in ua_candidates:
+                    ua_candidates.append(ua)
+            if not ua_candidates:
+                ua_candidates.append('Mozilla/5.0')
+
+            priority = get_115_api_priority()
+            method_order = [('download_url', 'Cookie'), ('openapi_downurl', 'OpenAPI')] if priority == 'cookie' else [('openapi_downurl', 'OpenAPI'), ('download_url', 'Cookie')]
+            range_header = f'bytes={int(start)}-{int(end)}'
+            expected_len = int(end) - int(start) + 1
+            last_status = None
+
+            for method_name, label in method_order:
+                method = getattr(client, method_name, None)
+                if not callable(method):
+                    continue
+                for ua in ua_candidates:
+                    try:
+                        down_url = _p115_extract_down_url(method(pick_code, user_agent=ua))
+                    except TypeError:
+                        try:
+                            down_url = _p115_extract_down_url(method(pick_code, ua))
+                        except Exception as e:
+                            logger.debug(f"  ➜ [115缓存] 获取 preid 直链失败({label}, positional-ua): {e}")
+                            down_url = ''
+                    except Exception as e:
+                        logger.debug(f"  ➜ [115缓存] 获取 preid 直链失败({label}): {e}")
+                        down_url = ''
+                    if not down_url:
+                        continue
+                    try:
+                        headers = {
+                            'Range': range_header,
+                            'User-Agent': ua,
+                            'Accept': '*/*',
+                            'Connection': 'close',
+                        }
+                        with requests.get(down_url, headers=headers, timeout=45, allow_redirects=True, stream=True) as resp:
+                            last_status = resp.status_code
+                            if resp.status_code != 206:
+                                logger.warning(
+                                    f"  ➜ [115缓存] 读取 preid Range 失败: api={label}, "
+                                    f"HTTP={resp.status_code}, range={range_header}, pc={pick_code[:8]}..."
+                                )
+                                continue
+                            content = resp.raw.read(expected_len) or b''
+                            if content:
+                                logger.debug(
+                                    f"  ➜ [115缓存] preid Range 读取成功: api={label}, "
+                                    f"range={range_header}, bytes={len(content)}, pc={pick_code[:8]}..."
+                                )
+                                return content
+                    except Exception as e:
+                        logger.debug(
+                            f"  ➜ [115缓存] Range GET 异常: api={label}, "
+                            f"range={range_header}, pc={pick_code[:8]}..., err={e}"
+                        )
+            if last_status:
+                logger.warning(f"  ➜ [115缓存] 已尝试读取 preid Range 仍失败，最后 HTTP={last_status}: pc={pick_code[:8]}...")
+        except Exception as e:
+            logger.debug(f"  ➜ [115缓存] 计算 preid 前置读取失败: pc={pick_code[:8]}..., err={e}")
+        return b''
+
+    @staticmethod
+    def ensure_file_preid(file_info=None, *, sha1=None, fid=None, pick_code=None, file_name=None):
+        """确保 p115_filesystem_cache 中对应文件有 preid，并返回 preid。
+
+        调用场景：整理/MP直出提取媒体信息后，已经拿到 SHA1/PC/FID，顺手读取前 128KB
+        计算 preid，避免后续共享登记/秒传时再单独补齐。
+        """
+        item = dict(file_info or {}) if isinstance(file_info, dict) else {}
+        sha1 = str(sha1 or item.get('sha1') or item.get('sha') or item.get('file_sha1') or '').strip().upper()
+        fid = str(fid or item.get('fid') or item.get('file_id') or item.get('id') or '').strip()
+        pick_code = str(pick_code or item.get('pick_code') or item.get('pc') or item.get('pickcode') or '').strip()
+        file_name = str(file_name or item.get('file_name') or item.get('fn') or item.get('name') or '').strip()
+        existing = P115CacheManager._norm_preid(item.get('preid') or item.get('pre_sha1') or item.get('pre_sha1_128k'))
+        if existing:
+            return existing
+
+        P115CacheManager._ensure_preid_column()
+        clauses, args = [], []
+        if fid:
+            clauses.append('id=%s')
+            args.append(fid)
+        if pick_code:
+            clauses.append('pick_code=%s')
+            args.append(pick_code)
+        if sha1 and re.fullmatch(r'[A-F0-9]{40}', sha1):
+            clauses.append('UPPER(sha1)=%s')
+            args.append(sha1)
+        if clauses:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            f"""
+                            SELECT id, name, sha1, pick_code, preid
+                            FROM p115_filesystem_cache
+                            WHERE {' OR '.join(clauses)}
+                            ORDER BY CASE WHEN preid IS NOT NULL AND preid <> '' THEN 0 ELSE 1 END,
+                                     updated_at DESC NULLS LAST
+                            LIMIT 1
+                            """,
+                            args,
+                        )
+                        row = cursor.fetchone()
+                if row:
+                    row = dict(row)
+                    found_preid = P115CacheManager._norm_preid(row.get('preid'))
+                    if found_preid:
+                        return found_preid
+                    fid = fid or str(row.get('id') or '').strip()
+                    pick_code = pick_code or str(row.get('pick_code') or '').strip()
+                    sha1 = sha1 or str(row.get('sha1') or '').strip().upper()
+                    file_name = file_name or str(row.get('name') or '').strip()
+            except Exception as e:
+                logger.debug(f"  ➜ [115缓存] 查询已有 preid 失败: {e}")
+
+        if not pick_code:
+            return ''
+        chunk = P115CacheManager._extract_preid_range_bytes(pick_code, 0, 131071)
+        if not chunk:
+            return ''
+        preid = hashlib.sha1(chunk).hexdigest().upper()
+        update_clauses, update_args = [], []
+        if fid:
+            update_clauses.append('id=%s')
+            update_args.append(fid)
+        if pick_code:
+            update_clauses.append('pick_code=%s')
+            update_args.append(pick_code)
+        if sha1 and re.fullmatch(r'[A-F0-9]{40}', sha1):
+            update_clauses.append('UPPER(sha1)=%s')
+            update_args.append(sha1)
+        if update_clauses:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            f"""
+                            UPDATE p115_filesystem_cache
+                            SET preid=%s, updated_at=NOW()
+                            WHERE {' OR '.join(update_clauses)}
+                            """,
+                            [preid, *update_args],
+                        )
+                    conn.commit()
+                logger.info(f"  ➜ [115缓存] 已计算并缓存 preid: {file_name or sha1 or pick_code} -> {preid[:12]}...")
+            except Exception as e:
+                logger.debug(f"  ➜ [115缓存] 回写 p115_filesystem_cache.preid 失败: {e}")
+        return preid
+
+    @staticmethod
     def save_mediainfo_cache(sha1, mediainfo_json, raw_ffprobe_json=None):
         """写入本地 p115_mediainfo_cache，结构保持 Emby MediaSourceInfo 标准格式"""
         if not sha1 or not mediainfo_json:
@@ -3585,6 +3785,13 @@ class P115CacheManager:
                         Json(raw_ffprobe_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)) if raw_ffprobe_json else None
                     ))
                     conn.commit()
+
+            # 整理/MP直出提取媒体信息时顺手补齐 preid：
+            # 只读取前 128KB，写入 p115_filesystem_cache，供后续 Rapid v2 登记/秒传直接复用。
+            try:
+                P115CacheManager.ensure_file_preid({'sha1': sha1})
+            except Exception as e_preid:
+                logger.debug(f"  ➜ [媒体信息缓存] 顺手计算 preid 失败: sha1={sha1[:12]}..., err={e_preid}")
 
             logger.info(f"  ➜ [媒体信息缓存] 已写入本地 p115_mediainfo_cache -> {sha1[:12]}...")
             return True
@@ -7229,6 +7436,10 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 if probe_sha1:
                                     probe_sha1 = str(probe_sha1).upper()
                                     P115CacheManager.save_mediainfo_cache(probe_sha1, emby_obj, raw_ffprobe)
+                                    try:
+                                        P115CacheManager.ensure_file_preid(file_item, sha1=probe_sha1, fid=fid, pick_code=pick_code, file_name=original_name)
+                                    except Exception as e_preid:
+                                        logger.debug(f"  ➜ [MP直出] 媒体信息提取后计算 preid 失败: {original_name} -> {e_preid}")
                                     sha1 = probe_sha1
                                     file_item['sha1'] = probe_sha1
                                 mediainfo_text = json.dumps(emby_obj, ensure_ascii=False, indent=2)
