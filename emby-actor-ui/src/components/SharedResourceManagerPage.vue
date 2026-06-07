@@ -497,7 +497,7 @@ const typeOptions = [
 const centerTypeOptions = [
   { label: '全部类型', value: 'all' },
   { label: '电影', value: 'Movie' },
-  { label: '季', value: 'Pack' },
+  { label: '剧集', value: 'Pack' },
 ];
 const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '季', value: 'Season' }, { label: '剧集', value: 'Series' },
@@ -1430,58 +1430,46 @@ const centerGroupKey = (row) => {
 };
 
 const groupCenterSources = (items, orderBy = 'latest') => {
-  // 新中心端已经完成分页/筛选/聚合；这里仅兼容旧中心端返回的散行数据。
-  if ((items || []).some(item => Array.isArray(item?.versions))) {
-    return (items || []).map(item => ({
-      ...item,
-      group_key: item.group_key || item.display_group_key || centerGroupKey(item),
-      versions: Array.isArray(item.versions) && item.versions.length ? item.versions : [item],
-      children: Array.isArray(item.children) ? item.children.map(child => ({
-        ...child,
-        group_key: child.group_key || centerGroupKey(child),
-        versions: Array.isArray(child.versions) && child.versions.length ? child.versions : [child],
-      })) : undefined,
-    }));
+  // 1. 展平所有版本，忽略中心端原有的分组，强制在前端重新聚合
+  const allVersions = [];
+  for (const item of (items || [])) {
+    if (Array.isArray(item.versions) && item.versions.length > 0) {
+      allVersions.push(...item.versions);
+    } else {
+      allVersions.push(item);
+    }
   }
+
+  // 严格的聚合 Key 生成逻辑
+  const getStrictGroupKey = (row) => {
+    const type = centerRowType(row);
+    const baseType = centerTypeLabel(type);
+    const tmdb = row.tmdb_id || row.share_tmdb_id || row.parent_series_tmdb_id || '';
+    // 去除标题中的年份，防止同剧不同年份被拆分为不同行
+    let title = row.title || row.media_title || '';
+    title = title.replace(/\s*\(\d{4}\)\s*$/, '').trim();
+    const season = row.season_number || '';
+    const episode = row.episode_number || '';
+
+    // 优先使用 TMDB ID 进行聚合，如果没有才退化到标题
+    const identifier = tmdb || title;
+
+    if (baseType === '电影') return `movie:${identifier}`;
+    if (baseType === '季') return `pack:${identifier}:S${season}`;
+    if (baseType === '单集') return `ep:${identifier}:S${season}:E${episode}`;
+    return `${baseType}:${identifier}:${season}:${episode}`;
+  };
+
   const groups = [];
   const byKey = new Map();
-  for (const item of (items || [])) {
-    const key = centerGroupKey(item);
+
+  for (const item of allVersions) {
+    const key = getStrictGroupKey(item);
     let group = byKey.get(key);
     if (!group) {
       group = {
+        ...item,
         group_key: key,
-        title: item.title || item.standard_title,
-        media_title: item.media_title,
-        tmdb_id: item.tmdb_id,
-        share_tmdb_id: item.share_tmdb_id,
-        parent_series_tmdb_id: item.parent_series_tmdb_id,
-        release_year: item.release_year,
-        season_number: item.season_number,
-        episode_number: item.episode_number,
-        display_type: centerRowType(item),
-        pack_item_count: item.pack_item_count,
-        pack_episode_numbers: item.pack_episode_numbers,
-        is_collapsed_pack: item.is_collapsed_pack,
-        is_ongoing_hub: item.is_ongoing_hub,
-        season_status: item.season_status,
-        season_status_label: item.season_status_label,
-        progress_current: item.progress_current,
-        progress_total: item.progress_total,
-        progress_text: item.progress_text,
-        children: Array.isArray(item.children) ? item.children.map(child => ({
-          group_key: centerGroupKey(child),
-          title: child.title || item.title,
-          media_title: child.media_title || item.media_title,
-          tmdb_id: child.tmdb_id || item.tmdb_id,
-          share_tmdb_id: child.share_tmdb_id || item.share_tmdb_id,
-          parent_series_tmdb_id: child.parent_series_tmdb_id || item.parent_series_tmdb_id,
-          release_year: child.release_year || item.release_year,
-          season_number: child.season_number || item.season_number,
-          episode_number: child.episode_number,
-          display_type: centerRowType(child),
-          versions: [child],
-        })) : undefined,
         versions: [],
       };
       byKey.set(key, group);
@@ -1489,8 +1477,31 @@ const groupCenterSources = (items, orderBy = 'latest') => {
     }
     group.versions.push(item);
   }
+
   for (const group of groups) {
-    // 👇 根据不同排序规则，对组内版本排序，并提取组的排序基准值
+    // 2. 合并相同 sha1 的版本，累加热度
+    const mergedVersions = [];
+    const sha1Map = new Map();
+
+    for (const v of group.versions) {
+      const sha1 = v.sha1;
+      if (sha1 && sha1Map.has(sha1)) {
+        // 相同 sha1，合并热度 (success_count)
+        const existing = sha1Map.get(sha1);
+        existing.success_count = (existing.success_count || 0) + (v.success_count || 0);
+        // 保留最新的更新时间
+        if (new Date(v.updated_at || 0) > new Date(existing.updated_at || 0)) {
+          existing.updated_at = v.updated_at;
+        }
+      } else {
+        const newV = { ...v };
+        if (sha1) sha1Map.set(sha1, newV);
+        mergedVersions.push(newV);
+      }
+    }
+    group.versions = mergedVersions;
+
+    // 3. 组内排序
     if (orderBy === 'popular') {
       group.versions.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
       group.sort_val = Math.max(...group.versions.map(v => v.success_count || 0));
@@ -1506,13 +1517,14 @@ const groupCenterSources = (items, orderBy = 'latest') => {
     }
     group.created_at = group.versions[0]?.created_at || group.created_at;
   }
-  
-  // 👇 对所有组进行排序
+
+  // 4. 组间排序
   groups.sort((a, b) => {
     if (orderBy === 'popular' || orderBy === 'size') return b.sort_val - a.sort_val;
     if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
     return b.sort_val - a.sort_val; // latest
   });
+
   return groups;
 };
 
