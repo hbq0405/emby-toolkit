@@ -1,8 +1,8 @@
-<!-- src/components/ShareRequestCreateModal.vue -->
+<!-- emby-actor-ui/src/components/ShareRequestCreateModal.vue -->
 <template>
   <n-modal v-model:show="visible" preset="card" title="共享池求共享" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal">
     <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-      先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季 / 单集和媒体参数。Rapid v2 会由中心调度在线设备秒传供给，中心不保存 115 CK 或分享链接。
+      先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季和媒体参数。Rapid v2 会由中心调度在线设备秒传供给，中心不保存 115 CK 或分享链接。
     </n-alert>
 
     <n-space class="toolbar" :vertical="isMobile" :size="12">
@@ -44,14 +44,9 @@
         </n-radio-group>
       </n-form-item>
       <n-grid v-if="form.media_type === 'tv'" :cols="isMobile ? 1 : 3" :x-gap="12">
-        <n-gi v-if="['season','episode'].includes(form.target_type)">
+        <n-gi v-if="form.target_type === 'season'">
           <n-form-item label="季号">
             <n-input-number v-model:value="form.season_number" :min="1" :max="999" style="width: 100%;" />
-          </n-form-item>
-        </n-gi>
-        <n-gi v-if="form.target_type === 'episode'">
-          <n-form-item label="集号">
-            <n-input-number v-model:value="form.episode_number" :min="1" :max="9999" style="width: 100%;" />
           </n-form-item>
         </n-gi>
       </n-grid>
@@ -193,7 +188,6 @@ const targetOptions = computed(() => {
   return [
     { label: '全剧', value: 'series' },
     { label: '单季', value: 'season' },
-    { label: '单集', value: 'episode' },
   ];
 });
 
@@ -216,7 +210,6 @@ const compactParams = () => {
 };
 
 const buildPayload = () => {
-  const episodeNumbers = form.target_type === 'episode' && form.episode_number ? [Number(form.episode_number)] : [];
   return {
     tmdb_id: form.tmdb_id,
     media_type: form.media_type,
@@ -225,9 +218,7 @@ const buildPayload = () => {
     release_year: form.release_year,
     poster_path: form.poster_path,
     overview: form.overview,
-    season_number: ['season','episode'].includes(form.target_type) ? form.season_number : null,
-    episode_number: form.target_type === 'episode' ? form.episode_number : null,
-    episode_numbers: episodeNumbers,
+    season_number: form.target_type === 'season' ? form.season_number : null,
     params_json: compactParams(),
     expires_days: form.expires_days || 7,
     auto_escalation: Boolean(form.auto_escalation),
@@ -283,18 +274,13 @@ const applyMedia = async (row) => {
   });
   if (props.initialTarget && typeof props.initialTarget === 'object') {
     Object.assign(form, {
-      target_type: props.initialTarget.target_type || form.target_type,
+      target_type: props.initialTarget.target_type === 'episode' ? 'season' : (props.initialTarget.target_type || form.target_type),
       season_number: props.initialTarget.season_number || form.season_number,
-      episode_number: props.initialTarget.episode_number || form.episode_number,
+      episode_number: 1,
     });
     if (Array.isArray(props.initialTarget.episode_numbers) && props.initialTarget.episode_numbers.length) {
-      if (props.initialTarget.episode_numbers.length === 1) {
-        form.target_type = 'episode';
-        form.episode_number = Number(props.initialTarget.episode_numbers[0]) || form.episode_number;
-      } else {
-        // Rapid v2 仍按 Season Hub 聚合多集缺口，由接收端按缺失集精确秒传。
-        form.target_type = 'season';
-      }
+      // Rapid v2 求共享不再支持单集，旧 episode 参数统一提升为单季。
+      form.target_type = 'season';
     }
   }
   if (props.initialParams && typeof props.initialParams === 'object') {
@@ -343,10 +329,9 @@ const loadParamOptions = async () => {
 
 const submit = async () => {
   if (!selectedMedia.value) return message.warning('请先搜索并选择 TMDb 目标');
-  if (form.media_type === 'tv' && ['season','episode'].includes(form.target_type) && !form.season_number) {
+  if (form.media_type === 'tv' && form.target_type === 'season' && !form.season_number) {
     return message.warning('请填写季号');
   }
-  if (form.target_type === 'episode' && !form.episode_number) return message.warning('请填写集号');
   submitting.value = true;
   try {
     const payload = buildPayload();

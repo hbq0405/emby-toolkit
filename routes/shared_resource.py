@@ -11,10 +11,12 @@ import requests
 from flask import Blueprint, jsonify, request
 
 import constants
+import config_manager
 from extensions import admin_required
 from database import shared_credit_db, shared_share_db, settings_db
 from handler.shared_center_client import SharedCenterClient
 from handler.shared_subscription_service import consume_device_event
+from handler import tmdb as tmdb_handler
 import tasks.shared_resource_tasks as shared_tasks
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
@@ -103,7 +105,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
     try:
         ledger = client.credit_ledger(limit=500)
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 拉取中心贡献值流水失败: {e}")
+        logger.warning(f"  ➜ [共享资源] 拉取中心贡献点流水失败: {e}")
     snapshot = {
         'device_id': me.get('id'),
         'credit': int(me.get('credit') or 0),
@@ -667,7 +669,7 @@ def api_register_center_device():
 def api_refresh_credit():
     try:
         data = _fetch_center_credit()
-        return jsonify({'success': True, 'message': '贡献值已同步', 'data': data})
+        return jsonify({'success': True, 'message': '贡献点已同步', 'data': data})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -679,7 +681,7 @@ def api_credit_ledger():
         try:
             _fetch_center_credit()
         except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 同步中心贡献值失败: {e}")
+            logger.warning(f"  ➜ [共享资源] 同步中心贡献点失败: {e}")
     limit = int(request.args.get('limit') or 200)
     items = shared_credit_db.list_credit_ledger(limit=limit, actual_only=_boolish(request.args.get('actual_only'), False))
     return jsonify({'success': True, 'items': items})
@@ -699,34 +701,193 @@ def api_replenish_prepare():
     return jsonify({'success': False, 'message': 'Rapid v2 没有待补充分享，直接登记本地资源即可'}), 400
 
 
-# Rapid v2 暂不保留求分享 UI 的中心接口，返回空列表，避免前端报错。
+def _tmdb_api_key() -> str:
+    for key in ('tmdb_api_key', 'tmdb_key', 'TMDB_API_KEY', 'themoviedb_api_key'):
+        value = (config_manager.APP_CONFIG or {}).get(key)
+        if value:
+            return str(value).strip()
+    return ''
+
+
+def _share_request_target_type(value: str, media_type: str = '') -> str:
+    text = str(value or '').strip().lower()
+    media = str(media_type or '').strip().lower()
+    if media == 'movie' or text in ('movie', 'film'):
+        return 'movie'
+    if text in ('series', 'tv', 'show'):
+        return 'series'
+    # Rapid v2 求共享不再支持单集，单集/多集统一提升到单季。
+    if text in ('season', 'episode', 'episode_batch', 'single'):
+        return 'season'
+    return 'movie' if media == 'movie' else 'season'
+
+
+def _share_request_count_from_tmdb(payload: Dict[str, Any]) -> int:
+    """按 TMDb 官方集数估算求共享视频个数；单季上限 10 点。"""
+    target = _share_request_target_type(payload.get('target_type'), payload.get('media_type'))
+    if target == 'movie':
+        return 1
+    try:
+        tv_id = int(str(payload.get('tmdb_id') or '0'))
+    except Exception:
+        tv_id = 0
+    api_key = _tmdb_api_key()
+    if not tv_id or not api_key:
+        return 1
+    if target == 'season':
+        season = _safe_int(payload.get('season_number'), 0)
+        if season <= 0:
+            return 1
+        try:
+            detail = tmdb_handler.get_season_details_tmdb(tv_id=tv_id, season_number=season, api_key=api_key, append_to_response=None) or {}
+            count = len([x for x in (detail.get('episodes') or []) if isinstance(x, dict) and _safe_int(x.get('episode_number'), 0) > 0])
+            return max(1, min(count or _safe_int(payload.get('expected_episode_count'), 0) or 1, 10))
+        except Exception as e:
+            logger.warning(f"  ➜ [求共享] 查询 TMDb 季集数失败: tv={tv_id}, S{season}, err={e}")
+            return max(1, min(_safe_int(payload.get('expected_episode_count'), 1), 10))
+    try:
+        detail = tmdb_handler.get_tv_details(tv_id, api_key, append_to_response=None, allow_english_fallback=False) or {}
+        total = 0
+        for season in detail.get('seasons') or []:
+            if not isinstance(season, dict):
+                continue
+            if _safe_int(season.get('season_number'), 0) <= 0:
+                continue
+            total += min(_safe_int(season.get('episode_count'), 0), 10)
+        return max(1, total or _safe_int(detail.get('number_of_episodes'), 0) or 1)
+    except Exception as e:
+        logger.warning(f"  ➜ [求共享] 查询 TMDb 全剧集数失败: tv={tv_id}, err={e}")
+        return 1
+
+
+def _enrich_share_request_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(data or {})
+    media_type = str(payload.get('media_type') or '').strip().lower()
+    target_type = _share_request_target_type(payload.get('target_type'), media_type)
+    payload['target_type'] = target_type
+    payload['media_type'] = 'movie' if target_type == 'movie' else 'tv'
+    payload['item_type'] = 'Movie' if target_type == 'movie' else 'Season'
+    if target_type == 'movie':
+        payload['season_number'] = None
+    elif target_type == 'series':
+        payload['season_number'] = None
+    else:
+        payload['season_number'] = _safe_int(payload.get('season_number'), 1) or 1
+    payload.pop('episode_number', None)
+    payload.pop('episode_numbers', None)
+    payload['video_count'] = _share_request_count_from_tmdb(payload)
+    if target_type == 'season':
+        payload['expected_episode_count'] = payload['video_count']
+    return payload
+
+
+def _tmdb_search_item(row: Dict[str, Any], media_type: str) -> Dict[str, Any]:
+    row = dict(row or {})
+    if media_type == 'movie':
+        release = row.get('release_date') or ''
+        title = row.get('title') or row.get('name') or row.get('original_title') or ''
+    else:
+        release = row.get('first_air_date') or ''
+        title = row.get('name') or row.get('title') or row.get('original_name') or ''
+    year = None
+    if release and len(str(release)) >= 4:
+        year = _safe_int(str(release)[:4], 0) or None
+    return {
+        'tmdb_id': str(row.get('id') or ''),
+        'media_type': 'movie' if media_type == 'movie' else 'tv',
+        'title': title,
+        'release_year': year,
+        'poster_path': row.get('poster_path') or '',
+        'overview': row.get('overview') or '',
+    }
+
+
+@shared_resource_bp.route('/share-requests/param-options', methods=['GET'])
+@admin_required
+def api_share_request_param_options():
+    return jsonify({'success': True, 'data': {
+        'resolution': [{'label': x, 'value': x} for x in ['4K', '1080p', '720p', '480p']],
+        'codec': [{'label': x, 'value': x} for x in ['HEVC', 'H.264', 'AV1', 'VP9']],
+        'effect': [{'label': x, 'value': x} for x in ['DoVi P8', 'DoVi P7', 'DoVi P5', 'DoVi', 'HDR10+', 'HDR', 'SDR']],
+        'frame_rate': [{'label': x, 'value': v} for x, v in [('≥ 60 fps', '60'), ('≥ 50 fps', '50'), ('≥ 30 fps', '30'), ('24 fps', '24')]],
+        'audio': [{'label': x, 'value': x} for x in ['国语', '粤语', '英语', '日语', '韩语']],
+        'subtitle': [{'label': x, 'value': x} for x in ['简体', '繁体', '英文', '日文', '韩文', '无']],
+    }})
+
+
 @shared_resource_bp.route('/share-requests/quote', methods=['POST'])
 @admin_required
 def api_share_request_quote():
-    return jsonify({'success': True, 'ok': True, 'current_bounty': 0, 'max_bounty': 0, 'breakdown': [], 'message': 'Rapid v2 暂不使用求分享悬赏'})
+    try:
+        payload = _enrich_share_request_payload(_request_json())
+        resp = SharedCenterClient().quote_share_request(payload)
+        return jsonify({'success': True, 'ok': True, 'data': resp, **({'message': resp.get('message')} if resp.get('message') else {})})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @shared_resource_bp.route('/share-requests/tmdb/search', methods=['GET'])
 @admin_required
 def api_share_request_tmdb_search():
-    return jsonify({'success': True, 'items': []})
+    keyword = (request.args.get('keyword') or request.args.get('q') or '').strip()
+    media_type = (request.args.get('media_type') or 'movie').strip().lower()
+    if not keyword:
+        return jsonify({'success': True, 'items': []})
+    api_key = _tmdb_api_key()
+    if not api_key:
+        return jsonify({'success': False, 'message': '未配置 TMDb API Key'}), 400
+    try:
+        if media_type in ('tv', 'series'):
+            rows = tmdb_handler.search_media(query=keyword, api_key=api_key, item_type='tv') or []
+            items = [_tmdb_search_item(x, 'tv') for x in rows[:20]]
+        else:
+            rows = tmdb_handler.search_media(query=keyword, api_key=api_key, item_type='movie') or []
+            items = [_tmdb_search_item(x, 'movie') for x in rows[:20]]
+        return jsonify({'success': True, 'items': items})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @shared_resource_bp.route('/share-requests', methods=['GET', 'POST'])
 @admin_required
 def api_share_requests():
+    client = SharedCenterClient()
     if request.method == 'GET':
-        return jsonify({'success': True, 'items': [], 'total': 0, 'message': 'Rapid v2 暂不使用求分享悬赏'})
-    return jsonify({'success': False, 'message': 'Rapid v2 暂不使用求分享悬赏'}), 400
+        try:
+            resp = client.list_share_requests(
+                keyword=request.args.get('keyword') or request.args.get('q') or '',
+                status=request.args.get('status') or 'open',
+                media_type=request.args.get('media_type') or '',
+                target_type=request.args.get('target_type') or '',
+                limit=int(request.args.get('limit') or 100),
+                offset=int(request.args.get('offset') or 0),
+            )
+            return jsonify({'success': True, **resp})
+        except Exception as e:
+            return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
+    try:
+        payload = _enrich_share_request_payload(_request_json())
+        resp = client.create_share_request(payload)
+        return jsonify({'success': True, 'message': resp.get('message') or '求共享已发布', 'data': resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
 
 
 @shared_resource_bp.route('/share-requests/<group_id>/co-request', methods=['POST'])
 @admin_required
 def api_share_request_co(group_id):
-    return jsonify({'success': False, 'message': 'Rapid v2 暂不使用求分享悬赏'}), 400
+    try:
+        resp = SharedCenterClient().co_request_share_request(group_id, _request_json())
+        return jsonify({'success': True, 'message': resp.get('message') or '同求成功', 'data': resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
 
 
 @shared_resource_bp.route('/share-requests/<group_id>/cancel', methods=['POST'])
 @admin_required
 def api_share_request_cancel(group_id):
-    return jsonify({'success': True, 'message': 'Rapid v2 暂不使用求分享悬赏'})
+    try:
+        resp = SharedCenterClient().cancel_share_request(group_id, _request_json())
+        return jsonify({'success': True, 'message': resp.get('message') or '已取消求共享', 'data': resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400

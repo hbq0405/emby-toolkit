@@ -7,7 +7,7 @@
           <div class="page-header">
             <div>
               <div class="page-title">共享资源管理</div>
-              <n-text depth="3">集中管理共享资源：本机秒传源、中心资源秒传和贡献值流水。</n-text>
+              <n-text depth="3">集中管理共享资源：本机秒传源、中心资源秒传和贡献点流水。</n-text>
             </div>
             <n-space>
               <n-button secondary @click="openSharedConfigModal">
@@ -20,7 +20,7 @@
               </n-button>
               <n-button :loading="refreshingCredit" @click="refreshCredit">
                 <template #icon><n-icon :component="RefreshIcon" /></template>
-                刷新贡献值
+                刷新贡献点
               </n-button>
               <n-button type="primary" ghost :loading="loading" @click="loadAll">
                 <template #icon><n-icon :component="SyncIcon" /></template>
@@ -31,7 +31,7 @@
         </template>
 
         <n-alert v-if="!hasCenterDevice" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
-          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献值、登记共享、转存中心资源。
+          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献点、登记共享、转存中心资源。
         </n-alert>
 
         <n-grid class="stat-grid" :cols="isMobile ? 2 : 4" :x-gap="12" :y-gap="12">
@@ -110,7 +110,7 @@
 
           <n-tab-pane name="requests" tab="求共享">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-              求共享是共享池悬赏需求：发起时冻结贡献值，参数越精确悬赏越高；其他用户可“同求”助力，也可以点“我有资源”从本地媒体库登记共享源。
+              求共享是共享池悬赏需求：发起时冻结贡献点，参数越精确悬赏越高；其他用户可“同求”助力，也可以点“我有资源”从本地媒体库登记共享源。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="requestFilters.keyword" placeholder="搜索片名 / TMDb ID" clearable @keyup.enter="loadShareRequests">
@@ -159,7 +159,7 @@
             </n-spin>
           </n-tab-pane>
 
-          <n-tab-pane name="ledger" tab="贡献值明细">
+          <n-tab-pane name="ledger" tab="贡献点明细">
             <n-data-table
               :loading="ledgerLoading"
               :columns="ledgerColumns"
@@ -394,7 +394,6 @@ const requestTargetTypeFilterOptions = [
   { label: '电影', value: 'movie' },
   { label: '全剧', value: 'series' },
   { label: '单季', value: 'season' },
-  { label: '单集', value: 'episode' },
 ];
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -677,7 +676,7 @@ const statCards = computed(() => {
   const shares = summary.value.shares || {};
   const credit = summary.value.credit || {};
   return [
-    { key: 'credit', label: '贡献值', value: credit.credit ?? 0, desc: credit.device_id ? `设备 ${credit.device_id}` : '未同步' },
+    { key: 'credit', label: '贡献点', value: credit.credit ?? 0, desc: credit.device_id ? `设备 ${credit.device_id}` : '未同步' },
     { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效共享` },
     { key: 'remote_sources', label: '中心资源', value: credit.shared_sources ?? 0, desc: `${credit.raw_ffprobe ?? 0} 条媒体信息` },
     { key: 'remote_gaps', label: '待补资源', value: credit.wanted_gaps ?? 0, desc: `${credit.remote_devices ?? 0} 个设备` },
@@ -742,8 +741,7 @@ const shareRequestTargetOptions = computed(() => {
   return [
     { label: '全剧', value: 'series' },
     { label: '单季', value: 'season' },
-    { label: '单集', value: 'episode' },
-  ];
+    ];
 });
 
 const requestStatusLabel = (status) => statusMap[status]?.text || status || '未知';
@@ -754,7 +752,7 @@ const requestParticipationText = (row = {}) => {
 };
 const canProvideShareRequest = (row = {}) => row.status === 'open' && row.my_role !== 'owner';
 const requestTargetTypeLabel = (value) => ({
-  movie: '电影', series: '全剧', season: '单季', episode: '单集', episode_batch: '单季',
+  movie: '电影', series: '全剧', season: '单季', episode: '单季', episode_batch: '单季',
 }[String(value || '').toLowerCase()] || value || '-');
 const requestTargetText = (row) => {
   const target = String(row?.target_type || '').toLowerCase();
@@ -825,7 +823,7 @@ const shareRequestSearchColumns = [
 
 const ledgerEventLabel = (eventType) => {
   const map = {
-    center_initial_credit: '基础贡献值',
+    center_initial_credit: '基础贡献点',
     center_source_registered: '中心登记共享源',
     center_source_registered_group: '中心登记共享源',
     center_backup_source_registered: '备份共享入池',
@@ -833,8 +831,10 @@ const ledgerEventLabel = (eventType) => {
     center_deleted_shared_source_summary: '已删除共享源',
     center_shared_source_served: '共享被转存',
     center_shared_source_served_group: '共享被转存',
+    rapid_source_served: '共享视频被秒传',
     center_shared_source_consumed: '转存共享资源',
     center_shared_source_consumed_group: '转存共享资源',
+    rapid_source_consumed: '秒传共享视频',
     share_created: '登记共享源',
     share_reported_center: '登记',
     share_raw_uploaded: '媒体信息',
@@ -877,7 +877,7 @@ const ledgerDisplayTitle = (row) => {
 
 const ledgerReasonDisplay = (row) => {
   const event = String(row?.event_type || '');
-  const deltaText = `贡献值 ${formatDelta(row?.delta || 0)}`;
+  const deltaText = `贡献点 ${formatDelta(row?.delta || 0)}`;
   const title = ledgerDisplayTitle(row);
   const reasonMap = {
     share_request_escrow: `求共享冻结：${title}，${deltaText}`,
@@ -971,10 +971,10 @@ const ledgerAggregateKey = (row) => `${normalizeLedgerKeyPart(row?.event_type)}:
 const buildAggregatedLedgerReason = (latest, rows, totalDelta) => {
   const unitDelta = Number(latest?.delta || 0);
   const sameDelta = rows.every(row => Number(row?.delta || 0) === unitDelta);
-  const creditText = sameDelta ? `贡献值 ${formatDelta(unitDelta)}*${rows.length}` : `贡献值合计 ${formatDelta(totalDelta)}（${rows.length} 条）`;
+  const creditText = sameDelta ? `贡献点 ${formatDelta(unitDelta)}*${rows.length}` : `贡献点合计 ${formatDelta(totalDelta)}（${rows.length} 条）`;
   const reason = String(latest?.reason || '').trim();
   if (reason) {
-    const replaced = reason.replace(/贡献值\s*[+-]?\d+(?:\.\d+)?(?=\s*[，,。；;、]?$)/, creditText);
+    const replaced = reason.replace(/贡献点\s*[+-]?\d+(?:\.\d+)?(?=\s*[，,。；;、]?$)/, creditText);
     if (replaced !== reason) return replaced;
     return `${reason}，${creditText}`;
   }
@@ -1751,7 +1751,6 @@ const compactRequestParams = () => {
 };
 
 const buildShareRequestPayload = () => {
-  const episodeNumbers = shareRequestForm.target_type === 'episode' && shareRequestForm.episode_number ? [Number(shareRequestForm.episode_number)] : [];
   return {
     tmdb_id: shareRequestForm.tmdb_id,
     media_type: shareRequestForm.media_type,
@@ -1760,9 +1759,7 @@ const buildShareRequestPayload = () => {
     release_year: shareRequestForm.release_year,
     poster_path: shareRequestForm.poster_path,
     overview: shareRequestForm.overview,
-    season_number: ['season','episode'].includes(shareRequestForm.target_type) ? shareRequestForm.season_number : null,
-    episode_number: shareRequestForm.target_type === 'episode' ? shareRequestForm.episode_number : null,
-    episode_numbers: episodeNumbers,
+    season_number: shareRequestForm.target_type === 'season' ? shareRequestForm.season_number : null,
     params_json: compactRequestParams(),
     expires_days: shareRequestForm.expires_days || 7,
     auto_escalation: Boolean(shareRequestForm.auto_escalation),
@@ -1867,10 +1864,9 @@ const loadShareRequests = async () => {
 
 const submitShareRequest = async () => {
   if (!selectedShareRequestMedia.value) return message.warning('请先搜索并选择 TMDb 目标');
-  if (shareRequestForm.media_type === 'tv' && ['season','episode'].includes(shareRequestForm.target_type) && !shareRequestForm.season_number) {
+  if (shareRequestForm.media_type === 'tv' && shareRequestForm.target_type === 'season' && !shareRequestForm.season_number) {
     return message.warning('请填写季号');
   }
-  if (shareRequestForm.target_type === 'episode' && !shareRequestForm.episode_number) return message.warning('请填写集号');
   shareRequestSubmitting.value = true;
   try {
     const payload = buildShareRequestPayload();
@@ -1890,7 +1886,7 @@ const confirmCoRequest = (row) => {
   const cost = Number(row.max_bounty || row.current_bounty || row.bounty_total || 0);
   dialog.warning({
     title: '同求助力',
-    content: `助力求共享将冻结 ${cost} 贡献值。资源成功共享并转存后，对应贡献值会支付给共享者；未成交取消/过期会退回。确定同求吗？`,
+    content: `助力求共享将冻结 ${cost} 贡献点。资源成功共享并转存后，对应贡献点会支付给共享者；未成交取消/过期会退回。确定同求吗？`,
     positiveText: '确认同求',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -1908,7 +1904,7 @@ const confirmCoRequest = (row) => {
 const confirmCancelShareRequest = (row) => {
   dialog.warning({
     title: '取消求共享',
-    content: row.my_role === 'owner' ? '发起人取消会关闭该求共享并退回所有参与者未使用贡献值，确定继续吗？' : '确定取消你的同求并退回未使用贡献值吗？',
+    content: row.my_role === 'owner' ? '发起人取消会关闭该求共享并退回所有参与者未使用贡献点，确定继续吗？' : '确定取消你的同求并退回未使用贡献点吗？',
     positiveText: '取消求共享',
     negativeText: '保留',
     onPositiveClick: async () => {
@@ -1948,7 +1944,7 @@ const triggerSharedMaintenance = async () => {
   }
 };
 
-const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献值流水失败'); } finally { ledgerLoading.value = false; } };
+const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献点流水失败'); } finally { ledgerLoading.value = false; } };
 const loadAll = async () => { await Promise.allSettled([loadSummary(), loadShares(), loadCenterSources(), loadLedger()]); };
 const handleTabChange = (name) => { if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'requests') loadShareRequests(); if (name === 'ledger') loadLedger(); };
 
@@ -1979,7 +1975,7 @@ const registerCenterDevice = async () => {
   await doRegister();
 };
 
-const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献值已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献值失败'); } finally { refreshingCredit.value = false; } };
+const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献点已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献点失败'); } finally { refreshingCredit.value = false; } };
 
 const resetManualShareForm = () => {
   manualShareValidationSeq += 1;

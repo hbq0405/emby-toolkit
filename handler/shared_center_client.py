@@ -345,7 +345,7 @@ class SharedCenterClient:
     def ack_device_events(self, event_ids: List[str], result: str = 'ok', message: str = '') -> Dict[str, Any]:
         return self._post('/api/v1/device-events/ack', {'event_ids': event_ids or [], 'result': result or 'ok', 'message': message or ''}, timeout=15)
 
-    # Rapid v2 已移除 115 分享、小黑屋、分享撤销、求分享中心端接口。保留空实现，避免旧调用点炸进程。
+    # Rapid v2 已移除 115 分享、小黑屋、分享撤销、求共享中心端接口。保留空实现，避免旧调用点炸进程。
     def cancel_sources(self, *args, **kwargs):
         return {'ok': True, 'skipped': True, 'message': 'Rapid v2 无 115 分享源需要撤销'}
 
@@ -355,5 +355,25 @@ class SharedCenterClient:
     def report_resource_blacklist(self, *args, **kwargs):
         return {'ok': True, 'skipped': True, 'message': 'Rapid v2 不使用中心资源黑名单'}
 
-    def list_share_requests(self, *args, **kwargs):
-        return {'items': [], 'total': 0, 'message': 'Rapid v2 暂未启用求分享接口'}
+    def quote_share_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/share-requests/quote', payload or {}, timeout=15)
+
+    def create_share_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/share-requests', payload or {}, timeout=20)
+
+    def list_share_requests(self, *, keyword: str = '', status: str = 'open', media_type: str = '',
+                            target_type: str = '', limit: int = 100, offset: int = 0, **_ignored) -> Dict[str, Any]:
+        return self._get('/api/v1/share-requests', {
+            'keyword': keyword or '',
+            'status': status or 'open',
+            'media_type': media_type or '',
+            'target_type': target_type or '',
+            'limit': max(1, min(int(limit or 100), 500)),
+            'offset': max(0, int(offset or 0)),
+        }, timeout=20)
+
+    def co_request_share_request(self, group_id: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return self._post(f"/api/v1/share-requests/{urllib.parse.quote(str(group_id or '').strip())}/co-request", payload or {}, timeout=20)
+
+    def cancel_share_request(self, group_id: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return self._post(f"/api/v1/share-requests/{urllib.parse.quote(str(group_id or '').strip())}/cancel", payload or {}, timeout=20)

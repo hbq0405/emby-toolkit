@@ -1130,16 +1130,25 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             errors.append({'file': f.get('file_name') or f.get('sha1'), 'error': str(e)})
 
     if ok_count:
-        reported = set()
+        report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for report_kind, report_id, report_file in success_sources:
             if report_kind not in ('movie', 'episode', 'completed_season') or not report_id:
                 continue
             key = (report_kind, report_id)
-            if key in reported:
-                continue
-            reported.add(key)
+            group = report_groups.setdefault(key, {'count': 0, 'file': report_file})
+            group['count'] += 1
+        for (report_kind, report_id), group in report_groups.items():
+            report_file = group.get('file') or {}
+            success_file_count = max(1, int(group.get('count') or 1))
             try:
-                client.report_transfer(report_kind, report_id, 'success', message=f'本机秒传成功：{report_file.get("file_name") or report_file.get("sha1") or report_id}')
+                client.report_transfer(
+                    report_kind,
+                    report_id,
+                    'success',
+                    success_count=success_file_count,
+                    total_count=success_file_count,
+                    message=f'本机秒传成功：{success_file_count} 个视频；{report_file.get("file_name") or report_file.get("sha1") or report_id}',
+                )
             except Exception as e:
                 logger.warning(f"  ➜ [共享资源] 上报秒传成功失败: {e}")
         _kick_115_organize_detached(reason=f'rapid:{source_kind}:{source_id}')
@@ -1147,7 +1156,14 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         fail_kind = source_kind if source_kind in ('movie', 'episode', 'completed_season') else ''
         if fail_kind and source_id:
             try:
-                client.report_transfer(fail_kind, source_id, 'failed', message=json.dumps(errors, ensure_ascii=False)[:1000])
+                client.report_transfer(
+                    fail_kind,
+                    source_id,
+                    'failed',
+                    success_count=0,
+                    total_count=len(files),
+                    message=json.dumps(errors, ensure_ascii=False)[:1000],
+                )
             except Exception:
                 pass
 
