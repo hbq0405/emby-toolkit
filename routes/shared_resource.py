@@ -146,8 +146,8 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         'source_provider', 'register_source', 'register_from', 'task_source',
         'task_type', 'source_provider_label', 'source_label', 'message', 'reason'
     ))
-    auto_provider_values = {'rapid_auto_library', 'rapid_all_library', 'rapid_completed_season'}
-    auto_provider_keywords = ('入库自动', '自动登记', '自动共享', '一键全库', '完结季收藏')
+    auto_provider_values = {'rapid_auto_library', 'rapid_all_library'}
+    auto_provider_keywords = ('入库自动', '自动登记', '自动共享', '一键全库')
     row['is_auto_share'] = bool(
         provider in auto_provider_values
         or row.get('is_auto_share')
@@ -161,7 +161,7 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         'manual_rapid': '手动登记',
         'rapid_auto_library': '入库自动登记',
         'rapid_all_library': '一键全库登记',
-        'rapid_completed_season': '完结季收藏源',
+        'rapid_completed_season': '完结季源',
     }.get(provider, provider or '本地秒传源')
     return row
 
@@ -1063,23 +1063,46 @@ def _ledger_exx(episode) -> str:
 def _ledger_media_context(row: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(row or {})
     sha1 = _ledger_extract_sha1(row)
-    local = _ledger_local_media_by_sha1(sha1) if sha1 else {}
     raw = _ledger_json(row.get('raw_json'))
     center_ledger = raw.get('center_ledger') if isinstance(raw.get('center_ledger'), dict) else {}
-    out = {**local}
-    for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year'):
-        if center_ledger.get(key) not in (None, ''):
-            out[key] = center_ledger.get(key)
-    # 中心 ledger 已经按 source_id / sha1 尽量 join 出媒体字段，本地只做兜底，不覆盖中心有效值。
-    for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year'):
-        if row.get(key) not in (None, ''):
-            out[key] = row.get(key)
+    out: Dict[str, Any] = {}
+
+    # 贡献点明细的媒体名应优先来自中心 /credit/ledger 的 join 结果。
+    # 本地库只做最后兜底，避免本地重组/重命名导致“标题 S03 S03E08”这种重复拼接。
+    for source in (center_ledger, row):
+        for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year', 'file_count'):
+            if source.get(key) not in (None, ''):
+                out[key] = source.get(key)
+
     for key in ('title', 'file_name', 'name'):
         if out.get('title') in (None, '') and raw.get(key):
             out['title'] = raw.get(key)
+
+    if out.get('title') in (None, '') and sha1:
+        local = _ledger_local_media_by_sha1(sha1)
+        for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year'):
+            if out.get(key) in (None, '') and local.get(key) not in (None, ''):
+                out[key] = local.get(key)
+
     if sha1:
         out['sha1'] = sha1
     return out
+
+
+def _ledger_clean_base_title(base: str, season=None, episode=None) -> str:
+    text = str(base or '').strip()
+    if not text:
+        return ''
+    sxx = _ledger_sxx(season)
+    exx = _ledger_exx(episode)
+    # 去掉标题末尾已经带着的 Sxx / SxxEyy，后面统一追加一次，防止 S03S03。
+    if sxx and exx:
+        text = re.sub(rf'\s*{re.escape(sxx)}\s*{re.escape(exx)}\s*$', '', text, flags=re.I)
+        text = re.sub(rf'\s*{re.escape(sxx)}{re.escape(exx)}\s*$', '', text, flags=re.I)
+    if sxx:
+        text = re.sub(rf'\s*{re.escape(sxx)}\s*$', '', text, flags=re.I)
+    text = re.sub(r'\s+', ' ', text).strip(' -·._')
+    return text or str(base or '').strip()
 
 
 def _ledger_title_from_context(ctx: Dict[str, Any], *, aggregate: bool = False) -> str:
@@ -1098,6 +1121,7 @@ def _ledger_title_from_context(ctx: Dict[str, Any], *, aggregate: bool = False) 
     ).strip()
     sxx = _ledger_sxx(season)
     exx = _ledger_exx(episode)
+    base = _ledger_clean_base_title(base, season, episode)
 
     if item_type == 'episode' or source_kind == 'episode' or (sxx and exx):
         if not base:

@@ -538,7 +538,12 @@ const shareFailureReasonText = (row) => {
     row?.last_error, row?.error, row?.error_message, row?.failure_reason, row?.fail_reason,
   ].map(v => String(v || '').trim()).find(v => v && !isSuccessShareMessage(v));
 
-  if (rawErrorText) return rawErrorText;
+  const disabledStatus = statusParts.find(v => ['disabled', 'cancelled', 'canceled', 'deleted'].includes(v));
+  // 维护任务留下的 last_error 不能污染仍然有效/已登记的共享源备注。
+  if (rawErrorText && (failedStatus || disabledStatus)) {
+    if (rawErrorText === 'source_file_sha1_not_in_library') return '本地文件不在媒体库';
+    return rawErrorText;
+  }
 
   if (failedStatus) {
     const rawReasonText = [row?.reason, row?.message, row?.status_message, row?.review_message]
@@ -572,12 +577,12 @@ const shareSourceText = (row) => {
   const rawManual = Boolean(raw?.manual_payload || raw?.manual_share || raw?.manual_create || raw?.manual_created || raw?.manual_context);
   const rawAuto = Boolean(raw?.auto_gap || raw?.auto_payload || raw?.auto_task || raw?.maintenance_payload || raw?.maintenance_task || raw?.auto_share_payload || raw?.auto_context);
   const providerBackup = /(backup_mirror|backup_share|auto_backup_share|backup)/i.test(providerText) || /(备份共享|备份源|镜像共享)/.test(labelText);
-  const providerAuto = /(rapid_auto_library|rapid_all_library|rapid_completed_season|auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /(自动共享|自动登记|入库自动|一键全库|完结季收藏)/.test(labelText);
-  const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created)/i.test(providerText) || /手动共享/.test(labelText);
+  const providerAuto = /(rapid_auto_library|rapid_all_library|auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /(自动共享|自动登记|入库自动|一键全库)/.test(labelText);
+  const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created|rapid_completed_season)/i.test(providerText) || /(手动共享|完结季源|完结季收藏)/.test(labelText);
 
   // 备份共享是中心下发的特殊来源，必须优先于自动/手动兜底判断。
   if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || rawBackup || providerBackup) return '备份共享';
-  // Rapid v2 入库自动登记/一键全库/完结季收藏必须优先于 manual 兜底，避免 auto 记录被误标成手动共享。
+  // Rapid v2 入库自动登记/一键全库优先于 manual 兜底；rapid_completed_season 只是完结季源类型，不等于自动共享。
   if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance || rawAuto || providerAuto) return '自动共享';
   if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动共享';
 
@@ -931,13 +936,13 @@ const ledgerContext = (row = {}) => {
   const job = (raw.job && typeof raw.job === 'object') ? raw.job : {};
   const first = (...values) => values.find(v => v !== undefined && v !== null && String(v).trim() !== '');
   return {
-    title: first(row.title, center.title, media.title, source.title, sharedSource.title, job.title, raw.title, row.file_name, center.file_name, raw.file_name),
-    file_name: first(row.file_name, center.file_name, media.file_name, source.file_name, sharedSource.file_name, job.file_name, raw.file_name),
-    tmdb_id: first(row.tmdb_id, center.tmdb_id, media.tmdb_id, source.tmdb_id, sharedSource.tmdb_id, raw.tmdb_id),
-    item_type: first(row.item_type, center.item_type, media.item_type, source.item_type, sharedSource.item_type, raw.item_type),
-    source_kind: first(row.source_kind, center.source_kind, source.source_kind, sharedSource.source_kind, raw.source_kind),
-    season_number: first(row.season_number, center.season_number, media.season_number, source.season_number, sharedSource.season_number, raw.season_number),
-    episode_number: first(row.episode_number, center.episode_number, media.episode_number, source.episode_number, sharedSource.episode_number, raw.episode_number),
+    title: first(center.title, row.title, media.title, source.title, sharedSource.title, job.title, raw.title, center.file_name, row.file_name, raw.file_name),
+    file_name: first(center.file_name, row.file_name, media.file_name, source.file_name, sharedSource.file_name, job.file_name, raw.file_name),
+    tmdb_id: first(center.tmdb_id, row.tmdb_id, media.tmdb_id, source.tmdb_id, sharedSource.tmdb_id, raw.tmdb_id),
+    item_type: first(center.item_type, row.item_type, media.item_type, source.item_type, sharedSource.item_type, raw.item_type),
+    source_kind: first(center.source_kind, row.source_kind, source.source_kind, sharedSource.source_kind, raw.source_kind),
+    season_number: first(center.season_number, row.season_number, media.season_number, source.season_number, sharedSource.season_number, raw.season_number),
+    episode_number: first(center.episode_number, row.episode_number, media.episode_number, source.episode_number, sharedSource.episode_number, raw.episode_number),
     sha1: first(row.sha1, row.ledger_sha1, center.sha1, raw.sha1, raw.file_sha1, source.sha1, sharedSource.sha1, media.sha1),
   };
 };
@@ -948,18 +953,31 @@ const cleanLedgerTitleText = (value) => {
   if (text.toLowerCase().startsWith('rapid_sign:')) return '';
   return text;
 };
+const cleanLedgerBaseTitle = (base, row) => {
+  let text = cleanLedgerTitleText(base);
+  if (!text) return '';
+  const ctx = ledgerContext(row);
+  const sxx = ledgerSxx(ctx.season_number);
+  const exx = ledgerExx(ctx.episode_number);
+  if (sxx && exx) {
+    text = text
+      .replace(new RegExp(`\\s*${sxx}\\s*${exx}\\s*$`, 'i'), '')
+      .replace(new RegExp(`\\s*${sxx}${exx}\\s*$`, 'i'), '');
+  }
+  if (sxx) text = text.replace(new RegExp(`\\s*${sxx}\\s*$`, 'i'), '');
+  text = text.replace(/\s+/g, ' ').replace(/[\s\-·._]+$/g, '').trim();
+  return text || cleanLedgerTitleText(base);
+};
 const appendLedgerSeasonEpisode = (base, row, { aggregate = false } = {}) => {
-  base = cleanLedgerTitleText(base);
+  base = cleanLedgerBaseTitle(base, row);
   if (!base) return '';
   const ctx = ledgerContext(row);
   const sxx = ledgerSxx(ctx.season_number);
   const exx = ledgerExx(ctx.episode_number);
-  const hasEpisode = /\bS\d{1,3}\s*E\d{1,4}\b/i.test(base);
-  const hasSeason = /\bS\d{1,3}\b/i.test(base);
-  if (aggregate && isLedgerConsumedRow(row) && sxx && !hasSeason) return `${base} ${sxx}`;
-  if (isLedgerSignRow(row) && sxx && exx && !hasEpisode) return `${base} ${sxx}${exx}`;
-  if ((String(ctx.item_type || '').toLowerCase() === 'episode' || String(ctx.source_kind || '').toLowerCase() === 'episode') && sxx && exx && !hasEpisode) return `${base} ${sxx}${exx}`;
-  if ((String(ctx.item_type || '').toLowerCase() === 'season' || String(ctx.source_kind || '').toLowerCase() === 'completed_season') && sxx && !hasSeason) return `${base} ${sxx}`;
+  if (aggregate && isLedgerConsumedRow(row) && sxx) return `${base} ${sxx}`;
+  if (isLedgerSignRow(row) && sxx && exx) return `${base} ${sxx}${exx}`;
+  if ((String(ctx.item_type || '').toLowerCase() === 'episode' || String(ctx.source_kind || '').toLowerCase() === 'episode') && sxx && exx) return `${base} ${sxx}${exx}`;
+  if ((String(ctx.item_type || '').toLowerCase() === 'season' || String(ctx.source_kind || '').toLowerCase() === 'completed_season') && sxx) return `${base} ${sxx}`;
   return base;
 };
 const ledgerCreditText = (row, rows = null) => {
@@ -1442,10 +1460,10 @@ const centerSourceText = (row) => {
 
   if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || /(backup_mirror|backup_share|auto_backup_share|backup|备份共享|备份源|镜像共享)/i.test(allText)) return '备份共享';
   if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动共享';
-  if (/(rapid_auto_library|rapid_all_library|rapid_completed_season|auto|自动|入库自动|一键全库|完结季收藏|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动共享';
+  if (/(rapid_auto_library|rapid_all_library|auto|自动|入库自动|一键全库|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动共享';
   if (/(hdhive|影巢)/i.test(allText)) return '影巢';
   if (/(tg_channel|telegram|频道)/i.test(allText)) return '频道';
-  if (/(manual|user_share|手动|人工)/i.test(allText) || row?.is_manual_share) return '手动共享';
+  if (/(manual|user_share|rapid_completed_season|手动|人工|完结季源|完结季收藏)/i.test(allText) || row?.is_manual_share) return '手动共享';
 
   const label = labelParts.join(' ').trim();
   return label || '本机共享';
