@@ -591,7 +591,18 @@ def _prepare_files_before_rapid_transfer(
     纯净版不在这里识别，只根据中心 is_clean_version 标签做策略拦截。
     """
     files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
+    source_label = f"{source_kind or '-'}:{source_id or '-'}"
+    preflight_started_at = time.time()
+    logger.info(f"  ➜ [共享资源] 秒传前预检开始：source={source_label}, files={len(files)}")
+
+    raw_started_at = time.time()
+    logger.info(f"  ➜ [共享资源] 秒传前预检：开始拉取中心 RAW，source={source_label}, files={len(files)}")
     raw_map = _load_center_raw_map(client, files)
+    logger.info(
+        f"  ➜ [共享资源] 秒传前预检：中心 RAW 拉取完成，"
+        f"命中 {len(raw_map)}/{len(files)}，耗时 {time.time() - raw_started_at:.1f}s"
+    )
+
     cached = 0
     cache_errors = []
     for f in files:
@@ -599,14 +610,28 @@ def _prepare_files_before_rapid_transfer(
         raw = raw_map.get(sha1)
         if not raw:
             continue
-        if _cache_center_raw_as_local_mediainfo(f, raw):
-            cached += 1
-        else:
-            cache_errors.append(f.get('file_name') or sha1)
+        file_name = f.get('file_name') or f.get('name') or sha1
+        try:
+            if _cache_center_raw_as_local_mediainfo(f, raw):
+                cached += 1
+            else:
+                cache_errors.append(file_name or sha1)
+                logger.warning(f"  ➜ [共享资源] 秒传前预检：RAW 转本地 MediaInfo 失败：{file_name}")
+        except Exception as e:
+            cache_errors.append(file_name or sha1)
+            logger.warning(f"  ➜ [共享资源] 秒传前预检：RAW 转本地 MediaInfo 异常：{file_name} -> {e}")
+    logger.info(
+        f"  ➜ [共享资源] 秒传前预检：RAW 缓存完成，成功 {cached}/{len(raw_map)}，"
+        f"失败 {len(cache_errors)}"
+    )
 
     rename_config = settings_db.get_setting('p115_rename_config') or {}
     conflict_mode = str(rename_config.get('conflict_mode') or '').strip().lower()
     if conflict_mode != 'replace':
+        logger.info(
+            f"  ➜ [共享资源] 秒传前预检结束：当前覆盖模式为 {conflict_mode or '未配置'}，"
+            f"跳过洗版预检，耗时 {time.time() - preflight_started_at:.1f}s"
+        )
         return files, {
             'raw_cached_count': cached,
             'raw_cache_errors': cache_errors[:20],
@@ -616,6 +641,7 @@ def _prepare_files_before_rapid_transfer(
 
     p115 = P115Service.get_client()
     if not p115:
+        logger.warning(f"  ➜ [共享资源] 秒传前预检失败：115 客户端未初始化，source={source_label}")
         return [], {
             'raw_cached_count': cached,
             'raw_cache_errors': cache_errors[:20],
@@ -627,6 +653,7 @@ def _prepare_files_before_rapid_transfer(
     try:
         from handler.resubscribe_service import WashingService
     except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 秒传前预检失败：导入 WashingService 失败，source={source_label}, err={e}")
         return [], {
             'raw_cached_count': cached,
             'raw_cache_errors': cache_errors[:20],
@@ -641,24 +668,37 @@ def _prepare_files_before_rapid_transfer(
     hard_reject = False
     is_completed_pack = str(source_kind or '') == 'completed_season'
     is_ongoing_hub = str(source_kind or '') == 'season_hub'
+    target_cache: Dict[Tuple[str, str, Any], Dict[str, Any]] = {}
+
+    logger.info(
+        f"  ➜ [共享资源] 洗版预检开始：source={source_label}, files={len(files)}, "
+        f"completed_pack={is_completed_pack}, ongoing_hub={is_ongoing_hub}"
+    )
 
     for idx, src in enumerate(files):
         file_name = src.get('file_name') or src.get('name') or _norm_sha1(src.get('sha1'))
         ext = os.path.splitext(str(file_name or ''))[1].lower()
         if ext and ext not in VIDEO_EXTS:
+            logger.debug(f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 跳过非视频：{file_name}")
             candidates.append({'file': src, 'score': 0, 'index': idx, 'episode': None, 'reason': 'non_video'})
             continue
 
         sha1 = _norm_sha1(src.get('sha1'))
         raw = raw_map.get(sha1)
+        logger.info(
+            f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 准备："
+            f"{file_name}，sha1={(sha1[:12] + '...') if sha1 else '-'}"
+        )
         if not raw:
             msg = f"{file_name}: 中心缺少 RAW，洗版预检拒绝秒传"
+            logger.warning(f"  ➜ [共享资源] {msg}")
             errors.append(msg)
             if is_completed_pack:
                 hard_reject = True
             continue
         if file_name in cache_errors or sha1 in cache_errors:
             msg = f"{file_name}: RAW 无法转换为本地 MediaInfo，洗版预检拒绝秒传"
+            logger.warning(f"  ➜ [共享资源] {msg}")
             errors.append(msg)
             if is_completed_pack:
                 hard_reject = True
@@ -672,33 +712,65 @@ def _prepare_files_before_rapid_transfer(
             tmdb_for_washing = str(_source_parent_series_tmdb_id(src, context) or '')
         if not tmdb_for_washing:
             msg = f"{file_name}: 缺少 TMDb ID，洗版预检拒绝秒传"
+            logger.warning(f"  ➜ [共享资源] {msg}")
             errors.append(msg)
             if is_completed_pack:
                 hard_reject = True
             continue
 
         s_num, e_num = _guess_se_from_source(src, context)
-        try:
-            organizer = SmartOrganizer(
-                p115,
-                int(tmdb_for_washing),
-                media_type,
-                context.get('title') or src.get('title') or file_name,
-                None,
-                False,
+        target_key = (media_type, str(tmdb_for_washing), s_num if media_type == 'tv' else None)
+        cached_target = target_cache.get(target_key)
+        if cached_target:
+            target_cid_for_washing = cached_target.get('target_cid') or ''
+            original_lang = cached_target.get('original_lang') or ''
+            logger.info(
+                f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 复用目标目录："
+                f"tmdb={tmdb_for_washing}, season={s_num if s_num is not None else '-'}, target_cid={target_cid_for_washing}"
             )
-            if media_type == 'tv' and s_num is not None:
-                organizer.forced_season = int(s_num)
-            target_cid_for_washing = organizer.get_target_cid(season_num=s_num if media_type == 'tv' else None)
-            original_lang = (organizer.raw_metadata or {}).get('lang_code')
-        except Exception as e:
-            msg = f"{file_name}: 无法计算洗版目标目录，拒绝秒传 -> {e}"
-            errors.append(msg)
-            if is_completed_pack:
-                hard_reject = True
-            continue
+        else:
+            target_started_at = time.time()
+            logger.info(
+                f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 计算目标目录："
+                f"tmdb={tmdb_for_washing}, media_type={media_type}, season={s_num if s_num is not None else '-'}, file={file_name}"
+            )
+            try:
+                organizer = SmartOrganizer(
+                    p115,
+                    int(tmdb_for_washing),
+                    media_type,
+                    context.get('title') or src.get('title') or file_name,
+                    None,
+                    False,
+                )
+                if media_type == 'tv' and s_num is not None:
+                    organizer.forced_season = int(s_num)
+                target_cid_for_washing = organizer.get_target_cid(season_num=s_num if media_type == 'tv' else None)
+                original_lang = (organizer.raw_metadata or {}).get('lang_code')
+                target_cache[target_key] = {
+                    'target_cid': str(target_cid_for_washing),
+                    'original_lang': original_lang or '',
+                }
+                logger.info(
+                    f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 目标目录完成："
+                    f"target_cid={target_cid_for_washing}, lang={original_lang or '-'}, "
+                    f"耗时 {time.time() - target_started_at:.1f}s"
+                )
+            except Exception as e:
+                msg = f"{file_name}: 无法计算洗版目标目录，拒绝秒传 -> {e}"
+                logger.warning(f"  ➜ [共享资源] {msg}")
+                errors.append(msg)
+                if is_completed_pack:
+                    hard_reject = True
+                continue
 
         file_size = _rapid_size_to_int(src.get('size') or src.get('file_size'), 0)
+        decision_started_at = time.time()
+        logger.info(
+            f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 调用规则："
+            f"target_cid={target_cid_for_washing}, tmdb={tmdb_for_washing}, "
+            f"S{s_num if s_num is not None else '-'}E{e_num if e_num is not None else '-'}, size={file_size}"
+        )
         action, reason = WashingService.decide_washing_action(
             sha1=sha1,
             file_name=file_name,
@@ -712,6 +784,10 @@ def _prepare_files_before_rapid_transfer(
             is_active_washing=False,
             has_external_subtitle=False,
         )
+        logger.info(
+            f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 规则结果："
+            f"{file_name} -> {action}，{reason}，耗时 {time.time() - decision_started_at:.1f}s"
+        )
         if action in ('REJECT', 'SKIP'):
             msg = f"{file_name}: 洗版预检 [{action}] {reason}"
             errors.append(msg)
@@ -719,6 +795,8 @@ def _prepare_files_before_rapid_transfer(
                 hard_reject = True
             continue
 
+        level_started_at = time.time()
+        logger.info(f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 计算评分：{file_name}")
         level, level_reason = _washing_new_level(
             sha1,
             file_name,
@@ -727,6 +805,10 @@ def _prepare_files_before_rapid_transfer(
             media_type,
             original_lang=original_lang,
             has_external_subtitle=False,
+        )
+        logger.info(
+            f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 评分完成："
+            f"level={level}, reason={level_reason}, 耗时 {time.time() - level_started_at:.1f}s"
         )
         level_score = (1000 - min(level, 999)) * 100000
         action_score = 20000 if action == 'REPLACE' else 10000
@@ -741,6 +823,10 @@ def _prepare_files_before_rapid_transfer(
         })
 
     if hard_reject:
+        logger.warning(
+            f"  ➜ [共享资源] 洗版预检拒绝：source={source_label}, "
+            f"通过 {len(candidates)}/{len(files)}，错误 {len(errors)}，耗时 {time.time() - preflight_started_at:.1f}s"
+        )
         return [], {
             'raw_cached_count': cached,
             'raw_cache_errors': cache_errors[:20],
@@ -750,6 +836,10 @@ def _prepare_files_before_rapid_transfer(
         }
 
     if not candidates:
+        logger.warning(
+            f"  ➜ [共享资源] 洗版预检无可用候选：source={source_label}, "
+            f"errors={len(errors)}，耗时 {time.time() - preflight_started_at:.1f}s"
+        )
         return [], {
             'raw_cached_count': cached,
             'raw_cache_errors': cache_errors[:20],
@@ -767,7 +857,7 @@ def _prepare_files_before_rapid_transfer(
         selected = [best_by_episode[k] for k in sorted(best_by_episode, key=lambda x: _safe_int(x, 999999) if not str(x).startswith('idx:') else 999999)]
         logger.info(
             f"  ➜ [共享资源] 连载公共包洗版预检按集选源：原始 {len(files)} 个，选中 {len(selected)} 个，"
-            f"跳过/拒绝 {len(errors)} 个。"
+            f"跳过/拒绝 {len(errors)} 个，耗时 {time.time() - preflight_started_at:.1f}s。"
         )
         return [c['file'] for c in selected], {
             'raw_cached_count': cached,
@@ -779,6 +869,10 @@ def _prepare_files_before_rapid_transfer(
         }
 
     # 电影/单集/完结季：预检通过的文件全部进入秒传；完结季如果任一视频被拒绝，前面已 hard_reject。
+    logger.info(
+        f"  ➜ [共享资源] 洗版预检通过：source={source_label}, "
+        f"选中 {len(candidates)}/{len(files)}，跳过/拒绝 {len(errors)}，耗时 {time.time() - preflight_started_at:.1f}s"
+    )
     return [c['file'] for c in sorted(candidates, key=lambda x: x.get('index') or 0)], {
         'raw_cached_count': cached,
         'raw_cache_errors': cache_errors[:20],
