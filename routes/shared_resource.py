@@ -951,6 +951,7 @@ LEDGER_REASON_LABEL_MAP = {
     'rapid_source_consumed': '从共享中心秒传资源',
     'rapid_source_served': '本机共享资源被他人秒传',
     'source_registered': '共享资源登记入池',
+    'center_initial_credit': '基础贡献点',
     'backup_source_registered': '备份共享入池',
     'shared_source_served': '共享资源被他人秒传',
     'shared_source_consumed': '从共享中心秒传资源',
