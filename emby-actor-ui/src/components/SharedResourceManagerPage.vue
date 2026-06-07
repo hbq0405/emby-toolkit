@@ -1267,8 +1267,18 @@ const listCell = (items, limit = 3) => {
 const isCenterReplenishRow = (row) => String(row?.status || '').trim().toLowerCase() === 'replenish';
 const centerUsableResourceCount = (row) => {
   if (isCenterReplenishRow(row)) return 0;
-  const count = Number(row?.version_count);
-  return Number.isFinite(count) && count > 0 ? count : 1;
+  // 资源数显示的是可签名 holder 数，不是版本数。
+  // version_count 只表示同一标题/同一集下有几个画质版本，不能反映秒传后新增的资源副本。
+  for (const key of ['resource_count', 'usable_resource_count', 'available_holder_count', 'holder_count']) {
+    const value = Number(row?.[key]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  const parts = [...(Array.isArray(row?.pack_items) ? row.pack_items : []), ...(Array.isArray(row?.children) ? row.children : [])];
+  const childCounts = parts
+    .map(item => Number(item?.resource_count || item?.usable_resource_count || item?.available_holder_count || item?.holder_count || 0))
+    .filter(value => Number.isFinite(value) && value > 0);
+  if (childCounts.length) return Math.min(...childCounts);
+  return 1;
 };
 const canCenterReplenishRow = (row) => {
   if (!isCenterReplenishRow(row)) return false;
