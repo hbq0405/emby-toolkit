@@ -1753,7 +1753,7 @@ def _event_listener_loop():
                 time.sleep(15)
                 continue
             # 先处理蜂群签名任务，再处理资源事件；避免接收端等待 sign_val 超时。
-            poll_and_process_rapid_sign_jobs_once(timeout=1, limit=3)
+            poll_and_process_rapid_sign_jobs_once(timeout=1, limit=10)
             poll_and_consume_once(timeout=25, limit=10)
         except Exception as e:
             logger.warning(f"  ➜ [共享事件监听] 本轮处理失败: {e}")

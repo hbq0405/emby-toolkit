@@ -1,0 +1,77 @@
+diff --git a/handler/shared_subscription_service.py b/handler/shared_subscription_service.py
+index 7b58fee..f129706 100644
+--- a/handler/shared_subscription_service.py
++++ b/handler/shared_subscription_service.py
+@@ -1,5 +1,6 @@
+ # handler/shared_subscription_service.py
+ # Rapid v2 共享资源消费入口：中心调度，本机 CK 执行秒传/入库。
++import concurrent.futures
+ import json
+ import logging
+ import os
+@@ -1112,7 +1113,9 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
+     ok_count = 0
+     errors = []
+     success_sources = []
+-    for f in files:
++
++    def _rapid_transfer_one(raw_file: Dict[str, Any]) -> Dict[str, Any]:
++        f = dict(raw_file or {})
+         try:
+             f.setdefault('source_kind', source_kind)
+             f.setdefault('source_id', source_id)
+@@ -1121,13 +1124,36 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
+             file_source_id = str(f.get('source_id') or f.get('source_ref_id') or source_id or '').strip()
+             result = rapid_save_file(f, target_cid=target_cid)
+             if result.get('ok'):
++                return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
++            return {'ok': False, 'file': f, 'error': {'file': f.get('file_name') or f.get('sha1'), 'response': result.get('response')}}
++        except Exception as e:
++            return {'ok': False, 'file': f, 'error': {'file': f.get('file_name') or f.get('sha1'), 'error': str(e)}}
++
++    # 完结季/公共季包通常会触发多文件 status=7 签名；并发发起秒传，中心才能把 sign_job
++    # 同时派给多个 holder，避免一集一集串行等待。单文件/电影仍走轻量串行。
++    parallel_transfer = source_kind in ('completed_season', 'season_hub') and len(files) > 1
++    if parallel_transfer:
++        max_workers = max(1, min(len(files), 8))
++        logger.info(f"  ➜ [共享资源] 季包秒传启用并发签名调度：files={len(files)}, workers={max_workers}")
++        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='shared-rapid-transfer') as executor:
++            future_map = {executor.submit(_rapid_transfer_one, f): f for f in files}
++            for future in concurrent.futures.as_completed(future_map):
++                item = future.result()
++                if item.get('ok'):
++                    ok_count += 1
++                    success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
++                    _register_local_rapid_holder(client, source_kind=item.get('kind'), source_id=item.get('id'), file_info=item.get('file') or {})
++                else:
++                    errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
++    else:
++        for f in files:
++            item = _rapid_transfer_one(f)
++            if item.get('ok'):
+                 ok_count += 1
+-                success_sources.append((file_source_kind, file_source_id, f))
+-                _register_local_rapid_holder(client, source_kind=file_source_kind, source_id=file_source_id, file_info=f)
++                success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
++                _register_local_rapid_holder(client, source_kind=item.get('kind'), source_id=item.get('id'), file_info=item.get('file') or {})
+             else:
+-                errors.append({'file': f.get('file_name') or f.get('sha1'), 'response': result.get('response')})
+-        except Exception as e:
+-            errors.append({'file': f.get('file_name') or f.get('sha1'), 'error': str(e)})
++                errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
+ 
+     if ok_count:
+         report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+diff --git a/tasks/shared_resource_tasks.py b/tasks/shared_resource_tasks.py
+index b353a15..7bfc412 100644
+--- a/tasks/shared_resource_tasks.py
++++ b/tasks/shared_resource_tasks.py
+@@ -1753,7 +1753,7 @@ def _event_listener_loop():
+                 time.sleep(15)
+                 continue
+             # 先处理蜂群签名任务，再处理资源事件；避免接收端等待 sign_val 超时。
+-            poll_and_process_rapid_sign_jobs_once(timeout=1, limit=3)
++            poll_and_process_rapid_sign_jobs_once(timeout=1, limit=10)
+             poll_and_consume_once(timeout=25, limit=10)
+         except Exception as e:
+             logger.warning(f"  ➜ [共享事件监听] 本轮处理失败: {e}")
