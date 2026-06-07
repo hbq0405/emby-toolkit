@@ -154,13 +154,13 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
     acquired = task_lock.acquire(blocking=False)
     if not acquired:
         if not silent:
-            logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
+            logger.debug(f"  ➜ 任务 '{task_name}' 提交失败：已有任务正在运行。")
         return False
 
     try:
         if background_task_status["is_running"]:
             if not silent:
-                logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
+                logger.debug(f"  ➜ 任务 '{task_name}' 提交失败：已有任务正在运行。")
             return False
 
         if not silent:
