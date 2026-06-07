@@ -1166,7 +1166,9 @@ const centerTitleNode = (row) => {
   return h('div', { class: 'main-title center-title-ellipsis', title: text }, text);
 };
 const centerIsOngoingHub = (row) => Boolean(row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing');
-const centerIsCompletedPack = (row) => Boolean(row?.source_kind === 'completed_season' || row?.season_status === 'completed');
+const centerStatusValue = (row) => String(row?.status || '').trim().toLowerCase();
+const centerIsCompletedPack = (row) => Boolean(row?.source_kind === 'completed_season');
+const centerIsCompletedCertifiedSource = (row) => Boolean(row?.source_kind === 'completed_season' && centerStatusValue(row) === 'available');
 const centerProgressText = (row) => {
   if (row?.progress_text) return String(row.progress_text);
   const current = Number(row?.progress_current || row?.pack_item_count || row?.file_count || 0);
@@ -1235,14 +1237,22 @@ const centerNestedParts = (row) => {
   return parts;
 };
 const centerCompletedCertifiedMeta = (row) => {
+  // 已完结是 ETK 官方认证标签，只允许 available 的 completed_season_source 输出。
+  // 不允许因为 source_kind=completed_season、Season 类型、watching_status=Completed 或进度满就兜底显示。
+  if (centerIsOngoingHub(row)) return {};
+  if (!centerIsCompletedCertifiedSource(row) && !row?.is_completed_certified) return {};
   for (const part of centerNestedParts(row)) {
     const meta = part?.completed_certified_meta_json || part?.completed_certified_meta || {};
-    if (part?.is_completed_certified || meta?.is_completed_certified) return meta && typeof meta === 'object' ? meta : { is_completed_certified: true };
+    if (part?.is_completed_certified || meta?.is_completed_certified) {
+      return meta && typeof meta === 'object' ? meta : { is_completed_certified: true };
+    }
   }
-  if (centerIsCompletedPack(row)) return { is_completed_certified: true, certified_by: 'completed_season_source' };
+  if (centerIsCompletedCertifiedSource(row)) {
+    return { is_completed_certified: true, certified_by: 'completed_season_source', status: row?.status };
+  }
   return {};
 };
-const isCenterCompletedCertified = (row) => Boolean(centerCompletedCertifiedMeta(row).is_completed_certified || row?.is_completed_certified);
+const isCenterCompletedCertified = (row) => Boolean(!centerIsOngoingHub(row) && centerCompletedCertifiedMeta(row).is_completed_certified);
 const centerCompletedCertifiedTooltip = (row) => {
   const meta = centerCompletedCertifiedMeta(row);
   const parts = ['已通过一致性校验'];

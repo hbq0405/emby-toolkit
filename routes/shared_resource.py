@@ -636,9 +636,19 @@ def _center_source_is_animation(row: Dict[str, Any]) -> bool:
 
 
 def _center_source_is_completed_certified(row: Dict[str, Any]) -> bool:
-    if _center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json'):
-        return True
-    return str((row or {}).get('source_kind') or '').strip() == 'completed_season' and str((row or {}).get('status') or '').lower() == 'available'
+    """中心资源库“已完结认证”只认 available 的 completed_season。
+
+    不能用 Season 类型、进度满、watching_status=Completed 或 source_kind=completed_season 兜底，
+    否则历史脏数据 status=alive 的 completed_season 也会被前端打上“已完结”。
+    """
+    row = row if isinstance(row, dict) else {}
+    source_kind = str(row.get('source_kind') or '').strip().lower()
+    status = str(row.get('status') or '').strip().lower()
+    if source_kind == 'completed_season':
+        return status == 'available'
+    if source_kind == 'season_hub' or row.get('is_ongoing_hub'):
+        return False
+    return bool(_center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json'))
 
 
 def _center_source_is_clean_version(row: Dict[str, Any]) -> bool:
@@ -736,11 +746,20 @@ def api_center_sources():
             if animation_meta:
                 row['is_animation'] = True
                 row['animation_meta_json'] = animation_meta
-            completed_meta = _center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json')
-            if completed_meta or _center_source_is_completed_certified(row):
+            completed_certified = _center_source_is_completed_certified(row)
+            completed_meta = _center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json') if completed_certified else {}
+            if completed_certified:
                 row['is_completed_certified'] = True
                 row['is_completed'] = True
-                row['completed_certified_meta_json'] = completed_meta or {'is_completed_certified': True, 'certified_by': 'completed_season_source'}
+                row['completed_certified_meta_json'] = completed_meta or {
+                    'is_completed_certified': True,
+                    'certified_by': 'completed_season_source',
+                    'status': row.get('status'),
+                }
+            else:
+                row['is_completed_certified'] = False
+                row['is_completed'] = False
+                row.pop('completed_certified_meta_json', None)
             # 连载季公共包没有统一版本参数；完结季包/电影/展开后的集才展示。
             if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
                 row['version_summary'] = {}
