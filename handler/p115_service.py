@@ -973,7 +973,7 @@ class P115OpenAPIClient:
             sign_check_text = str(data.get('sign_check') or init_res.get('sign_check') or '')
             logger.warning(
                 f"  ➜ [共享秒传] OpenAPI 返回 status=7，需要 holder 二次校验；"
-                f"直接交给中心调度签名客户端，不再尝试本机 Holder/备用接口："
+                f"交给中心调度签名客户端："
                 f"sha1={sha1[:12]}..., preid={(preid or sha1)[:12]}..., "
                 f"pc={(pick_code or '-')[:8]}..., sign_check={sign_check_text or '-'}, "
                 f"sign_key_prefix={sign_key_text[:12]}..., sign_key_len={len(sign_key_text)}"
@@ -1602,7 +1602,7 @@ class P115CookieClient:
             init_payload['sign_val'] = str(sign_val).upper()
 
         logger.info(
-            f"  ➜ [Cookie秒传] 尝试 Cookie initupload: {file_name} | "
+            f"  ➜ [Cookie秒传] 初始化上传: {file_name} | "
             f"sha1={sha1[:12]}... | size={size} | target={target}"
         )
 
@@ -1652,7 +1652,7 @@ class P115CookieClient:
             sign_check_text = str(out.get('sign_check') or data.get('sign_check') or '')
             logger.warning(
                 f"  ➜ [Cookie秒传] Cookie initupload 返回 status=7，需要 holder 二次校验；"
-                f"直接交给中心调度签名客户端，不再尝试本机 Holder/备用接口："
+                f"交给中心调度签名客户端："
                 f"sha1={sha1[:12]}..., pc={(pick_code or '-')[:8]}..., "
                 f"sign_check={sign_check_text or '-'}, sign_key_prefix={sign_key_text[:12]}..., "
                 f"sign_key_len={len(sign_key_text)}"
@@ -2237,7 +2237,7 @@ class P115Service:
                         if method_name == 'rapid_upload' and isinstance(resp, dict) and resp.get('_rapid_sign_required'):
                             logger.warning(
                                 f"  ➜ [115] {label} 接口 rapid_upload 返回 status=7，"
-                                "直接交给中心 holder 签名，不再切换备用接口。"
+                                "交给中心调度签名。"
                             )
                             return resp
                         logger.warning(f"  ➜ [115] {label} 接口 {method_name} 返回失败，准备尝试备用接口: {_p115_error_text(resp)}")

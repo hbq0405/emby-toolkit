@@ -319,7 +319,7 @@ def _register_local_rapid_holder(client: SharedCenterClient, *, source_kind: str
             'preid': file_info.get('preid') or meta.get('preid') or '',
             'meta_json': {'from': 'rapid_transfer_success'},
         })
-        logger.info(f"  ➜ [负载均衡签名] 已登记本机为 holder：sha1={sha1[:12]}..., source={source_kind}:{source_id}")
+        logger.debug(f"  ➜ [负载均衡签名] 已登记本机为源客户端")
     except Exception as e:
         logger.debug(f"  ➜ [负载均衡签名] 登记本机 holder 失败: {e}")
 
@@ -358,7 +358,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     holder_id = str(create_resp.get('holder_id') or (create_resp.get('job') or {}).get('holder_id') or '').strip()
     if not job_id:
         raise RuntimeError(f'中心未返回 sign_job id: {create_resp}')
-    logger.info(f"  ➜ [负载均衡签名] sign_job 已创建：job_id={job_id}, holder={holder_id or '-'}，等待 sign_val...")
+    logger.info(f"  ➜ [负载均衡签名] 签名任务已创建：等待源客户端签名...")
     wait_resp = client.wait_rapid_sign_job(job_id, timeout=45)
     status = str(wait_resp.get('status') or (wait_resp.get('job') or {}).get('status') or '')
     sign_val = str(wait_resp.get('sign_val') or (wait_resp.get('job') or {}).get('sign_val') or '').strip().upper()
@@ -370,7 +370,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     signed_meta['sign_key'] = sign_req.get('sign_key')
     signed_meta['sign_val'] = sign_val
     logger.info(
-        f"  ➜ [负载均衡签名] 已收到 sign_val，准备带签名重试秒传："
+        f"  ➜ [负载均衡签名] 已收到签名，开始秒传："
         f"job_id={job_id}, sign_val={sign_val[:12]}..., file={file_name}"
     )
     signed_resp = _call_rapid_method(
@@ -383,7 +383,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
         rapid_meta=signed_meta,
     )
     ok = _rapid_success(signed_resp)
-    logger.info(
+    logger.trace(
         f"  ➜ [负载均衡签名] 带中心 sign_val 重试完成：ok={ok}, "
         f"source={source_kind}:{source_id}, sha1={sha1[:12]}..."
     )
