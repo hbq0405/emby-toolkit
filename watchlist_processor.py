@@ -1274,7 +1274,7 @@ class WatchlistProcessor:
             daemon=True,
         ).start()
         logger.info(
-            "  ➜ [共享资源] 检查追更分集是否需要登记：%s episodes=%s",
+            "  ➜ [共享资源] 触发追更分集源登记：%s episodes=%s",
             series_name or parent_series_tmdb_id, len(precise_episode_ids),
         )
 
@@ -1312,7 +1312,7 @@ class WatchlistProcessor:
                     season_number=season_no,
                 ) or {}
                 logger.debug(
-                    "  ➜ [共享资源] 完结季源登记探测异步任务完成：%s S%02d created=%s, episode_cancelled=%s, message=%s",
+                    "  ➜ [共享资源] 完结季源登记异步任务完成：%s S%02d created=%s, episode_cancelled=%s, message=%s",
                     series_name or parent_series_tmdb_id,
                     season_no,
                     result.get('created', 0),
@@ -1321,7 +1321,7 @@ class WatchlistProcessor:
                 )
             except Exception as e:
                 logger.warning(
-                    "  ➜ [共享资源] 完结季源登记探测异步任务失败：%s S%02d -> %s",
+                    "  ➜ [共享资源] 完结季源登记异步任务失败：%s S%02d -> %s",
                     series_name or parent_series_tmdb_id, season_no, e, exc_info=True,
                 )
 
@@ -1331,7 +1331,7 @@ class WatchlistProcessor:
             daemon=True,
         ).start()
         logger.info(
-            "  ➜ [共享资源] 检查完结季收藏源是否需要登记：%s S%02d",
+            "  ➜ [共享资源] 触发完结季收藏源登记：%s S%02d",
             series_name or parent_series_tmdb_id, season_no,
         )
 
@@ -1458,7 +1458,7 @@ class WatchlistProcessor:
                 False,
                 reason="一致性已通过，完结洗版事务收口。",
             )
-            logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包登记探测。")
+            logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包登记。")
             self._trigger_completed_season_pack_share_detached(tmdb_id, last_s_num, series_name)
             return False
 
@@ -1512,7 +1512,7 @@ class WatchlistProcessor:
             # 2. 直接使用传入的集数进行一致性检查。
             #    当调用方已经执行过完结质量门禁时，可跳过这里，避免重复校验。
             if not skip_consistency_check and self._check_season_consistency(tmdb_id, season_number, episode_count):
-                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包登记探测。")
+                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包登记。")
                 self._set_season_active_washing(
                     tmdb_id,
                     season_number,
@@ -2349,18 +2349,14 @@ class WatchlistProcessor:
         # ======================================================================
         # ★★★ 共享资源追更分集源登记 ★★★
         # ======================================================================
-        if allow_airing_episode_share and final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:
-            release_date = latest_series_data.get('first_air_date') or ''
-            release_year = release_date[:4] if release_date else ''
-            self._trigger_airing_episode_share_detached(
-                tmdb_id=tmdb_id,
-                emby_item_ids=airing_episode_emby_ids or [],
-                series_name=item_name,
-                year=release_year,
-            )
-        elif allow_airing_episode_share:
+        # Rapid v2 自动共享已前移到 Webhook 入库完成后：只要共享资源开关启用，
+        # 明确新增的分集会在指纹体检后立即登记到中心。追剧模块只负责状态裁决
+        # 和完结季一致性通过后的 completed_season_source 登记，避免再做“是否需要共享”的判断。
+        if allow_airing_episode_share:
             logger.debug(
-                "  ➜ [共享资源] 本次携带新增分集，但最终状态为 %s，跳过追更分集源登记。",
+                "  ➜ [共享资源] 追更分集源登记已由 Webhook 入库即登记接管：%s episodes=%s, status=%s",
+                item_name,
+                len(airing_episode_emby_ids or []),
                 translate_internal_status(final_status),
             )
 

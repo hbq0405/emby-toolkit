@@ -571,7 +571,7 @@ const shareSourceText = (row) => {
   const rawAuto = Boolean(raw?.auto_gap || raw?.auto_payload || raw?.auto_task || raw?.maintenance_payload || raw?.maintenance_task || raw?.auto_share_payload || raw?.auto_context);
   const providerBackup = /(backup_mirror|backup_share|auto_backup_share|backup)/i.test(providerText) || /(备份共享|备份源|镜像共享)/.test(labelText);
   const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created)/i.test(providerText) || /手动共享/.test(labelText);
-  const providerAuto = /(auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /自动共享/.test(labelText);
+  const providerAuto = /(rapid_auto_library|auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /自动共享/.test(labelText);
 
   // 备份共享是中心下发的特殊来源，必须优先于 user_share/manual 兜底判断。
   if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || rawBackup || providerBackup) return '备份共享';
@@ -590,6 +590,7 @@ const shareRemarkNode = (row) => {
   const type = source === '自动共享' ? 'warning' : (source === '备份共享' ? 'info' : 'default');
   return h(NTag, { type, size: 'small', round: true }, { default: () => source });
 };
+const isAutoShareRow = (row) => shareSourceText(row) === '自动共享';
 
 const statusMap = {
   transferring: { text: '转存中', type: 'warning' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
@@ -706,7 +707,14 @@ const shareColumns = [
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '备注', key: 'share_remark', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareRemarkNode(row) },
   { title: '操作', key: 'actions', width: 110, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
-    h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'cancelled' || row.status === 'disabled', onClick: () => cancelShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '停用' }),
+    h(NButton, {
+      size: 'small',
+      type: 'error',
+      ghost: true,
+      disabled: row.status === 'cancelled' || row.status === 'disabled' || isAutoShareRow(row),
+      title: isAutoShareRow(row) ? '自动共享源由入库自动维护，不能手动停用' : '',
+      onClick: () => cancelShare(row),
+    }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '停用' }),
   ]}) },
 ];
 
@@ -2138,6 +2146,9 @@ const manualCreateShare = async () => {
 };
 
 const cancelShare = (row) => {
+  if (isAutoShareRow(row)) {
+    return message.warning('自动共享源由入库自动维护，不能手动停用');
+  }
   const ids = Array.isArray(row.source_ids) ? row.source_ids.filter(Boolean) : [];
   const isBatch = ids.length > 1;
   const title = row.title || row.root_name || row.file_name || '该资源';
