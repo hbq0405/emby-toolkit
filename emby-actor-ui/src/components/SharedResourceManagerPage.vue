@@ -1716,12 +1716,12 @@ const hideCenterPackParams = (it) => centerIsOngoingHub(it);
 const centerParamText = (it, value = '') => hideCenterPackParams(it) ? '-' : (value || '-');
 
 const centerColumns = [
-  { title: '片名', key: 'title', minWidth: 160, fixed: 'left', render: row => h('div', null, [
+  { title: '片名', key: 'title', minWidth: 120, fixed: 'left', render: row => h('div', null, [
     h('div', { class: 'main-title' }, centerTitleText(row)),
     metaLine(row)
   ]) },
   // 主行只展示片名；从类型列开始按 versions 拆分多行展示多版本。
-  { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
+  { title: '类型', key: 'item_type', width: 180, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).resolution))) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = centerVersionSummary(it) || {};
