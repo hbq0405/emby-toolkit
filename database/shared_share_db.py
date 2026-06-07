@@ -867,12 +867,9 @@ def all_library_share_candidates(limit: int = 100000) -> List[Dict[str, Any]]:
 def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
     """找出本机仍标记为共享、但登记 SHA1 已不在媒体库内的 Rapid 源。
 
-    判断口径尽量简单：
-    - movie：对应 Movie 行 in_library=true，且 file_sha1_json 仍包含该 SHA1；
-    - episode：对应 Episode 行 in_library=true，且季集号/父剧匹配，file_sha1_json 仍包含该 SHA1；
-    - completed_season：登记 manifest 里的每个文件 SHA1，都必须还能在同季入库 Episode 行中找到。
-
-    不访问 115，不触发指纹体检，不重新收集文件。这里只负责清理“媒体库已删除/换版后仍在共享”的本地索引。
+    判断口径（极简且健壮）：
+    只要源（或其子文件）的 SHA1 还能在 media_metadata (in_library=TRUE) 的 file_sha1_json 中找到，
+    就认为该文件依然在库，不下架。不强校验 TMDb ID 或季集号，防止用户刮削变更导致误判。
     """
     try:
         limit = max(1, min(int(limit or 300), 2000))
@@ -901,27 +898,6 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                                 FROM media_metadata m
                                 WHERE COALESCE(m.in_library, FALSE) = TRUE
                                   AND (
-                                        (
-                                            s.source_kind = 'movie'
-                                            AND m.item_type = 'Movie'
-                                            AND m.tmdb_id = s.tmdb_id
-                                        )
-                                     OR (
-                                            s.source_kind = 'episode'
-                                            AND m.item_type = 'Episode'
-                                            AND (m.tmdb_id = s.tmdb_id OR m.parent_series_tmdb_id = s.tmdb_id)
-                                            AND (s.season_number IS NULL OR m.season_number = s.season_number)
-                                            AND (s.episode_number IS NULL OR m.episode_number = s.episode_number)
-                                        )
-                                     OR (
-                                            s.source_kind = 'completed_season'
-                                            AND m.item_type = 'Episode'
-                                            AND m.parent_series_tmdb_id = s.tmdb_id
-                                            AND (s.season_number IS NULL OR m.season_number = s.season_number)
-                                            AND (f.episode_number IS NULL OR m.episode_number = f.episode_number)
-                                        )
-                                  )
-                                  AND (
                                         m.file_sha1_json ? UPPER(f.sha1)
                                      OR m.file_sha1_json ? LOWER(f.sha1)
                                   )
@@ -941,20 +917,6 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                             FROM media_metadata m
                             WHERE COALESCE(m.in_library, FALSE) = TRUE
                               AND COALESCE(s.sha1, '') <> ''
-                              AND (
-                                    (
-                                        s.source_kind = 'movie'
-                                        AND m.item_type = 'Movie'
-                                        AND m.tmdb_id = s.tmdb_id
-                                    )
-                                 OR (
-                                        s.source_kind = 'episode'
-                                        AND m.item_type = 'Episode'
-                                        AND (m.tmdb_id = s.tmdb_id OR m.parent_series_tmdb_id = s.tmdb_id)
-                                        AND (s.season_number IS NULL OR m.season_number = s.season_number)
-                                        AND (s.episode_number IS NULL OR m.episode_number = s.episode_number)
-                                    )
-                              )
                               AND (
                                     m.file_sha1_json ? UPPER(s.sha1)
                                  OR m.file_sha1_json ? LOWER(s.sha1)
