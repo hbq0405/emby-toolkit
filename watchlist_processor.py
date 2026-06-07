@@ -1278,12 +1278,24 @@ class WatchlistProcessor:
             series_name or parent_series_tmdb_id, len(precise_episode_ids),
         )
 
-    def _trigger_completed_season_pack_share_detached(self, tmdb_id: str, season_number: int, series_name: str = ''):
+    def _trigger_completed_season_pack_share_detached(
+        self,
+        tmdb_id: str,
+        season_number: int,
+        series_name: str = '',
+        year: str = '',
+        expected_episode_count: int = None,
+    ):
         """完结一致性通过后异步登记 completed_season_source，避免阻塞单线程任务队列。
 
         这里不能走 task_manager.submit_task：智能追剧本身通常已经运行在 task_manager
         的单 worker / 全局锁里，内部再提交任务容易被全局锁挡住，或者让追剧刷新长时间
         等待 RAW 上传、manifest 更新、中心事件派发等慢 I/O。
+
+        注意：title / expected_episode_count 必须从追剧判定链路显式传入。
+        否则任务层只能拿 parent_series_tmdb_id 兜底，中心 season_hub.title
+        会被纯数字 TMDb ID 污染；expected_episode_count 缺失也会影响完结包
+        状态和纯净版识别口径。
         """
         parent_series_tmdb_id = str(tmdb_id or '').strip()
         try:
@@ -1310,13 +1322,19 @@ class WatchlistProcessor:
                     None,
                     parent_series_tmdb_id=parent_series_tmdb_id,
                     season_number=season_no,
+                    title=series_name or '',
+                    year=year or '',
+                    expected_episode_count=expected_episode_count,
                 ) or {}
+                clean_meta = ((result.get('completed_season') or {}).get('item') or {}).get('clean_version_meta_json') or {}
                 logger.debug(
-                    "  ➜ [共享资源] 完结季源登记异步任务完成：%s S%02d created=%s, episode_cancelled=%s, message=%s",
+                    "  ➜ [共享资源] 完结季源登记异步任务完成：%s S%02d created=%s, episode_cancelled=%s, clean=%s, clean_reason=%s, message=%s",
                     series_name or parent_series_tmdb_id,
                     season_no,
                     result.get('created', 0),
                     result.get('episode_cancelled', 0),
+                    ((result.get('completed_season') or {}).get('item') or {}).get('is_clean_version'),
+                    clean_meta.get('reason') if isinstance(clean_meta, dict) else '',
                     result.get('message') or '',
                 )
             except Exception as e:
@@ -1492,8 +1510,16 @@ class WatchlistProcessor:
                 False,
                 reason="一致性已通过，完结洗版事务收口。",
             )
+            release_date = latest_series_data.get('first_air_date') or ''
+            release_year = release_date[:4] if release_date else ''
             logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包登记。")
-            self._trigger_completed_season_pack_share_detached(tmdb_id, last_s_num, series_name)
+            self._trigger_completed_season_pack_share_detached(
+                tmdb_id,
+                last_s_num,
+                series_name,
+                year=release_year,
+                expected_episode_count=last_ep_count,
+            )
             return False
 
         _mark_gate(
@@ -1563,7 +1589,12 @@ class WatchlistProcessor:
                     False,
                     reason="一致性已通过，不需要洗版。",
                 )
-                self._trigger_completed_season_pack_share_detached(tmdb_id, season_number, series_name)
+                self._trigger_completed_season_pack_share_detached(
+                    tmdb_id,
+                    season_number,
+                    series_name,
+                    expected_episode_count=episode_count,
+                )
                 return
             
             # 3. 检查是否需要删除旧文件 (Emby)

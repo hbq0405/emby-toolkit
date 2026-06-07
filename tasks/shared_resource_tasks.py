@@ -1372,6 +1372,139 @@ def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider
 
 
 
+def _title_looks_invalid_for_center(title: Any, tmdb_id: str = '') -> bool:
+    """中心公共标题防污染：空值、纯数字、等于 TMDb ID 都视为无效。"""
+    text = str(title or '').strip()
+    if not text:
+        return True
+    if text.lower() in {'none', 'null', 'undefined', 'nan'}:
+        return True
+    if re.fullmatch(r'\d+', text):
+        return True
+    tmdb_id = str(tmdb_id or '').strip()
+    if tmdb_id and text == tmdb_id:
+        return True
+    return False
+
+
+def _strip_season_suffix_from_title(title: str) -> str:
+    text = str(title or '').strip()
+    if not text:
+        return ''
+    text = re.sub(r'\s*[-·]\s*S\d{1,3}\s*$', '', text, flags=re.IGNORECASE).strip()
+    text = re.sub(r'\s+S\d{1,3}\s*$', '', text, flags=re.IGNORECASE).strip()
+    text = re.sub(r'\s*[-·]\s*第\s*\d+\s*季\s*$', '', text).strip()
+    return text
+
+
+def _series_identity_from_db(parent_series_tmdb_id: str, season_number=None) -> Dict[str, Any]:
+    """从本地 media_metadata 取公共季标题/年份/官方集数。"""
+    parent = str(parent_series_tmdb_id or '').strip()
+    if not parent:
+        return {}
+    season = _safe_int_or_none(season_number)
+    out: Dict[str, Any] = {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT title, original_title, release_year
+                    FROM media_metadata
+                    WHERE tmdb_id=%s AND item_type='Series'
+                    ORDER BY in_library DESC NULLS LAST, last_updated_at DESC NULLS LAST, date_added DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (parent,),
+                )
+                row = cur.fetchone()
+                if row:
+                    row = dict(row)
+                    title = str(row.get('title') or row.get('original_title') or '').strip()
+                    if not _title_looks_invalid_for_center(title, parent):
+                        out['title'] = _strip_season_suffix_from_title(title)
+                    if row.get('release_year') not in (None, ''):
+                        out['release_year'] = row.get('release_year')
+
+                if season is not None:
+                    cur.execute(
+                        """
+                        SELECT title, total_episodes, release_year
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id=%s AND item_type='Season' AND season_number=%s
+                        ORDER BY in_library DESC NULLS LAST, last_updated_at DESC NULLS LAST, date_added DESC NULLS LAST
+                        LIMIT 1
+                        """,
+                        (parent, season),
+                    )
+                    season_row = cur.fetchone()
+                    if season_row:
+                        season_row = dict(season_row)
+                        if not out.get('title'):
+                            season_title = _strip_season_suffix_from_title(str(season_row.get('title') or '').strip())
+                            if not _title_looks_invalid_for_center(season_title, parent):
+                                out['title'] = season_title
+                        if season_row.get('release_year') not in (None, '') and not out.get('release_year'):
+                            out['release_year'] = season_row.get('release_year')
+                        total = _safe_int_or_none(season_row.get('total_episodes'))
+                        if total and total > 0:
+                            out['expected_episode_count'] = total
+
+                    if not out.get('expected_episode_count'):
+                        cur.execute(
+                            """
+                            SELECT COUNT(DISTINCT episode_number)::integer AS n
+                            FROM media_metadata
+                            WHERE parent_series_tmdb_id=%s
+                              AND item_type='Episode'
+                              AND season_number=%s
+                              AND in_library=TRUE
+                              AND episode_number IS NOT NULL
+                            """,
+                            (parent, season),
+                        )
+                        cnt = cur.fetchone()
+                        count = _safe_int((cnt or {}).get('n'), 0) if cnt else 0
+                        if count > 0:
+                            out['expected_episode_count'] = count
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询剧集公共标题失败: tmdb={parent}, season={season}, err={e}")
+    return out
+
+
+def _normalize_series_candidate_identity(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Season/Episode 登记前统一修正公共剧名，避免中心 hub 被 TMDb 数字标题污染。"""
+    candidate = dict(candidate or {})
+    item_type = str(candidate.get('item_type') or '').strip()
+    if item_type not in {'Season', 'Episode'}:
+        return candidate
+
+    parent = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    season = candidate.get('season_number')
+    identity = _series_identity_from_db(parent, season)
+    title = str(candidate.get('title') or candidate.get('series_title') or '').strip()
+    if _title_looks_invalid_for_center(title, parent):
+        fixed_title = identity.get('title') or ''
+        if fixed_title:
+            candidate['title'] = fixed_title
+            candidate['series_title'] = fixed_title
+        elif parent:
+            candidate['title'] = f'TMDb{parent}'
+    else:
+        fixed_title = _strip_season_suffix_from_title(title)
+        if fixed_title:
+            candidate['title'] = fixed_title
+            candidate.setdefault('series_title', fixed_title)
+
+    if not candidate.get('release_year') and identity.get('release_year') not in (None, ''):
+        candidate['release_year'] = identity.get('release_year')
+    if not candidate.get('expected_episode_count') and identity.get('expected_episode_count'):
+        candidate['expected_episode_count'] = identity.get('expected_episode_count')
+    if not candidate.get('total_episodes') and identity.get('expected_episode_count'):
+        candidate['total_episodes'] = identity.get('expected_episode_count')
+    return candidate
+
+
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid') -> Dict[str, Any]:
     """把本地媒体库中的电影/分集/季登记到 Rapid v2 中心。
 
@@ -1382,7 +1515,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
     """
     if not _enabled():
         return {'ok': False, 'message': '共享资源未启用或中心未配置'}
-    candidate = dict(candidate or {})
+    candidate = _normalize_series_candidate_identity(dict(candidate or {}))
     item_type = str(candidate.get('item_type') or '').strip()
     files = shared_share_db.collect_files_for_candidate(candidate)
     if not files and item_type in ('Season', 'Episode'):
@@ -1406,6 +1539,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
     results = []
     uploaded = int(raw_batch_result.get('count') or 0)
     errors = list(raw_batch_result.get('errors') or [])
+    should_register_completed = item_type == 'Season' and _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
+    register_episode_pool = not (item_type == 'Season' and should_register_completed)
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     if item_type == 'Movie':
         tmdb_id = str(candidate.get('tmdb_id') or '').strip()
@@ -1443,6 +1578,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': raw_ok, **common}])
                 results.append(resp)
             else:
+                if not register_episode_pool:
+                    continue
                 ep_no = _safe_int_or_none(f.get('episode_number')) or _safe_int_or_none(candidate.get('episode_number'))
                 season_no = _safe_int_or_none(f.get('season_number')) or _safe_int_or_none(candidate.get('season_number'))
                 if season_no is None or ep_no is None:
@@ -1479,7 +1616,6 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
 
     completed_resp = None
     episode_cancelled = 0
-    should_register_completed = _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
     if item_type == 'Season' and should_register_completed:
         completed_files = []
         for f in files:
@@ -1520,6 +1656,25 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 completed_files,
                 files,
                 source_provider=source_provider,
+            )
+            logger.info(
+                "  ➜ [共享资源] 完结季纯净版识别结果: %s S%02d clean=%s checked=%s reason=%s comparable=%s hits=%s/%s",
+                candidate.get('title') or tmdb_id,
+                _safe_int(candidate.get('season_number'), 0),
+                bool(clean_detection.get('is_clean_version')),
+                bool(clean_detection.get('clean_version_checked')),
+                clean_detection.get('reason') or '',
+                clean_detection.get('comparable_count') or 0,
+                clean_detection.get('hit_count') or 0,
+                clean_detection.get('required_hits') or 0,
+            )
+        else:
+            logger.debug(
+                "  ➜ [共享资源] 完结季状态不是 available，跳过纯净版识别: %s S%s status=%s message=%s",
+                candidate.get('title') or tmdb_id,
+                candidate.get('season_number'),
+                status.get('status'),
+                status.get('message') or '',
             )
         is_clean_version = bool(clean_detection.get('is_clean_version'))
         clean_confidence = clean_detection.get('clean_version_confidence') if clean_detection.get('clean_version_checked') else None
@@ -1642,14 +1797,23 @@ def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tm
         season_no = int(float(season_number))
     except Exception:
         return {'ok': False, 'created': 0, 'message': f'无效季号: {season_number}'}
+    identity = _series_identity_from_db(parent, season_no)
+    raw_title = title or kwargs.get('series_name') or kwargs.get('name') or identity.get('title') or ''
+    if _title_looks_invalid_for_center(raw_title, parent):
+        raw_title = identity.get('title') or f'TMDb{parent}'
+    raw_title = _strip_season_suffix_from_title(raw_title) or raw_title
+    expected = kwargs.get('expected_episode_count') or kwargs.get('total_episodes') or identity.get('expected_episode_count')
     candidate = {
         'tmdb_id': parent,
         'parent_series_tmdb_id': parent,
+        'series_title': raw_title,
         'item_type': 'Season',
         'season_number': season_no,
-        'title': title or kwargs.get('series_name') or kwargs.get('name') or parent,
-        'release_year': year or kwargs.get('release_year'),
-        'expected_episode_count': kwargs.get('expected_episode_count') or kwargs.get('total_episodes'),
+        'title': raw_title,
+        'release_year': year or kwargs.get('release_year') or identity.get('release_year'),
+        'expected_episode_count': expected,
+        'total_episodes': expected,
+        'watching_status': 'Completed',
         'is_clean_version': kwargs.get('is_clean_version', False),
         'clean_version_confidence': kwargs.get('clean_version_confidence'),
         'clean_version_meta_json': kwargs.get('clean_version_meta_json') or {},
