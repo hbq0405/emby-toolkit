@@ -652,7 +652,7 @@ def api_center_sources():
         client = SharedCenterClient()
         resp = client.list_display_sources(
             q=request.args.get('q') or request.args.get('keyword') or '',
-            status=request.args.get('status') or 'alive,available,updating,inconsistent,incomplete',
+            status=request.args.get('status') or 'alive,available',
             item_type=request.args.get('item_type') or '',
             tmdb_id=request.args.get('tmdb_id') or '',
             order_by=request.args.get('order_by') or 'latest',

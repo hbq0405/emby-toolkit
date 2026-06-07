@@ -102,7 +102,7 @@
               :data="groupedCenterSources"
               :pagination="centerPagination"
               :row-key="row => row.group_key || row.source_id"
-              :scroll-x="1820"
+              :scroll-x="1680"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
             />
@@ -376,7 +376,7 @@ const shareRequestQuote = ref(null);
 const shareRequestEpisodeText = ref('');
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
-const centerFilters = reactive({ keyword: '', status: 'alive,available,pending,replenish', item_type: 'all', order_by: 'latest' });
+const centerFilters = reactive({ keyword: '', status: 'alive,available', item_type: 'all', order_by: 'latest' });
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const requestStatusOptions = [
   { label: '求共享中', value: 'open' },
@@ -485,10 +485,10 @@ const shareStatusOptions = [
 ];
 
 const centerStatusOptions = [
-  { label: '全部', value: 'alive,available,pending,replenish' },
+  { label: '全部', value: 'alive,available' },
   { label: '仅可用', value: 'alive' },
-  { label: '仅待验证', value: 'pending' },
-  { label: '仅待补充', value: 'replenish' },
+  { label: '纯净版', value: 'clean_version' },
+  { label: '短剧', value: 'short_drama' },
 ];
 const typeOptions = [
   { label: '全部类型', value: 'all' }, { label: '电影', value: 'Movie' },
@@ -1054,7 +1054,36 @@ const centerTypeLabel = (value) => ({
   Episode: '单集', episode: '单集', episodes: '单集', episode_file: '单集',
 }[value] || value || '-');
 const centerRowType = centerRowTypeSafe;
-const centerTitleText = (row) => standardTitleText(row);
+const stripCenterSeasonFromTitle = (title, row = {}) => {
+  let text = String(title || '').trim();
+  if (!text) return '';
+  const season = Number(row?.season_number || 0);
+  if (season > 0) {
+    const seasonText = String(season);
+    const season02 = seasonText.padStart(2, '0');
+    const patterns = [
+      new RegExp(`\\s*(?:[-·—–_]+\\s*)?(?:S0?${seasonText}|S${season02})\\s*$`, 'i'),
+      new RegExp(`\\s*(?:[-·—–_]+\\s*)?Season\\s*0?${seasonText}\\s*$`, 'i'),
+      new RegExp(`\\s*(?:[-·—–_]+\\s*)?第\\s*0?${seasonText}\\s*季\\s*$`, 'i'),
+    ];
+    for (const pattern of patterns) text = text.replace(pattern, '').trim();
+  }
+  // 兜底清理中心端历史标题里混入的季号；季号统一放到“类型”列显示。
+  text = text
+    .replace(/\s*(?:[-·—–_]+\s*)?S\d{1,3}\s*$/i, '')
+    .replace(/\s*(?:[-·—–_]+\s*)?Season\s*\d{1,3}\s*$/i, '')
+    .replace(/\s*(?:[-·—–_]+\s*)?第\s*\d{1,3}\s*季\s*$/i, '')
+    .trim();
+  return text || String(title || '').trim();
+};
+const centerTitleText = (row) => {
+  const rawTitle = row?.title || row?.standard_title || row?.media_title || row?.root_name || row?.file_name || row?.tmdb_id || '';
+  return appendYear(stripCenterSeasonFromTitle(rawTitle, row), row?.release_year);
+};
+const centerTitleNode = (row) => {
+  const text = centerTitleText(row);
+  return h('div', { class: 'main-title center-title-ellipsis', title: text }, text);
+};
 const centerIsOngoingHub = (row) => Boolean(row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing');
 const centerIsCompletedPack = (row) => Boolean(row?.source_kind === 'completed_season' || row?.season_status === 'completed');
 const centerProgressText = (row) => {
@@ -1376,178 +1405,105 @@ const openManualShareForCenterReplenish = async (row) => {
   }
 };
 
-const centerSemanticGroupKey = (row) => {
+const centerGroupKey = (row) => {
+  if (row?.display_group_key) return row.display_group_key;
   const type = centerRowType(row);
-  const tmdb = row?.tmdb_id || row?.share_tmdb_id || row?.parent_series_tmdb_id || '';
-  const title = row?.title || row?.standard_title || row?.media_title || row?.file_name || row?.root_name || row?.source_id || '';
-  const season = row?.season_number ?? '';
-  const episode = row?.episode_number ?? '';
+  const tmdb = row.tmdb_id || row.share_tmdb_id || row.parent_series_tmdb_id || '';
+  const title = row.title || row.media_title || '';
+  const season = row.season_number || '';
+  const episode = row.episode_number || '';
   const baseType = centerTypeLabel(type);
-  const mediaKey = String(tmdb || title || '').trim();
-  if (baseType === '电影') return `movie:${mediaKey}`;
-  if (baseType === '季') return `pack:${mediaKey}:S${season || ''}`;
-  if (baseType === '单集') return `ep:${mediaKey}:S${season || ''}:E${episode || ''}`;
-  return `${baseType || 'unknown'}:${mediaKey}:${season}:${episode}`;
-};
-
-const centerGroupKey = (row) => row?.group_key || row?.display_group_key || centerSemanticGroupKey(row);
-
-const centerVersionIdentity = (row) => [
-  row?.source_kind,
-  row?.source_id || row?.source_ref_id || row?.id,
-  row?.sha1,
-  row?.preid,
-  versionSummaryText(row),
-  row?.size || row?.total_size,
-  centerSemanticGroupKey(row),
-].filter(v => v !== undefined && v !== null && v !== '').join(':');
-
-const centerVersionInherit = (row) => ({
-  title: row?.title,
-  standard_title: row?.standard_title,
-  media_title: row?.media_title,
-  tmdb_id: row?.tmdb_id,
-  share_tmdb_id: row?.share_tmdb_id,
-  parent_series_tmdb_id: row?.parent_series_tmdb_id,
-  release_year: row?.release_year,
-  season_number: row?.season_number,
-  episode_number: row?.episode_number,
-  expected_episode_count: row?.expected_episode_count,
-  progress_current: row?.progress_current,
-  progress_total: row?.progress_total,
-  progress_text: row?.progress_text,
-  pack_item_count: row?.pack_item_count,
-  pack_episode_numbers: row?.pack_episode_numbers,
-  item_type: row?.item_type,
-  display_type: row?.display_type,
-  source_kind: row?.source_kind,
-  is_collapsed_pack: row?.is_collapsed_pack,
-  is_ongoing_hub: row?.is_ongoing_hub,
-  season_status: row?.season_status,
-  season_status_label: row?.season_status_label,
-  local_library: row?.local_library,
-});
-
-const centerDisplayVersionRows = (row) => {
-  const rawVersions = Array.isArray(row?.versions) && row.versions.length ? row.versions : [row];
-  const inherit = centerVersionInherit(row);
-  return rawVersions
-    .filter(v => v && typeof v === 'object')
-    .map(v => {
-      const version = { ...inherit, ...v };
-      delete version.versions;
-      if (centerIsCompletedPack(version)) {
-        delete version.children;
-        delete version.pack_items;
-      } else if (!centerIsOngoingHub(version)) {
-        delete version.children;
-      }
-      version.group_key = centerSemanticGroupKey(version);
-      return version;
-    });
-};
-
-const sortCenterVersions = (versions, orderBy = 'latest') => {
-  const rows = [...(versions || [])];
-  if (orderBy === 'popular') {
-    rows.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
-  } else if (orderBy === 'size') {
-    rows.sort((a, b) => (b.size || b.total_size || 0) - (a.size || a.total_size || 0));
-  } else if (orderBy === 'name') {
-    rows.sort((a, b) => versionSummaryText(a).localeCompare(versionSummaryText(b)) || centerCreatedTime(b) - centerCreatedTime(a));
-  } else {
-    rows.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
-  }
-  return rows;
-};
-
-const centerGroupSortValue = (group, orderBy = 'latest') => {
-  const versions = group?.versions || [];
-  if (orderBy === 'popular') return Math.max(0, ...versions.map(v => Number(v.success_count || 0)));
-  if (orderBy === 'size') return Math.max(0, ...versions.map(v => Number(v.size || v.total_size || 0)));
-  if (orderBy === 'name') return group?.title || group?.standard_title || group?.media_title || '';
-  return Math.max(0, ...versions.map(v => centerCreatedTime(v)));
-};
-
-const mergeCenterDisplayRows = (items, orderBy = 'latest', { childRows = false } = {}) => {
-  const groups = [];
-  const byKey = new Map();
-
-  const upsertGroup = (item) => {
-    if (!item || typeof item !== 'object') return;
-    const semanticKey = centerSemanticGroupKey(item);
-    let group = byKey.get(semanticKey);
-    if (!group) {
-      group = {
-        ...item,
-        group_key: semanticKey,
-        display_group_key: item.display_group_key || semanticKey,
-        versions: [],
-        children: undefined,
-      };
-      if (centerIsCompletedPack(group)) {
-        // 完结季包已经做过一致性校验，表格只展示“季包版本”，不再展开包内单集。
-        delete group.children;
-      }
-      byKey.set(semanticKey, group);
-      groups.push(group);
-    }
-
-    const knownVersionKeys = new Set((group.versions || []).map(centerVersionIdentity));
-    for (const version of centerDisplayVersionRows(item)) {
-      const versionKey = centerVersionIdentity(version);
-      if (knownVersionKeys.has(versionKey)) continue;
-      group.versions.push(version);
-      knownVersionKeys.add(versionKey);
-    }
-
-    const itemChildren = (!centerIsCompletedPack(item) && Array.isArray(item.children)) ? item.children : [];
-    if (itemChildren.length) {
-      const mergedChildren = mergeCenterDisplayRows(
-        [...(Array.isArray(group.children) ? group.children : []), ...itemChildren],
-        orderBy,
-        { childRows: true },
-      );
-      group.children = mergedChildren.length ? mergedChildren : undefined;
-    }
-
-    const latestVersion = sortCenterVersions(group.versions, 'latest')[0] || item;
-    for (const key of ['created_at', 'updated_at', 'sort_timestamp', 'status', 'status_label', 'status_type']) {
-      if (latestVersion?.[key] !== undefined && latestVersion?.[key] !== null) group[key] = latestVersion[key];
-    }
-    group.version_count = group.versions.length;
-    group.success_count = Math.max(0, ...group.versions.map(v => Number(v.success_count || 0)));
-    group.size = Math.max(0, ...group.versions.map(v => Number(v.size || v.total_size || 0))) || group.size;
-    if (childRows && centerTypeLabel(centerRowType(group)) === '单集') {
-      group.title = group.title || item.title;
-    }
-  };
-
-  (items || []).forEach(upsertGroup);
-
-  for (const group of groups) {
-    group.versions = sortCenterVersions(group.versions, orderBy);
-    group.sort_val = centerGroupSortValue(group, orderBy);
-    if (group.versions[0]) {
-      group.created_at = group.versions[0].created_at || group.created_at;
-      group.updated_at = group.versions[0].updated_at || group.updated_at;
-    }
-  }
-
-  groups.sort((a, b) => {
-    if (orderBy === 'popular' || orderBy === 'size') return Number(b.sort_val || 0) - Number(a.sort_val || 0);
-    if (orderBy === 'name') return String(a.sort_val || '').localeCompare(String(b.sort_val || ''));
-    return Number(b.sort_val || 0) - Number(a.sort_val || 0);
-  });
-
-  return groups;
+  if (baseType === '电影') return `movie:${tmdb || title}`;
+  if (baseType === '季') return `pack:${tmdb || title}:S${season || ''}`;
+  if (baseType === '单集') return `ep:${tmdb || title}:S${season || ''}:E${episode || ''}`;
+  return `${baseType}:${tmdb || title}:${season}:${episode}`;
 };
 
 const groupCenterSources = (items, orderBy = 'latest') => {
-  // 中心端会做一次聚合，但旧中心 / 兼容字段可能仍把同一电影、同一季包、同一 SxxExx 拆成多行。
-  // 前端再做一层语义聚合：主行只保留片名；从“类型”开始的列用 versions 拆成多行展示。
-  // 完结季包不展开包内单集；同一季多个完结包版本则仍按季包版本多行展示。
-  return mergeCenterDisplayRows(items || [], orderBy);
+  // 新中心端已经完成分页/筛选/聚合；这里仅兼容旧中心端返回的散行数据。
+  if ((items || []).some(item => Array.isArray(item?.versions))) {
+    return (items || []).map(item => ({
+      ...item,
+      group_key: item.group_key || item.display_group_key || centerGroupKey(item),
+      versions: Array.isArray(item.versions) && item.versions.length ? item.versions : [item],
+      children: Array.isArray(item.children) ? item.children.map(child => ({
+        ...child,
+        group_key: child.group_key || centerGroupKey(child),
+        versions: Array.isArray(child.versions) && child.versions.length ? child.versions : [child],
+      })) : undefined,
+    }));
+  }
+  const groups = [];
+  const byKey = new Map();
+  for (const item of (items || [])) {
+    const key = centerGroupKey(item);
+    let group = byKey.get(key);
+    if (!group) {
+      group = {
+        group_key: key,
+        title: item.title || item.standard_title,
+        media_title: item.media_title,
+        tmdb_id: item.tmdb_id,
+        share_tmdb_id: item.share_tmdb_id,
+        parent_series_tmdb_id: item.parent_series_tmdb_id,
+        release_year: item.release_year,
+        season_number: item.season_number,
+        episode_number: item.episode_number,
+        display_type: centerRowType(item),
+        pack_item_count: item.pack_item_count,
+        pack_episode_numbers: item.pack_episode_numbers,
+        is_collapsed_pack: item.is_collapsed_pack,
+        is_ongoing_hub: item.is_ongoing_hub,
+        season_status: item.season_status,
+        season_status_label: item.season_status_label,
+        progress_current: item.progress_current,
+        progress_total: item.progress_total,
+        progress_text: item.progress_text,
+        children: Array.isArray(item.children) ? item.children.map(child => ({
+          group_key: centerGroupKey(child),
+          title: child.title || item.title,
+          media_title: child.media_title || item.media_title,
+          tmdb_id: child.tmdb_id || item.tmdb_id,
+          share_tmdb_id: child.share_tmdb_id || item.share_tmdb_id,
+          parent_series_tmdb_id: child.parent_series_tmdb_id || item.parent_series_tmdb_id,
+          release_year: child.release_year || item.release_year,
+          season_number: child.season_number || item.season_number,
+          episode_number: child.episode_number,
+          display_type: centerRowType(child),
+          versions: [child],
+        })) : undefined,
+        versions: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.versions.push(item);
+  }
+  for (const group of groups) {
+    // 👇 根据不同排序规则，对组内版本排序，并提取组的排序基准值
+    if (orderBy === 'popular') {
+      group.versions.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
+      group.sort_val = Math.max(...group.versions.map(v => v.success_count || 0));
+    } else if (orderBy === 'size') {
+      group.versions.sort((a, b) => (b.size || 0) - (a.size || 0));
+      group.sort_val = Math.max(...group.versions.map(v => v.size || 0));
+    } else if (orderBy === 'name') {
+      group.versions.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      group.sort_val = group.title || '';
+    } else {
+      group.versions.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
+      group.sort_val = centerCreatedTime(group.versions[0]);
+    }
+    group.created_at = group.versions[0]?.created_at || group.created_at;
+  }
+  
+  // 👇 对所有组进行排序
+  groups.sort((a, b) => {
+    if (orderBy === 'popular' || orderBy === 'size') return b.sort_val - a.sort_val;
+    if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
+    return b.sort_val - a.sort_val; // latest
+  });
+  return groups;
 };
 
 const renderLineTooltipContent = (value) => {
@@ -1716,12 +1672,12 @@ const hideCenterPackParams = (it) => centerIsOngoingHub(it);
 const centerParamText = (it, value = '') => hideCenterPackParams(it) ? '-' : (value || '-');
 
 const centerColumns = [
-  { title: '片名', key: 'title', minWidth: 120, fixed: 'left', render: row => h('div', null, [
-    h('div', { class: 'main-title' }, centerTitleText(row)),
+  { title: '片名', key: 'title', width: 240, fixed: 'left', render: row => h('div', { class: 'center-title-cell' }, [
+    centerTitleNode(row),
     metaLine(row)
   ]) },
   // 主行只展示片名；从类型列开始按 versions 拆分多行展示多版本。
-  { title: '类型', key: 'item_type', width: 180, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
+  { title: '类型', key: 'item_type', width: 210, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).resolution))) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = centerVersionSummary(it) || {};
@@ -1729,8 +1685,8 @@ const centerColumns = [
   }) },
   { title: 'HDR / 杜比', key: 'effect', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-effect-compact' }, hideCenterPackParams(it) ? '-' : compactEffectText(centerVersionSummary(it).effect)), it => hideCenterPackParams(it) ? '' : (centerVersionSummary(it).effect || '')) },
   { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).fps))) },
-  { title: '音轨', key: 'audios', width: 100, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionAudioTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionAudioTracks(it))) },
-  { title: '字幕', key: 'subtitles', width: 100, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionSubtitleTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionSubtitleTracks(it))) },
+  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionAudioTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionAudioTracks(it))) },
+  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionSubtitleTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionSubtitleTracks(it))) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', hideCenterPackParams(it) ? '-' : formatCenterSize(it))) },
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '资源数', key: 'version_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${centerUsableResourceCount(it)} 个`)) },
@@ -2345,6 +2301,18 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .stat-desc { margin-top: 8px; font-size: 12px; opacity: .65; }
 .toolbar { margin-bottom: 14px; }
 .main-title { font-weight: 600; }
+.center-title-cell {
+  max-width: 220px;
+  min-width: 0;
+}
+.center-title-ellipsis {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .sub-title {
   display: flex;
   align-items: center;
