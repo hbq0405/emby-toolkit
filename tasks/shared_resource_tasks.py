@@ -2206,6 +2206,84 @@ def _sync_center_credit() -> Dict[str, Any]:
     return {'snapshot': saved, 'synced_ledger': synced}
 
 
+def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
+    """把维护任务的完整返回值压缩成人能看的单行摘要。
+
+    完整 snapshot / raw_json 仍然保留在返回值里，供前端或调用方使用；
+    日志只输出关键计数和异常，避免把中心 me/stats/datetime 全量刷屏。
+    """
+    result = result if isinstance(result, dict) else {}
+    parts: List[str] = []
+
+    listener = result.get('device_event_listener')
+    if listener is not None:
+        parts.append(f"监听={'已启动' if listener else '未启动'}")
+    if result.get('listener_error'):
+        parts.append(f"监听异常={str(result.get('listener_error'))[:160]}")
+
+    credit_result = result.get('credit') if isinstance(result.get('credit'), dict) else {}
+    snapshot = credit_result.get('snapshot') if isinstance(credit_result.get('snapshot'), dict) else {}
+    raw_json = snapshot.get('raw_json') if isinstance(snapshot.get('raw_json'), dict) else {}
+    me = raw_json.get('me') if isinstance(raw_json.get('me'), dict) else {}
+    stats = raw_json.get('stats') if isinstance(raw_json.get('stats'), dict) else {}
+
+    def _first_value(*values):
+        for value in values:
+            if value not in (None, ''):
+                return value
+        return None
+
+    credit = _first_value(snapshot.get('credit'), me.get('credit'))
+    if credit is not None:
+        parts.append(f"贡献值={_safe_int(credit, 0)}")
+
+    devices = _first_value(snapshot.get('remote_devices'), stats.get('devices'))
+    if devices is not None:
+        parts.append(f"设备={_safe_int(devices, 0)}")
+
+    shared_total = _first_value(snapshot.get('shared_sources'))
+    movie_sources = _safe_int(stats.get('movie_sources'), 0)
+    episode_sources = _safe_int(stats.get('episode_sources'), 0)
+    completed_season_sources = _safe_int(stats.get('completed_season_sources'), 0)
+    season_hubs = _safe_int(stats.get('season_hubs'), 0)
+    if shared_total is not None:
+        detail = []
+        if movie_sources:
+            detail.append(f"电影{movie_sources}")
+        if episode_sources:
+            detail.append(f"单集{episode_sources}")
+        if completed_season_sources:
+            detail.append(f"完结季{completed_season_sources}")
+        if season_hubs:
+            detail.append(f"季Hub{season_hubs}")
+        parts.append(f"资源={_safe_int(shared_total, 0)}" + (f"（{'/'.join(detail)}）" if detail else ''))
+
+    raw_ffprobe = _first_value(snapshot.get('raw_ffprobe'), stats.get('raw_ffprobe'))
+    if raw_ffprobe is not None:
+        parts.append(f"RAW={_safe_int(raw_ffprobe, 0)}")
+
+    wanted_gaps = _first_value(snapshot.get('wanted_gaps'), stats.get('active_gap_devices'))
+    if wanted_gaps is not None:
+        parts.append(f"缺口={_safe_int(wanted_gaps, 0)}")
+
+    pending_events = _first_value(stats.get('pending_events'))
+    if pending_events is not None:
+        parts.append(f"待事件={_safe_int(pending_events, 0)}")
+
+    active_share_requests = _first_value(stats.get('active_share_requests'))
+    if active_share_requests is not None:
+        parts.append(f"求分享={_safe_int(active_share_requests, 0)}")
+
+    synced_ledger = _first_value(credit_result.get('synced_ledger'))
+    if synced_ledger is not None:
+        parts.append(f"同步流水={_safe_int(synced_ledger, 0)}")
+
+    if result.get('credit_error'):
+        parts.append(f"贡献值同步异常={str(result.get('credit_error'))[:160]}")
+
+    return '，'.join(parts) if parts else '无可用摘要'
+
+
 def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = False):
     if not _enabled():
         if not maintenance_silent:
@@ -2221,7 +2299,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
     except Exception as e:
         result['credit_error'] = str(e)
     if not maintenance_silent:
-        logger.info(f"  ➜ [共享资源维护] Rapid v2 维护完成: {result}")
+        logger.info(f"  ➜ [共享资源维护] Rapid v2 维护完成：{_shared_maintenance_log_summary(result)}")
     return result
 
 
