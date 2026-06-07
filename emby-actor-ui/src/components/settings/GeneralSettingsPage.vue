@@ -1,4 +1,4 @@
-<!-- src/components/settings/GeneralSettingsPage.vue -->
+<!-- emby-actor-ui/src/components/settings/GeneralSettingsPage.vue -->
 <template>
   <n-layout class="settings-page" :content-style="pageContentStyle">
     <n-space vertical :size="pageSpaceSize" :style="pageSpaceStyle">
@@ -2173,13 +2173,16 @@ const tableInfo = {
   'p115_filesystem_cache': { cn: '115目录缓存', isSharable: false },
   'p115_mediainfo_cache': {cn: '媒体信息备份', isSharable: true },
   'p115_organize_records': {cn: '115整理记录', isSharable: false },
-  'shared_credit_snapshot': { cn: '贡献值快照', isSharable: false },
+  'shared_rapid_sources': { cn: '本机共享秒传源', isSharable: false },
+  'shared_rapid_source_files': { cn: '本机共享文件索引', isSharable: false },
+  'shared_credit_snapshot': { cn: '贡献点快照', isSharable: false },
   'shared_credit_ledger_local': { cn: '贡献值明细', isSharable: false },
   'washing_priority_groups': {cn: '115洗版规则', isSharable: false }
 };
 const tableDependencies = {
   'emby_users': ['user_media_data', 'emby_users_extended'],
-  'user_templates': ['invitations']
+  'user_templates': ['invitations'],
+  'shared_rapid_sources': ['shared_rapid_source_files']
 };
 const reverseTableDependencies = {};
 for (const parent in tableDependencies) {

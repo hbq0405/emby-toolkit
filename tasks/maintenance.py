@@ -48,6 +48,12 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         # 需要显式按 JSONB 处理，否则导入 PostgreSQL 时会把 dict/list 当普通字符串插入失败。
         'shared_credit_snapshot': {'raw_json'},
         'shared_credit_ledger_local': {'raw_json'},
+        'shared_rapid_sources': {
+            'clean_version_meta_json', 'media_signature_json', 'rapid_meta_json', 'raw_json'
+        },
+        'shared_rapid_source_files': {
+            'media_signature_json', 'rapid_meta_json', 'raw_json'
+        },
     }
 
     LIST_TO_STRING_COLUMNS = {
@@ -121,6 +127,8 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
         # 共享资源本地状态表默认不进入“共享导入”模式；这里补上冲突目标，
         # 防止后续扩展或误选共享模式时直接报 Conflict target not defined。
         'shared_credit_snapshot': 'id',
+        'shared_rapid_sources': 'source_key',
+        'shared_rapid_source_files': 'id',
     }
     
     db_table_name = table_name.lower()
@@ -290,7 +298,9 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         'media_cleanup_tasks': 'id',
         'user_templates': 'id',
         'invitations': 'id',
-        'shared_credit_ledger_local': 'id'
+        'shared_credit_ledger_local': 'id',
+        'shared_rapid_sources': 'id',
+        'shared_rapid_source_files': 'id'
     }
     
     pk_column = PRIMARY_KEY_COLUMNS.get(table_name.lower())
@@ -357,8 +367,10 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'washing_priority_groups': '115洗版规则',
         'p115_filesystem_cache': '115目录缓存',
         # 共享资源模块新增表
-        'shared_credit_snapshot': '贡献值快照',
-        'shared_credit_ledger_local': '贡献值明细'
+        'shared_rapid_sources': '本机共享秒传源',
+        'shared_rapid_source_files': '本机共享文件索引',
+        'shared_credit_snapshot': '贡献点快照',
+        'shared_credit_ledger_local': '贡献点明细'
     }
     summary_lines = []
     conn = None
@@ -378,9 +390,11 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 'emby_users_extended': 3,
                 'invitations': 4,
                 'actor_subscriptions': 10,
-                # 共享资源表导入顺序：分享主表必须早于分享明细表。
-                'shared_credit_snapshot': 23,
-                'shared_credit_ledger_local': 24
+                # 共享资源表导入顺序：秒传源主表必须早于文件明细表。
+                'shared_rapid_sources': 23,
+                'shared_rapid_source_files': 24,
+                'shared_credit_snapshot': 25,
+                'shared_credit_ledger_local': 26
             }
             return order.get(table_name.lower(), 100)
 
