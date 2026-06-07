@@ -16,7 +16,8 @@ import constants
 from database import shared_credit_db, shared_share_db, settings_db
 from database.connection import get_db_connection
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled
-from handler.shared_subscription_service import poll_and_consume_once
+from handler import shared_subscription_service as shared_subscription_service
+from handler.shared_subscription_service import poll_and_consume_once as _raw_poll_and_consume_once
 from handler import tmdb as tmdb_handler
 
 logger = logging.getLogger(__name__)
@@ -411,6 +412,91 @@ def _json_obj(value):
     return {}
 
 
+def _center_nested_parts_for_gate(source: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if isinstance(source, dict):
+        out.append(source)
+        for key in ('version_summary', 'summary_json', 'media_signature_json', 'raw_summary_json'):
+            value = _json_obj(source.get(key))
+            if value:
+                out.append(value)
+        for key in ('versions', 'children', 'pack_items'):
+            value = source.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        out.append(item)
+                        for sub_key in ('version_summary', 'summary_json', 'media_signature_json'):
+                            sub = _json_obj(item.get(sub_key))
+                            if sub:
+                                out.append(sub)
+    return out
+
+
+def _center_flag_meta_for_gate(source: Dict[str, Any], flag_key: str, meta_key: str) -> Dict[str, Any]:
+    for part in _center_nested_parts_for_gate(source):
+        meta = _json_obj(part.get(meta_key))
+        if _cfg_bool(part.get(flag_key), False) or _cfg_bool(meta.get(flag_key), False):
+            meta.setdefault(flag_key, True)
+            return meta
+    return {}
+
+
+def _shared_transfer_gate(source: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = settings_db.get_shared_resource_config() or {}
+    title = str((source or {}).get('title') or (source or {}).get('file_name') or (source or {}).get('source_id') or '').strip() or '该资源'
+    if _cfg_bool(cfg.get('p115_shared_block_clean_version_transfer'), False):
+        if _center_flag_meta_for_gate(source or {}, 'is_clean_version', 'clean_version_meta_json'):
+            return {'ok': False, 'reason': 'blocked_clean_version', 'message': f'已开启“不秒传纯净版”，跳过《{title}》。'}
+    if _cfg_bool(cfg.get('p115_shared_block_short_drama_transfer'), False):
+        if _center_flag_meta_for_gate(source or {}, 'is_short_drama', 'short_drama_meta_json'):
+            return {'ok': False, 'reason': 'blocked_short_drama', 'message': f'已开启“不秒传短剧”，跳过《{title}》。'}
+    return {'ok': True}
+
+
+def _event_source_payload(event: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(event, dict):
+        return {}
+    payload = event.get('payload_json') if isinstance(event.get('payload_json'), dict) else {}
+    if payload:
+        return payload
+    return event
+
+
+def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
+    source = _event_source_payload(event)
+    gate = _shared_transfer_gate(source)
+    if not gate.get('ok'):
+        logger.info(f"  ➜ [共享资源] 秒传拦截：{gate.get('message') or gate.get('reason')}")
+        return {
+            'ok': True,
+            'skipped': True,
+            'blocked': True,
+            'blocked_reason': gate.get('reason'),
+            'success_count': 0,
+            'total': 0,
+            'message': gate.get('message') or '该资源已被共享资源配置拦截',
+        }
+    return original_consume(event, *args, **kwargs)
+
+
+def poll_and_consume_once(*args, **kwargs):
+    """长轮询消费前加本地配置门禁，保证自动秒传也能拦截纯净版/短剧。"""
+    original = getattr(shared_subscription_service, 'consume_device_event', None)
+    if not callable(original) or getattr(original, '_etk_transfer_gate_wrapped', False):
+        return _raw_poll_and_consume_once(*args, **kwargs)
+
+    def _wrapped(event, *a, **kw):
+        return _consume_device_event_with_transfer_gate(original, event, *a, **kw)
+
+    _wrapped._etk_transfer_gate_wrapped = True
+    shared_subscription_service.consume_device_event = _wrapped
+    try:
+        return _raw_poll_and_consume_once(*args, **kwargs)
+    finally:
+        shared_subscription_service.consume_device_event = original
+
+
 def _raw_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
     sha1 = _norm_sha1(file_info.get('sha1'))
     if not sha1:
@@ -590,7 +676,7 @@ def _media_signature(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict
     fps = _fps_display(video)
     resolution = _video_resolution(video)
     effect = _effect_key(raw)
-    return {
+    sig = {
         'resolution': resolution,
         'resolution_display': resolution,
         'effect': effect,
@@ -604,6 +690,7 @@ def _media_signature(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict
         'audio_list': [x for x in audio_list if x.get('display') or x.get('codec') or x.get('language')],
         'subtitle_list': [x for x in subtitle_list if x.get('display') or x.get('codec') or x.get('language')],
     }
+    return _apply_short_drama_meta(sig, raw)
 
 
 def _center_format_rate(value: Any) -> str:
@@ -831,7 +918,7 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
     audio_list = [x for x in audio_list if x]
     subtitle_list = [x for x in subtitle_list if x]
 
-    return {
+    summary = {
         'resolution': _center_resolution(width, height),
         'width': width,
         'height': height,
@@ -857,6 +944,7 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         'subtitles': [{'display': x} for x in subtitle_list[:24]],
         'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
     }
+    return _apply_short_drama_meta(summary, raw)
 
 
 def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, Any], final_size: int = 0) -> Dict[str, Any]:
@@ -888,6 +976,7 @@ def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, A
         'audio_count', 'subtitle_count', 'audio_list', 'subtitle_list',
         'audios', 'subtitles', 'formatted_by',
         'resolution_display', 'codec_display', 'effect_key', 'frame_rate',
+        'duration_minutes', 'is_short_drama', 'short_drama_meta_json',
     }
     compact = {k: summary.get(k) for k in allowed_keys if k in summary}
     for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audios', 16), ('subtitles', 24)):
@@ -999,6 +1088,12 @@ _CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.94
 _CLEAN_VERSION_MIN_COMPARABLE_EPISODES = 2
 _CLEAN_VERSION_HIT_RATIO = 0.70
 
+# 短剧：单个视频实际时长低于 25 分钟。短剧片头更短，纯净版阈值单独收窄到约 1 分钟。
+_SHORT_DRAMA_MAX_RUNTIME_MINUTES = 25.0
+_SHORT_DRAMA_HIT_RATIO = 0.70
+_CLEAN_VERSION_SHORT_DRAMA_MIN_DELTA_MINUTES = 1.0
+_CLEAN_VERSION_SHORT_DRAMA_MAX_RUNTIME_RATIO = 0.98
+
 
 def _runtime_minutes_from_ticks(value) -> float:
     try:
@@ -1039,6 +1134,84 @@ def _physical_runtime_minutes_from_raw(raw: Dict[str, Any]) -> float:
         if runtime > 0:
             return runtime
     return 0.0
+
+
+def _short_drama_meta_from_runtime(runtime_minutes: float, *, source: str = 'raw_ffprobe') -> Dict[str, Any]:
+    runtime = float(runtime_minutes or 0)
+    checked = runtime > 0
+    is_short = bool(checked and runtime < _SHORT_DRAMA_MAX_RUNTIME_MINUTES)
+    return {
+        'is_short_drama': is_short,
+        'short_drama_checked': checked,
+        'reason': 'runtime_lt_25min' if is_short else ('runtime_not_short_enough' if checked else 'missing_runtime'),
+        'runtime_minutes': round(runtime, 2) if checked else None,
+        'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+        'runtime_source': source,
+    }
+
+
+def _short_drama_meta_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
+    return _short_drama_meta_from_runtime(_physical_runtime_minutes_from_raw(raw), source='raw_ffprobe')
+
+
+def _apply_short_drama_meta(summary: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    summary = summary if isinstance(summary, dict) else {}
+    meta = _short_drama_meta_from_raw(raw)
+    if meta.get('runtime_minutes') is not None:
+        summary['duration_minutes'] = meta.get('runtime_minutes')
+    summary['is_short_drama'] = bool(meta.get('is_short_drama'))
+    summary['short_drama_meta_json'] = meta
+    return summary
+
+
+def _detect_short_drama_for_completed_season(completed_files: List[Dict[str, Any]], source_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    raw_by_sha1 = {}
+    for f in source_files or []:
+        sha1 = _norm_sha1(f.get('sha1'))
+        if sha1 and sha1 not in raw_by_sha1:
+            raw_by_sha1[sha1] = _raw_for_file(f)
+
+    rows = []
+    for item in completed_files or []:
+        sha1 = _norm_sha1(item.get('sha1'))
+        raw = raw_by_sha1.get(sha1) or {}
+        runtime = _physical_runtime_minutes_from_raw(raw)
+        if runtime <= 0:
+            continue
+        rows.append({
+            'episode_number': _safe_int(item.get('episode_number'), 0),
+            'runtime_minutes': round(runtime, 2),
+            'short_drama_hit': bool(runtime < _SHORT_DRAMA_MAX_RUNTIME_MINUTES),
+            'file_name': item.get('file_name') or '',
+            'sha1': sha1,
+        })
+
+    comparable = len(rows)
+    if comparable <= 0:
+        return {
+            'is_short_drama': False,
+            'short_drama_checked': False,
+            'reason': 'missing_runtime',
+            'comparable_count': 0,
+            'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+        }
+
+    hit_count = len([x for x in rows if x.get('short_drama_hit')])
+    required_hits = max(1, int(math.ceil(comparable * _SHORT_DRAMA_HIT_RATIO)))
+    avg_runtime = sum(float(x.get('runtime_minutes') or 0) for x in rows) / comparable
+    is_short = hit_count >= required_hits
+    return {
+        'is_short_drama': bool(is_short),
+        'short_drama_checked': True,
+        'reason': 'majority_runtime_lt_25min' if is_short else 'runtime_not_short_enough',
+        'comparable_count': comparable,
+        'hit_count': hit_count,
+        'required_hits': required_hits,
+        'avg_runtime_minutes': round(avg_runtime, 2),
+        'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+        'hit_ratio': _SHORT_DRAMA_HIT_RATIO,
+        'episodes': rows[:80],
+    }
 
 
 def _load_local_runtime_map_for_season(parent_series_tmdb_id: str, season_number) -> Dict[int, float]:
@@ -1210,6 +1383,12 @@ def _detect_clean_version_for_completed_season(
             'comparable_count': comparable,
         }
 
+    short_hits = [ep for ep in episode_rows if 0 < float(ep.get('actual_runtime_minutes') or 0) < _SHORT_DRAMA_MAX_RUNTIME_MINUTES]
+    short_required_hits = max(1, int(math.ceil(comparable * _SHORT_DRAMA_HIT_RATIO)))
+    is_short_drama = len(short_hits) >= short_required_hits
+    min_delta = _CLEAN_VERSION_SHORT_DRAMA_MIN_DELTA_MINUTES if is_short_drama else _CLEAN_VERSION_MIN_DELTA_MINUTES
+    max_runtime_ratio = _CLEAN_VERSION_SHORT_DRAMA_MAX_RUNTIME_RATIO if is_short_drama else _CLEAN_VERSION_MAX_RUNTIME_RATIO
+
     hits = []
     for ep in episode_rows:
         official = float(ep.get('official_runtime_minutes') or 0)
@@ -1217,7 +1396,8 @@ def _detect_clean_version_for_completed_season(
         delta = float(ep.get('delta_minutes') or 0)
         ratio = (actual / official) if official > 0 else 1.0
         ep['runtime_ratio'] = round(ratio, 4)
-        ep['clean_hit'] = bool(delta >= _CLEAN_VERSION_MIN_DELTA_MINUTES and ratio <= _CLEAN_VERSION_MAX_RUNTIME_RATIO)
+        ep['short_drama_hit'] = bool(0 < actual < _SHORT_DRAMA_MAX_RUNTIME_MINUTES)
+        ep['clean_hit'] = bool(delta >= min_delta and ratio <= max_runtime_ratio)
         if ep['clean_hit']:
             hits.append(ep)
 
@@ -1236,9 +1416,13 @@ def _detect_clean_version_for_completed_season(
         'hit_count': len(hits),
         'required_hits': required_hits,
         'avg_delta_minutes': round(avg_delta, 2),
-        'min_delta_minutes': _CLEAN_VERSION_MIN_DELTA_MINUTES,
-        'max_runtime_ratio': _CLEAN_VERSION_MAX_RUNTIME_RATIO,
+        'min_delta_minutes': min_delta,
+        'max_runtime_ratio': max_runtime_ratio,
         'hit_ratio': _CLEAN_VERSION_HIT_RATIO,
+        'is_short_drama': bool(is_short_drama),
+        'short_drama_hit_count': len(short_hits),
+        'short_drama_required_hits': short_required_hits,
+        'short_drama_max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
         'clean_version_confidence': confidence,
         'episodes': episode_rows[:80],
     }
@@ -1639,6 +1823,10 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             if sig:
                 common_signature = sig
                 break
+        short_detection = _detect_short_drama_for_completed_season(completed_files, files)
+        common_signature = dict(common_signature or {})
+        common_signature['is_short_drama'] = bool(short_detection.get('is_short_drama'))
+        common_signature['short_drama_meta_json'] = short_detection
         if isinstance(consistency, dict) and consistency:
             reason = consistency.get('reason')
             if consistency.get('ok'):
@@ -1706,7 +1894,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'status': status['status'], 'center_status': 'reported', 'manifest_hash': payload['manifest_hash'],
                 'file_count': len(completed_files), 'total_size': sum(_safe_int(x.get('size'), 0) for x in completed_files),
                 'is_clean_version': payload['is_clean_version'], 'clean_version_confidence': payload['clean_version_confidence'],
-                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'clean_detection': clean_detection, 'root': root},
+                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'clean_detection': clean_detection, 'short_detection': short_detection, 'root': root},
             })
             shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': bool(_raw_for_file(f))} for f in files])
             if status.get('status') == 'available':

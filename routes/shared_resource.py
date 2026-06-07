@@ -55,6 +55,7 @@ def _shared_resource_config_payload() -> Dict[str, Any]:
     payload['p115_shared_resource_mode'] = 'rapid'
     payload.setdefault('p115_shared_disable_episode_transfer', False)
     payload.setdefault('p115_shared_block_clean_version_transfer', False)
+    payload.setdefault('p115_shared_block_short_drama_transfer', False)
     payload.setdefault('p115_shared_auto_share_requests_enabled', False)
     return payload
 
@@ -68,6 +69,7 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data.pop('p115_shared_max_active_shares', None)
     data['p115_shared_disable_episode_transfer'] = _boolish(data.get('p115_shared_disable_episode_transfer'), False)
     data['p115_shared_block_clean_version_transfer'] = _boolish(data.get('p115_shared_block_clean_version_transfer'), False)
+    data['p115_shared_block_short_drama_transfer'] = _boolish(data.get('p115_shared_block_short_drama_transfer'), False)
     data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
     install_id = str(data.get('p115_shared_install_id') or '').strip()
     if not install_id:
@@ -560,6 +562,58 @@ def _first_text(*values):
     return ''
 
 
+def _center_nested_rows(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if isinstance(row, dict):
+        out.append(row)
+        for key in ('versions', 'children', 'pack_items'):
+            value = row.get(key)
+            if isinstance(value, list):
+                out.extend([x for x in value if isinstance(x, dict)])
+    return out
+
+
+def _center_flag_meta(row: Dict[str, Any], flag_key: str, meta_key: str) -> Dict[str, Any]:
+    for part in _center_nested_rows(row):
+        for container_key in ('', 'version_summary', 'summary_json', 'media_signature_json', 'raw_summary_json'):
+            container = part if not container_key else _json_dict(part.get(container_key))
+            if not isinstance(container, dict):
+                continue
+            meta = _json_dict(container.get(meta_key))
+            if _boolish(container.get(flag_key), False) or _boolish(meta.get(flag_key), False):
+                if not meta:
+                    meta = {flag_key: True}
+                meta.setdefault(flag_key, True)
+                return meta
+    return {}
+
+
+def _center_source_is_clean_version(row: Dict[str, Any]) -> bool:
+    return bool(_center_flag_meta(row, 'is_clean_version', 'clean_version_meta_json'))
+
+
+def _center_source_is_short_drama(row: Dict[str, Any]) -> bool:
+    return bool(_center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json'))
+
+
+def _center_source_transfer_preflight(source: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = settings_db.get_shared_resource_config() or {}
+    title = str((source or {}).get('title') or (source or {}).get('file_name') or (source or {}).get('source_id') or '').strip()
+    if _boolish(cfg.get('p115_shared_block_clean_version_transfer'), False) and _center_source_is_clean_version(source):
+        return {
+            'ok': False,
+            'reason': 'blocked_clean_version',
+            'message': f"已开启“不秒传纯净版”，跳过《{title or '该资源'}》。",
+        }
+    if _boolish(cfg.get('p115_shared_block_short_drama_transfer'), False) and _center_source_is_short_drama(source):
+        return {
+            'ok': False,
+            'reason': 'blocked_short_drama',
+            'message': f"已开启“不秒传短剧”，跳过《{title or '该资源'}》。",
+        }
+    return {'ok': True}
+
+
 def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     """中心资源库展示用版本摘要。
 
@@ -613,6 +667,10 @@ def api_center_sources():
             for key in ('versions', 'children', 'pack_items'):
                 if isinstance(row.get(key), list):
                     row[key] = [_decorate_center_row(x) for x in row.get(key) if isinstance(x, dict)]
+            short_meta = _center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json')
+            if short_meta:
+                row['is_short_drama'] = True
+                row['short_drama_meta_json'] = short_meta
             # 连载季公共包没有统一版本参数；完结季包/电影/展开后的集才展示。
             if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
                 row['version_summary'] = {}
@@ -646,9 +704,13 @@ def api_center_import():
     if (not source_kind or not source_id) and data.get('source_ids'):
         return jsonify({
             'success': False,
-            'message': '前端提交的还是旧 source_ids 转存参数，缺少 Rapid v2 的 source_kind/source_id；请覆盖最新 SharedResourceManagerPage.vue。',
+            'message': '前端提交的还是旧 source_ids 秒传参数，缺少 Rapid v2 的 source_kind/source_id；请覆盖最新 SharedResourceManagerPage.vue。',
             'data': {'ok': False, 'success_count': 0, 'total': 0}
         }), 400
+
+    preflight = _center_source_transfer_preflight(source)
+    if not preflight.get('ok'):
+        return jsonify({'success': False, 'message': preflight.get('message') or '该资源已被配置拦截', 'data': preflight}), 400
 
     event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
     result = consume_device_event(event, ack=False)

@@ -205,8 +205,10 @@ DEFAULT_SHARED_RESOURCE_CONFIG = {
     # 虚拟入库已移除：共享资源消费模式固定为 permanent。
     'p115_shared_resource_mode': 'permanent',
     'p115_shared_disable_episode_transfer': False,
-    # 开启后，消费中心资源时会跳过被中心标记或实时识别为“纯净版”的季包。
+    # 开启后，消费中心资源时会跳过被中心标记为“纯净版”的季包。
     'p115_shared_block_clean_version_transfer': False,
+    # 开启后，消费中心资源时会跳过被中心标记为“短剧”的资源。
+    'p115_shared_block_short_drama_transfer': False,
     'p115_shared_auto_share_requests_enabled': False,
     'p115_shared_install_id': '',
 }
@@ -260,6 +262,10 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
         'p115_shared_disable_episode_transfer': _shared_bool(merged.get('p115_shared_disable_episode_transfer'), False),
         'p115_shared_block_clean_version_transfer': _shared_bool(
             merged.get('p115_shared_block_clean_version_transfer', merged.get('shared_block_clean_version_transfer')),
+            False,
+        ),
+        'p115_shared_block_short_drama_transfer': _shared_bool(
+            merged.get('p115_shared_block_short_drama_transfer', merged.get('shared_block_short_drama_transfer')),
             False,
         ),
         'p115_shared_auto_share_requests_enabled': _shared_bool(merged.get('p115_shared_auto_share_requests_enabled'), False),

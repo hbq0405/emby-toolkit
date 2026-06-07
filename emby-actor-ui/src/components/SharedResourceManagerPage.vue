@@ -31,7 +31,7 @@
         </template>
 
         <n-alert v-if="!hasCenterDevice" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
-          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献点、登记共享、转存中心资源。
+          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献点、登记共享、秒传中心资源。
         </n-alert>
 
         <n-grid class="stat-grid" :cols="isMobile ? 2 : 4" :x-gap="12" :y-gap="12">
@@ -102,7 +102,7 @@
               :data="groupedCenterSources"
               :pagination="centerPagination"
               :row-key="row => row.group_key || row.source_id"
-              :scroll-x="1740"
+              :scroll-x="1820"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
             />
@@ -192,19 +192,26 @@
           <n-form-item label="设备 Token">
             <n-input v-model:value="sharedConfigForm.p115_shared_device_token" type="password" show-password-on="click" placeholder="注册设备后自动写入，也可手动粘贴" />
           </n-form-item>
-          <n-form-item label="共享池单集转存">
+          <n-form-item label="共享池单集秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_disable_episode_transfer">
-              <template #checked>禁止单集</template>
-              <template #unchecked>允许单集</template>
+              <template #checked>不秒传单集</template>
+              <template #unchecked>允许秒传</template>
             </n-switch>
             <template #feedback>仅影响共享池中心源消费；开启后会过滤 `Episode` 单集资源，电影和季包不受影响。</template>
           </n-form-item>
-          <n-form-item label="共享池纯净版">
+          <n-form-item label="共享池纯净版秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_block_clean_version_transfer">
-              <template #checked>不转存纯净版</template>
-              <template #unchecked>允许转存</template>
+              <template #checked>不秒传纯净版</template>
+              <template #unchecked>允许秒传</template>
             </n-switch>
-            <template #feedback>仅检测季包资源：当包内多数集实际视频时长比 TMDb 官方单集时长短约 3 分钟时，自动/手动转存都会跳过该季包；单集资源不做纯净版检测。</template>
+            <template #feedback>仅检测季包资源：普通剧多数集实际时长比 TMDb 官方时长短约 3 分钟会识别为纯净版；短剧片头更短，阈值改为约 1 分钟。自动/手动秒传都会按该开关拦截。</template>
+          </n-form-item>
+          <n-form-item label="共享池短剧秒传">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_block_short_drama_transfer">
+              <template #checked>不秒传短剧</template>
+              <template #unchecked>允许秒传</template>
+            </n-switch>
+            <template #feedback>中心资源被标记为短剧时跳过秒传；短剧按单个视频实际时长低于 25 分钟识别，季包按包内多数集统计。</template>
           </n-form-item>
           <n-form-item label="自动响应求共享">
             <n-switch v-model:value="sharedConfigForm.p115_shared_auto_share_requests_enabled">
@@ -344,6 +351,7 @@ const sharedConfigForm = reactive({
   p115_shared_resource_mode: 'rapid',
   p115_shared_disable_episode_transfer: false,
   p115_shared_block_clean_version_transfer: false,
+  p115_shared_block_short_drama_transfer: false,
   p115_shared_auto_share_requests_enabled: false,
 });
 const showManualShareModal = ref(false);
@@ -585,7 +593,7 @@ const shareRemarkNode = (row) => {
 const isAutoShareRow = (row) => shareSourceText(row) === '自动共享';
 
 const statusMap = {
-  transferring: { text: '转存中', type: 'warning' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
+  transferring: { text: '秒传中', type: 'warning' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
   active: { text: '本地可用', type: 'success' }, available: { text: '可用', type: 'success' }, alive: { text: '可用', type: 'success' },
   pending: { text: '待验证', type: 'warning' }, replenish: { text: '待补充', type: 'error' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
   reported: { text: '已登记', type: 'success' }, local: { text: '本地未登记', type: 'default' }, partial: { text: '部分登记', type: 'warning' },
@@ -822,11 +830,11 @@ const ledgerEventLabel = (eventType) => {
     center_backup_source_registered: '备份共享入池',
     center_backup_source_registered_group: '备份共享入池',
     center_deleted_shared_source_summary: '已删除共享源',
-    center_shared_source_served: '共享被转存',
-    center_shared_source_served_group: '共享被转存',
+    center_shared_source_served: '共享被秒传',
+    center_shared_source_served_group: '共享被秒传',
     rapid_source_served: '共享视频被秒传',
-    center_shared_source_consumed: '转存共享资源',
-    center_shared_source_consumed_group: '转存共享资源',
+    center_shared_source_consumed: '秒传共享资源',
+    center_shared_source_consumed_group: '秒传共享资源',
     rapid_source_consumed: '秒传共享视频',
     share_created: '登记共享源',
     share_reported_center: '登记',
@@ -911,7 +919,7 @@ const buildDeletedCenterSourceSummaryRow = (rows) => {
     event_type: 'center_deleted_shared_source_summary',
     title: `已删除共享源（汇总 ${rows.length} 条）`,
     delta,
-    reason: `已汇总展示 ${rows.length} 条历史共享源积分变化；共享被转存 ${servedCount} 条，转存共享资源 ${consumedCount} 条。`,
+    reason: `已汇总展示 ${rows.length} 条历史共享源积分变化；共享被秒传 ${servedCount} 条，秒传共享资源 ${consumedCount} 条。`,
     raw_json: {
       ...(latest.raw_json || {}),
       deleted_source_summary: {
@@ -1084,10 +1092,50 @@ const centerCleanVersionTooltip = (row) => {
   const comparable = meta.comparable_count;
   const avgDelta = meta.avg_delta_minutes;
   const confidence = row?.clean_version_confidence ?? meta.clean_version_confidence;
+  const minDelta = meta.min_delta_minutes;
   const parts = ['疑似纯净版'];
   if (hit != null && comparable != null) parts.push(`命中 ${hit}/${comparable} 集`);
   if (avgDelta != null) parts.push(`平均短 ${avgDelta} 分钟`);
+  if (minDelta != null) parts.push(`阈值 ${minDelta} 分钟`);
   if (confidence != null && confidence !== '') parts.push(`置信度 ${Math.round(Number(confidence) * 100)}%`);
+  return parts.join(' · ');
+};
+const centerNestedParts = (row) => {
+  const parts = [];
+  if (row && typeof row === 'object') parts.push(row);
+  for (const key of ['version_summary', 'summary_json', 'media_signature_json']) {
+    const v = row?.[key];
+    if (v && typeof v === 'object') parts.push(v);
+  }
+  for (const key of ['children', 'pack_items', 'versions']) {
+    if (Array.isArray(row?.[key])) {
+      row[key].forEach(x => {
+        if (x && typeof x === 'object') {
+          parts.push(x);
+          if (x.version_summary && typeof x.version_summary === 'object') parts.push(x.version_summary);
+          if (x.summary_json && typeof x.summary_json === 'object') parts.push(x.summary_json);
+          if (x.media_signature_json && typeof x.media_signature_json === 'object') parts.push(x.media_signature_json);
+        }
+      });
+    }
+  }
+  return parts;
+};
+const centerShortDramaMeta = (row) => {
+  for (const part of centerNestedParts(row)) {
+    const meta = part?.short_drama_meta_json || part?.short_drama_meta || {};
+    if (part?.is_short_drama || meta?.is_short_drama) return meta && typeof meta === 'object' ? meta : { is_short_drama: true };
+  }
+  return {};
+};
+const isCenterShortDrama = (row) => Boolean(centerShortDramaMeta(row).is_short_drama || row?.is_short_drama);
+const centerShortDramaTooltip = (row) => {
+  const meta = centerShortDramaMeta(row);
+  const parts = ['短剧'];
+  const runtime = meta.runtime_minutes ?? meta.avg_runtime_minutes;
+  if (runtime != null) parts.push(`时长 ${runtime} 分钟`);
+  if (meta.hit_count != null && meta.comparable_count != null) parts.push(`命中 ${meta.hit_count}/${meta.comparable_count} 集`);
+  if (meta.max_runtime_minutes != null) parts.push(`阈值 < ${meta.max_runtime_minutes} 分钟`);
   return parts.join(' · ');
 };
 const centerTypeCell = (row) => {
@@ -1095,15 +1143,23 @@ const centerTypeCell = (row) => {
   const tags = [];
 
   if (centerIsOngoingHub(row)) {
-    tags.push(h(NTag, { size: 'small', round: true, type: 'info', class: 'center-clean-version-tag' }, { default: () => '连载中' }));
+    tags.push(h(NTag, { size: 'small', round: true, type: 'info', class: 'center-flag-tag' }, { default: () => '连载中' }));
   }
 
   if (isCenterCleanVersion(row)) {
     const cleanTagNode = h(NTooltip, { trigger: 'hover' }, {
-      trigger: () => h(NTag, { size: 'small', round: true, type: 'warning', class: 'center-clean-version-tag' }, { default: () => '纯净版' }),
+      trigger: () => h(NTag, { size: 'small', round: true, type: 'warning', class: 'center-flag-tag' }, { default: () => '纯净版' }),
       default: () => centerCleanVersionTooltip(row),
     });
     tags.push(cleanTagNode);
+  }
+
+  if (isCenterShortDrama(row)) {
+    const shortDramaTagNode = h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h(NTag, { size: 'small', round: true, type: 'success', class: 'center-flag-tag' }, { default: () => '短剧' }),
+      default: () => centerShortDramaTooltip(row),
+    });
+    tags.push(shortDramaTagNode);
   }
 
   if (!tags.length) return textNode;
@@ -1577,9 +1633,9 @@ const localLibraryTooltipLines = (it) => {
     if (rows.length > limit) lines.push(`  ……另有 ${rows.length - limit} 个`);
   };
   pushRows('已入库', inRows);
-  pushRows('未转存', outRows);
+  pushRows('未秒传', outRows);
   pushRows('无法判断 SHA1', unknownRows, 8);
-  if (!lines.length) lines.push('未返回本地转存状态');
+  if (!lines.length) lines.push('未返回本地秒传状态');
   return lines;
 };
 
@@ -1592,7 +1648,7 @@ const centerColumns = [
     metaLine(row)
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
-  { title: '类型', key: 'item_type', width: 170, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
+  { title: '类型', key: 'item_type', width: 230, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).resolution))) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = centerVersionSummary(it) || {};
@@ -1654,6 +1710,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_resource_mode: 'rapid',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
+    p115_shared_block_short_drama_transfer: Boolean(data.p115_shared_block_short_drama_transfer),
     p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
   });
 };
@@ -1877,7 +1934,7 @@ const confirmCoRequest = (row) => {
   const cost = Number(row.max_bounty || row.current_bounty || row.bounty_total || 0);
   dialog.warning({
     title: '同求助力',
-    content: `助力求共享将冻结 ${cost} 贡献点。资源成功共享并转存后，对应贡献点会支付给共享者；未成交取消/过期会退回。确定同求吗？`,
+    content: `助力求共享将冻结 ${cost} 贡献点。资源成功共享并秒传后，对应贡献点会支付给共享者；未成交取消/过期会退回。确定同求吗？`,
     positiveText: '确认同求',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -2490,7 +2547,7 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
   gap: 6px;
   flex-wrap: wrap;
 }
-.center-clean-version-tag {
+.center-flag-tag {
   transform: scale(.92);
   transform-origin: left center;
 }
