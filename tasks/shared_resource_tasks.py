@@ -2276,7 +2276,7 @@ def _sign_listener_loop():
     而请求端正在同步等待 sign_val。签名任务必须独立长轮询，避免 pending
     阶段因为 holder 没及时领取而被中心误判超时。
     """
-    logger.info('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已启动。')
+    logger.debug('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已启动。')
     while not _LISTENER_STOP.is_set():
         try:
             if not _enabled():
@@ -2290,7 +2290,7 @@ def _sign_listener_loop():
 
 
 def _event_listener_loop():
-    logger.info('  ➜ [共享事件监听] Rapid v2 长轮询监听已启动。')
+    logger.debug('  ➜ [共享事件监听] Rapid v2 长轮询监听已启动。')
     while not _LISTENER_STOP.is_set():
         try:
             if not _enabled():
