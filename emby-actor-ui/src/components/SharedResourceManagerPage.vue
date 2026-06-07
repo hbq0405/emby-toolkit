@@ -1099,12 +1099,22 @@ const centerCleanVersionTooltip = (row) => {
 };
 const centerTypeCell = (row) => {
   const textNode = h('span', centerSeasonText(row));
-  if (!isCenterCleanVersion(row)) return textNode;
-  const tagNode = h(NTag, { size: 'small', round: true, type: 'warning', class: 'center-clean-version-tag' }, { default: () => '纯净版' });
-  return h(NTooltip, { trigger: 'hover' }, {
-    trigger: () => h('span', { class: 'center-type-with-flags' }, [textNode, tagNode]),
-    default: () => centerCleanVersionTooltip(row),
-  });
+  const tags = [];
+
+  if (centerIsOngoingHub(row)) {
+    tags.push(h(NTag, { size: 'small', round: true, type: 'info', class: 'center-clean-version-tag' }, { default: () => '连载中' }));
+  }
+
+  if (isCenterCleanVersion(row)) {
+    const cleanTagNode = h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h(NTag, { size: 'small', round: true, type: 'warning', class: 'center-clean-version-tag' }, { default: () => '纯净版' }),
+      default: () => centerCleanVersionTooltip(row),
+    });
+    tags.push(cleanTagNode);
+  }
+
+  if (!tags.length) return textNode;
+  return h('span', { class: 'center-type-with-flags' }, [textNode, ...tags]);
 };
 const centerStatusTag = (row) => {
   const text = row.status_label || statusMap[row.status]?.text || row.status || '未知';
@@ -1603,7 +1613,6 @@ const centerColumns = [
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '资源数', key: 'version_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${centerUsableResourceCount(it)} 个`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
-  { title: '秒传', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
   { title: '操作', key: 'actions', width: 120, fixed: 'right', render: row => lineStack(row.versions, it => {
     const isImportingPermanent = importingMap[it.source_id] === 'permanent';
     const isPreparingReplenish = importingMap[it.source_id] === 'replenish';
@@ -1627,7 +1636,7 @@ const centerColumns = [
       loading: isImportingPermanent,
       disabled: Boolean(importingMap[it.source_id]) && !isImportingPermanent,
       onClick: () => importCenterSource(it, 'permanent')
-    }, { default: () => centerIsOngoingHub(it) ? '秒传已收录' : '秒传' });
+    }, { default: () => '秒传' });
   }) },
 ];
 
