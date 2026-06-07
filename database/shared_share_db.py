@@ -864,6 +864,151 @@ def all_library_share_candidates(limit: int = 100000) -> List[Dict[str, Any]]:
     return result
 
 
+def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
+    """找出本机仍标记为共享、但登记 SHA1 已不在媒体库内的 Rapid 源。
+
+    判断口径尽量简单：
+    - movie：对应 Movie 行 in_library=true，且 file_sha1_json 仍包含该 SHA1；
+    - episode：对应 Episode 行 in_library=true，且季集号/父剧匹配，file_sha1_json 仍包含该 SHA1；
+    - completed_season：登记 manifest 里的每个文件 SHA1，都必须还能在同季入库 Episode 行中找到。
+
+    不访问 115，不触发指纹体检，不重新收集文件。这里只负责清理“媒体库已删除/换版后仍在共享”的本地索引。
+    """
+    try:
+        limit = max(1, min(int(limit or 300), 2000))
+    except Exception:
+        limit = 300
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH candidate_sources AS (
+                    SELECT *
+                    FROM shared_rapid_sources
+                    WHERE COALESCE(status, '') NOT IN ('disabled', 'cancelled')
+                      AND COALESCE(center_status, '') <> 'disabled'
+                    ORDER BY updated_at ASC NULLS LAST, id ASC
+                    LIMIT %s
+                ),
+                file_match AS (
+                    SELECT
+                        s.id AS local_source_id,
+                        COUNT(f.id)::integer AS total_files,
+                        COUNT(f.id) FILTER (
+                            WHERE EXISTS (
+                                SELECT 1
+                                FROM media_metadata m
+                                WHERE COALESCE(m.in_library, FALSE) = TRUE
+                                  AND (
+                                        (
+                                            s.source_kind = 'movie'
+                                            AND m.item_type = 'Movie'
+                                            AND m.tmdb_id = s.tmdb_id
+                                        )
+                                     OR (
+                                            s.source_kind = 'episode'
+                                            AND m.item_type = 'Episode'
+                                            AND (m.tmdb_id = s.tmdb_id OR m.parent_series_tmdb_id = s.tmdb_id)
+                                            AND (s.season_number IS NULL OR m.season_number = s.season_number)
+                                            AND (s.episode_number IS NULL OR m.episode_number = s.episode_number)
+                                        )
+                                     OR (
+                                            s.source_kind = 'completed_season'
+                                            AND m.item_type = 'Episode'
+                                            AND m.parent_series_tmdb_id = s.tmdb_id
+                                            AND (s.season_number IS NULL OR m.season_number = s.season_number)
+                                            AND (f.episode_number IS NULL OR m.episode_number = f.episode_number)
+                                        )
+                                  )
+                                  AND (
+                                        m.file_sha1_json ? UPPER(f.sha1)
+                                     OR m.file_sha1_json ? LOWER(f.sha1)
+                                  )
+                            )
+                        )::integer AS live_files
+                    FROM candidate_sources s
+                    LEFT JOIN shared_rapid_source_files f
+                      ON f.local_source_id = s.id
+                     AND COALESCE(f.sha1, '') <> ''
+                    GROUP BY s.id
+                ),
+                source_match AS (
+                    SELECT
+                        s.id AS local_source_id,
+                        EXISTS (
+                            SELECT 1
+                            FROM media_metadata m
+                            WHERE COALESCE(m.in_library, FALSE) = TRUE
+                              AND COALESCE(s.sha1, '') <> ''
+                              AND (
+                                    (
+                                        s.source_kind = 'movie'
+                                        AND m.item_type = 'Movie'
+                                        AND m.tmdb_id = s.tmdb_id
+                                    )
+                                 OR (
+                                        s.source_kind = 'episode'
+                                        AND m.item_type = 'Episode'
+                                        AND (m.tmdb_id = s.tmdb_id OR m.parent_series_tmdb_id = s.tmdb_id)
+                                        AND (s.season_number IS NULL OR m.season_number = s.season_number)
+                                        AND (s.episode_number IS NULL OR m.episode_number = s.episode_number)
+                                    )
+                              )
+                              AND (
+                                    m.file_sha1_json ? UPPER(s.sha1)
+                                 OR m.file_sha1_json ? LOWER(s.sha1)
+                              )
+                        ) AS source_live
+                    FROM candidate_sources s
+                )
+                SELECT
+                    s.*,
+                    COALESCE(f.total_files, 0) AS total_files,
+                    COALESCE(f.live_files, 0) AS live_files,
+                    CASE
+                        WHEN COALESCE(f.total_files, 0) > 0 THEN 'source_file_sha1_not_in_library'
+                        ELSE 'source_sha1_not_in_library'
+                    END AS offline_reason
+                FROM candidate_sources s
+                LEFT JOIN file_match f ON f.local_source_id = s.id
+                LEFT JOIN source_match sm ON sm.local_source_id = s.id
+                WHERE
+                    (
+                        COALESCE(f.total_files, 0) > 0
+                        AND COALESCE(f.live_files, 0) < COALESCE(f.total_files, 0)
+                    )
+                    OR (
+                        COALESCE(f.total_files, 0) = 0
+                        AND COALESCE(s.sha1, '') <> ''
+                        AND COALESCE(sm.source_live, FALSE) = FALSE
+                    )
+                ORDER BY s.updated_at ASC NULLS LAST, s.id ASC
+                """,
+                (limit,),
+            )
+            return _rows(cur.fetchall())
+
+
+def disable_local_source(local_source_id: int, *, reason: str = '', center_response: Dict[str, Any] = None) -> Dict[str, Any]:
+    """把本地 Rapid 源标记为 disabled，保留原 raw_json，并追加停用原因。"""
+    source = get_local_source(local_source_id) or {}
+    raw = source.get('raw_json') if isinstance(source.get('raw_json'), dict) else {}
+    raw = dict(raw or {})
+    raw['disabled_reason'] = reason or 'disabled'
+    raw['disabled_at_source'] = 'local_maintenance'
+    if center_response is not None:
+        raw['center_disable_response'] = center_response
+    return update_local_source(
+        int(local_source_id),
+        status='disabled',
+        center_status='disabled',
+        disabled_at='NOW()',
+        last_error=reason or None,
+        raw_json=raw,
+    )
+
+
 # 下面保留少量旧函数名为空实现，避免未改到的调用点抛 AttributeError；不会再创建 115 分享。
 def active_share_statuses(): return ['active', 'available', 'updating', 'inconsistent', 'incomplete', 'error']
 def invalid_share_statuses(): return ['inconsistent', 'error']

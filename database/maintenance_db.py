@@ -628,6 +628,204 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
         logger.error(f"执行 prepare_for_library_rebuild 时发生严重错误: {e}", exc_info=True)
         raise
 
+
+def _norm_sha1_for_shared_cleanup(value: Any) -> str:
+    text = str(value or '').strip().upper()
+    return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+
+def _json_list_for_shared_cleanup(value: Any) -> list:
+    if value in (None, ''):
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            value = [value]
+    if isinstance(value, dict):
+        value = list(value.values())
+    if not isinstance(value, (list, tuple, set)):
+        value = [value]
+    return list(value)
+
+
+def _append_shared_cleanup_context(contexts: List[Dict[str, Any]], *, scope: str, reason: str, **kwargs) -> None:
+    ctx = {'scope': scope, 'reason': reason}
+    for key, value in kwargs.items():
+        if value not in (None, ''):
+            ctx[key] = value
+    # 避免同一事件里重复追加完全一致的上下文。
+    marker = json.dumps(ctx, ensure_ascii=False, sort_keys=True, default=str)
+    if marker not in {json.dumps(x, ensure_ascii=False, sort_keys=True, default=str) for x in contexts}:
+        contexts.append(ctx)
+
+
+def _shared_cleanup_select_sources(contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """按删除事件的精确范围找本机共享源。
+
+    这里不扫描媒体库，不访问 115，只查 shared_rapid_sources / shared_rapid_source_files。
+    维护任务负责兜底全量体检；删除事件只处理它明确知道已经死掉的东西。
+    """
+    if not contexts:
+        return []
+
+    active_sql = """
+        COALESCE(s.status, '') NOT IN ('disabled', 'cancelled')
+        AND COALESCE(s.center_status, '') <> 'disabled'
+    """
+    out: Dict[int, Dict[str, Any]] = {}
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            for ctx in contexts:
+                scope = str(ctx.get('scope') or '').strip()
+                reason = str(ctx.get('reason') or scope or 'media_deleted')
+
+                if scope == 'sha1':
+                    sha1s = [_norm_sha1_for_shared_cleanup(x) for x in _json_list_for_shared_cleanup(ctx.get('sha1s'))]
+                    sha1s = [x for x in sha1s if x]
+                    if not sha1s:
+                        continue
+                    cursor.execute(f"""
+                        SELECT DISTINCT s.*, %s AS offline_reason
+                        FROM shared_rapid_sources s
+                        LEFT JOIN shared_rapid_source_files f ON f.local_source_id = s.id
+                        WHERE {active_sql}
+                          AND (
+                                UPPER(COALESCE(s.sha1, '')) = ANY(%s)
+                             OR UPPER(COALESCE(f.sha1, '')) = ANY(%s)
+                          )
+                    """, (reason, sha1s, sha1s))
+
+                elif scope == 'movie':
+                    cursor.execute(f"""
+                        SELECT DISTINCT s.*, %s AS offline_reason
+                        FROM shared_rapid_sources s
+                        WHERE {active_sql}
+                          AND s.source_kind = 'movie'
+                          AND s.tmdb_id = %s
+                    """, (reason, str(ctx.get('tmdb_id') or '')))
+
+                elif scope == 'episode':
+                    cursor.execute(f"""
+                        SELECT DISTINCT s.*, %s AS offline_reason
+                        FROM shared_rapid_sources s
+                        WHERE {active_sql}
+                          AND (
+                                (
+                                    s.source_kind = 'episode'
+                                    AND s.tmdb_id = %s
+                                    AND (%s IS NULL OR s.season_number = %s)
+                                    AND (%s IS NULL OR s.episode_number = %s)
+                                )
+                             OR (
+                                    s.source_kind = 'completed_season'
+                                    AND s.tmdb_id = %s
+                                    AND (%s IS NULL OR s.season_number = %s)
+                                )
+                          )
+                    """, (
+                        reason,
+                        str(ctx.get('parent_tmdb_id') or ctx.get('tmdb_id') or ''),
+                        ctx.get('season_number'), ctx.get('season_number'),
+                        ctx.get('episode_number'), ctx.get('episode_number'),
+                        str(ctx.get('parent_tmdb_id') or ctx.get('tmdb_id') or ''),
+                        ctx.get('season_number'), ctx.get('season_number'),
+                    ))
+
+                elif scope == 'season':
+                    cursor.execute(f"""
+                        SELECT DISTINCT s.*, %s AS offline_reason
+                        FROM shared_rapid_sources s
+                        WHERE {active_sql}
+                          AND s.source_kind IN ('episode', 'completed_season')
+                          AND s.tmdb_id = %s
+                          AND (%s IS NULL OR s.season_number = %s)
+                    """, (
+                        reason,
+                        str(ctx.get('parent_tmdb_id') or ctx.get('tmdb_id') or ''),
+                        ctx.get('season_number'), ctx.get('season_number'),
+                    ))
+
+                elif scope == 'series':
+                    cursor.execute(f"""
+                        SELECT DISTINCT s.*, %s AS offline_reason
+                        FROM shared_rapid_sources s
+                        WHERE {active_sql}
+                          AND s.source_kind IN ('episode', 'completed_season')
+                          AND s.tmdb_id = %s
+                    """, (reason, str(ctx.get('tmdb_id') or ctx.get('parent_tmdb_id') or '')))
+
+                else:
+                    continue
+
+                for row in cursor.fetchall() or []:
+                    item = dict(row)
+                    local_id = int(item.get('id') or 0)
+                    if local_id <= 0:
+                        continue
+                    # 一个源可能被 sha1 + scope 同时命中，保留更精确的 sha1 原因。
+                    if local_id not in out or str(item.get('offline_reason')).startswith('deleted_sha1'):
+                        out[local_id] = item
+
+    return list(out.values())
+
+
+def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = _shared_cleanup_select_sources(contexts)
+    if not rows:
+        return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0}
+
+    try:
+        from database import shared_share_db
+        from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源删除善后] 导入共享资源模块失败，跳过实时下架: {e}")
+        return {'ok': False, 'matched': len(rows), 'disabled': 0, 'failed': len(rows), 'error': str(e)}
+
+    if not shared_center_enabled():
+        logger.debug("  ➜ [共享资源删除善后] 共享中心未启用，跳过实时下架。")
+        return {'ok': True, 'matched': len(rows), 'disabled': 0, 'failed': 0, 'skipped': True}
+
+    client = SharedCenterClient()
+    disabled = failed = 0
+    items = []
+    for row in rows:
+        local_id = int(row.get('id') or 0)
+        source_kind = str(row.get('source_kind') or '').strip()
+        center_source_id = str(row.get('center_source_id') or '').strip()
+        title = str(row.get('title') or row.get('file_name') or row.get('tmdb_id') or local_id)
+        reason = str(row.get('offline_reason') or 'media_deleted')
+        message = f'local media deleted: {reason}'
+        center_resp = {}
+
+        if center_source_id:
+            try:
+                center_resp = client.disable_source(source_kind, center_source_id, message=message) or {}
+                if center_resp.get('ok') is False:
+                    raise RuntimeError(center_resp.get('message') or center_resp.get('error') or center_resp)
+            except Exception as e:
+                failed += 1
+                try:
+                    shared_share_db.update_local_source(local_id, last_error=f'删除善后下架中心失败: {e}')
+                except Exception:
+                    pass
+                logger.warning(
+                    "  ➜ [共享资源删除善后] 中心下架失败，保留 active 等维护任务重试: id=%s, kind=%s, center=%s, title=%s, err=%s",
+                    local_id, source_kind, center_source_id, title, e,
+                )
+                continue
+
+        shared_share_db.disable_local_source(local_id, reason=reason, center_response=center_resp)
+        disabled += 1
+        items.append({'id': local_id, 'source_kind': source_kind, 'center_source_id': center_source_id, 'title': title, 'reason': reason})
+        logger.info(
+            "  ➜ [共享资源删除善后] 已实时下架失效共享源: id=%s, kind=%s, center=%s, title=%s, reason=%s",
+            local_id, source_kind, center_source_id or '-', title, reason,
+        )
+
+    return {'ok': failed == 0, 'matched': len(rows), 'disabled': disabled, 'failed': failed, 'items': items[:50]}
+
 def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     处理一个从 Emby 中被删除的媒体项，同步清除所有相关的数据。
@@ -661,7 +859,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
         def remove_id_from_metadata(cursor, target_emby_id):
             # 1. 查找包含该 ID 的记录 (锁定行)
             cursor.execute("""
-                SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number,
+                SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number, episode_number,
                        emby_item_ids_json, asset_details_json, file_sha1_json, file_pickcode_json
                 FROM media_metadata
                 WHERE emby_item_ids_json @> %s::jsonb
@@ -670,20 +868,29 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             row = cursor.fetchone()
 
             if not row:
-                return None, None, None, None, None
+                return None, None, None, None, None, None, [], []
 
             # 2. 解析 JSON 为 Python 列表
             emby_ids = row['emby_item_ids_json'] if isinstance(row['emby_item_ids_json'], list) else json.loads(row['emby_item_ids_json'] or '[]')
             
             if not isinstance(emby_ids, list) or target_emby_id not in emby_ids:
-                return None, None, None, None, None
+                return None, None, None, None, None, None, [], []
 
             assets = row['asset_details_json'] if isinstance(row['asset_details_json'], list) else json.loads(row['asset_details_json'] or '[]')
             sha1s = row['file_sha1_json'] if isinstance(row['file_sha1_json'], list) else json.loads(row['file_sha1_json'] or '[]')
             pcs = row['file_pickcode_json'] if isinstance(row['file_pickcode_json'], list) else json.loads(row['file_pickcode_json'] or '[]')
 
-            # 3. 找到目标 ID 的索引并移除
+            # 3. 找到目标 ID 的索引并移除，同时记录被删版本的指纹，给共享资源实时下架用。
             idx = emby_ids.index(target_emby_id)
+            removed_sha1s = []
+            removed_pcs = []
+            if isinstance(sha1s, list) and idx < len(sha1s):
+                sha1 = _norm_sha1_for_shared_cleanup(sha1s[idx])
+                if sha1:
+                    removed_sha1s.append(sha1)
+            if isinstance(pcs, list) and idx < len(pcs) and pcs[idx]:
+                removed_pcs.append(str(pcs[idx]).strip())
+
             emby_ids.pop(idx)
             
             # 安全移除其他三个数组的对应项 (防止越界报错)
@@ -708,7 +915,16 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 row['tmdb_id'], row['item_type']
             ))
 
-            return len(emby_ids), row['tmdb_id'], row['item_type'], row['parent_series_tmdb_id'], row['season_number']
+            return (
+                len(emby_ids),
+                row['tmdb_id'],
+                row['item_type'],
+                row['parent_series_tmdb_id'],
+                row['season_number'],
+                row.get('episode_number'),
+                removed_sha1s,
+                removed_pcs,
+            )
 
         # ======================================================================
         # 开始处理
@@ -717,21 +933,33 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
         target_tmdb_id_for_full_cleanup: Optional[str] = None
         target_item_type_for_full_cleanup: Optional[str] = None
         cascaded_cleanup_info = None
+        shared_cleanup_contexts: List[Dict[str, Any]] = []
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 
                 # --- 执行移除操作 ---
-                remaining_count, tmdb_id, db_item_type, parent_tmdb_id, season_num = remove_id_from_metadata(cursor, item_id)
+                remaining_count, tmdb_id, db_item_type, parent_tmdb_id, season_num, episode_num, removed_sha1s, removed_pcs = remove_id_from_metadata(cursor, item_id)
 
                 if remaining_count is None:
                     logger.warning(f"  ➜ 在数据库中未找到包含 Emby ID {item_id} 的记录，无需清理。")
                     return None
 
+                if removed_sha1s:
+                    _append_shared_cleanup_context(
+                        shared_cleanup_contexts,
+                        scope='sha1',
+                        reason='deleted_sha1',
+                        sha1s=removed_sha1s,
+                        tmdb_id=tmdb_id,
+                        item_type=db_item_type,
+                    )
+
                 # --- 情况 A: 还有其他版本存在 ---
                 if remaining_count > 0:
                     logger.info(f"  ➜ 媒体项 '{item_name}' (TMDB: {tmdb_id}) 移除了一个版本，但仍有 {remaining_count} 个版本在库中。")
                     conn.commit()
+                    _cleanup_shared_sources_after_media_delete(shared_cleanup_contexts)
                     return None
 
                 # --- 情况 B: 所有版本都已删除 (remaining_count == 0) ---
@@ -747,9 +975,30 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if db_item_type in ['Movie', 'Series']:
                     target_tmdb_id_for_full_cleanup = tmdb_id
                     target_item_type_for_full_cleanup = db_item_type
+                    if db_item_type == 'Movie':
+                        _append_shared_cleanup_context(
+                            shared_cleanup_contexts,
+                            scope='movie',
+                            reason='movie_offline',
+                            tmdb_id=tmdb_id,
+                        )
+                    else:
+                        _append_shared_cleanup_context(
+                            shared_cleanup_contexts,
+                            scope='series',
+                            reason='series_offline',
+                            tmdb_id=tmdb_id,
+                        )
 
                 elif db_item_type == 'Season':
                     logger.info(f"  ➜ 第 {season_num} 季已完全删除，正在检查父剧集 (TMDB: {parent_tmdb_id})...")
+                    _append_shared_cleanup_context(
+                        shared_cleanup_contexts,
+                        scope='season',
+                        reason='season_offline',
+                        parent_tmdb_id=parent_tmdb_id,
+                        season_number=season_num,
+                    )
                     
                     # ★ 同步清空指纹数组
                     cursor.execute(
@@ -780,6 +1029,15 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         target_item_type_for_full_cleanup = 'Series'
 
                 elif db_item_type == 'Episode':
+                    _append_shared_cleanup_context(
+                        shared_cleanup_contexts,
+                        scope='episode',
+                        reason='episode_offline',
+                        tmdb_id=tmdb_id,
+                        parent_tmdb_id=parent_tmdb_id,
+                        season_number=season_num,
+                        episode_number=episode_num,
+                    )
                     cursor.execute(
                         """
                         SELECT 1 
@@ -796,6 +1054,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                     if not has_episodes_in_season:
                         logger.info(f"  ➜ 第 {season_num} 季已无任何在库分集，标记该季为离线。")
+                        _append_shared_cleanup_context(
+                            shared_cleanup_contexts,
+                            scope='season',
+                            reason='season_empty',
+                            parent_tmdb_id=parent_tmdb_id,
+                            season_number=season_num,
+                        )
                         # ★ 同步清空指纹数组
                         cursor.execute(
                             """
@@ -838,6 +1103,12 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         logger.warning(f"  ➜ 父剧集已无任何在库分集，将触发整剧清理。")
                         target_tmdb_id_for_full_cleanup = parent_tmdb_id
                         target_item_type_for_full_cleanup = 'Series'
+                        _append_shared_cleanup_context(
+                            shared_cleanup_contexts,
+                            scope='series',
+                            reason='series_empty',
+                            tmdb_id=parent_tmdb_id,
+                        )
 
                 # ======================================================================
                 # 步骤 2: 执行统一的“完全清理” (针对整部剧/电影离线)
@@ -887,6 +1158,12 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     )
 
                     if target_item_type_for_full_cleanup == 'Series':
+                        _append_shared_cleanup_context(
+                            shared_cleanup_contexts,
+                            scope='series',
+                            reason='series_offline',
+                            tmdb_id=target_tmdb_id_for_full_cleanup,
+                        )
                         # ★ 同步清空指纹数组
                         cursor.execute(
                             """
@@ -974,6 +1251,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 # 提交事务
                 conn.commit()
 
+        shared_cleanup_result = _cleanup_shared_sources_after_media_delete(shared_cleanup_contexts)
+        if cascaded_cleanup_info is not None:
+            cascaded_cleanup_info['shared_cleanup'] = shared_cleanup_result
         return cascaded_cleanup_info
 
     except Exception as e:

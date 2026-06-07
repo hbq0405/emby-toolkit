@@ -2206,82 +2206,99 @@ def _sync_center_credit() -> Dict[str, Any]:
     return {'snapshot': saved, 'synced_ledger': synced}
 
 
-def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
-    """把维护任务的完整返回值压缩成人能看的单行摘要。
+def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
+    """维护任务里的轻量离线清理。
 
-    完整 snapshot / raw_json 仍然保留在返回值里，供前端或调用方使用；
-    日志只输出关键计数和异常，避免把中心 me/stats/datetime 全量刷屏。
+    只用本地共享索引里的 SHA1 反查 media_metadata.in_library=true。
+    不访问 115，不走 collect_files_for_candidate，不触发指纹修复。
     """
-    result = result if isinstance(result, dict) else {}
-    parts: List[str] = []
+    rows = shared_share_db.list_offline_local_sources(limit=limit)
+    if not rows:
+        return {'ok': True, 'offline_found': 0, 'disabled': 0, 'failed': 0}
 
-    listener = result.get('device_event_listener')
-    if listener is not None:
-        parts.append(f"监听={'已启动' if listener else '未启动'}")
-    if result.get('listener_error'):
-        parts.append(f"监听异常={str(result.get('listener_error'))[:160]}")
+    client = SharedCenterClient()
+    disabled = 0
+    failed = 0
+    items = []
+    for row in rows:
+        local_id = int(row.get('id') or 0)
+        source_kind = str(row.get('source_kind') or '').strip()
+        center_source_id = str(row.get('center_source_id') or '').strip()
+        title = str(row.get('title') or row.get('file_name') or row.get('tmdb_id') or local_id)
+        reason = str(row.get('offline_reason') or 'sha1_not_in_library')
+        msg = f'local library removed or replaced: {reason}'
+        center_resp = {}
 
-    credit_result = result.get('credit') if isinstance(result.get('credit'), dict) else {}
-    snapshot = credit_result.get('snapshot') if isinstance(credit_result.get('snapshot'), dict) else {}
-    raw_json = snapshot.get('raw_json') if isinstance(snapshot.get('raw_json'), dict) else {}
-    me = raw_json.get('me') if isinstance(raw_json.get('me'), dict) else {}
-    stats = raw_json.get('stats') if isinstance(raw_json.get('stats'), dict) else {}
+        if center_source_id:
+            try:
+                center_resp = client.disable_source(source_kind, center_source_id, message=msg) or {}
+                if center_resp.get('ok') is False:
+                    raise RuntimeError(center_resp.get('message') or center_resp.get('error') or center_resp)
+            except Exception as e:
+                failed += 1
+                try:
+                    shared_share_db.update_local_source(local_id, last_error=f'中心下架失败: {e}')
+                except Exception:
+                    pass
+                logger.warning(
+                    "  ➜ [共享资源维护] 本机失效共享源中心下架失败，保留 active 等下次重试: "
+                    "id=%s, kind=%s, center=%s, title=%s, err=%s",
+                    local_id,
+                    source_kind,
+                    center_source_id,
+                    title,
+                    e,
+                )
+                continue
 
-    def _first_value(*values):
-        for value in values:
-            if value not in (None, ''):
-                return value
-        return None
+        shared_share_db.disable_local_source(local_id, reason=reason, center_response=center_resp)
+        disabled += 1
+        item = {
+            'id': local_id,
+            'source_kind': source_kind,
+            'center_source_id': center_source_id,
+            'title': title,
+            'reason': reason,
+            'total_files': int(row.get('total_files') or 0),
+            'live_files': int(row.get('live_files') or 0),
+        }
+        items.append(item)
+        logger.info(
+            "  ➜ [共享资源维护] 已下架本机失效共享源: id=%s, kind=%s, center=%s, title=%s, files=%s/%s, reason=%s",
+            local_id,
+            source_kind,
+            center_source_id or '-',
+            title,
+            item['live_files'],
+            item['total_files'],
+            reason,
+        )
 
-    credit = _first_value(snapshot.get('credit'), me.get('credit'))
-    if credit is not None:
-        parts.append(f"贡献值={_safe_int(credit, 0)}")
+    return {'ok': failed == 0, 'offline_found': len(rows), 'disabled': disabled, 'failed': failed, 'items': items[:50]}
 
-    devices = _first_value(snapshot.get('remote_devices'), stats.get('devices'))
-    if devices is not None:
-        parts.append(f"设备={_safe_int(devices, 0)}")
 
-    shared_total = _first_value(snapshot.get('shared_sources'))
-    movie_sources = _safe_int(stats.get('movie_sources'), 0)
-    episode_sources = _safe_int(stats.get('episode_sources'), 0)
-    completed_season_sources = _safe_int(stats.get('completed_season_sources'), 0)
-    season_hubs = _safe_int(stats.get('season_hubs'), 0)
-    if shared_total is not None:
-        detail = []
-        if movie_sources:
-            detail.append(f"电影{movie_sources}")
-        if episode_sources:
-            detail.append(f"单集{episode_sources}")
-        if completed_season_sources:
-            detail.append(f"完结季{completed_season_sources}")
-        if season_hubs:
-            detail.append(f"季Hub{season_hubs}")
-        parts.append(f"资源={_safe_int(shared_total, 0)}" + (f"（{'/'.join(detail)}）" if detail else ''))
-
-    raw_ffprobe = _first_value(snapshot.get('raw_ffprobe'), stats.get('raw_ffprobe'))
-    if raw_ffprobe is not None:
-        parts.append(f"RAW={_safe_int(raw_ffprobe, 0)}")
-
-    wanted_gaps = _first_value(snapshot.get('wanted_gaps'), stats.get('active_gap_devices'))
-    if wanted_gaps is not None:
-        parts.append(f"缺口={_safe_int(wanted_gaps, 0)}")
-
-    pending_events = _first_value(stats.get('pending_events'))
-    if pending_events is not None:
-        parts.append(f"待事件={_safe_int(pending_events, 0)}")
-
-    active_share_requests = _first_value(stats.get('active_share_requests'))
-    if active_share_requests is not None:
-        parts.append(f"求分享={_safe_int(active_share_requests, 0)}")
-
-    synced_ledger = _first_value(credit_result.get('synced_ledger'))
-    if synced_ledger is not None:
-        parts.append(f"同步流水={_safe_int(synced_ledger, 0)}")
-
-    if result.get('credit_error'):
-        parts.append(f"贡献值同步异常={str(result.get('credit_error'))[:160]}")
-
-    return '，'.join(parts) if parts else '无可用摘要'
+def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
+    result = result or {}
+    parts = [f"监听={'已启动' if result.get('device_event_listener') else '未启动'}"]
+    cleanup = result.get('offline_cleanup') if isinstance(result.get('offline_cleanup'), dict) else {}
+    if cleanup:
+        parts.append(f"失效清理={cleanup.get('disabled', 0)}/{cleanup.get('offline_found', 0)}")
+        if cleanup.get('failed'):
+            parts.append(f"下架失败={cleanup.get('failed')}")
+    credit = result.get('credit') if isinstance(result.get('credit'), dict) else {}
+    snapshot = credit.get('snapshot') if isinstance(credit.get('snapshot'), dict) else {}
+    if snapshot:
+        parts.append(f"贡献值={snapshot.get('credit', 0)}")
+        parts.append(f"资源={snapshot.get('shared_sources', 0)}")
+        parts.append(f"RAW={snapshot.get('raw_ffprobe', 0)}")
+        parts.append(f"缺口={snapshot.get('wanted_gaps', 0)}")
+        parts.append(f"设备={snapshot.get('remote_devices', 0)}")
+    if credit:
+        parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
+    for key in ('listener_error', 'offline_cleanup_error', 'credit_error'):
+        if result.get(key):
+            parts.append(f"{key}={result.get(key)}")
+    return '，'.join(parts)
 
 
 def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = False):
@@ -2294,6 +2311,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['device_event_listener'] = ensure_shared_device_event_listener()
     except Exception as e:
         result['listener_error'] = str(e)
+    try:
+        result['offline_cleanup'] = _cleanup_offline_local_sources(limit=300)
+    except Exception as e:
+        result['offline_cleanup_error'] = str(e)
     try:
         result['credit'] = _sync_center_credit()
     except Exception as e:
