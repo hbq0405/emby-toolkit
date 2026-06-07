@@ -574,6 +574,44 @@ def _center_nested_rows(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _bool_state(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'on', '启用', '开启', '是'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'off', '停用', '关闭', '否'):
+        return False
+    return None
+
+
+def _center_direct_flag_state(row: Dict[str, Any], flag_key: str, meta_key: str):
+    """只读取顶层/顶层摘要容器里的显式标签状态。
+
+    中心端会给聚合季包写入聚合后的 is_short_drama=false。
+    这时不能再递归子项，否则历史子项残留的 true 会把季包重新污染。
+    """
+    row = row if isinstance(row, dict) else {}
+    for container_key in (
+        '', meta_key, 'version_summary', 'summary_json', 'media_signature_json', 'raw_summary_json', 'rapid_meta_json'
+    ):
+        container = row if not container_key else _json_dict(row.get(container_key))
+        if not isinstance(container, dict):
+            continue
+        state = _bool_state(container.get(flag_key)) if flag_key in container else None
+        if state is not None:
+            return state
+        meta = _json_dict(container.get(meta_key))
+        state = _bool_state(meta.get(flag_key)) if flag_key in meta else None
+        if state is not None:
+            return state
+    return None
+
+
 def _center_flag_meta(row: Dict[str, Any], flag_key: str, meta_key: str) -> Dict[str, Any]:
     for part in _center_nested_rows(row):
         for container_key in (
@@ -608,6 +646,9 @@ def _center_source_is_clean_version(row: Dict[str, Any]) -> bool:
 
 
 def _center_source_is_short_drama(row: Dict[str, Any]) -> bool:
+    direct = _center_direct_flag_state(row, 'is_short_drama', 'short_drama_meta_json')
+    if direct is not None:
+        return bool(direct)
     return bool(_center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json'))
 
 
@@ -682,10 +723,15 @@ def api_center_sources():
             for key in ('versions', 'children', 'pack_items'):
                 if isinstance(row.get(key), list):
                     row[key] = [_decorate_center_row(x) for x in row.get(key) if isinstance(x, dict)]
-            short_meta = _center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json')
-            if short_meta:
-                row['is_short_drama'] = True
-                row['short_drama_meta_json'] = short_meta
+            short_direct = _center_direct_flag_state(row, 'is_short_drama', 'short_drama_meta_json')
+            if short_direct is False:
+                row['is_short_drama'] = False
+                row['short_drama_meta_json'] = row.get('short_drama_meta_json') or {'is_short_drama': False, 'manual_override': True}
+            else:
+                short_meta = _center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json')
+                if short_meta:
+                    row['is_short_drama'] = True
+                    row['short_drama_meta_json'] = short_meta
             animation_meta = _center_flag_meta(row, 'is_animation', 'animation_meta_json')
             if animation_meta:
                 row['is_animation'] = True
