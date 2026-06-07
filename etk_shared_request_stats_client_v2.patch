@@ -1,0 +1,50 @@
+diff --git a/emby-actor-ui/src/components/SharedResourceManagerPage.vue b/emby-actor-ui/src/components/SharedResourceManagerPage.vue
+index 993c465..fc5faa2 100644
+--- a/emby-actor-ui/src/components/SharedResourceManagerPage.vue
++++ b/emby-actor-ui/src/components/SharedResourceManagerPage.vue
+@@ -122,7 +122,7 @@
+               <n-button type="primary" :loading="requestLoading" @click="loadShareRequests">查询</n-button>
+               <n-button type="primary" @click="openShareRequestModal">
+                 <template #icon><n-icon :component="ShareIcon" /></template>
+-                求资源
++                求共享
+               </n-button>
+             </n-space>
+ 
+@@ -154,7 +154,7 @@
+                 </n-card>
+               </div>
+               <n-card v-else :bordered="false" class="empty-request-card">
+-                <n-text depth="3">暂无求共享。可以点击“求资源”发布一个悬赏需求。</n-text>
++                <n-text depth="3">暂无求共享。可以点击“求共享”发布一个悬赏需求。</n-text>
+               </n-card>
+             </n-spin>
+           </n-tab-pane>
+@@ -676,10 +676,10 @@ const statCards = computed(() => {
+   const shares = summary.value.shares || {};
+   const credit = summary.value.credit || {};
+   return [
+-    { key: 'credit', label: '贡献点', value: credit.credit ?? 0, desc: credit.device_id ? `设备 ${credit.device_id}` : '未同步' },
++    { key: 'credit', label: '贡献点', value: credit.credit ?? 0, desc: `${credit.remote_devices ?? 0} 个设备` },
+     { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效共享` },
+     { key: 'remote_sources', label: '中心资源', value: credit.shared_sources ?? 0, desc: `${credit.raw_ffprobe ?? 0} 条媒体信息` },
+-    { key: 'remote_gaps', label: '待补资源', value: credit.wanted_gaps ?? 0, desc: `${credit.remote_devices ?? 0} 个设备` },
++    { key: 'share_requests', label: '求共享', value: credit.share_requests ?? credit.wanted_gaps ?? 0, desc: '活跃求共享需求' },
+   ];
+ });
+ 
+diff --git a/routes/shared_resource.py b/routes/shared_resource.py
+index 8d3aef8..5675688 100644
+--- a/routes/shared_resource.py
++++ b/routes/shared_resource.py
+@@ -107,7 +107,9 @@ def _fetch_center_credit() -> Dict[str, Any]:
+     snapshot = {
+         'device_id': me.get('id'),
+         'credit': int(me.get('credit') or 0),
+-        'wanted_gaps': int(stats.get('active_gap_devices') or 0),
++        # Rapid v2 入库即共享后，普通缺口数量不再作为首页统计；首页展示主动“求共享”数量。
++        'wanted_gaps': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
++        'share_requests': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
+         'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0) + int(stats.get('completed_season_sources') or 0),
+         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
+         'remote_devices': int(stats.get('devices') or 0),

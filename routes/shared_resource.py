@@ -109,7 +109,9 @@ def _fetch_center_credit() -> Dict[str, Any]:
     snapshot = {
         'device_id': me.get('id'),
         'credit': int(me.get('credit') or 0),
-        'wanted_gaps': int(stats.get('active_gap_devices') or 0),
+        # Rapid v2 入库即共享后，普通缺口数量不再作为首页统计；首页展示主动“求共享”数量。
+        'wanted_gaps': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
+        'share_requests': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
         'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0) + int(stats.get('completed_season_sources') or 0),
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
         'remote_devices': int(stats.get('devices') or 0),
