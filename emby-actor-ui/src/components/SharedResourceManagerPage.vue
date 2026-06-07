@@ -487,6 +487,8 @@ const shareStatusOptions = [
 const centerStatusOptions = [
   { label: '全部', value: 'alive,available' },
   { label: '仅可用', value: 'alive' },
+  { label: '已完结', value: 'completed_certified' },
+  { label: '动漫', value: 'animation' },
   { label: '纯净版', value: 'clean_version' },
   { label: '短剧', value: 'short_drama' },
 ];
@@ -1211,7 +1213,7 @@ const centerCleanVersionTooltip = (row) => {
 const centerNestedParts = (row) => {
   const parts = [];
   if (row && typeof row === 'object') parts.push(row);
-  for (const key of ['version_summary', 'summary_json', 'media_signature_json']) {
+  for (const key of ['version_summary', 'summary_json', 'media_signature_json', 'raw_summary_json', 'rapid_meta_json', 'clean_version_meta_json', 'short_drama_meta_json', 'animation_meta_json', 'completed_certified_meta_json']) {
     const v = row?.[key];
     if (v && typeof v === 'object') parts.push(v);
   }
@@ -1223,12 +1225,49 @@ const centerNestedParts = (row) => {
           if (x.version_summary && typeof x.version_summary === 'object') parts.push(x.version_summary);
           if (x.summary_json && typeof x.summary_json === 'object') parts.push(x.summary_json);
           if (x.media_signature_json && typeof x.media_signature_json === 'object') parts.push(x.media_signature_json);
+          if (x.rapid_meta_json && typeof x.rapid_meta_json === 'object') parts.push(x.rapid_meta_json);
+          if (x.animation_meta_json && typeof x.animation_meta_json === 'object') parts.push(x.animation_meta_json);
+          if (x.completed_certified_meta_json && typeof x.completed_certified_meta_json === 'object') parts.push(x.completed_certified_meta_json);
         }
       });
     }
   }
   return parts;
 };
+const centerCompletedCertifiedMeta = (row) => {
+  for (const part of centerNestedParts(row)) {
+    const meta = part?.completed_certified_meta_json || part?.completed_certified_meta || {};
+    if (part?.is_completed_certified || meta?.is_completed_certified) return meta && typeof meta === 'object' ? meta : { is_completed_certified: true };
+  }
+  if (centerIsCompletedPack(row)) return { is_completed_certified: true, certified_by: 'completed_season_source' };
+  return {};
+};
+const isCenterCompletedCertified = (row) => Boolean(centerCompletedCertifiedMeta(row).is_completed_certified || row?.is_completed_certified);
+const centerCompletedCertifiedTooltip = (row) => {
+  const meta = centerCompletedCertifiedMeta(row);
+  const parts = ['已通过一致性校验'];
+  const fileCount = meta.file_count ?? row?.file_count ?? row?.pack_item_count;
+  const expected = meta.expected_episode_count ?? row?.expected_episode_count ?? row?.progress_total;
+  if (fileCount != null && expected != null) parts.push(`集数 ${fileCount}/${expected}`);
+  if (meta.message) parts.push(String(meta.message));
+  return parts.join(' · ');
+};
+const centerAnimationMeta = (row) => {
+  for (const part of centerNestedParts(row)) {
+    const meta = part?.animation_meta_json || part?.animation_meta || {};
+    if (part?.is_animation || meta?.is_animation || part?.genres_json_contains_animation) return meta && typeof meta === 'object' ? meta : { is_animation: true };
+  }
+  return {};
+};
+const isCenterAnimation = (row) => Boolean(centerAnimationMeta(row).is_animation || row?.is_animation);
+const centerAnimationTooltip = (row) => {
+  const meta = centerAnimationMeta(row);
+  const parts = ['动漫'];
+  if (meta.reason === 'tmdb_genres_animation') parts.push('TMDb 类型命中动画');
+  if (meta.source) parts.push(String(meta.source));
+  return parts.join(' · ');
+};
+
 const centerShortDramaMeta = (row) => {
   for (const part of centerNestedParts(row)) {
     const meta = part?.short_drama_meta_json || part?.short_drama_meta || {};
@@ -1252,6 +1291,20 @@ const centerTypeCell = (row) => {
 
   if (centerIsOngoingHub(row)) {
     tags.push(h(NTag, { size: 'small', round: true, type: 'info', class: 'center-flag-tag' }, { default: () => '连载中' }));
+  }
+
+  if (isCenterCompletedCertified(row) && !centerIsOngoingHub(row)) {
+    tags.push(h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h(NTag, { size: 'small', round: true, type: 'success', class: 'center-flag-tag' }, { default: () => '已完结' }),
+      default: () => centerCompletedCertifiedTooltip(row),
+    }));
+  }
+
+  if (isCenterAnimation(row)) {
+    tags.push(h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h(NTag, { size: 'small', round: true, type: 'info', class: 'center-flag-tag' }, { default: () => '动漫' }),
+      default: () => centerAnimationTooltip(row),
+    }));
   }
 
   if (isCenterCleanVersion(row)) {

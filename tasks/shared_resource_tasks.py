@@ -1061,10 +1061,18 @@ def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any])
     return True
 
 
-def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False) -> Dict[str, Any]:
+def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, animation_meta: Dict[str, Any] = None) -> Dict[str, Any]:
     raw = _raw_for_file(file_info) if raw_uploaded else {}
     sig = _media_signature(raw, file_info) if raw else {}
+    sig = _apply_animation_tag(sig, animation_meta)
     preid = _ensure_file_preid(file_info)
+    rapid_meta = {
+        'fid': file_info.get('fid') or file_info.get('file_id') or '',
+        'pick_code': file_info.get('pick_code') or file_info.get('pc') or '',
+        'relative_path': file_info.get('relative_path') or '',
+        'preid': preid or '',
+    }
+    rapid_meta = _apply_animation_tag(rapid_meta, animation_meta)
     return {
         'sha1': _norm_sha1(file_info.get('sha1')),
         'preid': preid or None,
@@ -1073,12 +1081,7 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False) 
         'quality': sig.get('resolution') or '',
         'has_raw_ffprobe': bool(raw_uploaded),
         'media_signature_json': sig,
-        'rapid_meta_json': {
-            'fid': file_info.get('fid') or file_info.get('file_id') or '',
-            'pick_code': file_info.get('pick_code') or file_info.get('pc') or '',
-            'relative_path': file_info.get('relative_path') or '',
-            'preid': preid or '',
-        },
+        'rapid_meta_json': rapid_meta,
     }
 
 
@@ -1261,6 +1264,52 @@ def _short_drama_source_has_animation_genre(source_info: Dict[str, Any]) -> bool
         )
         _SHORT_DRAMA_GENRE_CACHE[cache_key] = False
         return False
+
+
+def _animation_meta_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """生成中心资源库动漫标签。
+
+    复用短剧动画门禁的 TMDb genres_json 判断：只要媒体类型包含 TMDb 动画类型
+    id=16 / Animation / 动画 / 动漫，就给中心源写入 is_animation。
+    标签写进 media_signature_json / rapid_meta_json，避免中心端额外建列。
+    """
+    hit = _short_drama_source_has_animation_genre(candidate or {})
+    return {
+        'is_animation': bool(hit),
+        'animation_checked': True,
+        'reason': 'tmdb_genres_animation' if hit else 'tmdb_genres_not_animation',
+        'source': 'local_media_metadata.genres_json',
+        'genres_json_contains_animation': bool(hit),
+    }
+
+
+def _apply_animation_tag(meta: Dict[str, Any], animation_meta: Dict[str, Any] = None) -> Dict[str, Any]:
+    out = dict(meta or {})
+    animation_meta = animation_meta if isinstance(animation_meta, dict) else {}
+    if animation_meta.get('animation_checked'):
+        out['is_animation'] = bool(animation_meta.get('is_animation'))
+        out['animation_meta_json'] = animation_meta
+    labels = list(out.get('tag_labels') or []) if isinstance(out.get('tag_labels'), list) else []
+    if animation_meta.get('is_animation') and '动漫' not in labels:
+        labels.append('动漫')
+    if labels:
+        out['tag_labels'] = labels
+    return out
+
+
+def _apply_completed_certified_tag(meta: Dict[str, Any], completed_meta: Dict[str, Any] = None) -> Dict[str, Any]:
+    out = dict(meta or {})
+    completed_meta = completed_meta if isinstance(completed_meta, dict) else {}
+    if completed_meta.get('is_completed_certified'):
+        out['is_completed_certified'] = True
+        out['is_completed'] = True
+        out['completed_certified_meta_json'] = completed_meta
+        labels = list(out.get('tag_labels') or []) if isinstance(out.get('tag_labels'), list) else []
+        if '已完结' not in labels:
+            labels.append('已完结')
+        out['tag_labels'] = labels
+    return out
+
 
 def _short_drama_meta_from_runtime(
     runtime_minutes: float,
@@ -1892,6 +1941,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
     client = SharedCenterClient()
     raw_batch_result = _upload_raw_batch(client, files)
     uploaded_sha1s = raw_batch_result.get('uploaded') or {}
+    animation_meta = _animation_meta_for_candidate(candidate)
     results = []
     uploaded = int(raw_batch_result.get('count') or 0)
     errors = list(raw_batch_result.get('errors') or [])
@@ -1911,7 +1961,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         try:
             sha_for_raw = _norm_sha1(f.get('sha1'))
             raw_ok = bool(uploaded_sha1s.get(sha_for_raw))
-            common = _file_payload_common(f, raw_uploaded=raw_ok)
+            common = _file_payload_common(f, raw_uploaded=raw_ok, animation_meta=animation_meta)
             if item_type == 'Movie':
                 payload = {
                     'tmdb_id': tmdb_id,
@@ -1980,11 +2030,12 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 continue
             raw = _raw_for_file(f)
             sig = _media_signature(raw, f) if raw else {}
+            sig = _apply_animation_tag(sig, animation_meta)
             preid = _ensure_file_preid(f)
             completed_files.append({
                 'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'preid': preid or None, 'size': _file_size_from_cache(f) or None,
                 'file_name': f.get('file_name') or '', 'quality': sig.get('resolution') or '', 'media_signature_json': sig,
-                'rapid_meta_json': {'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path'), 'preid': preid or ''},
+                'rapid_meta_json': _apply_animation_tag({'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path'), 'preid': preid or ''}, animation_meta),
             })
         expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes'), 0)
         consistency = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
@@ -1997,6 +2048,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 break
         short_detection = _detect_short_drama_for_completed_season(candidate, completed_files, files)
         common_signature = dict(common_signature or {})
+        common_signature = _apply_animation_tag(common_signature, animation_meta)
         common_signature['is_short_drama'] = bool(short_detection.get('is_short_drama'))
         common_signature['short_drama_meta_json'] = short_detection
         if isinstance(consistency, dict) and consistency:
@@ -2038,6 +2090,22 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             )
         is_clean_version = bool(clean_detection.get('is_clean_version'))
         clean_confidence = clean_detection.get('clean_version_confidence') if clean_detection.get('clean_version_checked') else None
+        is_completed_certified = status.get('status') == 'available'
+        completed_certified_meta = {
+            'is_completed_certified': bool(is_completed_certified),
+            'certified_by': 'season_consistency_check',
+            'status': status.get('status'),
+            'message': status.get('message') or '',
+            'expected_episode_count': expected or None,
+            'file_count': len(completed_files),
+            'consistency': consistency if isinstance(consistency, dict) else {},
+        } if is_completed_certified else {}
+        common_signature = _apply_completed_certified_tag(common_signature, completed_certified_meta)
+        season_rapid_meta = _apply_animation_tag({
+            'root_fid': root.get('root_fid'),
+            'root_name': root.get('root_name'),
+        }, animation_meta)
+        season_rapid_meta = _apply_completed_certified_tag(season_rapid_meta, completed_certified_meta)
         try:
             payload = {
                 'tmdb_id': tmdb_id,
@@ -2054,6 +2122,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'clean_version_confidence': clean_confidence,
                 'clean_version_meta_json': clean_detection,
                 'media_signature_json': common_signature,
+                'rapid_meta_json': season_rapid_meta,
                 'files': completed_files,
             }
             completed_resp = client.register_completed_season_source(payload)
@@ -2066,7 +2135,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'status': status['status'], 'center_status': 'reported', 'manifest_hash': payload['manifest_hash'],
                 'file_count': len(completed_files), 'total_size': sum(_safe_int(x.get('size'), 0) for x in completed_files),
                 'is_clean_version': payload['is_clean_version'], 'clean_version_confidence': payload['clean_version_confidence'],
-                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'clean_detection': clean_detection, 'short_detection': short_detection, 'root': root},
+                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'clean_detection': clean_detection, 'short_detection': short_detection, 'animation_meta': animation_meta, 'completed_certified_meta': completed_certified_meta, 'root': root},
             })
             shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': bool(_raw_for_file(f))} for f in files])
             if status.get('status') == 'available':
