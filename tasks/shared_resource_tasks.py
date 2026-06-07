@@ -691,7 +691,7 @@ def _media_signature(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict
         'audio_list': [x for x in audio_list if x.get('display') or x.get('codec') or x.get('language')],
         'subtitle_list': [x for x in subtitle_list if x.get('display') or x.get('codec') or x.get('language')],
     }
-    return _apply_short_drama_meta(sig, raw)
+    return _apply_short_drama_meta(sig, raw, source)
 
 
 def _center_format_rate(value: Any) -> str:
@@ -945,7 +945,7 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         'subtitles': [{'display': x} for x in subtitle_list[:24]],
         'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
     }
-    return _apply_short_drama_meta(summary, raw)
+    return _apply_short_drama_meta(summary, raw, source)
 
 
 def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, Any], final_size: int = 0) -> Dict[str, Any]:
@@ -1137,9 +1137,151 @@ def _physical_runtime_minutes_from_raw(raw: Dict[str, Any]) -> float:
     return 0.0
 
 
-def _short_drama_meta_from_runtime(runtime_minutes: float, *, source: str = 'raw_ffprobe') -> Dict[str, Any]:
+
+_SHORT_DRAMA_GENRE_CACHE: Dict[str, bool] = {}
+
+
+def _json_list(value: Any) -> List[Any]:
+    if value in (None, '', []):
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return [value]
+    if isinstance(value, dict):
+        if isinstance(value.get('genres'), list):
+            return value.get('genres') or []
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _genres_include_animation(genres_json: Any) -> bool:
+    """判断 TMDb genres_json 是否包含动画。
+
+    兼容常见格式：[{"id": 16, "name": "动画"}]、[{"id": 16, "name": "Animation"}]、
+    以及老数据里可能出现的纯字符串数组。只有命中动画类型时才拦截短剧判断，
+    genres_json 缺失时不扩大误杀。
+    """
+    for item in _json_list(genres_json):
+        values = []
+        if isinstance(item, dict):
+            for key in ('id', 'genre_id', 'tmdb_id'):
+                if item.get(key) not in (None, ''):
+                    values.append(item.get(key))
+            for key in ('name', 'Name', 'title', 'Title', 'zh_name', 'en_name'):
+                if item.get(key) not in (None, ''):
+                    values.append(item.get(key))
+        else:
+            values.append(item)
+        for value in values:
+            text = str(value or '').strip()
+            if not text:
+                continue
+            if text == '16':
+                return True
+            low = text.lower()
+            if low in {'animation', 'animated'} or '动画' in text or '動漫' in text or '动漫' in text:
+                return True
+    return False
+
+
+def _short_drama_source_has_animation_genre(source_info: Dict[str, Any]) -> bool:
+    """短剧识别前置门禁：genres_json 只要包含动画，就不允许打短剧标签。"""
+    source_info = source_info if isinstance(source_info, dict) else {}
+
+    # 先吃调用方已经带进来的完整媒体行，避免不必要查库。
+    for value in (
+        source_info.get('genres_json'),
+        (source_info.get('raw_json') or {}).get('genres_json') if isinstance(source_info.get('raw_json'), dict) else None,
+        ((source_info.get('raw_json') or {}).get('media_row') or {}).get('genres_json')
+        if isinstance(source_info.get('raw_json'), dict) and isinstance((source_info.get('raw_json') or {}).get('media_row'), dict)
+        else None,
+    ):
+        if _genres_include_animation(value):
+            return True
+
+    item_type = str(source_info.get('item_type') or source_info.get('share_item_type') or '').strip()
+    tmdb_id = str(source_info.get('tmdb_id') or source_info.get('share_tmdb_id') or '').strip()
+    parent = str(source_info.get('parent_series_tmdb_id') or source_info.get('series_tmdb_id') or '').strip()
+    if item_type in ('Series', 'Season', 'Episode') and not parent:
+        parent = tmdb_id
+    if not tmdb_id and parent:
+        tmdb_id = parent
+    if not tmdb_id and not parent:
+        return False
+
+    cache_key = f"{item_type}|{tmdb_id}|{parent}"
+    if cache_key in _SHORT_DRAMA_GENRE_CACHE:
+        return bool(_SHORT_DRAMA_GENRE_CACHE.get(cache_key))
+
+    try:
+        clauses = []
+        args = []
+        if item_type == 'Movie' and tmdb_id:
+            clauses.append("(tmdb_id=%s AND item_type='Movie')")
+            args.append(tmdb_id)
+        else:
+            # 剧集/季/集都以 Series genres_json 为准；同时兼容 Season/Episode 行自身带 genres_json 的情况。
+            if parent:
+                clauses.append("(tmdb_id=%s AND item_type='Series')")
+                args.append(parent)
+                clauses.append("(parent_series_tmdb_id=%s AND item_type IN ('Season','Episode'))")
+                args.append(parent)
+            if tmdb_id and tmdb_id != parent:
+                clauses.append("(tmdb_id=%s AND item_type IN ('Series','Season','Episode'))")
+                args.append(tmdb_id)
+        if not clauses:
+            _SHORT_DRAMA_GENRE_CACHE[cache_key] = False
+            return False
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT genres_json
+                    FROM media_metadata
+                    WHERE ({' OR '.join(clauses)})
+                      AND genres_json IS NOT NULL
+                    LIMIT 30
+                    """,
+                    args,
+                )
+                hit = any(_genres_include_animation((row or {}).get('genres_json')) for row in (cur.fetchall() or []))
+                _SHORT_DRAMA_GENRE_CACHE[cache_key] = bool(hit)
+                return bool(hit)
+    except Exception as e:
+        logger.debug(
+            "  ➜ [共享资源] 检查短剧动画类型门禁失败，按非动画继续: tmdb=%s, parent=%s, item_type=%s, err=%s",
+            tmdb_id,
+            parent,
+            item_type,
+            e,
+        )
+        _SHORT_DRAMA_GENRE_CACHE[cache_key] = False
+        return False
+
+def _short_drama_meta_from_runtime(
+    runtime_minutes: float,
+    *,
+    source: str = 'raw_ffprobe',
+    animation_genre: bool = False,
+) -> Dict[str, Any]:
     runtime = float(runtime_minutes or 0)
     checked = runtime > 0
+    if animation_genre:
+        return {
+            'is_short_drama': False,
+            'short_drama_checked': True,
+            'reason': 'animation_genre_skipped',
+            'runtime_minutes': round(runtime, 2) if checked else None,
+            'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+            'runtime_source': source,
+            'genre_gate_checked': True,
+            'genre_gate_passed': False,
+            'genres_json_contains_animation': True,
+        }
     is_short = bool(checked and runtime < _SHORT_DRAMA_MAX_RUNTIME_MINUTES)
     return {
         'is_short_drama': is_short,
@@ -1148,16 +1290,23 @@ def _short_drama_meta_from_runtime(runtime_minutes: float, *, source: str = 'raw
         'runtime_minutes': round(runtime, 2) if checked else None,
         'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
         'runtime_source': source,
+        'genre_gate_checked': True,
+        'genre_gate_passed': True,
+        'genres_json_contains_animation': False,
     }
 
 
-def _short_drama_meta_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
-    return _short_drama_meta_from_runtime(_physical_runtime_minutes_from_raw(raw), source='raw_ffprobe')
+def _short_drama_meta_from_raw(raw: Dict[str, Any], source_info: Dict[str, Any] = None) -> Dict[str, Any]:
+    return _short_drama_meta_from_runtime(
+        _physical_runtime_minutes_from_raw(raw),
+        source='raw_ffprobe',
+        animation_genre=_short_drama_source_has_animation_genre(source_info or {}),
+    )
 
 
-def _apply_short_drama_meta(summary: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_short_drama_meta(summary: Dict[str, Any], raw: Dict[str, Any], source_info: Dict[str, Any] = None) -> Dict[str, Any]:
     summary = summary if isinstance(summary, dict) else {}
-    meta = _short_drama_meta_from_raw(raw)
+    meta = _short_drama_meta_from_raw(raw, source_info=source_info)
     if meta.get('runtime_minutes') is not None:
         summary['duration_minutes'] = meta.get('runtime_minutes')
     summary['is_short_drama'] = bool(meta.get('is_short_drama'))
@@ -1165,7 +1314,19 @@ def _apply_short_drama_meta(summary: Dict[str, Any], raw: Dict[str, Any]) -> Dic
     return summary
 
 
-def _detect_short_drama_for_completed_season(completed_files: List[Dict[str, Any]], source_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _detect_short_drama_for_completed_season(candidate: Dict[str, Any], completed_files: List[Dict[str, Any]], source_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if _short_drama_source_has_animation_genre(candidate or {}):
+        return {
+            'is_short_drama': False,
+            'short_drama_checked': True,
+            'reason': 'animation_genre_skipped',
+            'comparable_count': 0,
+            'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+            'genre_gate_checked': True,
+            'genre_gate_passed': False,
+            'genres_json_contains_animation': True,
+        }
+
     raw_by_sha1 = {}
     for f in source_files or []:
         sha1 = _norm_sha1(f.get('sha1'))
@@ -1195,6 +1356,9 @@ def _detect_short_drama_for_completed_season(completed_files: List[Dict[str, Any
             'reason': 'missing_runtime',
             'comparable_count': 0,
             'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+            'genre_gate_checked': True,
+            'genre_gate_passed': True,
+            'genres_json_contains_animation': False,
         }
 
     hit_count = len([x for x in rows if x.get('short_drama_hit')])
@@ -1211,6 +1375,9 @@ def _detect_short_drama_for_completed_season(completed_files: List[Dict[str, Any
         'avg_runtime_minutes': round(avg_runtime, 2),
         'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
         'hit_ratio': _SHORT_DRAMA_HIT_RATIO,
+        'genre_gate_checked': True,
+        'genre_gate_passed': True,
+        'genres_json_contains_animation': False,
         'episodes': rows[:80],
     }
 
@@ -1384,9 +1551,10 @@ def _detect_clean_version_for_completed_season(
             'comparable_count': comparable,
         }
 
-    short_hits = [ep for ep in episode_rows if 0 < float(ep.get('actual_runtime_minutes') or 0) < _SHORT_DRAMA_MAX_RUNTIME_MINUTES]
+    animation_genre = _short_drama_source_has_animation_genre(candidate)
+    short_hits = [] if animation_genre else [ep for ep in episode_rows if 0 < float(ep.get('actual_runtime_minutes') or 0) < _SHORT_DRAMA_MAX_RUNTIME_MINUTES]
     short_required_hits = max(1, int(math.ceil(comparable * _SHORT_DRAMA_HIT_RATIO)))
-    is_short_drama = len(short_hits) >= short_required_hits
+    is_short_drama = bool((not animation_genre) and len(short_hits) >= short_required_hits)
     min_delta = _CLEAN_VERSION_SHORT_DRAMA_MIN_DELTA_MINUTES if is_short_drama else _CLEAN_VERSION_MIN_DELTA_MINUTES
     max_runtime_ratio = _CLEAN_VERSION_SHORT_DRAMA_MAX_RUNTIME_RATIO if is_short_drama else _CLEAN_VERSION_MAX_RUNTIME_RATIO
 
@@ -1397,7 +1565,7 @@ def _detect_clean_version_for_completed_season(
         delta = float(ep.get('delta_minutes') or 0)
         ratio = (actual / official) if official > 0 else 1.0
         ep['runtime_ratio'] = round(ratio, 4)
-        ep['short_drama_hit'] = bool(0 < actual < _SHORT_DRAMA_MAX_RUNTIME_MINUTES)
+        ep['short_drama_hit'] = bool((not animation_genre) and 0 < actual < _SHORT_DRAMA_MAX_RUNTIME_MINUTES)
         ep['clean_hit'] = bool(delta >= min_delta and ratio <= max_runtime_ratio)
         if ep['clean_hit']:
             hits.append(ep)
@@ -1424,6 +1592,9 @@ def _detect_clean_version_for_completed_season(
         'short_drama_hit_count': len(short_hits),
         'short_drama_required_hits': short_required_hits,
         'short_drama_max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+        'short_drama_genre_gate_checked': True,
+        'short_drama_genre_gate_passed': not animation_genre,
+        'genres_json_contains_animation': bool(animation_genre),
         'clean_version_confidence': confidence,
         'episodes': episode_rows[:80],
     }
@@ -1824,7 +1995,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             if sig:
                 common_signature = sig
                 break
-        short_detection = _detect_short_drama_for_completed_season(completed_files, files)
+        short_detection = _detect_short_drama_for_completed_season(candidate, completed_files, files)
         common_signature = dict(common_signature or {})
         common_signature['is_short_drama'] = bool(short_detection.get('is_short_drama'))
         common_signature['short_drama_meta_json'] = short_detection
