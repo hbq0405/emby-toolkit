@@ -375,7 +375,7 @@ const selectedShareRequestMedia = ref(null);
 const shareRequestQuote = ref(null);
 const shareRequestEpisodeText = ref('');
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
-const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
+const shareFilters = reactive({ keyword: '', status: 'usable', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '', status: 'alive,available', item_type: 'all', order_by: 'latest' });
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const requestStatusOptions = [
@@ -476,12 +476,12 @@ const shareRequestForm = reactive({
 });
 
 const shareStatusOptions = [
-  { label: '有效共享', value: 'active' }, 
-  { label: '全部状态', value: 'all' }, 
-  { label: '已登记', value: 'reported' },
-  { label: '部分登记', value: 'partial' }, 
-  { label: '失败/异常', value: 'failed' },
-  { label: '已取消', value: 'cancelled' },
+  { label: '有效共享', value: 'usable' },
+  { label: '全部状态', value: 'all' },
+  { label: '已上报中心', value: 'reported' },
+  { label: '本地未上报', value: 'local' },
+  { label: '不合格/异常', value: 'failed' },
+  { label: '已停用', value: 'disabled' },
 ];
 
 const centerStatusOptions = [
@@ -909,32 +909,85 @@ const shortLedgerHash = (value, length = 12) => {
 };
 
 const looksLikeShareRequestId = (value) => /^srq_[0-9a-f]/i.test(String(value || '').trim());
-const ledgerDisplayTitle = (row) => {
-  if (row?.title_display) return row.title_display;
+const ledgerCode = (row) => String(row?.event_type || row?.reason || '').trim().toLowerCase();
+const ledgerReasonCode = (row) => String(row?.reason || row?.event_type || '').trim().toLowerCase().replace(/^center_/, '');
+const isLedgerSignRow = (row) => ledgerCode(row).includes('rapid_sign') || ledgerReasonCode(row).startsWith('rapid_sign');
+const isLedgerConsumedRow = (row) => ledgerCode(row).includes('rapid_source_consumed') || ledgerReasonCode(row) === 'rapid_source_consumed' || ledgerCode(row).includes('shared_source_consumed') || ledgerReasonCode(row) === 'shared_source_consumed';
+const isLedgerServedRow = (row) => ledgerCode(row).includes('rapid_source_served') || ledgerReasonCode(row) === 'rapid_source_served' || ledgerCode(row).includes('shared_source_served') || ledgerReasonCode(row) === 'shared_source_served';
+const ledgerSxx = (value) => {
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n > 0 ? `S${String(Math.trunc(n)).padStart(2, '0')}` : '';
+};
+const ledgerExx = (value) => {
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n > 0 ? `E${String(Math.trunc(n)).padStart(2, '0')}` : '';
+};
+const ledgerContext = (row = {}) => {
   const raw = ledgerRawJson(row);
-  const media = raw.media && typeof raw.media === 'object' ? raw.media : {};
-  const request = raw.request && typeof raw.request === 'object' ? raw.request : {};
-  const source = raw.source && typeof raw.source === 'object' ? raw.source : {};
-  const sharedSource = raw.shared_source && typeof raw.shared_source === 'object' ? raw.shared_source : {};
-  const job = raw.job && typeof raw.job === 'object' ? raw.job : {};
-  const candidates = [
-    row?.title, row?.file_name, media.title, media.name, request.title, request.name,
-    source.title, source.name, source.file_name, sharedSource.title, sharedSource.name, sharedSource.file_name,
-    job.title, job.name, job.file_name, raw.title, raw.name, raw.file_name, row?.ref_id, row?.id,
-  ];
-  for (const item of candidates) {
-    const text = String(item || '').trim();
-    if (!text || looksLikeShareRequestId(text)) continue;
-    if (text.toLowerCase().startsWith('rapid_sign:')) {
-      const sha = text.split(':').find(x => /^[A-Fa-f0-9]{40}$/.test(x));
-      return sha ? `秒传签名：${shortLedgerHash(sha)}` : '秒传签名任务';
-    }
-    return text;
+  const center = (raw.center_ledger && typeof raw.center_ledger === 'object') ? raw.center_ledger : {};
+  const source = (raw.source && typeof raw.source === 'object') ? raw.source : {};
+  const sharedSource = (raw.shared_source && typeof raw.shared_source === 'object') ? raw.shared_source : {};
+  const media = (raw.media && typeof raw.media === 'object') ? raw.media : {};
+  const job = (raw.job && typeof raw.job === 'object') ? raw.job : {};
+  const first = (...values) => values.find(v => v !== undefined && v !== null && String(v).trim() !== '');
+  return {
+    title: first(row.title, center.title, media.title, source.title, sharedSource.title, job.title, raw.title, row.file_name, center.file_name, raw.file_name),
+    file_name: first(row.file_name, center.file_name, media.file_name, source.file_name, sharedSource.file_name, job.file_name, raw.file_name),
+    tmdb_id: first(row.tmdb_id, center.tmdb_id, media.tmdb_id, source.tmdb_id, sharedSource.tmdb_id, raw.tmdb_id),
+    item_type: first(row.item_type, center.item_type, media.item_type, source.item_type, sharedSource.item_type, raw.item_type),
+    source_kind: first(row.source_kind, center.source_kind, source.source_kind, sharedSource.source_kind, raw.source_kind),
+    season_number: first(row.season_number, center.season_number, media.season_number, source.season_number, sharedSource.season_number, raw.season_number),
+    episode_number: first(row.episode_number, center.episode_number, media.episode_number, source.episode_number, sharedSource.episode_number, raw.episode_number),
+    sha1: first(row.sha1, row.ledger_sha1, center.sha1, raw.sha1, raw.file_sha1, source.sha1, sharedSource.sha1, media.sha1),
+  };
+};
+const cleanLedgerTitleText = (value) => {
+  const text = String(value || '').trim();
+  if (!text || looksLikeShareRequestId(text)) return '';
+  if (/^(?:rapid_sign:)?[A-Fa-f0-9]{40}(?::.*)?$/.test(text)) return '';
+  if (text.toLowerCase().startsWith('rapid_sign:')) return '';
+  return text;
+};
+const appendLedgerSeasonEpisode = (base, row, { aggregate = false } = {}) => {
+  base = cleanLedgerTitleText(base);
+  if (!base) return '';
+  const ctx = ledgerContext(row);
+  const sxx = ledgerSxx(ctx.season_number);
+  const exx = ledgerExx(ctx.episode_number);
+  const hasEpisode = /\bS\d{1,3}\s*E\d{1,4}\b/i.test(base);
+  const hasSeason = /\bS\d{1,3}\b/i.test(base);
+  if (aggregate && isLedgerConsumedRow(row) && sxx && !hasSeason) return `${base} ${sxx}`;
+  if (isLedgerSignRow(row) && sxx && exx && !hasEpisode) return `${base} ${sxx}${exx}`;
+  if ((String(ctx.item_type || '').toLowerCase() === 'episode' || String(ctx.source_kind || '').toLowerCase() === 'episode') && sxx && exx && !hasEpisode) return `${base} ${sxx}${exx}`;
+  if ((String(ctx.item_type || '').toLowerCase() === 'season' || String(ctx.source_kind || '').toLowerCase() === 'completed_season') && sxx && !hasSeason) return `${base} ${sxx}`;
+  return base;
+};
+const ledgerCreditText = (row, rows = null) => {
+  const delta = rows ? rows.reduce((sum, item) => sum + Number(item?.delta || 0), 0) : Number(row?.delta || 0);
+  const count = rows ? rows.length : 0;
+  if (rows && count > 1 && rows.every(item => Number(item?.delta || 0) === Number(rows[0]?.delta || 0))) {
+    const unit = Number(rows[0]?.delta || 0);
+    return `贡献点 ${formatDelta(unit)}*${count}`;
   }
+  if ((isLedgerConsumedRow(row) || isLedgerServedRow(row) || isLedgerSignRow(row)) && Math.abs(delta) > 1) {
+    return `贡献点 ${delta > 0 ? '+1' : '-1'}*${Math.abs(delta)}`;
+  }
+  return `贡献点 ${formatDelta(delta)}`;
+};
+const ledgerDisplayTitle = (row) => {
+  if (row?.title_display) {
+    const fixed = appendLedgerSeasonEpisode(row.title_display, row, { aggregate: Boolean(row.__ledger_aggregated && isLedgerConsumedRow(row)) });
+    if (fixed && !fixed.startsWith('秒传签名：') && !/^未知资源\s+[A-Fa-f0-9]/.test(fixed)) return fixed;
+  }
+  if (row?.ledger_aggregate_title && row.__ledger_aggregated) return row.ledger_aggregate_title;
+  const ctx = ledgerContext(row);
+  const title = appendLedgerSeasonEpisode(ctx.title || ctx.file_name, row, { aggregate: Boolean(row.__ledger_aggregated && isLedgerConsumedRow(row)) });
+  if (title && !title.startsWith('秒传签名：') && !/^未知资源\s+[A-Fa-f0-9]/.test(title)) return title;
+  const raw = ledgerRawJson(row);
   const event = String(row?.event_type || '').toLowerCase();
   if (event.includes('share_request')) return '求共享';
-  if (event.includes('rapid') && event.includes('sign')) {
-    const sha = raw.sha1 || raw.file_sha1 || raw.sign_check || '';
+  if (isLedgerSignRow(row)) {
+    const sha = ctx.sha1 || raw.sha1 || raw.file_sha1 || raw.sign_check || '';
     return sha ? `秒传签名：${shortLedgerHash(sha)}` : '秒传签名任务';
   }
   return row?.title || '-';
@@ -944,7 +997,7 @@ const ledgerReasonDisplay = (row) => {
   if (row?.reason_display) return row.reason_display;
   const event = String(row?.event_type || '');
   const reason = String(row?.reason || '').trim();
-  const deltaText = `贡献点 ${formatDelta(row?.delta || 0)}`;
+  const deltaText = ledgerCreditText(row);
   const title = ledgerDisplayTitle(row);
   const reasonMap = {
     share_request_escrow: `求共享冻结：${title}，${deltaText}`,
@@ -1047,29 +1100,51 @@ const shouldAggregateLedgerRow = (row) => {
     !isDeletedCenterSourceLedgerRow(row)
   );
 };
-const ledgerAggregateKey = (row) => `${normalizeLedgerKeyPart(row?.event_type)}::${ledgerFileKey(row)}`;
-const buildAggregatedLedgerReason = (latest, rows, totalDelta) => {
-  const unitDelta = Number(latest?.delta || 0);
-  const sameDelta = rows.every(row => Number(row?.delta || 0) === unitDelta);
-  const creditText = sameDelta ? `贡献点 ${formatDelta(unitDelta)}*${rows.length}` : `贡献点合计 ${formatDelta(totalDelta)}（${rows.length} 条）`;
+const ledgerSeasonAggregateKey = (row) => {
+  const ctx = ledgerContext(row);
+  const tmdb = normalizeLedgerKeyPart(ctx.tmdb_id);
+  const season = ledgerSxx(ctx.season_number) || normalizeLedgerKeyPart(ctx.season_number);
+  if (tmdb && season) return `${tmdb}:${season}`;
+  return ledgerFileKey(row);
+};
+const ledgerAggregateKey = (row) => {
+  const event = normalizeLedgerKeyPart(row?.event_type || row?.reason);
+  if (row?.ledger_aggregate_key) return `${event}::${row.ledger_aggregate_key}`;
+  if (isLedgerConsumedRow(row)) return `${event}::consume-season::${ledgerSeasonAggregateKey(row)}`;
+  return `${event}::${ledgerFileKey(row)}`;
+};
+const ledgerAggregateTitle = (latest, rows) => {
+  if (latest?.ledger_aggregate_title && isLedgerConsumedRow(latest)) return latest.ledger_aggregate_title;
+  if (isLedgerConsumedRow(latest)) return appendLedgerSeasonEpisode(ledgerContext(latest).title || ledgerContext(latest).file_name, latest, { aggregate: true }) || ledgerDisplayTitle(latest);
+  return ledgerDisplayTitle(latest);
+};
+const buildAggregatedLedgerReason = (latest, rows, totalDelta, titleOverride = '') => {
+  const creditText = ledgerCreditText(latest, rows);
+  const title = titleOverride || ledgerDisplayTitle(latest) || '-';
+  if (isLedgerSignRow(latest)) return `响应中心秒传签名成功：${title}，${creditText}`;
+  if (isLedgerConsumedRow(latest)) return `从共享中心秒传资源：${title}，${creditText}`;
+  if (isLedgerServedRow(latest)) return `本机共享资源被他人秒传：${title}，${creditText}`;
   const reason = String(latest?.reason_display || latest?.reason || '').trim();
   if (reason) {
     const replaced = reason.replace(/贡献点\s*[+-]?\d+(?:\.\d+)?(?:\*\d+)?(?=\s*[，,。；;、]?$)/, creditText);
     if (replaced !== reason) return replaced;
     return `${reason}，${creditText}`;
   }
-  return `${ledgerEventLabel(latest?.event_type)}：${ledgerDisplayTitle(latest) || '-'}，${creditText}`;
+  return `${ledgerEventLabel(latest?.event_type)}：${title}，${creditText}`;
 };
 const buildAggregatedLedgerRow = (rows, index) => {
   const sorted = [...rows].sort((a, b) => ledgerTimeValue(b) - ledgerTimeValue(a));
   const latest = sorted[0] || {};
   const delta = rows.reduce((sum, row) => sum + Number(row?.delta || 0), 0);
-  const aggregateReason = buildAggregatedLedgerReason(latest, rows, delta);
+  const aggregateTitle = ledgerAggregateTitle(latest, rows);
+  const aggregateReason = buildAggregatedLedgerReason(latest, rows, delta, aggregateTitle);
   return {
     ...latest,
     id: `ledger-aggregate:${ledgerAggregateKey(latest)}:${index}`,
     created_at: latest.created_at,
     delta,
+    title_display: aggregateTitle,
+    ledger_aggregate_title: aggregateTitle,
     reason: aggregateReason,
     reason_display: aggregateReason,
     __ledger_aggregated: true,

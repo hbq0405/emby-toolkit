@@ -119,8 +119,9 @@ def _fetch_center_credit() -> Dict[str, Any]:
         'raw_json': {'me': me, 'stats': stats},
     }
     saved = shared_credit_db.upsert_credit_snapshot(snapshot)
-    synced_ledger = shared_credit_db.sync_center_credit_ledger(ledger.get('items') or [], device_snapshot=me)
-    return {'ok': True, 'snapshot': saved, 'synced_ledger': synced_ledger}
+    center_ledger_items = ledger.get('items') or []
+    synced_ledger = shared_credit_db.sync_center_credit_ledger(center_ledger_items, device_snapshot=me)
+    return {'ok': True, 'snapshot': saved, 'synced_ledger': synced_ledger, 'center_ledger_items': center_ledger_items}
 
 
 def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -335,6 +336,62 @@ def _apply_local_season_meta(row: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+def _share_status_tokens(value: Any) -> List[str]:
+    tokens = []
+    for token in str(value or 'usable').split(','):
+        token = token.strip().lower()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens or ['usable']
+
+
+def _share_row_matches_filter(row: Dict[str, Any], status_filter: str) -> bool:
+    """我的共享源筛选口径。
+
+    Rapid v2 本地源的 status 表示本地源状态，center_status 表示中心登记状态。
+    旧分享模式的“已登记/部分登记”直接按 status 查会把 available/active 源过滤没，
+    所以这里统一在聚合后按 Rapid 语义筛选。
+    """
+    tokens = _share_status_tokens(status_filter)
+    if any(t in {'all', '全部', '全部状态'} for t in tokens):
+        return True
+
+    row = row if isinstance(row, dict) else {}
+    status = str(row.get('status') or row.get('review_status') or '').strip().lower()
+    center_status = str(row.get('center_status') or '').strip().lower()
+    source_kind = str(row.get('source_kind') or '').strip().lower()
+    has_center_id = bool(str(row.get('center_source_id') or '').strip())
+
+    live = status in {'active', 'available'}
+    disabled = status in {'disabled', 'cancelled', 'canceled', 'deleted'} or center_status in {'disabled', 'cancelled', 'canceled'}
+    failed = status in {'failed', 'error', 'dead', 'expired', 'rejected', 'inconsistent', 'incomplete'} or center_status in {'failed', 'error', 'dead', 'expired', 'rejected'}
+    reported = center_status in {'reported', 'partial'} or has_center_id
+    local_only = not has_center_id and center_status in {'', 'local', 'pending', 'not_reported'}
+
+    for token in tokens:
+        if token in {'usable', 'active', 'alive', 'valid', 'valid_share', '有效', '有效共享'}:
+            if live and not disabled and not failed:
+                return True
+        elif token in {'reported', 'center_reported', 'registered', '已登记', '已登记中心', '已上报'}:
+            if reported:
+                return True
+        elif token in {'partial', '部分登记'}:
+            if center_status == 'partial':
+                return True
+        elif token in {'local', 'local_only', 'unreported', 'not_reported', '本地', '本地未登记', '未登记'}:
+            if local_only:
+                return True
+        elif token in {'failed', 'error', 'abnormal', 'invalid', '失败', '异常', '不合格'}:
+            if failed:
+                return True
+        elif token in {'disabled', 'cancelled', 'canceled', 'deleted', '停用', '已停用', '已取消'}:
+            if disabled:
+                return True
+        elif token == status or token == center_status or token == source_kind:
+            return True
+    return False
+
+
 @shared_resource_bp.route('/config', methods=['GET', 'POST'])
 @admin_required
 def api_shared_resource_config():
@@ -353,18 +410,20 @@ def api_shared_resource_summary():
 @shared_resource_bp.route('/shares', methods=['GET'])
 @admin_required
 def api_list_local_sources():
-    status = request.args.get('status') or 'all'
+    status = request.args.get('status') or 'usable'
     keyword = request.args.get('keyword') or request.args.get('q') or ''
     page = max(1, int(request.args.get('page') or 1))
     page_size = max(1, min(int(request.args.get('page_size') or 30), 200))
 
-    # 先取本机匹配源再聚合，避免同一季 30 多集被分页拆成多页重复季。
-    # 这是本机管理页，不是中心资源库；中心资源库仍由中心端 display-list 做分页/筛选/聚合。
-    rows, _raw_total = shared_share_db.list_local_sources(status=status, keyword=keyword, page=1, page_size=100000)
+    # Rapid v2 的“我的共享源”需要先按季聚合再筛选。
+    # 旧分享模式把 reported/partial 当 status 直接查库，会误过滤掉 active/available 源；
+    # 这里统一拉取本机匹配源后按 status + center_status 做展示筛选。
+    rows, _raw_total = shared_share_db.list_local_sources(status='all', keyword=keyword, page=1, page_size=100000)
     aggregated = _aggregate_local_sources(rows)
+    filtered = [row for row in aggregated if _share_row_matches_filter(row, status)]
     start = (page - 1) * page_size
     end = start + page_size
-    return jsonify({'success': True, 'items': aggregated[start:end], 'total': len(aggregated)})
+    return jsonify({'success': True, 'items': filtered[start:end], 'total': len(filtered)})
 
 
 @shared_resource_bp.route('/shares/<int:source_id>/check', methods=['POST'])
@@ -932,29 +991,243 @@ def _ledger_json(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _ledger_title(row: Dict[str, Any]) -> str:
+def _ledger_extract_sha1(row: Dict[str, Any]) -> str:
+    raw = _ledger_json((row or {}).get('raw_json'))
+    values = [
+        (row or {}).get('sha1'), (row or {}).get('ref_id'), raw.get('sha1'), raw.get('file_sha1'),
+        raw.get('sign_check'), raw.get('source_ref_id'), raw.get('source_id'),
+    ]
+    for key in ('media', 'source', 'shared_source', 'job'):
+        obj = raw.get(key) if isinstance(raw.get(key), dict) else {}
+        values.extend([obj.get('sha1'), obj.get('file_sha1'), obj.get('sign_check'), obj.get('ref_id')])
+    for value in values:
+        m = re.search(r'([A-Fa-f0-9]{40})', str(value or ''))
+        if m:
+            return m.group(1).upper()
+    return ''
+
+
+def _ledger_local_media_by_sha1(sha1: str) -> Dict[str, Any]:
+    sha1 = str(sha1 or '').strip().upper()
+    if not re.fullmatch(r'[A-F0-9]{40}', sha1):
+        return {}
+    cache = getattr(_ledger_local_media_by_sha1, '_cache', None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(_ledger_local_media_by_sha1, '_cache', cache)
+    if sha1 in cache:
+        return cache[sha1]
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        m.tmdb_id, m.item_type, m.parent_series_tmdb_id, m.season_number, m.episode_number,
+                        m.title, m.original_title, m.release_year,
+                        p.title AS series_title, p.original_title AS series_original_title, p.release_year AS series_release_year
+                    FROM media_metadata m
+                    LEFT JOIN media_metadata p
+                      ON p.item_type='Series' AND p.tmdb_id=m.parent_series_tmdb_id
+                    WHERE COALESCE(m.file_sha1_json::text, '') ILIKE %s
+                    ORDER BY
+                        CASE m.item_type WHEN 'Episode' THEN 0 WHEN 'Movie' THEN 1 WHEN 'Season' THEN 2 ELSE 3 END,
+                        COALESCE(m.in_library, FALSE) DESC,
+                        COALESCE(m.last_updated_at, m.date_added, m.created_at) DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (f'%{sha1}%',),
+                )
+                row = cur.fetchone()
+                cache[sha1] = dict(row) if row else {}
+    except Exception:
+        cache[sha1] = {}
+    return cache[sha1]
+
+
+def _ledger_sxx(season) -> str:
+    try:
+        return f"S{int(season):02d}"
+    except Exception:
+        return ''
+
+
+def _ledger_exx(episode) -> str:
+    try:
+        return f"E{int(episode):02d}"
+    except Exception:
+        return ''
+
+
+def _ledger_media_context(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(row or {})
+    sha1 = _ledger_extract_sha1(row)
+    local = _ledger_local_media_by_sha1(sha1) if sha1 else {}
+    raw = _ledger_json(row.get('raw_json'))
+    center_ledger = raw.get('center_ledger') if isinstance(raw.get('center_ledger'), dict) else {}
+    out = {**local}
+    for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year'):
+        if center_ledger.get(key) not in (None, ''):
+            out[key] = center_ledger.get(key)
+    # 中心 ledger 已经按 source_id / sha1 尽量 join 出媒体字段，本地只做兜底，不覆盖中心有效值。
+    for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year'):
+        if row.get(key) not in (None, ''):
+            out[key] = row.get(key)
+    for key in ('title', 'file_name', 'name'):
+        if out.get('title') in (None, '') and raw.get(key):
+            out['title'] = raw.get(key)
+    if sha1:
+        out['sha1'] = sha1
+    return out
+
+
+def _ledger_title_from_context(ctx: Dict[str, Any], *, aggregate: bool = False) -> str:
+    ctx = ctx or {}
+    item_type = str(ctx.get('item_type') or '').strip().lower()
+    source_kind = str(ctx.get('source_kind') or '').strip().lower()
+    season = ctx.get('season_number')
+    episode = ctx.get('episode_number')
+    base = str(
+        ctx.get('series_title')
+        or ctx.get('series_original_title')
+        or ctx.get('title')
+        or ctx.get('file_name')
+        or ctx.get('name')
+        or ''
+    ).strip()
+    sxx = _ledger_sxx(season)
+    exx = _ledger_exx(episode)
+
+    if item_type == 'episode' or source_kind == 'episode' or (sxx and exx):
+        if not base:
+            return ''
+        return f"{base} {sxx}" if aggregate and sxx else f"{base} {sxx}{exx}".strip()
+    if item_type == 'season' or source_kind == 'completed_season' or (sxx and not exx):
+        if not base:
+            return ''
+        return f"{base} {sxx}" if sxx else base
+    return base
+
+
+def _ledger_aggregate_key_for_row(row: Dict[str, Any], ctx: Dict[str, Any]) -> str:
+    event = str((row or {}).get('event_type') or (row or {}).get('reason') or '').strip()
+    item_type = str((ctx or {}).get('item_type') or '').strip().lower()
+    source_kind = str((ctx or {}).get('source_kind') or '').strip().lower()
+    tmdb_id = str((ctx or {}).get('tmdb_id') or '').strip()
+    season = (ctx or {}).get('season_number')
+    episode = (ctx or {}).get('episode_number')
+    sha1 = str((ctx or {}).get('sha1') or _ledger_extract_sha1(row) or '').strip().upper()
+    sxx = _ledger_sxx(season)
+
+    # 签名成功按“具体文件/具体集”聚合：家业 S01E01 +1*3。
+    if _ledger_is_sign_row(row):
+        if sha1:
+            return f"{event}:sign:sha1:{sha1}"
+        if tmdb_id and sxx and episode not in (None, ''):
+            return f"{event}:sign:{tmdb_id}:{sxx}:E{episode}"
+
+    # 秒传扣分按“季”聚合：家业 S01 -1*42。
+    if _ledger_is_consumed_row(row) and tmdb_id and (sxx or source_kind == 'completed_season' or item_type in {'episode', 'season'}):
+        return f"{event}:consume-season:{tmdb_id}:{sxx or season or ''}"
+
+    if tmdb_id and (item_type in {'episode', 'season'} or source_kind in {'episode', 'completed_season'}):
+        return f"{event}:season:{tmdb_id}:{sxx or season or ''}"
+    if tmdb_id:
+        return f"{event}:movie:{tmdb_id}"
+    if sha1:
+        return f"{event}:sha1:{sha1}"
+    return f"{event}:{str((row or {}).get('ref_id') or (row or {}).get('id') or '').strip()}"
+
+def _ledger_title(row: Dict[str, Any], *, aggregate: bool = False) -> str:
+    ctx = _ledger_media_context(row)
+    media_title = _ledger_title_from_context(ctx, aggregate=aggregate)
+    if media_title:
+        return media_title
+
     raw = _ledger_json((row or {}).get('raw_json'))
     nested = [raw.get(k) for k in ('media', 'request', 'source', 'shared_source', 'job') if isinstance(raw.get(k), dict)]
-    values = [row.get('title'), row.get('file_name'), raw.get('title'), raw.get('name'), raw.get('file_name')]
+    values = [raw.get('title'), raw.get('name'), raw.get('file_name')]
     for obj in nested:
         values.extend([obj.get('title'), obj.get('name'), obj.get('file_name')])
-    values.extend([row.get('ref_id'), row.get('source_id')])
+    values.extend([row.get('title'), row.get('file_name')])
     for value in values:
         text = str(value or '').strip()
         if not text or re.match(r'^srq_[0-9a-f]', text, re.I):
             continue
         if text.lower().startswith('rapid_sign:'):
-            sha = next((x for x in text.split(':') if re.fullmatch(r'[A-Fa-f0-9]{40}', x)), '')
-            return f"秒传签名：{sha[:12]}..." if sha else '秒传签名任务'
+            continue
+        if re.fullmatch(r'(?:rapid_sign:)?[A-Fa-f0-9]{40}(?::.*)?', text):
+            continue
         return text
-    event = str(row.get('event_type') or '').lower()
+    event = str((row or {}).get('event_type') or '').lower()
     if 'share_request' in event:
         return '求共享'
-    if 'rapid' in event and 'sign' in event:
-        sha = str(raw.get('sha1') or raw.get('file_sha1') or raw.get('sign_check') or '').strip()
-        return f"秒传签名：{sha[:12]}..." if sha else '秒传签名任务'
+    sha = _ledger_extract_sha1(row)
+    if sha:
+        return f"未知资源 {sha[:12]}..."
     return '-'
 
+
+
+
+def _ledger_event_code(row: Dict[str, Any]) -> str:
+    row = row if isinstance(row, dict) else {}
+    return str(row.get('event_type') or row.get('reason') or '').strip().lower()
+
+
+def _ledger_reason_code(row: Dict[str, Any]) -> str:
+    row = row if isinstance(row, dict) else {}
+    return str(row.get('reason') or row.get('event_type') or '').strip().lower().replace('center_', '')
+
+
+def _ledger_is_sign_row(row: Dict[str, Any]) -> bool:
+    code = _ledger_event_code(row)
+    reason = _ledger_reason_code(row)
+    return 'rapid_sign' in code or reason.startswith('rapid_sign')
+
+
+def _ledger_is_consumed_row(row: Dict[str, Any]) -> bool:
+    code = _ledger_event_code(row)
+    reason = _ledger_reason_code(row)
+    return 'rapid_source_consumed' in code or reason == 'rapid_source_consumed' or 'shared_source_consumed' in code or reason == 'shared_source_consumed'
+
+
+def _ledger_is_served_row(row: Dict[str, Any]) -> bool:
+    code = _ledger_event_code(row)
+    reason = _ledger_reason_code(row)
+    return 'rapid_source_served' in code or reason == 'rapid_source_served' or 'shared_source_served' in code or reason == 'shared_source_served'
+
+
+def _ledger_credit_text(row: Dict[str, Any]) -> str:
+    try:
+        n = int(float((row or {}).get('delta') or 0))
+    except Exception:
+        n = 0
+    sign = '+' if n > 0 else ''
+    # Rapid v2 这里的绝对值就是“视频数/签名次数”：-42 应显示为 -1*42。
+    if (_ledger_is_consumed_row(row) or _ledger_is_served_row(row) or _ledger_is_sign_row(row)) and abs(n) > 1:
+        unit = '+1' if n > 0 else '-1'
+        return f"贡献点 {unit}*{abs(n)}"
+    return f"贡献点 {sign}{n}"
+
+
+def _normalize_center_credit_ledger_item(row: Dict[str, Any]) -> Dict[str, Any]:
+    """把中心 /credit/ledger 返回行转换成本地前端兼容格式。
+
+    本地旧同步表可能只留下 rapid_sign:SHA1，中心实时返回的 ledger 已经携带 title / season_number / episode_number，
+    sync_center=1 时优先使用这份富信息，避免贡献点明细展示 SHA1。
+    """
+    row = dict(row or {})
+    reason = str(row.get('reason') or '').strip()
+    if reason and not row.get('event_type'):
+        row['event_type'] = reason if reason.startswith('center_') else f'center_{reason}'
+    raw = row.get('raw_json') if isinstance(row.get('raw_json'), dict) else {}
+    raw.setdefault('center_ledger', {k: v for k, v in row.items() if k != 'raw_json'})
+    row['raw_json'] = raw
+    if row.get('ref_id') and not row.get('source_id') and str(row.get('source_kind') or '') in {'movie', 'episode', 'completed_season'}:
+        row['source_id'] = row.get('ref_id')
+    return row
 
 def _ledger_delta_text(delta: Any) -> str:
     try:
@@ -968,8 +1241,10 @@ def _decorate_credit_ledger_item(row: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(row or {})
     event = str(row.get('event_type') or '').strip()
     reason = str(row.get('reason') or '').strip()
+    ctx = _ledger_media_context(row)
     title = _ledger_title(row)
-    delta_text = f"贡献点 {_ledger_delta_text(row.get('delta'))}"
+    aggregate_title = (_ledger_title(row, aggregate=True) if _ledger_is_consumed_row(row) else title) or title
+    delta_text = _ledger_credit_text(row)
     event_label = _ledger_event_label(event)
     reason_label = LEDGER_REASON_LABEL_MAP.get(reason) or LEDGER_REASON_LABEL_MAP.get(event.replace('center_', ''))
     if not reason_label and event.startswith('center_share_request_'):
@@ -978,6 +1253,13 @@ def _decorate_credit_ledger_item(row: Dict[str, Any]) -> Dict[str, Any]:
         reason_label = event_label
     row['event_label'] = event_label
     row['title_display'] = title
+    row['ledger_aggregate_title'] = aggregate_title
+    row['ledger_aggregate_key'] = _ledger_aggregate_key_for_row(row, ctx)
+    row['ledger_sha1'] = ctx.get('sha1') or _ledger_extract_sha1(row)
+    # 让前端即使不重新解析 raw_json，也能按季聚合签名贡献点。
+    for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind'):
+        if row.get(key) in (None, '') and ctx.get(key) not in (None, ''):
+            row[key] = ctx.get(key)
     row['reason_display'] = f'{reason_label or event_label}：{title}，{delta_text}' if (reason_label or not reason) else reason
     row['delta_display'] = _ledger_delta_text(row.get('delta'))
     return row
@@ -986,13 +1268,18 @@ def _decorate_credit_ledger_item(row: Dict[str, Any]) -> Dict[str, Any]:
 @shared_resource_bp.route('/credit/ledger', methods=['GET'])
 @admin_required
 def api_credit_ledger():
+    center_items = []
     if _boolish(request.args.get('sync_center'), False):
         try:
-            _fetch_center_credit()
+            sync_result = _fetch_center_credit()
+            center_items = sync_result.get('center_ledger_items') or []
         except Exception as e:
             logger.warning(f"  ➜ [共享资源] 同步中心贡献点失败: {e}")
     limit = int(request.args.get('limit') or 200)
-    items = shared_credit_db.list_credit_ledger(limit=limit, actual_only=_boolish(request.args.get('actual_only'), False))
+    if center_items:
+        items = [_normalize_center_credit_ledger_item(x) for x in center_items[:limit] if isinstance(x, dict)]
+    else:
+        items = shared_credit_db.list_credit_ledger(limit=limit, actual_only=_boolish(request.args.get('actual_only'), False))
     items = [_decorate_credit_ledger_item(x) for x in (items or []) if isinstance(x, dict)]
     return jsonify({'success': True, 'items': items})
 
