@@ -207,7 +207,6 @@ DEFAULT_SHARED_RESOURCE_CONFIG = {
     'p115_shared_disable_episode_transfer': False,
     # 开启后，消费中心资源时会跳过被中心标记或实时识别为“纯净版”的季包。
     'p115_shared_block_clean_version_transfer': False,
-    'p115_shared_max_active_shares': 0,
     'p115_shared_auto_share_requests_enabled': False,
     'p115_shared_install_id': '',
 }
@@ -263,7 +262,6 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
             merged.get('p115_shared_block_clean_version_transfer', merged.get('shared_block_clean_version_transfer')),
             False,
         ),
-        'p115_shared_max_active_shares': _shared_int(merged.get('p115_shared_max_active_shares'), 0, 0, 10000),
         'p115_shared_auto_share_requests_enabled': _shared_bool(merged.get('p115_shared_auto_share_requests_enabled'), False),
         'p115_shared_install_id': str(merged.get('p115_shared_install_id') or '').strip(),
     }

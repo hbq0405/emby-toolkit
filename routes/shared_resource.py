@@ -56,8 +56,6 @@ def _shared_resource_config_payload() -> Dict[str, Any]:
     payload.setdefault('p115_shared_disable_episode_transfer', False)
     payload.setdefault('p115_shared_block_clean_version_transfer', False)
     payload.setdefault('p115_shared_auto_share_requests_enabled', False)
-    # Rapid v2 没有分享上限；字段保留给前端展示为 0。
-    payload['p115_shared_max_active_shares'] = 0
     return payload
 
 
@@ -67,7 +65,7 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data['p115_shared_center_url'] = str(data.get('p115_shared_center_url') or 'https://shared.55565576.xyz').rstrip('/')
     data['p115_shared_device_token'] = str(data.get('p115_shared_device_token') or '').strip()
     data['p115_shared_resource_mode'] = 'rapid'
-    data['p115_shared_max_active_shares'] = 0
+    data.pop('p115_shared_max_active_shares', None)
     data['p115_shared_disable_episode_transfer'] = _boolish(data.get('p115_shared_disable_episode_transfer'), False)
     data['p115_shared_block_clean_version_transfer'] = _boolish(data.get('p115_shared_block_clean_version_transfer'), False)
     data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)

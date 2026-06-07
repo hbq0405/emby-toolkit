@@ -206,12 +206,6 @@
             </n-switch>
             <template #feedback>仅检测季包资源：当包内多数集实际视频时长比 TMDb 官方单集时长短约 3 分钟时，自动/手动转存都会跳过该季包；单集资源不做纯净版检测。</template>
           </n-form-item>
-          <n-form-item label="最大活跃共享数">
-            <n-input-number v-model:value="sharedConfigForm.p115_shared_max_active_shares" :min="0" :max="10000" :step="10" style="width: 180px;">
-              <template #suffix>条</template>
-            </n-input-number>
-            <template #feedback>0 表示不限制；维护任务超过上限时清理到约 80% 水位。</template>
-          </n-form-item>
           <n-form-item label="自动响应求共享">
             <n-switch v-model:value="sharedConfigForm.p115_shared_auto_share_requests_enabled">
               <template #checked>自动共享别人所求</template>
@@ -350,7 +344,6 @@ const sharedConfigForm = reactive({
   p115_shared_resource_mode: 'rapid',
   p115_shared_disable_episode_transfer: false,
   p115_shared_block_clean_version_transfer: false,
-  p115_shared_max_active_shares: 0,
   p115_shared_auto_share_requests_enabled: false,
 });
 const showManualShareModal = ref(false);
@@ -1661,7 +1654,6 @@ const applySharedConfig = (data = {}) => {
     p115_shared_resource_mode: 'rapid',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
-    p115_shared_max_active_shares: Number(data.p115_shared_max_active_shares ?? 0),
     p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
   });
 };
@@ -1687,7 +1679,6 @@ const saveSharedConfig = async () => {
   sharedConfigSaving.value = true;
   try {
     sharedConfigForm.p115_shared_resource_mode = 'rapid';
-    sharedConfigForm.p115_shared_max_active_shares = Math.max(0, Math.floor(Number(sharedConfigForm.p115_shared_max_active_shares || 0)));
     const res = await axios.post('/api/shared/resources/config', { ...sharedConfigForm });
     applySharedConfig(res.data?.data || sharedConfigForm);
     message.success(res.data?.message || '共享资源配置已保存');
