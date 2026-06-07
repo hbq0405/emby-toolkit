@@ -823,6 +823,7 @@ const shareRequestSearchColumns = [
 ];
 
 const ledgerEventLabel = (eventType) => {
+  const text = String(eventType || '').trim();
   const map = {
     center_initial_credit: '基础贡献点',
     center_source_registered: '中心登记共享源',
@@ -836,9 +837,22 @@ const ledgerEventLabel = (eventType) => {
     center_shared_source_consumed: '秒传共享资源',
     center_shared_source_consumed_group: '秒传共享资源',
     rapid_source_consumed: '秒传共享视频',
+    center_rapid_source_registered: '中心登记秒传源',
+    center_rapid_source_registered_group: '中心登记秒传源',
+    center_rapid_source_served: '共享资源被秒传',
+    center_rapid_source_served_group: '共享资源被秒传',
+    center_rapid_source_consumed: '秒传共享资源',
+    center_rapid_source_consumed_group: '秒传共享资源',
+    center_rapid_sign_success: '秒传签名成功',
+    center_rapid_sign_failed: '秒传签名失败',
+    center_rapid_sign_timeout: '秒传签名超时',
+    center_rapid_sign_job_success: '秒传签名成功',
+    center_rapid_sign_job_failed: '秒传签名失败',
+    center_rapid_raw_uploaded: '上传媒体信息',
+    center_rapid_raw_ffprobe_uploaded: '上传媒体信息',
     share_created: '登记共享源',
-    share_reported_center: '登记',
-    share_raw_uploaded: '媒体信息',
+    share_reported_center: '登记中心',
+    share_raw_uploaded: '上传媒体信息',
     share_cancelled: '取消共享',
     share_request_escrow: '求共享冻结',
     share_request_refund: '求共享退款',
@@ -851,7 +865,17 @@ const ledgerEventLabel = (eventType) => {
     center_share_request_bounty_received: '求共享悬赏收入',
     center_share_request_service_fee: '求共享服务费',
   };
-  return map[eventType] || eventType || '-';
+  if (map[text]) return map[text];
+  const low = text.toLowerCase();
+  if (low.includes('rapid') && low.includes('sign')) {
+    if (low.includes('fail') || low.includes('error')) return '秒传签名失败';
+    if (low.includes('timeout')) return '秒传签名超时';
+    return '秒传签名';
+  }
+  if (low.includes('rapid') && low.includes('consume')) return '秒传共享资源';
+  if (low.includes('rapid') && low.includes('serv')) return '共享资源被秒传';
+  if (low.includes('source') && low.includes('register')) return '登记共享源';
+  return text || '-';
 };
 
 const formatDelta = (value) => {
@@ -859,25 +883,65 @@ const formatDelta = (value) => {
   return n > 0 ? `+${n}` : String(n);
 };
 
+const ledgerReasonCodeLabel = (value) => ({
+  rapid_sign_success: '响应中心秒传签名成功',
+  rapid_sign_failed: '响应中心秒传签名失败',
+  rapid_sign_timeout: '响应中心秒传签名超时',
+  rapid_source_consumed: '从共享中心秒传资源',
+  rapid_source_served: '本机共享资源被他人秒传',
+  source_registered: '共享资源登记入池',
+  backup_source_registered: '备份共享入池',
+  shared_source_served: '共享资源被他人秒传',
+  shared_source_consumed: '从共享中心秒传资源',
+  share_request_escrow: '求共享冻结贡献点',
+  share_request_refund: '求共享退回贡献点',
+  share_request_bounty_paid: '求共享悬赏支付',
+  share_request_bounty_received: '求共享悬赏收入',
+  share_request_service_fee: '求共享服务费',
+}[value] || '');
+
+const shortLedgerHash = (value, length = 12) => {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.length > length ? `${text.slice(0, length)}...` : text;
+};
+
 const looksLikeShareRequestId = (value) => /^srq_[0-9a-f]/i.test(String(value || '').trim());
 const ledgerDisplayTitle = (row) => {
+  if (row?.title_display) return row.title_display;
   const raw = ledgerRawJson(row);
   const media = raw.media && typeof raw.media === 'object' ? raw.media : {};
   const request = raw.request && typeof raw.request === 'object' ? raw.request : {};
+  const source = raw.source && typeof raw.source === 'object' ? raw.source : {};
+  const sharedSource = raw.shared_source && typeof raw.shared_source === 'object' ? raw.shared_source : {};
+  const job = raw.job && typeof raw.job === 'object' ? raw.job : {};
   const candidates = [
     row?.title, row?.file_name, media.title, media.name, request.title, request.name,
-    raw.title, raw.name, raw.file_name, row?.ref_id, row?.id,
+    source.title, source.name, source.file_name, sharedSource.title, sharedSource.name, sharedSource.file_name,
+    job.title, job.name, job.file_name, raw.title, raw.name, raw.file_name, row?.ref_id, row?.id,
   ];
   for (const item of candidates) {
     const text = String(item || '').trim();
-    if (text && !looksLikeShareRequestId(text)) return text;
+    if (!text || looksLikeShareRequestId(text)) continue;
+    if (text.toLowerCase().startsWith('rapid_sign:')) {
+      const sha = text.split(':').find(x => /^[A-Fa-f0-9]{40}$/.test(x));
+      return sha ? `秒传签名：${shortLedgerHash(sha)}` : '秒传签名任务';
+    }
+    return text;
   }
-  if (String(row?.event_type || '').includes('share_request')) return '求共享';
+  const event = String(row?.event_type || '').toLowerCase();
+  if (event.includes('share_request')) return '求共享';
+  if (event.includes('rapid') && event.includes('sign')) {
+    const sha = raw.sha1 || raw.file_sha1 || raw.sign_check || '';
+    return sha ? `秒传签名：${shortLedgerHash(sha)}` : '秒传签名任务';
+  }
   return row?.title || '-';
 };
 
 const ledgerReasonDisplay = (row) => {
+  if (row?.reason_display) return row.reason_display;
   const event = String(row?.event_type || '');
+  const reason = String(row?.reason || '').trim();
   const deltaText = `贡献点 ${formatDelta(row?.delta || 0)}`;
   const title = ledgerDisplayTitle(row);
   const reasonMap = {
@@ -893,8 +957,21 @@ const ledgerReasonDisplay = (row) => {
     center_share_request_service_fee: `求共享服务费：${title}，${deltaText}`,
     center_backup_source_registered: `备份共享入池：${title}，${deltaText}`,
     center_backup_source_registered_group: `备份共享入池：${title}，${deltaText}`,
+    center_rapid_sign_success: `响应中心秒传签名成功：${title}，${deltaText}`,
+    center_rapid_sign_job_success: `响应中心秒传签名成功：${title}，${deltaText}`,
+    center_rapid_sign_failed: `响应中心秒传签名失败：${title}，${deltaText}`,
+    center_rapid_sign_job_failed: `响应中心秒传签名失败：${title}，${deltaText}`,
+    center_rapid_source_consumed: `从共享中心秒传资源：${title}，${deltaText}`,
+    center_rapid_source_consumed_group: `从共享中心秒传资源：${title}，${deltaText}`,
+    center_rapid_source_served: `本机共享资源被他人秒传：${title}，${deltaText}`,
+    center_rapid_source_served_group: `本机共享资源被他人秒传：${title}，${deltaText}`,
+    center_rapid_source_registered: `共享资源登记入池：${title}，${deltaText}`,
+    center_rapid_source_registered_group: `共享资源登记入池：${title}，${deltaText}`,
   };
-  return reasonMap[event] || row?.reason || '-';
+  if (reasonMap[event]) return reasonMap[event];
+  const reasonLabel = ledgerReasonCodeLabel(reason) || ledgerReasonCodeLabel(event.replace(/^center_/, ''));
+  if (reasonLabel) return `${reasonLabel}：${title}，${deltaText}`;
+  return reason || `${ledgerEventLabel(event)}：${title}，${deltaText}`;
 };
 
 const isDeletedCenterSourceLedgerRow = (row) => {
@@ -973,9 +1050,9 @@ const buildAggregatedLedgerReason = (latest, rows, totalDelta) => {
   const unitDelta = Number(latest?.delta || 0);
   const sameDelta = rows.every(row => Number(row?.delta || 0) === unitDelta);
   const creditText = sameDelta ? `贡献点 ${formatDelta(unitDelta)}*${rows.length}` : `贡献点合计 ${formatDelta(totalDelta)}（${rows.length} 条）`;
-  const reason = String(latest?.reason || '').trim();
+  const reason = String(latest?.reason_display || latest?.reason || '').trim();
   if (reason) {
-    const replaced = reason.replace(/贡献点\s*[+-]?\d+(?:\.\d+)?(?=\s*[，,。；;、]?$)/, creditText);
+    const replaced = reason.replace(/贡献点\s*[+-]?\d+(?:\.\d+)?(?:\*\d+)?(?=\s*[，,。；;、]?$)/, creditText);
     if (replaced !== reason) return replaced;
     return `${reason}，${creditText}`;
   }
@@ -985,12 +1062,14 @@ const buildAggregatedLedgerRow = (rows, index) => {
   const sorted = [...rows].sort((a, b) => ledgerTimeValue(b) - ledgerTimeValue(a));
   const latest = sorted[0] || {};
   const delta = rows.reduce((sum, row) => sum + Number(row?.delta || 0), 0);
+  const aggregateReason = buildAggregatedLedgerReason(latest, rows, delta);
   return {
     ...latest,
     id: `ledger-aggregate:${ledgerAggregateKey(latest)}:${index}`,
     created_at: latest.created_at,
     delta,
-    reason: buildAggregatedLedgerReason(latest, rows, delta),
+    reason: aggregateReason,
+    reason_display: aggregateReason,
     __ledger_aggregated: true,
     __ledger_count: rows.length,
     __ledger_records: sorted,
@@ -1035,7 +1114,7 @@ const ledgerDisplayItems = computed(() => {
 const ledgerTooltipContent = (row) => h('div', { class: 'ledger-detail-tooltip' }, [
   h('div', { class: 'ledger-detail-title' }, `已聚合 ${row.__ledger_count || 0} 条详细记录`),
   ...(row.__ledger_records || []).map((item, index) => h('div', { class: 'ledger-detail-item' }, [
-    h('div', { class: 'ledger-detail-meta' }, `${index + 1}. ${fmtDate(item.created_at)} ｜ ${ledgerEventLabel(item.event_type)} ｜ ${formatDelta(item.delta)}`),
+    h('div', { class: 'ledger-detail-meta' }, `${index + 1}. ${fmtDate(item.created_at)} ｜ ${item.event_label || ledgerEventLabel(item.event_type)} ｜ ${formatDelta(item.delta)}`),
     h('div', { class: 'ledger-detail-reason' }, ledgerReasonDisplay(item)),
   ])),
 ]);
@@ -1761,7 +1840,7 @@ const centerColumns = [
 
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => withLedgerTooltip(row, fmtDate(row.created_at)) },
-  { title: '事件', key: 'event_type', width: 190, render: row => withLedgerTooltip(row, ledgerEventLabel(row.event_type)) },
+  { title: '事件', key: 'event_type', width: 190, render: row => withLedgerTooltip(row, row.event_label || ledgerEventLabel(row.event_type)) },
   { title: '变化', key: 'delta', width: 90, render: row => {
     const n = Number(row.delta || 0);
     const node = h(NTag, { type: n > 0 ? 'success' : (n < 0 ? 'error' : 'default'), size: 'small' }, { default: () => formatDelta(n) });

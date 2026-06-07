@@ -2,6 +2,7 @@
 # Rapid v2 共享资源 API：不再创建/管理 115 分享；只登记秒传资源索引与消费中心事件。
 import json
 import logging
+import re
 import socket
 import threading
 import uuid
@@ -753,6 +754,147 @@ def api_refresh_credit():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+
+LEDGER_EVENT_LABEL_MAP = {
+    'center_initial_credit': '基础贡献点',
+    'center_source_registered': '中心登记共享源',
+    'center_source_registered_group': '中心登记共享源',
+    'center_backup_source_registered': '备份共享入池',
+    'center_backup_source_registered_group': '备份共享入池',
+    'center_deleted_shared_source_summary': '已删除共享源',
+    'center_shared_source_served': '共享被秒传',
+    'center_shared_source_served_group': '共享被秒传',
+    'center_shared_source_consumed': '秒传共享资源',
+    'center_shared_source_consumed_group': '秒传共享资源',
+    'rapid_source_served': '共享视频被秒传',
+    'rapid_source_consumed': '秒传共享视频',
+    'center_rapid_source_registered': '中心登记秒传源',
+    'center_rapid_source_registered_group': '中心登记秒传源',
+    'center_rapid_source_served': '共享资源被秒传',
+    'center_rapid_source_served_group': '共享资源被秒传',
+    'center_rapid_source_consumed': '秒传共享资源',
+    'center_rapid_source_consumed_group': '秒传共享资源',
+    'center_rapid_sign_success': '秒传签名成功',
+    'center_rapid_sign_failed': '秒传签名失败',
+    'center_rapid_sign_timeout': '秒传签名超时',
+    'center_rapid_sign_job_success': '秒传签名成功',
+    'center_rapid_sign_job_failed': '秒传签名失败',
+    'center_rapid_raw_uploaded': '上传媒体信息',
+    'center_rapid_raw_ffprobe_uploaded': '上传媒体信息',
+    'share_created': '登记共享源',
+    'share_reported_center': '登记中心',
+    'share_raw_uploaded': '上传媒体信息',
+    'share_cancelled': '取消共享',
+    'share_request_escrow': '求共享冻结',
+    'share_request_refund': '求共享退款',
+    'share_request_bounty_paid': '求共享悬赏支付',
+    'share_request_bounty_received': '求共享悬赏收入',
+    'share_request_service_fee': '求共享服务费',
+    'center_share_request_escrow': '求共享冻结',
+    'center_share_request_refund': '求共享退款',
+    'center_share_request_bounty_paid': '求共享悬赏支付',
+    'center_share_request_bounty_received': '求共享悬赏收入',
+    'center_share_request_service_fee': '求共享服务费',
+}
+
+LEDGER_REASON_LABEL_MAP = {
+    'rapid_sign_success': '响应中心秒传签名成功',
+    'rapid_sign_failed': '响应中心秒传签名失败',
+    'rapid_sign_timeout': '响应中心秒传签名超时',
+    'rapid_source_consumed': '从共享中心秒传资源',
+    'rapid_source_served': '本机共享资源被他人秒传',
+    'source_registered': '共享资源登记入池',
+    'backup_source_registered': '备份共享入池',
+    'shared_source_served': '共享资源被他人秒传',
+    'shared_source_consumed': '从共享中心秒传资源',
+}
+
+
+def _ledger_event_label(event_type: Any) -> str:
+    text = str(event_type or '').strip()
+    if not text:
+        return '-'
+    if text in LEDGER_EVENT_LABEL_MAP:
+        return LEDGER_EVENT_LABEL_MAP[text]
+    low = text.lower()
+    if 'rapid' in low and 'sign' in low:
+        if 'fail' in low or 'error' in low:
+            return '秒传签名失败'
+        if 'timeout' in low:
+            return '秒传签名超时'
+        return '秒传签名'
+    if 'rapid' in low and 'consume' in low:
+        return '秒传共享资源'
+    if 'rapid' in low and 'serv' in low:
+        return '共享资源被秒传'
+    if 'source' in low and 'register' in low:
+        return '登记共享源'
+    return text
+
+
+def _ledger_json(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            obj = json.loads(value)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _ledger_title(row: Dict[str, Any]) -> str:
+    raw = _ledger_json((row or {}).get('raw_json'))
+    nested = [raw.get(k) for k in ('media', 'request', 'source', 'shared_source', 'job') if isinstance(raw.get(k), dict)]
+    values = [row.get('title'), row.get('file_name'), raw.get('title'), raw.get('name'), raw.get('file_name')]
+    for obj in nested:
+        values.extend([obj.get('title'), obj.get('name'), obj.get('file_name')])
+    values.extend([row.get('ref_id'), row.get('source_id')])
+    for value in values:
+        text = str(value or '').strip()
+        if not text or re.match(r'^srq_[0-9a-f]', text, re.I):
+            continue
+        if text.lower().startswith('rapid_sign:'):
+            sha = next((x for x in text.split(':') if re.fullmatch(r'[A-Fa-f0-9]{40}', x)), '')
+            return f"秒传签名：{sha[:12]}..." if sha else '秒传签名任务'
+        return text
+    event = str(row.get('event_type') or '').lower()
+    if 'share_request' in event:
+        return '求共享'
+    if 'rapid' in event and 'sign' in event:
+        sha = str(raw.get('sha1') or raw.get('file_sha1') or raw.get('sign_check') or '').strip()
+        return f"秒传签名：{sha[:12]}..." if sha else '秒传签名任务'
+    return '-'
+
+
+def _ledger_delta_text(delta: Any) -> str:
+    try:
+        n = int(float(delta or 0))
+    except Exception:
+        n = 0
+    return f'+{n}' if n > 0 else str(n)
+
+
+def _decorate_credit_ledger_item(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(row or {})
+    event = str(row.get('event_type') or '').strip()
+    reason = str(row.get('reason') or '').strip()
+    title = _ledger_title(row)
+    delta_text = f"贡献点 {_ledger_delta_text(row.get('delta'))}"
+    event_label = _ledger_event_label(event)
+    reason_label = LEDGER_REASON_LABEL_MAP.get(reason) or LEDGER_REASON_LABEL_MAP.get(event.replace('center_', ''))
+    if not reason_label and event.startswith('center_share_request_'):
+        reason_label = event_label
+    if not reason_label and event.startswith('share_request_'):
+        reason_label = event_label
+    row['event_label'] = event_label
+    row['title_display'] = title
+    row['reason_display'] = f'{reason_label or event_label}：{title}，{delta_text}' if (reason_label or not reason) else reason
+    row['delta_display'] = _ledger_delta_text(row.get('delta'))
+    return row
+
+
 @shared_resource_bp.route('/credit/ledger', methods=['GET'])
 @admin_required
 def api_credit_ledger():
@@ -763,6 +905,7 @@ def api_credit_ledger():
             logger.warning(f"  ➜ [共享资源] 同步中心贡献点失败: {e}")
     limit = int(request.args.get('limit') or 200)
     items = shared_credit_db.list_credit_ledger(limit=limit, actual_only=_boolish(request.args.get('actual_only'), False))
+    items = [_decorate_credit_ledger_item(x) for x in (items or []) if isinstance(x, dict)]
     return jsonify({'success': True, 'items': items})
 
 
