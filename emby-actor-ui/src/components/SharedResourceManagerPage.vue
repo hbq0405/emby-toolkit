@@ -1935,7 +1935,7 @@ const centerColumns = [
     metaLine(row)
   ]) },
   // 主行只展示片名；从类型列开始按 versions 拆分多行展示多版本。
-  { title: '类型', key: 'item_type', width: 210, render: row => lineStack(row.versions, it => centerTypeCell(it), it => isCenterCleanVersion(it) ? centerCleanVersionTooltip(it) : '') },
+  { title: '类型', key: 'item_type', width: 210, render: row => lineStack(row.versions, it => centerTypeCell(it)) },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).resolution))) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = centerVersionSummary(it) || {};
