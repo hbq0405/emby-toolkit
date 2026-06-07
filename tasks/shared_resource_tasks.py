@@ -23,6 +23,7 @@ from handler import tmdb as tmdb_handler
 logger = logging.getLogger(__name__)
 
 _LISTENER_THREAD = None
+_SIGN_LISTENER_THREAD = None
 _LISTENER_STOP = threading.Event()
 _LISTENER_LOCK = threading.Lock()
 _FULL_SHARE_LOCK = threading.Lock()
@@ -2097,6 +2098,26 @@ def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> D
             results.append({'job_id': job_id, 'ok': False, 'error': str(e), 'submit': submit})
     return {'ok': True, 'count': len(jobs), 'items': results}
 
+def _sign_listener_loop():
+    """独立处理中心 sign_job。
+
+    不能和资源事件消费共用一个循环：资源事件长轮询可能阻塞 25 秒，
+    而请求端正在同步等待 sign_val。签名任务必须独立长轮询，避免 pending
+    阶段因为 holder 没及时领取而被中心误判超时。
+    """
+    logger.info('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已启动。')
+    while not _LISTENER_STOP.is_set():
+        try:
+            if not _enabled():
+                time.sleep(5)
+                continue
+            poll_and_process_rapid_sign_jobs_once(timeout=20, limit=10)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享签名监听] 本轮处理失败: {e}")
+            time.sleep(3)
+    logger.info('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已停止。')
+
+
 def _event_listener_loop():
     logger.info('  ➜ [共享事件监听] Rapid v2 长轮询监听已启动。')
     while not _LISTENER_STOP.is_set():
@@ -2104,8 +2125,6 @@ def _event_listener_loop():
             if not _enabled():
                 time.sleep(15)
                 continue
-            # 先处理蜂群签名任务，再处理资源事件；避免接收端等待 sign_val 超时。
-            poll_and_process_rapid_sign_jobs_once(timeout=1, limit=10)
             poll_and_consume_once(timeout=25, limit=10)
         except Exception as e:
             logger.warning(f"  ➜ [共享事件监听] 本轮处理失败: {e}")
@@ -2114,37 +2133,54 @@ def _event_listener_loop():
 
 
 def ensure_shared_device_event_listener() -> bool:
-    global _LISTENER_THREAD
+    global _LISTENER_THREAD, _SIGN_LISTENER_THREAD
     if not _enabled():
         return False
     with _LISTENER_LOCK:
-        if _LISTENER_THREAD and _LISTENER_THREAD.is_alive():
-            return True
+        started = False
         _LISTENER_STOP.clear()
-        _LISTENER_THREAD = threading.Thread(target=_event_listener_loop, name='shared-rapid-event-listener', daemon=True)
-        _LISTENER_THREAD.start()
+        if not (_SIGN_LISTENER_THREAD and _SIGN_LISTENER_THREAD.is_alive()):
+            _SIGN_LISTENER_THREAD = threading.Thread(
+                target=_sign_listener_loop,
+                name='shared-rapid-sign-listener',
+                daemon=True,
+            )
+            _SIGN_LISTENER_THREAD.start()
+            started = True
+        if not (_LISTENER_THREAD and _LISTENER_THREAD.is_alive()):
+            _LISTENER_THREAD = threading.Thread(
+                target=_event_listener_loop,
+                name='shared-rapid-event-listener',
+                daemon=True,
+            )
+            _LISTENER_THREAD.start()
+            started = True
         return True
 
 
 def stop_shared_device_event_listener(timeout: float = 3.0) -> bool:
-    """停止 Rapid v2 中心事件监听线程。
+    """停止 Rapid v2 中心事件监听线程和签名监听线程。
 
     web_app.py 在共享开关关闭、配置重载和应用退出时会调用这个函数。
     旧版任务文件没有导出该函数，导致启动阶段导入失败。
     """
-    global _LISTENER_THREAD
+    global _LISTENER_THREAD, _SIGN_LISTENER_THREAD
     with _LISTENER_LOCK:
-        thread = _LISTENER_THREAD
+        event_thread = _LISTENER_THREAD
+        sign_thread = _SIGN_LISTENER_THREAD
         _LISTENER_STOP.set()
-    if thread and thread.is_alive():
-        try:
-            thread.join(timeout=max(0.1, float(timeout or 0)))
-        except Exception:
-            pass
+    for thread in (event_thread, sign_thread):
+        if thread and thread.is_alive():
+            try:
+                thread.join(timeout=max(0.1, float(timeout or 0)))
+            except Exception:
+                pass
     with _LISTENER_LOCK:
         if _LISTENER_THREAD and not _LISTENER_THREAD.is_alive():
             _LISTENER_THREAD = None
-        return _LISTENER_THREAD is None
+        if _SIGN_LISTENER_THREAD and not _SIGN_LISTENER_THREAD.is_alive():
+            _SIGN_LISTENER_THREAD = None
+        return _LISTENER_THREAD is None and _SIGN_LISTENER_THREAD is None
 
 
 def ensure_share_request_event_listener() -> bool:
