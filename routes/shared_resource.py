@@ -138,12 +138,29 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
     row['raw_uploaded_count'] = _safe_int(row.get('raw_uploaded_count'), 0) if row.get('raw_uploaded_count') is not None else item_count
     row['center_reported_count'] = _safe_int(row.get('center_reported_count'), 0) if row.get('center_reported_count') is not None else (item_count if row.get('center_status') == 'reported' else 0)
     row['reported_count'] = _safe_int(row.get('reported_count'), row.get('center_reported_count') or 0)
+    provider = str(row.get('source_provider') or '').strip()
+    raw_json = row.get('raw_json') if isinstance(row.get('raw_json'), dict) else {}
+    raw_provider_text = ' '.join(str(raw_json.get(k) or '') for k in (
+        'source_provider', 'register_source', 'register_from', 'task_source',
+        'task_type', 'source_provider_label', 'source_label', 'message', 'reason'
+    ))
+    auto_provider_values = {'rapid_auto_library', 'rapid_all_library', 'rapid_completed_season'}
+    auto_provider_keywords = ('入库自动', '自动登记', '自动共享', '一键全库', '完结季收藏')
+    row['is_auto_share'] = bool(
+        provider in auto_provider_values
+        or row.get('is_auto_share')
+        or row.get('auto_created')
+        or row.get('auto_registered')
+        or row.get('created_by_task')
+        or row.get('from_maintenance')
+        or any(k in raw_provider_text for k in auto_provider_keywords)
+    )
     row['source_provider_label'] = {
         'manual_rapid': '手动登记',
         'rapid_auto_library': '入库自动登记',
         'rapid_all_library': '一键全库登记',
         'rapid_completed_season': '完结季收藏源',
-    }.get(row.get('source_provider'), row.get('source_provider') or '本地秒传源')
+    }.get(provider, provider or '本地秒传源')
     return row
 
 

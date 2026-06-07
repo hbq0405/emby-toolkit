@@ -569,16 +569,16 @@ const shareSourceText = (row) => {
   const rawManual = Boolean(raw?.manual_payload || raw?.manual_share || raw?.manual_create || raw?.manual_created || raw?.manual_context);
   const rawAuto = Boolean(raw?.auto_gap || raw?.auto_payload || raw?.auto_task || raw?.maintenance_payload || raw?.maintenance_task || raw?.auto_share_payload || raw?.auto_context);
   const providerBackup = /(backup_mirror|backup_share|auto_backup_share|backup)/i.test(providerText) || /(备份共享|备份源|镜像共享)/.test(labelText);
+  const providerAuto = /(rapid_auto_library|rapid_all_library|rapid_completed_season|auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /(自动共享|自动登记|入库自动|一键全库|完结季收藏)/.test(labelText);
   const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created)/i.test(providerText) || /手动共享/.test(labelText);
-  const providerAuto = /(rapid_auto_library|auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /自动共享/.test(labelText);
 
-  // 备份共享是中心下发的特殊来源，必须优先于 user_share/manual 兜底判断。
+  // 备份共享是中心下发的特殊来源，必须优先于自动/手动兜底判断。
   if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || rawBackup || providerBackup) return '备份共享';
-  // 手动标记优先。手动创建的共享即使后续由维护任务自动检查/登记中心，也仍然叫“手动共享”。
-  if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动共享';
+  // Rapid v2 入库自动登记/一键全库/完结季收藏必须优先于 manual 兜底，避免 auto 记录被误标成手动共享。
   if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance || rawAuto || providerAuto) return '自动共享';
+  if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动共享';
 
-  return '手动共享';
+  return '本机共享';
 };
 const shareRemarkNode = (row) => {
   const reason = shareFailureReasonText(row);
@@ -1147,9 +1147,9 @@ const centerSourceText = (row) => {
 
   if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || /(backup_mirror|backup_share|auto_backup_share|backup|备份共享|备份源|镜像共享)/i.test(allText)) return '备份共享';
   if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动共享';
+  if (/(rapid_auto_library|rapid_all_library|rapid_completed_season|auto|自动|入库自动|一键全库|完结季收藏|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动共享';
   if (/(hdhive|影巢)/i.test(allText)) return '影巢';
   if (/(tg_channel|telegram|频道)/i.test(allText)) return '频道';
-  if (/(auto|自动|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动共享';
   if (/(manual|user_share|手动|人工)/i.test(allText) || row?.is_manual_share) return '手动共享';
 
   const label = labelParts.join(' ').trim();
