@@ -675,6 +675,21 @@ def _prepare_files_before_rapid_transfer(
         f"completed_pack={is_completed_pack}, ongoing_hub={is_ongoing_hub}"
     )
 
+    def _reject_completed_pack_now(message: str):
+        """完结季包一票否定：任一视频不合格，立刻拒绝整包，不继续预检后续集。"""
+        logger.warning(
+            f"  ➜ [共享资源] 洗版预检一票否定：source={source_label}, reason={message}，"
+            f"耗时 {time.time() - preflight_started_at:.1f}s"
+        )
+        return [], {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'washing_checked': True,
+            'washing_rejected': True,
+            'errors': errors[:50] or [message],
+            'veto_file': message,
+        }
+
     for idx, src in enumerate(files):
         file_name = src.get('file_name') or src.get('name') or _norm_sha1(src.get('sha1'))
         ext = os.path.splitext(str(file_name or ''))[1].lower()
@@ -694,14 +709,14 @@ def _prepare_files_before_rapid_transfer(
             logger.warning(f"  ➜ [共享资源] {msg}")
             errors.append(msg)
             if is_completed_pack:
-                hard_reject = True
+                return _reject_completed_pack_now(msg)
             continue
         if file_name in cache_errors or sha1 in cache_errors:
             msg = f"{file_name}: RAW 无法转换为本地 MediaInfo，洗版预检拒绝秒传"
             logger.warning(f"  ➜ [共享资源] {msg}")
             errors.append(msg)
             if is_completed_pack:
-                hard_reject = True
+                return _reject_completed_pack_now(msg)
             continue
 
         source_item_type = str(src.get('item_type') or context.get('item_type') or '')
@@ -715,7 +730,7 @@ def _prepare_files_before_rapid_transfer(
             logger.warning(f"  ➜ [共享资源] {msg}")
             errors.append(msg)
             if is_completed_pack:
-                hard_reject = True
+                return _reject_completed_pack_now(msg)
             continue
 
         s_num, e_num = _guess_se_from_source(src, context)
@@ -761,7 +776,7 @@ def _prepare_files_before_rapid_transfer(
                 logger.warning(f"  ➜ [共享资源] {msg}")
                 errors.append(msg)
                 if is_completed_pack:
-                    hard_reject = True
+                    return _reject_completed_pack_now(msg)
                 continue
 
         file_size = _rapid_size_to_int(src.get('size') or src.get('file_size'), 0)
@@ -792,7 +807,7 @@ def _prepare_files_before_rapid_transfer(
             msg = f"{file_name}: 洗版预检 [{action}] {reason}"
             errors.append(msg)
             if is_completed_pack:
-                hard_reject = True
+                return _reject_completed_pack_now(msg)
             continue
 
         level_started_at = time.time()
