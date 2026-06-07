@@ -990,3 +990,28 @@ def get_p115_files_from_cache_tree(root_fid: str, max_depth: int = 6):
         with conn.cursor() as cur:
             cur.execute("SELECT *, name AS rel_path FROM p115_filesystem_cache WHERE parent_id=%s OR id=%s LIMIT 5000", (str(root_fid), str(root_fid)))
             return _rows(cur.fetchall())
+
+def list_recoverable_local_sources(limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    找出本机标记为 disabled，但 SHA1 实际上又悄悄回到媒体库的源。
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.*
+                FROM shared_rapid_sources s
+                WHERE s.status = 'disabled'
+                  AND COALESCE(s.sha1, '') <> ''
+                  AND EXISTS (
+                      SELECT 1
+                      FROM media_metadata m
+                      WHERE COALESCE(m.in_library, FALSE) = TRUE
+                        AND (
+                              m.file_sha1_json ? UPPER(s.sha1)
+                           OR m.file_sha1_json ? LOWER(s.sha1)
+                        )
+                  )
+                ORDER BY s.updated_at ASC
+                LIMIT %s
+            """, (limit,))
+            return _rows(cur.fetchall())
