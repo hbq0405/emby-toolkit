@@ -450,78 +450,29 @@ def _submit_shared_auto_share_after_library_ready(
 ):
     """媒体入库完成后，异步登记 Rapid v2 共享源。
 
-    Rapid v2 不创建 115 分享，也没有审核窗口。只要共享资源开关已启用：
-    - Movie：入库后立即登记电影源；
-    - Episode：入库后立即登记分集源；
-    - Series + new_episode_ids：Webhook 批量入库后立即登记明确新增的分集源。
-
-    完结季收藏源仍由 watchlist_processor 在完结一致性校验通过后统一登记。
+    职责边界：
+    - Movie：入库完成即可登记电影源；
+    - Episode / Series：Webhook 只负责入库、指纹体检和把 new_episode_ids 透传给 watchlist_processor；
+      由 watchlist_processor 先判定连载/完结，再决定登记单集源或完结季包。
     """
     try:
-        if not tmdb_id:
+        if item_type != 'Movie' or not tmdb_id:
             return
 
-        register_items = []
         title = item_details.get('Name') or ''
         year = item_details.get('ProductionYear') or ''
-
-        if item_type == 'Movie':
-            register_items.append({
+        _run_shared_auto_share_batch_detached(
+            f"Rapid电影共享源登记: {title or tmdb_id}",
+            [{
                 'item_type': 'Movie',
                 'tmdb_id': str(tmdb_id),
                 'emby_item_id': str(item_id),
                 'title': title,
                 'year': year,
-            })
-        elif item_type == 'Episode':
-            parent_series_tmdb_id = ''
-            season_number = None
-            episode_number = None
-            try:
-                parent_series_tmdb_id = (
-                    item_details.get('SeriesProviderIds', {}).get('Tmdb') if isinstance(item_details.get('SeriesProviderIds'), dict) else ''
-                ) or item_details.get('SeriesTmdbId') or item_details.get('ParentSeriesTmdbId') or ''
-                season_number = item_details.get('ParentIndexNumber') or item_details.get('SeasonNumber')
-                episode_number = item_details.get('IndexNumber') or item_details.get('EpisodeNumber')
-            except Exception:
-                pass
-            register_items.append({
-                'item_type': 'Episode',
-                'tmdb_id': str(tmdb_id),
-                'parent_series_tmdb_id': str(parent_series_tmdb_id or ''),
-                'season_number': season_number,
-                'episode_number': episode_number,
-                'emby_item_id': str(item_id),
-                'title': title,
-                'year': year,
-            })
-        elif item_type == 'Series':
-            episode_ids = []
-            for eid in new_episode_ids or []:
-                eid = str(eid or '').strip()
-                if eid and eid not in episode_ids:
-                    episode_ids.append(eid)
-            if not episode_ids:
-                return
-            for eid in episode_ids:
-                register_items.append({
-                    'item_type': 'Episode',
-                    'tmdb_id': str(tmdb_id),
-                    'parent_series_tmdb_id': str(tmdb_id),
-                    'emby_item_id': eid,
-                    'title': title,
-                    'year': year,
-                })
-        else:
-            return
-
-        _run_shared_auto_share_batch_detached(
-            f"Rapid共享源登记: {title or tmdb_id}",
-            register_items,
+            }],
         )
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 提交 webhook Rapid 共享源登记失败: {e}", exc_info=True)
-
+        logger.warning(f"  ➜ [共享资源] 提交 webhook Rapid 电影共享源登记失败: {e}", exc_info=True)
 
 def _get_processor_local_strm_root(processor) -> str:
     """从 MediaProcessor / 配置中提取本地 STRM 根目录，用于补齐 p115_filesystem_cache.local_path。"""
@@ -716,7 +667,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             log_prefix="Webhook新集指纹补齐",
         )
 
-    # 3. 共享资源供给侧实时触发：不再判断中心缺口，只要共享资源启用，入库即登记本机秒传源。
+    # 3. 共享资源供给侧实时触发：电影仍入库即登记；剧集分集交由 watchlist_processor 状态判定后登记。
     _submit_shared_auto_share_after_library_ready(
         item_details,
         item_id,
@@ -897,7 +848,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
                 precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
 
-                # 新集指纹体检已在入库即登记共享源前完成；这里不再重复体检。
+                # 新集指纹体检已在 Webhook 中完成；watchlist_processor 后续可直接登记分集/季包共享源。
                 logger.info(
                     f"  ➜ [智能追剧] 触发单项刷新..."
                     f"{' (透传新增分集: ' + str(len(precise_new_episode_ids)) + ' 个)' if precise_new_episode_ids else ''}"

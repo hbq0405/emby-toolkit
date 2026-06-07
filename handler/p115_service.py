@@ -3253,9 +3253,27 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     P115CacheManager._ensure_preid_column()
+                    preid = P115CacheManager._norm_preid(preid)
+                    if not preid:
+                        cursor.execute(
+                            """
+                            SELECT preid
+                            FROM p115_filesystem_cache
+                            WHERE id = %s
+                               OR (parent_id = %s AND name = %s)
+                               OR (%s IS NOT NULL AND pick_code = %s)
+                               OR (%s IS NOT NULL AND UPPER(sha1) = UPPER(%s))
+                            ORDER BY CASE WHEN preid IS NOT NULL AND preid <> '' THEN 0 ELSE 1 END,
+                                     updated_at DESC NULLS LAST
+                            LIMIT 1
+                            """,
+                            (str(fid), str(parent_id), str(name), pick_code, pick_code, sha1, sha1),
+                        )
+                        old_row = cursor.fetchone()
+                        if old_row:
+                            preid = P115CacheManager._norm_preid(old_row.get('preid'))
                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (str(fid),))
 
-                    preid = P115CacheManager._norm_preid(preid)
                     cursor.execute("""
                         INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path, size, preid)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -3604,7 +3622,26 @@ class P115CacheManager:
             except Exception:
                 app_type = 'web'
             ua_candidates = []
-            for ua in (get_115_ua(app_type or 'web'), get_115_ua('web'), get_115_ua('mac')):
+            # 优先复用刚刚 ffprobe / STRM 生成阶段已经取过的直链 UA，避免同一个文件连续请求两次直链。
+            try:
+                for cache_key, cached in list(_DIRECT_URL_CACHE.items()):
+                    if not isinstance(cache_key, tuple) or len(cache_key) < 2:
+                        continue
+                    if str(cache_key[0] or '').strip() != pick_code:
+                        continue
+                    if not isinstance(cached, dict) or not cached.get('url'):
+                        continue
+                    cached_ua = cache_key[1]
+                    if cached_ua is None:
+                        if None not in ua_candidates:
+                            ua_candidates.append(None)
+                    else:
+                        cached_ua = str(cached_ua or '').strip()
+                        if cached_ua and cached_ua not in ua_candidates:
+                            ua_candidates.append(cached_ua)
+            except Exception:
+                pass
+            for ua in ('Mozilla/5.0', get_115_ua(app_type or 'web'), get_115_ua('web'), get_115_ua('mac')):
                 ua = str(ua or '').strip()
                 if ua and ua not in ua_candidates:
                     ua_candidates.append(ua)
@@ -3638,10 +3675,11 @@ class P115CacheManager:
                     try:
                         headers = {
                             'Range': range_header,
-                            'User-Agent': ua,
                             'Accept': '*/*',
                             'Connection': 'close',
                         }
+                        if ua:
+                            headers['User-Agent'] = ua
                         with requests.get(down_url, headers=headers, timeout=45, allow_redirects=True, stream=True) as resp:
                             last_status = resp.status_code
                             if resp.status_code != 206:
@@ -7437,7 +7475,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                     probe_sha1 = str(probe_sha1).upper()
                                     P115CacheManager.save_mediainfo_cache(probe_sha1, emby_obj, raw_ffprobe)
                                     try:
-                                        P115CacheManager.ensure_file_preid(file_item, sha1=probe_sha1, fid=fid, pick_code=pick_code, file_name=original_name)
+                                        cached_preid = P115CacheManager.ensure_file_preid(file_item, sha1=probe_sha1, fid=fid, pick_code=pick_code, file_name=original_name)
+                                        if cached_preid:
+                                            file_item['preid'] = cached_preid
                                     except Exception as e_preid:
                                         logger.debug(f"  ➜ [MP直出] 媒体信息提取后计算 preid 失败: {original_name} -> {e_preid}")
                                     sha1 = probe_sha1
@@ -7487,7 +7527,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     sha1=sha1,
                     pick_code=pick_code,
                     local_path=file_local_path,
-                    size=file_size
+                    size=file_size,
+                    preid=file_item.get('preid')
                 )
 
                 P115RecordManager.add_or_update_record(

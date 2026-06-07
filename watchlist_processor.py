@@ -2349,16 +2349,25 @@ class WatchlistProcessor:
         # ======================================================================
         # ★★★ 共享资源追更分集源登记 ★★★
         # ======================================================================
-        # Rapid v2 自动共享已前移到 Webhook 入库完成后：只要共享资源开关启用，
-        # 明确新增的分集会在指纹体检后立即登记到中心。追剧模块只负责状态裁决
-        # 和完结季一致性通过后的 completed_season_source 登记，避免再做“是否需要共享”的判断。
+        # Webhook 只负责入库和指纹体检；是否登记单集源必须由追剧模块根据
+        # final_status 决定：Watching / Paused / Pending 仍按明确新增集登记；
+        # Completed 不登记单集，交给上面的完结一致性门禁生成 completed_season_source。
         if allow_airing_episode_share:
-            logger.debug(
-                "  ➜ [共享资源] 追更分集源登记已由 Webhook 入库即登记接管：%s episodes=%s, status=%s",
-                item_name,
-                len(airing_episode_emby_ids or []),
-                translate_internal_status(final_status),
-            )
+            if final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:
+                release_date = latest_series_data.get('first_air_date') or ''
+                release_year = release_date[:4] if release_date else ''
+                self._trigger_airing_episode_share_detached(
+                    tmdb_id=tmdb_id,
+                    emby_item_ids=airing_episode_emby_ids or [],
+                    series_name=item_name,
+                    year=release_year,
+                )
+            else:
+                logger.debug(
+                    "  ➜ [共享资源] 本轮判定为已完结，跳过单集源登记，等待完结季包门禁处理：%s episodes=%s",
+                    item_name,
+                    len(airing_episode_emby_ids or []),
+                )
 
         # ======================================================================
         # ★★★ MP 状态接管与同步 (自动待定 & 自动暂停) ★★★

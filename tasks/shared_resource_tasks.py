@@ -1270,6 +1270,75 @@ def _completed_status_from_files(files: List[Dict[str, Any]], expected_count: in
         return {'status': 'incomplete', 'message': '没有可登记的视频文件'}
     return {'status': 'available', 'message': '完结季一致性校验通过'}
 
+
+def _disable_local_episode_sources_for_completed_season(parent_series_tmdb_id: str, season_number, *, center_client: SharedCenterClient = None) -> int:
+    """完结季包可用后，停用本机同季单集源。
+
+    连载阶段按 episode_source 供给；一旦本机登记出 available 的 completed_season_source，
+    同一设备同一季的单集源就不应继续参与中心公共包，避免中心资源库同时出现单集和完结包。
+    """
+    parent = str(parent_series_tmdb_id or '').strip()
+    try:
+        season_no = int(float(season_number))
+    except Exception:
+        return 0
+    if not parent or season_no <= 0:
+        return 0
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, center_source_id, status, center_status
+                    FROM shared_rapid_sources
+                    WHERE source_kind='episode'
+                      AND tmdb_id=%s
+                      AND season_number=%s
+                      AND COALESCE(status, '') NOT IN ('disabled', 'cancelled')
+                    ORDER BY id ASC
+                    """,
+                    (parent, season_no),
+                )
+                rows = [dict(r) for r in (cur.fetchall() or [])]
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 查询待停用单集源失败: tmdb={parent}, S{season_no}, err={e}")
+        return 0
+
+    if not rows:
+        return 0
+
+    client = center_client or SharedCenterClient()
+    disabled = 0
+    for row in rows:
+        center_resp = {}
+        center_source_id = str(row.get('center_source_id') or '').strip()
+        if center_source_id:
+            try:
+                center_resp = client.disable_source('episode', center_source_id, message='completed season source available') or {}
+            except Exception as e:
+                center_resp = {'ok': False, 'message': str(e)}
+                logger.debug(
+                    f"  ➜ [共享资源] 中心停用单集源失败，仍停用本地源: "
+                    f"tmdb={parent}, S{season_no}, source={center_source_id}, err={e}"
+                )
+        try:
+            shared_share_db.update_local_source(
+                int(row.get('id')),
+                status='disabled',
+                center_status='disabled',
+                disabled_at='NOW()',
+                raw_json={'reason': 'completed_season_source_available', 'center_response': center_resp},
+            )
+            disabled += 1
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 本地停用单集源失败: id={row.get('id')}, err={e}")
+
+    if disabled:
+        logger.info(f"  ➜ [共享资源] 完结季包已可用，已停用同季单集源: tmdb={parent}, S{season_no:02d}, count={disabled}")
+    return disabled
+
+
 def _candidate_bool(candidate: Dict[str, Any], *keys: str) -> bool:
     for key in keys:
         value = (candidate or {}).get(key)
@@ -1409,6 +1478,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             errors.append({'file': f.get('file_name') or f.get('sha1'), 'error': str(e)})
 
     completed_resp = None
+    episode_cancelled = 0
     should_register_completed = _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
     if item_type == 'Season' and should_register_completed:
         completed_files = []
@@ -1484,6 +1554,12 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'clean_detection': clean_detection, 'root': root},
             })
             shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': bool(_raw_for_file(f))} for f in files])
+            if status.get('status') == 'available':
+                episode_cancelled = _disable_local_episode_sources_for_completed_season(
+                    tmdb_id,
+                    candidate.get('season_number'),
+                    center_client=client,
+                )
         except Exception as e:
             logger.warning(f"  ➜ [共享资源] 登记完结季源失败: {candidate.get('title') or tmdb_id} -> {e}")
             errors.append({'completed_season': candidate.get('title') or tmdb_id, 'error': str(e)})
@@ -1493,12 +1569,13 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         'registered_count': len(results),
         'raw_uploaded_count': uploaded,
         'completed_season': completed_resp,
+        'episode_cancelled': episode_cancelled,
         'errors': errors,
         'root': root,
         'fingerprint_repair': repair_result or {},
         'message': (
             f"已登记 {len(results)} 个分集/电影源"
-            + ("，已更新完结季源" if completed_resp else ("，连载季已聚合到中心公共包" if item_type == 'Season' else ''))
+            + ("，已更新完结季源" + (f"，已停用 {episode_cancelled} 个同季单集源" if episode_cancelled else '') if completed_resp else ("，连载季已聚合到中心公共包" if item_type == 'Season' else ''))
         ),
     }
 
