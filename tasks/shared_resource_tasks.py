@@ -2516,74 +2516,15 @@ def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
 
     return {'ok': failed == 0, 'offline_found': len(rows), 'disabled': disabled, 'failed': failed, 'items': items[:50]}
 
-def _recover_offline_local_sources(limit: int = 50) -> Dict[str, Any]:
-    """【修复版】自动复活那些重新回到媒体库的共享源，防止无限克隆。"""
-    from database import shared_share_db
-    rows = shared_share_db.list_recoverable_local_sources(limit=limit)
-    if not rows:
-        return {'ok': True, 'recovered': 0, 'failed': 0}
-
-    recovered = 0
-    failed = 0
-    for row in rows:
-        try:
-            # 构造基础候选信息
-            candidate = {
-                'tmdb_id': row.get('tmdb_id'),
-                'item_type': row.get('item_type'),
-                'season_number': row.get('season_number'),
-                'episode_number': row.get('episode_number'),
-                'title': row.get('title'),
-                'release_year': row.get('release_year'),
-            }
-            
-            if row.get('item_type') in ('Episode', 'Season'):
-                candidate['parent_series_tmdb_id'] = row.get('tmdb_id')
-                
-            # ★ 核心修复 1：如果是完结季包，必须带上 Completed 状态，否则只会复活单集！
-            if row.get('source_kind') == 'completed_season':
-                candidate['watching_status'] = 'Completed'
-
-            # ★ 核心修复 2：必须使用原有的 source_provider，否则会生成新的 source_key 导致无限克隆！
-            provider = row.get('source_provider') or 'rapid_auto_recovery'
-            
-            res = register_candidate_to_center(candidate, source_provider=provider)
-            
-            # ★ 核心修复 3：无论成功还是失败（比如一致性校验不通过），都必须更新该行的 updated_at
-            # 否则它会永远卡在队列最前面，导致死循环！
-            if res.get('ok'):
-                recovered += 1
-                logger.info(f"  ➜ [共享资源维护] 已自动复活重返媒体库的共享源: {row.get('title')}")
-            else:
-                failed += 1
-                shared_share_db.update_local_source(row['id'], last_error=res.get('message') or '复活登记失败')
-                
-        except Exception as e:
-            failed += 1
-            logger.debug(f"  ➜ [共享资源维护] 复活共享源失败: {row.get('title')}, err={e}")
-            try:
-                shared_share_db.update_local_source(row['id'], last_error=str(e))
-            except:
-                pass
-
-    return {'ok': True, 'recovered': recovered, 'failed': failed}
-
 
 def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
     result = result or {}
     parts = [f"监听={'已启动' if result.get('device_event_listener') else '未启动'}"]
-    
     cleanup = result.get('offline_cleanup') if isinstance(result.get('offline_cleanup'), dict) else {}
     if cleanup:
         parts.append(f"失效清理={cleanup.get('disabled', 0)}/{cleanup.get('offline_found', 0)}")
         if cleanup.get('failed'):
             parts.append(f"下架失败={cleanup.get('failed')}")
-            
-    # ★ 新增：在日志摘要中显示复活数量
-    recovery = result.get('offline_recovery') if isinstance(result.get('offline_recovery'), dict) else {}
-    if recovery and recovery.get('recovered', 0) > 0:
-        parts.append(f"自动复活={recovery.get('recovered')}")
-
     credit = result.get('credit') if isinstance(result.get('credit'), dict) else {}
     snapshot = credit.get('snapshot') if isinstance(credit.get('snapshot'), dict) else {}
     if snapshot:
@@ -2594,8 +2535,7 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
         parts.append(f"设备={snapshot.get('remote_devices', 0)}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
-        
-    for key in ('listener_error', 'offline_cleanup_error', 'offline_recovery_error', 'credit_error'):
+    for key in ('listener_error', 'offline_cleanup_error', 'credit_error'):
         if result.get(key):
             parts.append(f"{key}={result.get(key)}")
     return '，'.join(parts)
@@ -2615,13 +2555,6 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['offline_cleanup'] = _cleanup_offline_local_sources(limit=300)
     except Exception as e:
         result['offline_cleanup_error'] = str(e)
-        
-    # ★ 新增：执行自动复活任务
-    try:
-        result['offline_recovery'] = _recover_offline_local_sources(limit=50)
-    except Exception as e:
-        result['offline_recovery_error'] = str(e)
-        
     try:
         result['credit'] = _sync_center_credit()
     except Exception as e:

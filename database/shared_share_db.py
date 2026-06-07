@@ -865,11 +865,19 @@ def all_library_share_candidates(limit: int = 100000) -> List[Dict[str, Any]]:
 
 
 def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
-    """找出本机仍标记为共享、但登记 SHA1 已不在媒体库内的 Rapid 源。
+    """找出本机仍标记为共享、但本地媒体库已经完全没有对应文件的 Rapid 源。
 
-    判断口径（极简且健壮）：
-    只要源（或其子文件）的 SHA1 还能在 media_metadata (in_library=TRUE) 的 file_sha1_json 中找到，
-    就认为该文件依然在库，不下架。不强校验 TMDb ID 或季集号，防止用户刮削变更导致误判。
+    这里不能只用 media_metadata.file_sha1_json 判断：很多旧数据/第三方 STRM
+    只有 PC 码，SHA1 是通过 p115_filesystem_cache 反查后补齐的。登记中心能成功，
+    但 file_sha1_json 可能仍为空；如果维护任务只看 file_sha1_json，就会把所有
+    completed_season 误判为“离线”并下架。
+
+    判断口径：
+    - movie / episode：登记文件在同一媒体行中通过 SHA1 或 PC 任一命中，视为仍在库；
+    - completed_season：包内至少还有一个文件在同季 Episode 行中通过 SHA1 或 PC 命中，就不下架；
+      完结包是一组文件，离线清理只负责“整包已不存在”的善后，缺单集/洗版不在这里处理。
+
+    不访问 115，不触发指纹体检，不重新收集文件。这里只负责清理“媒体库已删除/换版后仍在共享”的本地索引。
     """
     try:
         limit = max(1, min(int(limit or 300), 2000))
@@ -888,26 +896,86 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                     ORDER BY updated_at ASC NULLS LAST, id ASC
                     LIMIT %s
                 ),
-                file_match AS (
+                candidate_files AS (
                     SELECT
                         s.id AS local_source_id,
-                        COUNT(f.id)::integer AS total_files,
-                        COUNT(f.id) FILTER (
+                        s.source_kind,
+                        s.tmdb_id,
+                        s.season_number,
+                        s.episode_number AS source_episode_number,
+                        f.id AS file_row_id,
+                        NULLIF(UPPER(COALESCE(f.sha1, '')), '') AS file_sha1,
+                        NULLIF(COALESCE(f.pick_code, ''), '') AS file_pick_code,
+                        f.episode_number AS file_episode_number
+                    FROM candidate_sources s
+                    JOIN shared_rapid_source_files f
+                      ON f.local_source_id = s.id
+                     AND (
+                            COALESCE(f.sha1, '') <> ''
+                         OR COALESCE(f.pick_code, '') <> ''
+                     )
+                ),
+                file_match AS (
+                    SELECT
+                        cf.local_source_id,
+                        COUNT(cf.file_row_id)::integer AS total_files,
+                        COUNT(cf.file_row_id) FILTER (
                             WHERE EXISTS (
                                 SELECT 1
                                 FROM media_metadata m
                                 WHERE COALESCE(m.in_library, FALSE) = TRUE
                                   AND (
-                                        m.file_sha1_json ? UPPER(f.sha1)
-                                     OR m.file_sha1_json ? LOWER(f.sha1)
+                                        (
+                                            cf.source_kind = 'movie'
+                                            AND m.item_type = 'Movie'
+                                            AND m.tmdb_id = cf.tmdb_id
+                                        )
+                                     OR (
+                                            cf.source_kind = 'episode'
+                                            AND m.item_type = 'Episode'
+                                            AND (m.tmdb_id = cf.tmdb_id OR m.parent_series_tmdb_id = cf.tmdb_id)
+                                            AND (cf.season_number IS NULL OR m.season_number = cf.season_number)
+                                            AND (cf.source_episode_number IS NULL OR m.episode_number = cf.source_episode_number)
+                                        )
+                                     OR (
+                                            cf.source_kind = 'completed_season'
+                                            AND m.item_type = 'Episode'
+                                            AND m.parent_series_tmdb_id = cf.tmdb_id
+                                            AND (cf.season_number IS NULL OR m.season_number = cf.season_number)
+                                            AND (cf.file_episode_number IS NULL OR m.episode_number = cf.file_episode_number)
+                                        )
+                                  )
+                                  AND (
+                                        (
+                                            cf.file_sha1 IS NOT NULL
+                                            AND (
+                                                   m.file_sha1_json ? cf.file_sha1
+                                                OR m.file_sha1_json ? LOWER(cf.file_sha1)
+                                                OR COALESCE(m.file_sha1_json::text, '') ILIKE ('%%' || cf.file_sha1 || '%%')
+                                                OR EXISTS (
+                                                    SELECT 1
+                                                    FROM p115_filesystem_cache p
+                                                    WHERE UPPER(COALESCE(p.sha1, '')) = cf.file_sha1
+                                                      AND COALESCE(p.pick_code, '') <> ''
+                                                      AND (
+                                                            m.file_pickcode_json ? p.pick_code
+                                                         OR COALESCE(m.file_pickcode_json::text, '') LIKE ('%%' || p.pick_code || '%%')
+                                                      )
+                                                )
+                                            )
+                                        )
+                                     OR (
+                                            cf.file_pick_code IS NOT NULL
+                                            AND (
+                                                   m.file_pickcode_json ? cf.file_pick_code
+                                                OR COALESCE(m.file_pickcode_json::text, '') LIKE ('%%' || cf.file_pick_code || '%%')
+                                            )
+                                        )
                                   )
                             )
                         )::integer AS live_files
-                    FROM candidate_sources s
-                    LEFT JOIN shared_rapid_source_files f
-                      ON f.local_source_id = s.id
-                     AND COALESCE(f.sha1, '') <> ''
-                    GROUP BY s.id
+                    FROM candidate_files cf
+                    GROUP BY cf.local_source_id
                 ),
                 source_match AS (
                     SELECT
@@ -916,10 +984,46 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                             SELECT 1
                             FROM media_metadata m
                             WHERE COALESCE(m.in_library, FALSE) = TRUE
-                              AND COALESCE(s.sha1, '') <> ''
                               AND (
-                                    m.file_sha1_json ? UPPER(s.sha1)
-                                 OR m.file_sha1_json ? LOWER(s.sha1)
+                                    (
+                                        s.source_kind = 'movie'
+                                        AND m.item_type = 'Movie'
+                                        AND m.tmdb_id = s.tmdb_id
+                                    )
+                                 OR (
+                                        s.source_kind = 'episode'
+                                        AND m.item_type = 'Episode'
+                                        AND (m.tmdb_id = s.tmdb_id OR m.parent_series_tmdb_id = s.tmdb_id)
+                                        AND (s.season_number IS NULL OR m.season_number = s.season_number)
+                                        AND (s.episode_number IS NULL OR m.episode_number = s.episode_number)
+                                    )
+                              )
+                              AND (
+                                    (
+                                        COALESCE(s.sha1, '') <> ''
+                                        AND (
+                                               m.file_sha1_json ? UPPER(s.sha1)
+                                            OR m.file_sha1_json ? LOWER(s.sha1)
+                                            OR COALESCE(m.file_sha1_json::text, '') ILIKE ('%%' || UPPER(s.sha1) || '%%')
+                                            OR EXISTS (
+                                                SELECT 1
+                                                FROM p115_filesystem_cache p
+                                                WHERE UPPER(COALESCE(p.sha1, '')) = UPPER(s.sha1)
+                                                  AND COALESCE(p.pick_code, '') <> ''
+                                                  AND (
+                                                        m.file_pickcode_json ? p.pick_code
+                                                     OR COALESCE(m.file_pickcode_json::text, '') LIKE ('%%' || p.pick_code || '%%')
+                                                  )
+                                            )
+                                        )
+                                    )
+                                 OR (
+                                        COALESCE(s.rapid_meta_json->>'pick_code', '') <> ''
+                                        AND (
+                                               m.file_pickcode_json ? (s.rapid_meta_json->>'pick_code')
+                                            OR COALESCE(m.file_pickcode_json::text, '') LIKE ('%%' || (s.rapid_meta_json->>'pick_code') || '%%')
+                                        )
+                                    )
                               )
                         ) AS source_live
                     FROM candidate_sources s
@@ -929,8 +1033,8 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                     COALESCE(f.total_files, 0) AS total_files,
                     COALESCE(f.live_files, 0) AS live_files,
                     CASE
-                        WHEN COALESCE(f.total_files, 0) > 0 THEN 'source_file_sha1_not_in_library'
-                        ELSE 'source_sha1_not_in_library'
+                        WHEN COALESCE(f.total_files, 0) > 0 THEN 'source_file_not_in_library'
+                        ELSE 'source_not_in_library'
                     END AS offline_reason
                 FROM candidate_sources s
                 LEFT JOIN file_match f ON f.local_source_id = s.id
@@ -938,7 +1042,7 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                 WHERE
                     (
                         COALESCE(f.total_files, 0) > 0
-                        AND COALESCE(f.live_files, 0) < COALESCE(f.total_files, 0)
+                        AND COALESCE(f.live_files, 0) = 0
                     )
                     OR (
                         COALESCE(f.total_files, 0) = 0
@@ -950,7 +1054,6 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                 (limit,),
             )
             return _rows(cur.fetchall())
-
 
 def disable_local_source(local_source_id: int, *, reason: str = '', center_response: Dict[str, Any] = None) -> Dict[str, Any]:
     """把本地 Rapid 源标记为 disabled，保留原 raw_json，并追加停用原因。"""
@@ -989,73 +1092,4 @@ def get_p115_files_from_cache_tree(root_fid: str, max_depth: int = 6):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT *, name AS rel_path FROM p115_filesystem_cache WHERE parent_id=%s OR id=%s LIMIT 5000", (str(root_fid), str(root_fid)))
-            return _rows(cur.fetchall())
-
-def list_recoverable_local_sources(limit: int = 50) -> List[Dict[str, Any]]:
-    """
-    【修复版】找出本机标记为 disabled，但实际上文件已经全部回到媒体库的源。
-    支持单集、电影，以及包含多个文件的完结季包。
-    """
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                WITH candidate_sources AS (
-                    SELECT *
-                    FROM shared_rapid_sources
-                    WHERE status = 'disabled'
-                    ORDER BY updated_at ASC
-                    LIMIT %s
-                ),
-                file_match AS (
-                    SELECT
-                        s.id AS local_source_id,
-                        COUNT(f.id)::integer AS total_files,
-                        COUNT(f.id) FILTER (
-                            WHERE EXISTS (
-                                SELECT 1
-                                FROM media_metadata m
-                                WHERE COALESCE(m.in_library, FALSE) = TRUE
-                                  AND (
-                                        m.file_sha1_json ? UPPER(f.sha1)
-                                     OR m.file_sha1_json ? LOWER(f.sha1)
-                                  )
-                            )
-                        )::integer AS live_files
-                    FROM candidate_sources s
-                    LEFT JOIN shared_rapid_source_files f
-                      ON f.local_source_id = s.id
-                     AND COALESCE(f.sha1, '') <> ''
-                    GROUP BY s.id
-                ),
-                source_match AS (
-                    SELECT
-                        s.id AS local_source_id,
-                        EXISTS (
-                            SELECT 1
-                            FROM media_metadata m
-                            WHERE COALESCE(m.in_library, FALSE) = TRUE
-                              AND COALESCE(s.sha1, '') <> ''
-                              AND (
-                                    m.file_sha1_json ? UPPER(s.sha1)
-                                 OR m.file_sha1_json ? LOWER(s.sha1)
-                              )
-                        ) AS source_live
-                    FROM candidate_sources s
-                )
-                SELECT s.*
-                FROM candidate_sources s
-                LEFT JOIN file_match f ON f.local_source_id = s.id
-                LEFT JOIN source_match sm ON sm.local_source_id = s.id
-                WHERE
-                    (
-                        COALESCE(f.total_files, 0) > 0
-                        AND COALESCE(f.live_files, 0) = COALESCE(f.total_files, 0)
-                    )
-                    OR (
-                        COALESCE(f.total_files, 0) = 0
-                        AND COALESCE(s.sha1, '') <> ''
-                        AND COALESCE(sm.source_live, FALSE) = TRUE
-                    )
-                ORDER BY s.updated_at ASC
-            """, (limit,))
             return _rows(cur.fetchall())
