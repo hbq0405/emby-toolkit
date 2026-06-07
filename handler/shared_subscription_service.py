@@ -1027,13 +1027,274 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
     return source_kind, source_id, [file_info]
 
 
+
+_CURRENT_CENTER_DEVICE_ID_CACHE = {'value': '', 'loaded_at': 0.0}
+
+
+def _current_center_device_id(client: SharedCenterClient = None) -> str:
+    """读取当前中心设备 ID，用于消费端兜底排除本机源。"""
+    now = time.time()
+    cached = _CURRENT_CENTER_DEVICE_ID_CACHE.get('value') or ''
+    if cached and now - float(_CURRENT_CENTER_DEVICE_ID_CACHE.get('loaded_at') or 0) < 300:
+        return cached
+    try:
+        c = client or SharedCenterClient()
+        me = c.me() if hasattr(c, 'me') else {}
+        device_id = str((me or {}).get('id') or (me or {}).get('device_id') or '').strip()
+        if device_id:
+            _CURRENT_CENTER_DEVICE_ID_CACHE['value'] = device_id
+            _CURRENT_CENTER_DEVICE_ID_CACHE['loaded_at'] = now
+            return device_id
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 获取当前中心设备 ID 失败，跳过本机源判断: {e}")
+    return cached or ''
+
+
+def _normalize_episode_numbers(value) -> List[int]:
+    if value in (None, '', [], {}):
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            value = re.split(r'[，,\s]+', value.strip()) if value.strip() else []
+    if isinstance(value, dict):
+        value = value.get('episodes') or value.get('missing') or value.get('missing_episode_numbers') or value.values()
+    if not isinstance(value, (list, tuple, set)):
+        value = [value]
+    out: List[int] = []
+    for item in value:
+        try:
+            n = int(float(item))
+            if n > 0 and n not in out:
+                out.append(n)
+        except Exception:
+            pass
+    return sorted(out)
+
+
+def _requested_missing_episodes_from_payload(payload: Dict[str, Any], event: Dict[str, Any] = None) -> List[int]:
+    event = event or {}
+    for container in (payload or {}, event or {}):
+        for key in (
+            '_requested_missing_episode_numbers', 'requested_missing_episode_numbers',
+            'missing_episode_numbers', 'missing_episodes', 'episode_numbers'
+        ):
+            nums = _normalize_episode_numbers(container.get(key)) if isinstance(container, dict) else []
+            if nums:
+                return nums
+        context = container.get('_consume_context') if isinstance(container, dict) and isinstance(container.get('_consume_context'), dict) else {}
+        for key in ('missing_episode_numbers', 'missing_episodes'):
+            nums = _normalize_episode_numbers(context.get(key))
+            if nums:
+                return nums
+    return []
+
+
+def _boolish_local(value, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'on', '启用', '开启', '是'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'off', '停用', '关闭', '否'):
+        return False
+    return bool(default)
+
+
+def _same_device_id(left: Any, right: Any) -> bool:
+    return bool(str(left or '').strip() and str(left or '').strip() == str(right or '').strip())
+
+
+def _file_is_own_center_source(file_info: Dict[str, Any], payload: Dict[str, Any], client: SharedCenterClient) -> bool:
+    """消费端兜底排除本机登记的中心源，避免统一订阅吃到自己的回旋镖。"""
+    file_info = file_info if isinstance(file_info, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    if _boolish_local(file_info.get('is_mine'), False) or _boolish_local(payload.get('is_mine'), False):
+        return True
+    current_id = ''
+    for obj in (file_info, payload):
+        for key in ('provider_device_id', 'contributor_id', 'device_id', 'holder_id'):
+            value = str(obj.get(key) or '').strip()
+            if not value:
+                continue
+            if not current_id:
+                current_id = _current_center_device_id(client)
+            if _same_device_id(value, current_id):
+                return True
+    return False
+
+
+def _local_movie_in_library(tmdb_id: Any) -> bool:
+    tmdb = str(tmdb_id or '').strip()
+    if not tmdb:
+        return False
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM media_metadata
+                    WHERE item_type='Movie'
+                      AND tmdb_id=%s
+                      AND COALESCE(in_library, FALSE)=TRUE
+                    LIMIT 1
+                    """,
+                    (tmdb,),
+                )
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询本地电影入库状态失败: tmdb={tmdb}, err={e}")
+        return False
+
+
+def _local_episode_in_library(parent_series_tmdb_id: Any, season_number: Any, episode_number: Any) -> bool:
+    parent = str(parent_series_tmdb_id or '').strip()
+    season = _safe_int_or_none(season_number)
+    episode = _safe_int_or_none(episode_number)
+    if not parent or season is None or episode is None:
+        return False
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM media_metadata
+                    WHERE item_type='Episode'
+                      AND parent_series_tmdb_id=%s
+                      AND season_number=%s
+                      AND episode_number=%s
+                      AND COALESCE(in_library, FALSE)=TRUE
+                    LIMIT 1
+                    """,
+                    (parent, season, episode),
+                )
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.debug(
+            f"  ➜ [共享资源] 查询本地分集入库状态失败: tmdb={parent}, "
+            f"S{season}E{episode}, err={e}"
+        )
+        return False
+
+
+def _filter_files_before_transfer(
+    *,
+    client: SharedCenterClient,
+    source_kind: str,
+    source_id: str,
+    payload: Dict[str, Any],
+    files: List[Dict[str, Any]],
+    requested_missing_episode_numbers: List[int] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """在 RAW/洗版预检前做业务级过滤。
+
+    - 统一订阅传入缺集号时，只允许中心返回的目标集进入秒传；
+    - 中心事件推送没有缺集上下文时，实时查询本地库，已入库集直接 ACK 跳过；
+    - 本机登记的中心源直接跳过，避免秒传自己的共享资源形成回旋镖。
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
+    missing_set = set(_normalize_episode_numbers(requested_missing_episode_numbers))
+    kept: List[Dict[str, Any]] = []
+    skipped = {
+        'self_source': [],
+        'not_requested_episode': [],
+        'already_in_library': [],
+        'unknown_identity': [],
+    }
+    context = _preflight_context(source_kind, source_id, payload, files)
+    source_label = f"{source_kind or '-'}:{source_id or '-'}"
+
+    for f in files:
+        file_name = f.get('file_name') or f.get('name') or f.get('sha1') or ''
+        if _file_is_own_center_source(f, payload, client):
+            skipped['self_source'].append(file_name)
+            continue
+
+        item_type = str(f.get('item_type') or context.get('item_type') or payload.get('item_type') or '').strip()
+        file_kind = str(f.get('source_kind') or source_kind or '').strip()
+        is_movie = file_kind == 'movie' or item_type == 'Movie'
+        is_episode_like = file_kind in ('episode', 'season_hub', 'completed_season') or item_type in ('Episode', 'Season')
+
+        if is_movie:
+            movie_tmdb = f.get('tmdb_id') or payload.get('tmdb_id') or context.get('tmdb_id')
+            if _local_movie_in_library(movie_tmdb):
+                skipped['already_in_library'].append(file_name)
+                continue
+            kept.append(f)
+            continue
+
+        if is_episode_like:
+            s_num, e_num = _guess_se_from_source(f, context)
+            parent_tmdb = _source_parent_series_tmdb_id(f, context)
+            if e_num is not None and missing_set and int(e_num) not in missing_set:
+                skipped['not_requested_episode'].append(f"E{int(e_num):02d} {file_name}".strip())
+                continue
+            # 没有统一订阅缺集列表时，中心事件/手动秒传都用本地库实时兜底，避免重复秒传已入库集。
+            if e_num is not None and _local_episode_in_library(parent_tmdb, s_num, e_num):
+                skipped['already_in_library'].append(f"E{int(e_num):02d} {file_name}".strip())
+                continue
+            if e_num is None and missing_set:
+                skipped['unknown_identity'].append(file_name)
+                continue
+            kept.append(f)
+            continue
+
+        kept.append(f)
+
+    total_skipped = sum(len(v) for v in skipped.values())
+    if total_skipped:
+        logger.info(
+            f"  ➜ [共享资源] 秒传前匹配过滤：source={source_label}, "
+            f"输入 {len(files)}，保留 {len(kept)}，跳过 {total_skipped} "
+            f"(非缺失集 {len(skipped['not_requested_episode'])}, 已入库 {len(skipped['already_in_library'])}, "
+            f"本机源 {len(skipped['self_source'])}, 身份不明 {len(skipped['unknown_identity'])})"
+        )
+    reason = ''
+    if files and not kept:
+        if skipped['self_source'] and len(skipped['self_source']) == len(files):
+            reason = 'all_self_source'
+            message = '中心返回的是本机共享源，已跳过，避免秒传自己的资源。'
+        elif skipped['not_requested_episode'] and len(skipped['not_requested_episode']) == len(files):
+            reason = 'no_requested_episode'
+            message = f"中心当前资源不包含本机缺失集 {sorted(missing_set)}，已跳过。"
+        elif skipped['already_in_library'] and len(skipped['already_in_library']) == len(files):
+            reason = 'all_already_in_library'
+            message = '中心返回的集本机均已入库，已跳过重复秒传。'
+        else:
+            reason = 'all_filtered'
+            message = '中心返回的资源经缺集/已入库/本机源过滤后无可秒传文件。'
+    else:
+        message = '秒传前匹配过滤完成'
+    return kept, {
+        'checked': True,
+        'source_kind': source_kind,
+        'source_id': source_id,
+        'input_count': len(files),
+        'kept_count': len(kept),
+        'skipped_count': total_skipped,
+        'requested_missing_episode_numbers': sorted(missing_set),
+        'skipped': {k: v[:20] for k, v in skipped.items() if v},
+        'reason': reason,
+        'message': message,
+    }
+
 def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
     client = SharedCenterClient()
     event_id = str(event.get('event_id') or '')
     payload = _event_payload(event)
 
-    # 调试/验收阶段允许本机手动秒传自己的共享源。
-    # 中心长轮询仍会自然排除 provider=consumer 的事件，不影响线上调度。
+    # 消费端再兜底排除本机共享源；即使手动中心资源库/批量探测返回了 is_mine，
+    # 也不能秒传自己的资源形成回旋镖。
 
     source_kind, source_id, files = _event_sources(event, client)
     if not source_kind or not source_id:
@@ -1052,6 +1313,38 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'ok': False, 'message': message, 'event_id': event_id,
             'source_kind': source_kind, 'source_id': source_id,
             'success_count': 0, 'total': 0, 'errors': [{'error': message}],
+        }
+
+    original_file_count = len(files)
+    requested_missing_episode_numbers = _requested_missing_episodes_from_payload(payload, event)
+    files, match_filter = _filter_files_before_transfer(
+        client=client,
+        source_kind=source_kind,
+        source_id=source_id,
+        payload=payload,
+        files=files,
+        requested_missing_episode_numbers=requested_missing_episode_numbers,
+    )
+    if not files:
+        message = match_filter.get('message') or '中心返回的资源无需秒传'
+        if ack and event_id:
+            try:
+                # 这是业务跳过，不是源失效；ACK ok，避免中心反复推同一条事件。
+                client.ack_device_events([event_id], result='ok', message=message[:500])
+            except Exception:
+                pass
+        return {
+            'ok': False,
+            'skipped': True,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'success_count': 0,
+            'total': 0,
+            'original_total': original_file_count,
+            'errors': [],
+            'match_filter': match_filter,
         }
 
     target_cid = _target_cid()
@@ -1340,28 +1633,53 @@ def _reported_gap_from_probe(resp_or_row: Dict[str, Any]) -> bool:
     return False
 
 
-def _consume_sources(sources: List[Dict[str, Any]], *, report_gap: bool = False) -> Dict[str, Any]:
+def _consume_sources(
+    sources: List[Dict[str, Any]],
+    *,
+    report_gap: bool = False,
+    missing_episode_numbers: List[int] = None,
+    consume_context: Dict[str, Any] = None,
+) -> Dict[str, Any]:
     if not sources:
         return {'enabled': True, 'success': False, 'reported_gap': bool(report_gap), 'mode': 'rapid', 'count': 0}
     ok = 0
     errors = []
+    skipped = []
     tried = 0
+    missing_episode_numbers = _normalize_episode_numbers(missing_episode_numbers)
+    consume_context = dict(consume_context or {})
+    if missing_episode_numbers:
+        consume_context['missing_episode_numbers'] = missing_episode_numbers
+
     for src in sources[:20]:
         tried += 1
+        payload = dict(src or {})
+        if consume_context:
+            payload['_consume_context'] = consume_context
+        if missing_episode_numbers:
+            # 统一订阅已经知道缺集时，必须把缺集号透传到消费层；
+            # season_hub / completed_season 会在 RAW/洗版预检前按集号裁剪。
+            payload['_requested_missing_episode_numbers'] = missing_episode_numbers
         event = {
             'event_id': '',
-            'source_kind': src.get('source_kind'),
-            'source_ref_id': src.get('source_id') or src.get('source_ref_id'),
-            'payload_json': src,
+            'source_kind': payload.get('source_kind'),
+            'source_ref_id': payload.get('source_id') or payload.get('source_ref_id'),
+            'payload_json': payload,
         }
         result = consume_device_event(event, ack=False)
         if result.get('ok'):
             ok += int(result.get('success_count') or 1)
             # 电影 / 单集命中一个即可；完结季一次事件会包含多文件。
-            if src.get('source_kind') in ('movie', 'episode'):
+            if payload.get('source_kind') in ('movie', 'episode'):
                 break
+        elif result.get('skipped'):
+            skipped.append({
+                'source_id': payload.get('source_id') or payload.get('source_ref_id'),
+                'message': result.get('message'),
+                'match_filter': result.get('match_filter'),
+            })
         else:
-            errors.extend(result.get('errors') or [{'source_id': src.get('source_id'), 'message': result.get('message')}])
+            errors.extend(result.get('errors') or [{'source_id': payload.get('source_id'), 'message': result.get('message')}])
     return {
         'enabled': True,
         'success': ok > 0,
@@ -1370,11 +1688,13 @@ def _consume_sources(sources: List[Dict[str, Any]], *, report_gap: bool = False)
         'action_type': '共享资源秒传',
         'count': ok,
         'tried_sources': tried,
+        'skipped_sources': skipped,
+        'missing_episode_numbers': missing_episode_numbers,
         'errors': errors,
     }
 
 
-def try_consume_shared_resource(item: Dict[str, Any], title: str = '', tmdb_id=None, item_type: str = '', parent_tmdb_id=None, season_number=None, year='', **_kwargs) -> Dict[str, Any]:
+def try_consume_shared_resource(item: Dict[str, Any], title: str = '', tmdb_id=None, item_type: str = '', parent_tmdb_id=None, season_number=None, year='', missing_episode_numbers=None, **_kwargs) -> Dict[str, Any]:
     if not shared_center_enabled():
         return {'enabled': False, 'success': False, 'reported_gap': False}
     query = _build_gap_query(item or {}, title, tmdb_id, item_type, parent_tmdb_id, season_number, year)
@@ -1383,7 +1703,19 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str = '', tmdb_id=N
         resp = client.probe_subscriptions_batch([query], limit_per_item=50)
         sources = _flatten_sources_from_probe(resp)
         reported_gap = _reported_gap_from_probe(resp)
-        result = _consume_sources(sources, report_gap=reported_gap)
+        result = _consume_sources(
+            sources,
+            report_gap=reported_gap,
+            missing_episode_numbers=missing_episode_numbers,
+            consume_context={
+                'title': title,
+                'tmdb_id': tmdb_id,
+                'item_type': item_type,
+                'parent_tmdb_id': parent_tmdb_id,
+                'season_number': season_number,
+                'year': year,
+            },
+        )
         if not result.get('success') and not reported_gap:
             # list 没命中时，保险登记缺口，等待中心事件监听异步处理。
             try:
@@ -1401,7 +1733,12 @@ def try_consume_preprobed_shared_resource(probe_row: Dict[str, Any] = None, item
     sources = _flatten_sources_from_probe(probe_row or {})
     reported_gap = _reported_gap_from_probe(probe_row or {})
     if sources:
-        return _consume_sources(sources, report_gap=reported_gap)
+        return _consume_sources(
+            sources,
+            report_gap=reported_gap,
+            missing_episode_numbers=kwargs.get('missing_episode_numbers'),
+            consume_context=kwargs,
+        )
     if reported_gap:
         return {'enabled': True, 'success': False, 'reported_gap': True, 'mode': 'rapid', 'count': 0}
     return try_consume_shared_resource(item or {}, **kwargs)

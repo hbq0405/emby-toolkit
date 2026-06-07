@@ -1802,6 +1802,7 @@ def task_auto_subscribe(processor):
                             parent_tmdb_id=parent_tmdb_id,
                             season_number=season_number,
                             year=item_year,
+                            missing_episode_numbers=missing_episode_numbers,
                         )
                     elif try_consume_shared_resource:
                         shared_result = try_consume_shared_resource(
@@ -1812,6 +1813,7 @@ def task_auto_subscribe(processor):
                             parent_tmdb_id=parent_tmdb_id,
                             season_number=season_number,
                             year=item_year,
+                            missing_episode_numbers=missing_episode_numbers,
                         )
                     else:
                         shared_result = {}
