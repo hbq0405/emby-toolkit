@@ -319,9 +319,9 @@ def _register_local_rapid_holder(client: SharedCenterClient, *, source_kind: str
             'preid': file_info.get('preid') or meta.get('preid') or '',
             'meta_json': {'from': 'rapid_transfer_success'},
         })
-        logger.info(f"  ➜ [Rapid蜂群签名] 已登记本机为 holder：sha1={sha1[:12]}..., source={source_kind}:{source_id}")
+        logger.info(f"  ➜ [负载均衡签名] 已登记本机为 holder：sha1={sha1[:12]}..., source={source_kind}:{source_id}")
     except Exception as e:
-        logger.debug(f"  ➜ [Rapid蜂群签名] 登记本机 holder 失败: {e}")
+        logger.debug(f"  ➜ [负载均衡签名] 登记本机 holder 失败: {e}")
 
 
 def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info: Dict[str, Any], target_cid: str, sha1: str, size: int, file_name: str, rapid_meta: Dict[str, Any], first_resp: Any) -> Dict[str, Any]:
@@ -332,13 +332,13 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     source_id = str(file_info.get('source_id') or file_info.get('source_ref_id') or rapid_meta.get('source_id') or rapid_meta.get('source_ref_id') or '').strip()
     if not source_kind or not source_id:
         logger.warning(
-            f"  ➜ [Rapid蜂群签名] 秒传需要签名但缺少 source_kind/source_id，无法向中心创建 sign_job: "
+            f"  ➜ [负载均衡签名] 秒传需要签名但缺少 source_kind/source_id，无法向中心创建 sign_job: "
             f"sha1={sha1[:12]}..., file={file_name}"
         )
         return {'ok': False, 'response': first_resp, 'skipped': True, 'message': '缺少 source_kind/source_id'}
 
     logger.warning(
-        f"  ➜ [Rapid蜂群签名] 秒传返回 status=7，准备请求中心调度在线 holder："
+        f"  ➜ [负载均衡签名] 秒传返回 status=7，准备请求中心调度在线 holder："
         f"source={source_kind}:{source_id}, sha1={sha1[:12]}..., backend={sign_req.get('backend') or '-'}, "
         f"sign_check={sign_req.get('sign_check')}"
     )
@@ -358,19 +358,19 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     holder_id = str(create_resp.get('holder_id') or (create_resp.get('job') or {}).get('holder_id') or '').strip()
     if not job_id:
         raise RuntimeError(f'中心未返回 sign_job id: {create_resp}')
-    logger.info(f"  ➜ [Rapid蜂群签名] sign_job 已创建：job_id={job_id}, holder={holder_id or '-'}，等待 sign_val...")
+    logger.info(f"  ➜ [负载均衡签名] sign_job 已创建：job_id={job_id}, holder={holder_id or '-'}，等待 sign_val...")
     wait_resp = client.wait_rapid_sign_job(job_id, timeout=45)
     status = str(wait_resp.get('status') or (wait_resp.get('job') or {}).get('status') or '')
     sign_val = str(wait_resp.get('sign_val') or (wait_resp.get('job') or {}).get('sign_val') or '').strip().upper()
     if status != 'done' or not _norm_sha1(sign_val):
-        logger.warning(f"  ➜ [Rapid蜂群签名] sign_job 未完成：job_id={job_id}, status={status}, resp={str(wait_resp)[:500]}")
+        logger.warning(f"  ➜ [负载均衡签名] sign_job 未完成：job_id={job_id}, status={status}, resp={str(wait_resp)[:500]}")
         return {'ok': False, 'response': first_resp, 'sign_job': wait_resp, 'message': f'sign_job 未完成: {status}'}
 
     signed_meta = dict(rapid_meta or {})
     signed_meta['sign_key'] = sign_req.get('sign_key')
     signed_meta['sign_val'] = sign_val
     logger.info(
-        f"  ➜ [Rapid蜂群签名] 已收到 sign_val，准备带签名重试秒传："
+        f"  ➜ [负载均衡签名] 已收到 sign_val，准备带签名重试秒传："
         f"job_id={job_id}, sign_val={sign_val[:12]}..., file={file_name}"
     )
     signed_resp = _call_rapid_method(
@@ -384,7 +384,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     )
     ok = _rapid_success(signed_resp)
     logger.info(
-        f"  ➜ [Rapid蜂群签名] 带中心 sign_val 重试完成：ok={ok}, "
+        f"  ➜ [负载均衡签名] 带中心 sign_val 重试完成：ok={ok}, "
         f"source={source_kind}:{source_id}, sha1={sha1[:12]}..."
     )
     return {'ok': ok, 'response': signed_resp, 'sign_job': wait_resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
@@ -944,7 +944,7 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
                 return retry
             resp = retry.get('response') or resp
         except Exception as e:
-            logger.warning(f"  ➜ [Rapid蜂群签名] 中心 holder 签名闭环失败：{e}")
+            logger.warning(f"  ➜ [负载均衡签名] 中心 holder 签名闭环失败：{e}")
 
     return {'ok': False, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
 

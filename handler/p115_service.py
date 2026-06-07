@@ -118,8 +118,8 @@ def _p115_range_sha1_from_url(down_url, sign_check, user_agent=None, label='115'
     }
     if user_agent:
         headers['User-Agent'] = user_agent
-    logger.info(
-        f"  ➜ [Rapid签名闭环] {label} 开始读取 sign_check Range: "
+    logger.debug(
+        f"  ➜ [负载均衡签名] {label} 开始读取 sign_check Range: "
         f"{start}-{end}，expected={expected_len} bytes"
     )
     resp = requests.get(str(down_url), headers=headers, timeout=timeout, allow_redirects=True)
@@ -131,12 +131,12 @@ def _p115_range_sha1_from_url(down_url, sign_check, user_agent=None, label='115'
         raise RuntimeError('Range GET 返回空内容')
     if len(content) != expected_len:
         logger.warning(
-            f"  ➜ [Rapid签名闭环] {label} Range 长度与 sign_check 不一致："
+            f"  ➜ [负载均衡签名] {label} Range 长度与 sign_check 不一致："
             f"got={len(content)}, expected={expected_len}，继续按实际内容计算 sign_val"
         )
     sign_val = hashlib.sha1(content).hexdigest().upper()
-    logger.info(
-        f"  ➜ [Rapid签名闭环] {label} Range 读取完成："
+    logger.debug(
+        f"  ➜ [负载均衡签名] {label} Range 读取完成："
         f"got={len(content)} bytes, sign_val={sign_val[:12]}..."
     )
     return sign_val, len(content), start, end
@@ -147,19 +147,19 @@ def _p115_try_local_holder_sign(*, pick_code, sign_check, downurl_getter, user_a
     pc = str(pick_code or '').strip()
     if not pc:
         logger.warning(
-            f"  ➜ [Rapid签名闭环] {label} 无法计算 sign_val：缺少源文件 pick_code；"
+            f"  ➜ [负载均衡签名] {label} 无法计算 sign_val：缺少源文件 pick_code；"
             f"sha1={str(sha1 or '')[:12]}..., file={file_name or '-'}"
         )
         return None
-    logger.info(
-        f"  ➜ [Rapid签名闭环] {label} 收到二次校验任务："
+    logger.debug(
+        f"  ➜ [负载均衡签名] {label} 收到二次校验任务："
         f"sha1={str(sha1 or '')[:12]}..., pc={pc[:8]}..., sign_check={sign_check}, file={file_name or '-'}"
     )
     down_url = downurl_getter(pc, user_agent)
     down_url = _p115_extract_down_url(down_url)
     if not down_url:
         raise RuntimeError(f'{label} 未能获取源文件直链')
-    logger.info(f"  ➜ [Rapid签名闭环] {label} 已获取源文件直链，准备 Range 读取：pc={pc[:8]}...")
+    logger.debug(f"  ➜ [负载均衡签名] {label} 已获取源文件直链，准备 Range 读取：pc={pc[:8]}...")
     sign_val, byte_len, start, end = _p115_range_sha1_from_url(
         down_url, sign_check, user_agent=user_agent, label=label
     )
@@ -196,7 +196,7 @@ def _p115_lookup_local_holder_file_for_sign(*, sha1='', size=0, pick_code='', fi
                 pass
             return out
     except Exception as e:
-        logger.debug(f"  ➜ [Rapid签名闭环] 查询 P115CacheManager holder 文件失败: {e}")
+        logger.debug(f"  ➜ [负载均衡签名] 查询 P115CacheManager holder 文件失败: {e}")
 
     try:
         clauses, args = [], []
@@ -232,7 +232,7 @@ def _p115_lookup_local_holder_file_for_sign(*, sha1='', size=0, pick_code='', fi
                     except Exception:
                         pass
     except Exception as e:
-        logger.debug(f"  ➜ [Rapid签名闭环] 直接查询 p115_filesystem_cache holder 文件失败: {e}")
+        logger.debug(f"  ➜ [负载均衡签名] 直接查询 p115_filesystem_cache holder 文件失败: {e}")
     return out
 
 class LimitedCache(OrderedDict):
@@ -849,7 +849,7 @@ class P115OpenAPIClient:
                 if not cache_row and fid and hasattr(cache_mgr, 'get_file_cache_by_id'):
                     cache_row = cache_mgr.get_file_cache_by_id(fid)
             except Exception as e:
-                logger.debug(f"  ➜ [Rapid秒传] 查询 p115_filesystem_cache 失败: {e}")
+                logger.debug(f"  ➜ [共享秒传] 查询 p115_filesystem_cache 失败: {e}")
 
         if cache_row:
             try:
@@ -907,7 +907,7 @@ class P115OpenAPIClient:
                         except Exception:
                             pass
             except Exception as e:
-                logger.debug(f"  ➜ [Rapid秒传] 实时查询 115 文件详情失败 fid={fid}: {e}")
+                logger.debug(f"  ➜ [共享秒传] 实时查询 115 文件详情失败 fid={fid}: {e}")
 
         if not target_cid:
             return {'state': False, 'error_msg': '缺少目标目录 cid，无法秒传'}
@@ -934,10 +934,10 @@ class P115OpenAPIClient:
                     'fid': fid, 'pick_code': pick_code, 'sha1': sha1, 'file_name': file_name, 'size': size,
                 }) or preid
             except Exception as e:
-                logger.debug(f"  ➜ [Rapid秒传] 秒传前补齐 preid 失败: sha1={sha1[:12]}..., err={e}")
+                logger.debug(f"  ➜ [共享秒传] 秒传前补齐 preid 失败: sha1={sha1[:12]}..., err={e}")
 
         logger.info(
-            f"  ➜ [Rapid秒传] 准备秒传到 CID={target_cid}: "
+            f"  ➜ [共享秒传] 准备秒传到 CID={target_cid}: "
             f"{file_name} | sha1={sha1[:12]}... | preid={(preid[:12] + '...') if preid else '-'} | size={size}"
         )
 
@@ -972,14 +972,14 @@ class P115OpenAPIClient:
             sign_key_text = str(data.get('sign_key') or init_res.get('sign_key') or '')
             sign_check_text = str(data.get('sign_check') or init_res.get('sign_check') or '')
             logger.warning(
-                f"  ➜ [Rapid秒传] OpenAPI 返回 status=7，进入本机 Holder 签名闭环："
+                f"  ➜ [共享秒传] OpenAPI 返回 status=7，进入本机 Holder 签名闭环："
                 f"sha1={sha1[:12]}..., preid={(preid or sha1)[:12]}..., "
                 f"pc={(pick_code or '-')[:8]}..., sign_check={sign_check_text or '-'}, "
                 f"sign_key_prefix={sign_key_text[:12]}..., sign_key_len={len(sign_key_text)}"
             )
 
             if not sign_key_text or not sign_check_text:
-                logger.warning("  ➜ [Rapid签名闭环] OpenAPI status=7 但缺少 sign_key/sign_check，无法闭环重试。")
+                logger.warning("  ➜ [负载均衡签名] OpenAPI status=7 但缺少 sign_key/sign_check，无法闭环重试。")
                 return {
                     'state': False,
                     'error_msg': '115 要求二次校验(status=7)，但返回缺少 sign_key/sign_check，无法计算 sign_val',
@@ -1022,7 +1022,7 @@ class P115OpenAPIClient:
                     raise RuntimeError('本机 Holder 未返回 sign_val')
 
                 logger.info(
-                    f"  ➜ [Rapid签名闭环] OpenAPI 已拿到 sign_val，准备带 sign_key/sign_val 重试 upload/init："
+                    f"  ➜ [负载均衡签名] OpenAPI 已拿到 sign_val，准备带 sign_key/sign_val 重试 upload/init："
                     f"sign_val={sign_result['sign_val'][:12]}..., bytes={sign_result.get('byte_len')}"
                 )
                 signed_res = self.fs_upload_init(
@@ -1039,7 +1039,7 @@ class P115OpenAPIClient:
                     else ''
                 )
                 logger.info(
-                    f"  ➜ [Rapid签名闭环] OpenAPI 带签名重试完成："
+                    f"  ➜ [负载均衡签名] OpenAPI 带签名重试完成："
                     f"state={bool(isinstance(signed_res, dict) and signed_res.get('state'))}, status={signed_status or '-'}, "
                     f"new_sign_check={signed_data.get('sign_check') or '-'}"
                 )
@@ -1060,7 +1060,7 @@ class P115OpenAPIClient:
                         'byte_len': sign_result.get('byte_len'),
                         'range': f"{sign_result.get('start')}-{sign_result.get('end')}",
                     }
-                    logger.info(f"  ➜ [Rapid签名闭环] OpenAPI 本机 Holder 闭环成功：{file_name}")
+                    logger.info(f"  ➜ [负载均衡签名] OpenAPI 本机 Holder 闭环成功：{file_name}")
                     return out
 
                 return {
@@ -1084,7 +1084,7 @@ class P115OpenAPIClient:
                     },
                 }
             except Exception as e:
-                logger.warning(f"  ➜ [Rapid签名闭环] OpenAPI 本机 Holder 签名闭环失败：{e}")
+                logger.warning(f"  ➜ [负载均衡签名] OpenAPI 本机 Holder 签名闭环失败：{e}")
                 return {
                     'state': False,
                     'error_msg': f'115 要求二次校验(status=7)，本机 Holder 签名闭环失败：{e}',
@@ -1802,13 +1802,13 @@ class P115CookieClient:
                 signed_payload['sign_key'] = sign_key_text
                 signed_payload['sign_val'] = sign_result['sign_val']
                 logger.info(
-                    f"  ➜ [Rapid签名闭环] Cookie 已拿到 sign_val，准备带 sign_key/sign_val 重试 initupload："
+                    f"  ➜ [负载均衡签名] Cookie 已拿到 sign_val，准备带 sign_key/sign_val 重试 initupload："
                     f"sign_val={sign_result['sign_val'][:12]}..., bytes={sign_result.get('byte_len')}"
                 )
                 signed_resp = self.webapi.upload_init(signed_payload)
                 signed_status, signed_data = _status_from_cookie_init(signed_resp if isinstance(signed_resp, dict) else {})
                 logger.info(
-                    f"  ➜ [Rapid签名闭环] Cookie 带签名重试完成："
+                    f"  ➜ [负载均衡签名] Cookie 带签名重试完成："
                     f"state={bool(isinstance(signed_resp, dict) and signed_resp.get('state'))}, "
                     f"status={signed_status or '-'}, new_sign_check={signed_data.get('sign_check') or '-'}"
                 )
@@ -1834,7 +1834,7 @@ class P115CookieClient:
                         'byte_len': sign_result.get('byte_len'),
                         'range': f"{sign_result.get('start')}-{sign_result.get('end')}",
                     }
-                    logger.info(f"  ➜ [Rapid签名闭环] Cookie 本机 Holder 闭环成功：{file_name}")
+                    logger.info(f"  ➜ [负载均衡签名] Cookie 本机 Holder 闭环成功：{file_name}")
                     return signed_out
 
                 out['state'] = False
@@ -1856,7 +1856,7 @@ class P115CookieClient:
                 }
                 return out
             except Exception as e:
-                logger.warning(f"  ➜ [Rapid签名闭环] Cookie 本机 Holder 签名闭环失败：{e}")
+                logger.warning(f"  ➜ [负载均衡签名] Cookie 本机 Holder 签名闭环失败：{e}")
                 out['state'] = False
                 out['error_msg'] = f'Cookie initupload 要求二次校验(status=7)，本机 Holder 签名闭环失败：{e}'
                 out['_rapid_sign_closed_loop'] = False
@@ -2857,7 +2857,7 @@ class P115Service:
                             return out
                     except Exception as e:
                         last_error = e
-                        logger.warning(f"  ➜ [Rapid签名闭环] {label} 计算 sign_val 失败，尝试备用接口: {e}")
+                        logger.warning(f"  ➜ [负载均衡签名] {label} 计算 sign_val 失败，尝试备用接口: {e}")
                 raise RuntimeError(f'本机 holder 计算 sign_val 失败: {last_error}')
 
             def fs_rapid_upload(self, target_cid, sha1, size, file_name, preid=None, **kwargs):

@@ -1706,7 +1706,7 @@ def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> D
         sign_check = str(job.get('sign_check') or '').strip()
         file_name = str(job.get('file_name') or sha1 or '').strip()
         logger.info(
-            f"  ➜ [Rapid蜂群签名] 收到中心 sign_job：job_id={job_id}, "
+            f"  ➜ [负载均衡签名] 收到中心 sign_job：job_id={job_id}, "
             f"sha1={sha1[:12]}..., sign_check={sign_check}, requester={job.get('requester_id') or '-'}, file={file_name}"
         )
         try:
@@ -1732,12 +1732,12 @@ def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> D
             }
             submit = client.submit_rapid_sign_job(job_id, submit_payload)
             logger.info(
-                f"  ➜ [Rapid蜂群签名] sign_job 已回传 sign_val：job_id={job_id}, "
+                f"  ➜ [负载均衡签名] sign_job 已回传 sign_val：job_id={job_id}, "
                 f"sign_val={sign_val[:12]}..., bytes={(sign_res or {}).get('byte_len')}"
             )
             results.append({'job_id': job_id, 'ok': True, 'submit': submit})
         except Exception as e:
-            logger.warning(f"  ➜ [Rapid蜂群签名] 处理 sign_job 失败：job_id={job_id}, err={e}")
+            logger.warning(f"  ➜ [负载均衡签名] 处理 sign_job 失败：job_id={job_id}, err={e}")
             try:
                 submit = client.submit_rapid_sign_job(job_id, {'status': 'failed', 'message': str(e)[:1000]})
             except Exception as submit_err:
