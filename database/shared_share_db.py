@@ -993,25 +993,69 @@ def get_p115_files_from_cache_tree(root_fid: str, max_depth: int = 6):
 
 def list_recoverable_local_sources(limit: int = 50) -> List[Dict[str, Any]]:
     """
-    找出本机标记为 disabled，但 SHA1 实际上又悄悄回到媒体库的源。
+    【修复版】找出本机标记为 disabled，但实际上文件已经全部回到媒体库的源。
+    支持单集、电影，以及包含多个文件的完结季包。
     """
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
+                WITH candidate_sources AS (
+                    SELECT *
+                    FROM shared_rapid_sources
+                    WHERE status = 'disabled'
+                    ORDER BY updated_at ASC
+                    LIMIT %s
+                ),
+                file_match AS (
+                    SELECT
+                        s.id AS local_source_id,
+                        COUNT(f.id)::integer AS total_files,
+                        COUNT(f.id) FILTER (
+                            WHERE EXISTS (
+                                SELECT 1
+                                FROM media_metadata m
+                                WHERE COALESCE(m.in_library, FALSE) = TRUE
+                                  AND (
+                                        m.file_sha1_json ? UPPER(f.sha1)
+                                     OR m.file_sha1_json ? LOWER(f.sha1)
+                                  )
+                            )
+                        )::integer AS live_files
+                    FROM candidate_sources s
+                    LEFT JOIN shared_rapid_source_files f
+                      ON f.local_source_id = s.id
+                     AND COALESCE(f.sha1, '') <> ''
+                    GROUP BY s.id
+                ),
+                source_match AS (
+                    SELECT
+                        s.id AS local_source_id,
+                        EXISTS (
+                            SELECT 1
+                            FROM media_metadata m
+                            WHERE COALESCE(m.in_library, FALSE) = TRUE
+                              AND COALESCE(s.sha1, '') <> ''
+                              AND (
+                                    m.file_sha1_json ? UPPER(s.sha1)
+                                 OR m.file_sha1_json ? LOWER(s.sha1)
+                              )
+                        ) AS source_live
+                    FROM candidate_sources s
+                )
                 SELECT s.*
-                FROM shared_rapid_sources s
-                WHERE s.status = 'disabled'
-                  AND COALESCE(s.sha1, '') <> ''
-                  AND EXISTS (
-                      SELECT 1
-                      FROM media_metadata m
-                      WHERE COALESCE(m.in_library, FALSE) = TRUE
-                        AND (
-                              m.file_sha1_json ? UPPER(s.sha1)
-                           OR m.file_sha1_json ? LOWER(s.sha1)
-                        )
-                  )
+                FROM candidate_sources s
+                LEFT JOIN file_match f ON f.local_source_id = s.id
+                LEFT JOIN source_match sm ON sm.local_source_id = s.id
+                WHERE
+                    (
+                        COALESCE(f.total_files, 0) > 0
+                        AND COALESCE(f.live_files, 0) = COALESCE(f.total_files, 0)
+                    )
+                    OR (
+                        COALESCE(f.total_files, 0) = 0
+                        AND COALESCE(s.sha1, '') <> ''
+                        AND COALESCE(sm.source_live, FALSE) = TRUE
+                    )
                 ORDER BY s.updated_at ASC
-                LIMIT %s
             """, (limit,))
             return _rows(cur.fetchall())

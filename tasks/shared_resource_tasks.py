@@ -2517,7 +2517,8 @@ def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
     return {'ok': failed == 0, 'offline_found': len(rows), 'disabled': disabled, 'failed': failed, 'items': items[:50]}
 
 def _recover_offline_local_sources(limit: int = 50) -> Dict[str, Any]:
-    """【新增】自动复活那些重新回到媒体库的共享源。"""
+    """【修复版】自动复活那些重新回到媒体库的共享源，防止无限克隆。"""
+    from database import shared_share_db
     rows = shared_share_db.list_recoverable_local_sources(limit=limit)
     if not rows:
         return {'ok': True, 'recovered': 0, 'failed': 0}
@@ -2526,7 +2527,7 @@ def _recover_offline_local_sources(limit: int = 50) -> Dict[str, Any]:
     failed = 0
     for row in rows:
         try:
-            # 构造基础候选信息，触发重新登记
+            # 构造基础候选信息
             candidate = {
                 'tmdb_id': row.get('tmdb_id'),
                 'item_type': row.get('item_type'),
@@ -2535,19 +2536,35 @@ def _recover_offline_local_sources(limit: int = 50) -> Dict[str, Any]:
                 'title': row.get('title'),
                 'release_year': row.get('release_year'),
             }
-            if row.get('item_type') == 'Episode':
+            
+            if row.get('item_type') in ('Episode', 'Season'):
                 candidate['parent_series_tmdb_id'] = row.get('tmdb_id')
+                
+            # ★ 核心修复 1：如果是完结季包，必须带上 Completed 状态，否则只会复活单集！
+            if row.get('source_kind') == 'completed_season':
+                candidate['watching_status'] = 'Completed'
 
-            # 重新向中心发起登记，成功后底层会自动将 status 覆写为 active
-            res = register_candidate_to_center(candidate, source_provider='rapid_auto_recovery')
+            # ★ 核心修复 2：必须使用原有的 source_provider，否则会生成新的 source_key 导致无限克隆！
+            provider = row.get('source_provider') or 'rapid_auto_recovery'
+            
+            res = register_candidate_to_center(candidate, source_provider=provider)
+            
+            # ★ 核心修复 3：无论成功还是失败（比如一致性校验不通过），都必须更新该行的 updated_at
+            # 否则它会永远卡在队列最前面，导致死循环！
             if res.get('ok'):
                 recovered += 1
                 logger.info(f"  ➜ [共享资源维护] 已自动复活重返媒体库的共享源: {row.get('title')}")
             else:
                 failed += 1
+                shared_share_db.update_local_source(row['id'], last_error=res.get('message') or '复活登记失败')
+                
         except Exception as e:
             failed += 1
             logger.debug(f"  ➜ [共享资源维护] 复活共享源失败: {row.get('title')}, err={e}")
+            try:
+                shared_share_db.update_local_source(row['id'], last_error=str(e))
+            except:
+                pass
 
     return {'ok': True, 'recovered': recovered, 'failed': failed}
 
