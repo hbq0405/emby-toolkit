@@ -90,6 +90,7 @@ def _install_stubs():
     constants_mod.CONFIG_OPTION_ETK_SERVER_URL = "etk_server_url"
     constants_mod.CONFIG_OPTION_115_ENABLE_SYNC_DELETE = "p115_enable_sync_delete"
     constants_mod.CONFIG_OPTION_115_GENERATE_MEDIAINFO = "p115_generate_mediainfo"
+    constants_mod.CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION = "p115_mediainfo_assisted_recognition"
     constants_mod.CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"
     constants_mod.CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"
     constants_mod.CONFIG_OPTION_115_MEDIAINFO_CENTER = "p115_mediainfo_center"

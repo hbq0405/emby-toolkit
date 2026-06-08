@@ -13,6 +13,14 @@ import constants # 你的常量定义
 logger = logging.getLogger(__name__)
 
 
+def _log_trace(message):
+    trace_logger = getattr(logger, 'trace', None)
+    if callable(trace_logger):
+        trace_logger(message)
+        return
+    logger.debug(message)
+
+
 def _notify_pending_system_update_result():
     try:
         from tasks.system_update import peek_post_update_status, clear_post_update_status
@@ -80,7 +88,7 @@ def retry_pending_system_update_result(max_attempts: int = 10, interval_seconds:
             return True
         if attempt < max_attempts:
             time.sleep(interval_seconds)
-    logger.trace("  ➜ 系统更新结果通知重试结束，仍未成功发送。")
+    _log_trace("  ➜ 系统更新结果通知重试结束，仍未成功发送。")
     return False
 
 # --- 路径和配置定义 ---

@@ -368,8 +368,11 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
         self.assertEqual(kwargs["entrypoint"][0:2], ["python", "-c"])
         self.assertIn("if __name__ == \"__main__\":", kwargs["entrypoint"][2])
         self.assertNotIn("/tmp/etk_update_helper.py", kwargs["entrypoint"][2])
+        self.assertTrue(kwargs["auto_remove"])
         self.assertEqual(kwargs["volumes"]["/srv/etk-config"], {"bind": "/config", "mode": "rw"})
         self.assertEqual(kwargs["environment"]["ETK_UPDATE_STATUS_PATH"], "/config/system_update_result.json")
+        self.assertEqual(kwargs["labels"]["com.embytoolkit.role"], "system-update-helper")
+        self.assertEqual(kwargs["labels"]["com.embytoolkit.target-container"], "emby-toolkit")
 
     def test_run_docker_helper_fails_fast_when_status_path_is_not_persisted_mount(self):
         fake_client = mock.Mock()
