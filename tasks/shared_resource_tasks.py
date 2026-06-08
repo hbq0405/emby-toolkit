@@ -7,6 +7,7 @@ import math
 import re
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, List
 
 import requests
@@ -2485,6 +2486,81 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
 
 
 
+def _human_title_from_sign_job(job: Dict[str, Any], fallback: str = '该资源') -> str:
+    """签名日志面向人展示：只保留片名，机器字段放 DEBUG。"""
+    job = job if isinstance(job, dict) else {}
+    for key in ('title', 'display_title', 'media_title', 'name', 'file_name'):
+        value = str(job.get(key) or '').strip()
+        if value:
+            text = value
+            break
+    else:
+        text = str(fallback or '').strip()
+
+    text = text.replace('\\', '/').split('/')[-1].strip()
+    text = re.sub(r'\.(?:mkv|mp4|ts|m2ts|avi|mov|wmv|flv|rmvb|webm|iso)$', '', text, flags=re.IGNORECASE).strip()
+
+    # 常见中心文件名：片名 (年份) · UHD BluRay · HDR10 ...
+    for sep in (' · ', '｜', ' | '):
+        if sep in text:
+            text = text.split(sep, 1)[0].strip()
+            break
+
+    # 兜底：没有“·”时，遇到明显质量标签也截断。避免误砍“片名 - 正片”这类合法标题。
+    quality_match = re.search(
+        r'\s[-–—]\s(?:UHD|BluRay|WEB[- ]?DL|WEBRip|HDTV|DVDRip|HDR10|DoVi|DV|2160p|1080p|720p)\b',
+        text,
+        flags=re.IGNORECASE,
+    )
+    if quality_match:
+        text = text[:quality_match.start()].strip()
+
+    text = re.sub(r'\s*[（(](?:19|20)\d{2}[）)]\s*$', '', text).strip()
+    text = re.sub(r'\s+', ' ', text).strip(' -–—·|｜_')
+    if not text:
+        text = str(fallback or '该资源').strip() or '该资源'
+    return text[:80] + ('…' if len(text) > 80 else '')
+
+
+class _SignNoiseFilter(logging.Filter):
+    """签名任务里压掉 115 客户端的直链成功明细，避免 INFO 日志刷机器字段。"""
+    _NOISE = (
+        '成功获取直链 ->',
+        '成功获取直链：',
+    )
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+            if any(x in msg for x in self._NOISE):
+                return False
+        except Exception:
+            pass
+        return True
+
+
+@contextmanager
+def _suppress_sign_noise_logs():
+    noise_filter = _SignNoiseFilter()
+    target_loggers = [
+        logging.getLogger('handler.p115_service'),
+        logging.getLogger('p115_service'),
+    ]
+    for target in target_loggers:
+        try:
+            target.addFilter(noise_filter)
+        except Exception:
+            pass
+    try:
+        yield
+    finally:
+        for target in target_loggers:
+            try:
+                target.removeFilter(noise_filter)
+            except Exception:
+                pass
+
+
 def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> Dict[str, Any]:
     """Holder 端处理中心下发的 sign_job。CK/PC 只在本机使用，只回传 sign_val。"""
     if not _enabled():
@@ -2502,16 +2578,23 @@ def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> D
         sha1 = _norm_sha1(job.get('sha1'))
         sign_check = str(job.get('sign_check') or '').strip()
         file_name = str(job.get('file_name') or sha1 or '').strip()
-        logger.info(
-            f"  ➜ [负载均衡签名] 收到中心 sign_job：job_id={job_id}, "
-            f"sha1={sha1[:12]}..., sign_check={sign_check}, requester={job.get('requester_id') or '-'}, file={file_name}"
+        display_title = _human_title_from_sign_job(job, fallback=file_name or sha1 or '该资源')
+        logger.info(f"  ➜ [负载均衡签名] 收到中心派发的签名请求：《{display_title}》")
+        logger.debug(
+            "  ➜ [负载均衡签名] 签名请求详情：job_id=%s, sha1=%s, sign_check=%s, requester=%s, file=%s",
+            job_id or '-',
+            sha1[:12] + '...' if sha1 else '-',
+            sign_check or '-',
+            job.get('requester_id') or '-',
+            file_name or '-',
         )
         try:
             from handler.p115_service import P115Service
             p115 = P115Service.get_client()
             if not p115 or not hasattr(p115, 'rapid_sign_value'):
                 raise RuntimeError('当前 115 客户端不支持 rapid_sign_value')
-            sign_res = p115.rapid_sign_value(job)
+            with _suppress_sign_noise_logs():
+                sign_res = p115.rapid_sign_value(job)
             sign_val = _norm_sha1((sign_res or {}).get('sign_val'))
             if not sign_val:
                 raise RuntimeError(f'未计算出合法 sign_val: {sign_res}')
@@ -2528,13 +2611,23 @@ def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> D
                 },
             }
             submit = client.submit_rapid_sign_job(job_id, submit_payload)
-            logger.info(
-                f"  ➜ [负载均衡签名] sign_job 已回传 sign_val：job_id={job_id}, "
-                f"sign_val={sign_val[:12]}..., bytes={(sign_res or {}).get('byte_len')}"
+            logger.info(f"  ➜ [负载均衡签名] 《{display_title}》的签名已成功获取并回传")
+            logger.debug(
+                "  ➜ [负载均衡签名] 签名回传详情：job_id=%s, sign_val=%s, bytes=%s",
+                job_id or '-',
+                sign_val[:12] + '...' if sign_val else '-',
+                (sign_res or {}).get('byte_len') or '-',
             )
             results.append({'job_id': job_id, 'ok': True, 'submit': submit})
         except Exception as e:
-            logger.warning(f"  ➜ [负载均衡签名] 处理 sign_job 失败：job_id={job_id}, err={e}")
+            logger.warning(f"  ➜ [负载均衡签名] 《{display_title}》的签名获取或回传失败：{e}")
+            logger.debug(
+                "  ➜ [负载均衡签名] 签名失败详情：job_id=%s, sha1=%s, sign_check=%s",
+                job_id or '-',
+                sha1[:12] + '...' if sha1 else '-',
+                sign_check or '-',
+                exc_info=True,
+            )
             try:
                 submit = client.submit_rapid_sign_job(job_id, {'status': 'failed', 'message': str(e)[:1000]})
             except Exception as submit_err:
