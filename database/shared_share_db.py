@@ -246,6 +246,46 @@ def get_local_source(local_source_id: int):
             return _row(cur.fetchone())
 
 
+def delete_local_source(local_source_id: int) -> Dict[str, Any]:
+    """彻底删除本地 Rapid 共享索引。
+
+    只处理本机数据库：先删 shared_rapid_source_files，再删 shared_rapid_sources。
+    中心端取消登记由 routes/shared_resource.py 在调用本函数前完成，避免这里耦合网络请求。
+    """
+    local_source_id = int(local_source_id)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM shared_rapid_sources WHERE id=%s FOR UPDATE", (local_source_id,))
+            row = _row(cur.fetchone())
+            if not row:
+                conn.commit()
+                return {}
+            cur.execute("DELETE FROM shared_rapid_source_files WHERE local_source_id=%s", (local_source_id,))
+            files_deleted = cur.rowcount or 0
+            cur.execute("DELETE FROM shared_rapid_sources WHERE id=%s", (local_source_id,))
+            sources_deleted = cur.rowcount or 0
+            conn.commit()
+            row['_deleted_files'] = files_deleted
+            row['_deleted_sources'] = sources_deleted
+            return row
+
+
+def delete_local_sources(local_source_ids: List[int]) -> Dict[str, Any]:
+    deleted = []
+    missing = []
+    for value in local_source_ids or []:
+        try:
+            sid = int(value)
+        except Exception:
+            continue
+        row = delete_local_source(sid)
+        if row:
+            deleted.append(row)
+        else:
+            missing.append(sid)
+    return {'deleted': deleted, 'missing': missing, 'count': len(deleted)}
+
+
 def list_local_sources(status='all', keyword='', page=1, page_size=30, order_by='created_desc') -> Tuple[List[Dict[str, Any]], int]:
     page = max(1, int(page or 1))
     page_size = min(500, max(1, int(page_size or 30)))

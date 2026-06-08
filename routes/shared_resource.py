@@ -115,6 +115,14 @@ def _fetch_center_credit() -> Dict[str, Any]:
         'share_requests': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
         'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0) + int(stats.get('completed_season_sources') or 0),
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
+        'display_movie_count': int(stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or stats.get('movie_sources') or 0),
+        'display_season_count': int(stats.get('display_season_count') or (stats.get('media_stats') or {}).get('season_count') or 0),
+        'video_count': int(stats.get('video_count') or (stats.get('media_stats') or {}).get('video_count') or stats.get('raw_ffprobe') or 0),
+        'media_stats': stats.get('media_stats') or {
+            'movie_count': int(stats.get('display_movie_count') or stats.get('movie_sources') or 0),
+            'season_count': int(stats.get('display_season_count') or 0),
+            'video_count': int(stats.get('video_count') or stats.get('raw_ffprobe') or 0),
+        },
         'remote_devices': int(stats.get('devices') or 0),
         'raw_json': {'me': me, 'stats': stats},
     }
@@ -479,6 +487,48 @@ def api_reregister_local_sources_batch():
     return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '重新登记完成', 'data': result}), status
 
 
+
+def _local_source_requires_center_cancel(row: Dict[str, Any]) -> bool:
+    row = row if isinstance(row, dict) else {}
+    if not str(row.get('center_source_id') or '').strip():
+        return False
+    status = str(row.get('status') or '').strip().lower()
+    center_status = str(row.get('center_status') or '').strip().lower()
+    if status in {'disabled', 'cancelled', 'canceled', 'deleted'}:
+        return False
+    if center_status in {'disabled', 'cancelled', 'canceled', 'deleted'}:
+        return False
+    return bool(status in {'active', 'available', 'updating', 'pending', ''} or center_status in {'reported', 'partial', 'local', 'pending', ''})
+
+
+def _cancel_center_source_for_local_row(row: Dict[str, Any], message: str = 'local delete') -> Dict[str, Any]:
+    row = row if isinstance(row, dict) else {}
+    if not _local_source_requires_center_cancel(row):
+        return {'ok': True, 'skipped': True, 'reason': 'local_only_or_already_disabled'}
+    try:
+        return SharedCenterClient().disable_source(row.get('source_kind'), row.get('center_source_id'), message=message)
+    except Exception as e:
+        return {'ok': False, 'message': str(e)}
+
+
+def _delete_local_source_with_center_cancel(source_id: int, *, message: str = 'local delete') -> Dict[str, Any]:
+    row = shared_share_db.get_local_source(source_id)
+    if not row:
+        return {'ok': False, 'missing': True, 'id': source_id, 'message': '本地共享源不存在'}
+    center_resp = _cancel_center_source_for_local_row(row, message=message)
+    if _local_source_requires_center_cancel(row) and center_resp.get('ok') is False:
+        return {'ok': False, 'id': source_id, 'center': center_resp, 'message': center_resp.get('message') or '中心取消登记失败，未删除本地数据'}
+    deleted = shared_share_db.delete_local_source(source_id)
+    return {
+        'ok': bool(deleted),
+        'id': source_id,
+        'item': _decorate_local_source(row),
+        'deleted': deleted,
+        'center': center_resp,
+        'center_cancelled': bool(center_resp and not center_resp.get('skipped') and center_resp.get('ok') is not False),
+    }
+
+
 @shared_resource_bp.route('/shares/<int:source_id>/cancel', methods=['POST'])
 @admin_required
 def api_disable_local_source(source_id: int):
@@ -535,6 +585,68 @@ def api_disable_local_sources_batch():
         'center': center_results,
         'missing': missing,
     })
+
+
+
+@shared_resource_bp.route('/shares/<int:source_id>/delete', methods=['POST', 'DELETE'])
+@admin_required
+def api_delete_local_source(source_id: int):
+    result = _delete_local_source_with_center_cancel(source_id, message='local delete')
+    status = 200 if result.get('ok') else (404 if result.get('missing') else 400)
+    message = '已删除本地共享源'
+    center = result.get('center') or {}
+    if result.get('center_cancelled'):
+        message = '已同步中心取消登记，并删除本地共享源'
+    elif center.get('skipped'):
+        message = '共享源已停用或未登记中心，已直接删除本地数据'
+    return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or message, 'data': result}), status
+
+
+@shared_resource_bp.route('/shares/delete-batch', methods=['POST'])
+@admin_required
+def api_delete_local_sources_batch():
+    data = _request_json()
+    raw_ids = data.get('ids') or data.get('source_ids') or []
+    ids = []
+    for value in raw_ids if isinstance(raw_ids, list) else []:
+        sid = _safe_int(value, 0)
+        if sid > 0 and sid not in ids:
+            ids.append(sid)
+    if not ids:
+        return jsonify({'success': False, 'message': '缺少要删除的本地源 ID'}), 400
+
+    deleted = []
+    missing = []
+    failed = []
+    center_results = []
+    for sid in ids:
+        result = _delete_local_source_with_center_cancel(sid, message='local delete batch')
+        if result.get('missing'):
+            missing.append(sid)
+            continue
+        if not result.get('ok'):
+            failed.append({'id': sid, 'message': result.get('message'), 'center': result.get('center')})
+            continue
+        deleted.append(result.get('item') or {'id': sid})
+        center_results.append({'id': sid, 'center': result.get('center'), 'center_cancelled': result.get('center_cancelled')})
+
+    success = not failed
+    parts = [f'已删除 {len(deleted)} 个本地共享源']
+    cancelled_count = len([x for x in center_results if x.get('center_cancelled')])
+    if cancelled_count:
+        parts.append(f'同步取消中心登记 {cancelled_count} 个')
+    if missing:
+        parts.append(f'{len(missing)} 个不存在')
+    if failed:
+        parts.append(f'{len(failed)} 个中心取消失败未删除')
+    return jsonify({
+        'success': success,
+        'message': '，'.join(parts),
+        'items': deleted,
+        'center': center_results,
+        'missing': missing,
+        'failed': failed,
+    }), 200 if success else 400
 
 
 @shared_resource_bp.route('/media/search', methods=['GET'])

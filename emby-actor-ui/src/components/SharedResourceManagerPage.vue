@@ -685,13 +685,32 @@ const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink
 
 const hasCenterDevice = computed(() => Boolean((summary.value.credit || {}).device_id));
 
+const centerResourceStats = computed(() => {
+  const credit = summary.value.credit || {};
+  const rawStats = credit?.raw_json?.stats || {};
+  const mediaStats = credit.media_stats || rawStats.media_stats || {};
+  const numberValue = (...values) => {
+    for (const value of values) {
+      if (value === undefined || value === null || value === '') continue;
+      const n = Number(value);
+      if (Number.isFinite(n)) return n;
+    }
+    return 0;
+  };
+  const movieCount = numberValue(credit.display_movie_count, credit.center_movie_count, mediaStats.movie_count, rawStats.display_movie_count, rawStats.movie_sources);
+  const seasonCount = numberValue(credit.display_season_count, credit.center_season_count, mediaStats.season_count, rawStats.display_season_count, rawStats.completed_season_sources);
+  const videoCount = numberValue(credit.video_count, mediaStats.video_count, rawStats.video_count, credit.raw_ffprobe, rawStats.raw_ffprobe);
+  return { movieCount, seasonCount, videoCount };
+});
+
 const statCards = computed(() => {
   const shares = summary.value.shares || {};
   const credit = summary.value.credit || {};
+  const centerStats = centerResourceStats.value;
   return [
     { key: 'credit', label: '贡献点', value: credit.credit ?? 0, desc: `${credit.remote_devices ?? 0} 个设备` },
     { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效共享` },
-    { key: 'remote_sources', label: '中心资源', value: credit.shared_sources ?? 0, desc: `${credit.raw_ffprobe ?? 0} 条媒体信息` },
+    { key: 'remote_sources', label: '中心资源', value: `电影 ${centerStats.movieCount} · 剧集 ${centerStats.seasonCount}`, desc: `共计视频 ${centerStats.videoCount} 个` },
     { key: 'share_requests', label: '求共享', value: credit.share_requests ?? credit.wanted_gaps ?? 0, desc: '活跃求共享需求' },
   ];
 });
@@ -718,7 +737,7 @@ const shareColumns = [
   } },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '备注', key: 'share_remark', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareRemarkNode(row) },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
+  { title: '操作', key: 'actions', width: 300, fixed: 'right', render: row => h(NSpace, { size: 8, align: 'center', wrap: false }, { default: () => [
     h(NButton, {
       size: 'small',
       type: 'primary',
@@ -734,6 +753,13 @@ const shareColumns = [
       title: isAutoShareRow(row) ? '自动共享源由入库自动维护，不能手动停用' : '',
       onClick: () => cancelShare(row),
     }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '停用' }),
+    h(NButton, {
+      size: 'small',
+      type: 'error',
+      secondary: true,
+      title: '删除本地共享记录；有效共享会先同步中心取消登记',
+      onClick: () => deleteShare(row),
+    }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '删除' }),
   ]}) },
 ];
 
@@ -2829,6 +2855,38 @@ const cancelShare = (row) => {
         await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]);
       } catch (e) {
         message.error(e.response?.data?.message || '停用失败');
+      }
+    }
+  });
+};
+
+
+const deleteShare = (row) => {
+  const ids = Array.isArray(row.source_ids) ? row.source_ids.filter(Boolean) : [];
+  const isBatch = ids.length > 1;
+  const title = row.title || row.root_name || row.file_name || '该资源';
+  const status = String(row.status || row.review_status || '').toLowerCase();
+  const centerStatus = String(row.center_status || '').toLowerCase();
+  const alreadyDisabled = status === 'disabled' || status === 'cancelled' || centerStatus === 'disabled' || centerStatus === 'cancelled';
+  const countText = isBatch ? `该聚合项下 ${ids.length} 个本机源` : '该本机源';
+  dialog.warning({
+    title: '删除共享源',
+    content: alreadyDisabled
+      ? `确定彻底删除《${title}》的${countText}本地记录吗？该资源已停用，不会再请求中心。`
+      : `确定删除《${title}》的${countText}吗？有效共享会先同步中心取消登记，成功后再删除本地数据。`,
+    positiveText: alreadyDisabled ? '删除本地数据' : '取消登记并删除',
+    negativeText: '保留',
+    onPositiveClick: async () => {
+      try {
+        if (isBatch) {
+          await axios.post('/api/shared/resources/shares/delete-batch', { ids });
+        } else {
+          await axios.post(`/api/shared/resources/shares/${row.id}/delete`);
+        }
+        message.success(alreadyDisabled ? '已删除本地共享记录' : '已取消登记并删除共享记录');
+        await Promise.allSettled([loadShares(), loadCenterSources(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '删除失败');
       }
     }
   });
