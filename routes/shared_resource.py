@@ -201,7 +201,7 @@ def _min_text(values: List[Any]) -> str:
 
 def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """我的共享源展示聚合。"""
-    # 【优化】去掉耗时的 _decorate_local_source，直接使用原始数据
+    # 【核心优化】直接使用轻量级字典，不执行任何耗时操作
     raw_rows = [r for r in (rows or []) if isinstance(r, dict)]
     groups: Dict[str, Dict[str, Any]] = {}
     singles: List[Dict[str, Any]] = []
@@ -281,7 +281,7 @@ def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         g['created_at'] = _min_text(created_values) or g.get('created_at')
         g['updated_at'] = _max_text(updated_values) or g.get('updated_at')
         g['share_remark'] = f"聚合显示：{g.get('aggregated_source_count') or len(g.get('source_ids') or [])} 个本机分集源"
-        out.append(g)  # 【优化】去掉这里的 _decorate_local_source
+        out.append(g)
 
     out.extend(singles)
     out.sort(key=lambda r: str(r.get('updated_at') or r.get('created_at') or ''), reverse=True)
@@ -425,44 +425,74 @@ def api_list_local_sources():
     page_size = max(1, min(int(request.args.get('page_size') or 30), 200))
     raw_limit = max(1000, min(int(request.args.get('raw_limit') or 200000), 200000))
 
-    # Rapid v2 的“我的共享源”必须先取完整本地源，再按季聚合、按 Rapid 状态筛选、最后分页。
-    # 注意：shared_share_db.list_local_sources 是通用分页查询，内部 page_size 上限 500；
-    # 如果这里误用 list_local_sources(page_size=100000)，几千条共享源会被截成前 500 条，
-    # 前端 total 也只剩聚合后的几十/几百条，看起来就“只有一页”。
-    if hasattr(shared_share_db, 'list_all_local_sources'):
-        rows, raw_total = shared_share_db.list_all_local_sources(
-            status='all', keyword=keyword, order_by='updated_desc', limit=raw_limit
-        )
-    else:
-        # 兼容旧 database/shared_share_db.py：分页循环取满，避免 500 上限截断。
-        rows, raw_total = [], 0
-        fetch_page = 1
-        while len(rows) < raw_limit:
-            batch, total = shared_share_db.list_local_sources(
-                status='all', keyword=keyword, page=fetch_page, page_size=500, order_by='updated_desc'
-            )
-            raw_total = max(raw_total, int(total or 0))
-            if not batch:
-                break
-            rows.extend(batch)
-            if len(batch) < 500 or len(rows) >= raw_total:
-                break
-            fetch_page += 1
+    from database.connection import get_db_connection
+    from database.shared_share_db import _local_sources_where_sql, _local_sources_order_sql, _rows
 
-    aggregated = _aggregate_local_sources(rows)
+    where_sql, args = _local_sources_where_sql(status='all', keyword=keyword)
+    order_sql = _local_sources_order_sql(order_by='updated_desc')
+
+    # 1. 极速轻量级查询：绝不查任何 JSONB 字段，只查聚合和过滤需要的基础列
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS n FROM shared_rapid_sources {where_sql}", args)
+            row = cur.fetchone()
+            raw_total = dict(row)['n'] if row else 0
+
+            cur.execute(f"""
+                SELECT 
+                    id, source_kind, item_type, tmdb_id, season_number, episode_number, 
+                    status, center_status, center_source_id, created_at, updated_at, 
+                    file_count, title, file_name, source_provider
+                FROM shared_rapid_sources 
+                {where_sql} 
+                ORDER BY {order_sql} 
+                LIMIT %s
+            """, args + [raw_limit])
+            light_rows = _rows(cur.fetchall())
+
+    # 2. 在内存中进行聚合和过滤（因为没有庞大的 JSON，这一步只需 1-2 毫秒）
+    aggregated = _aggregate_local_sources(light_rows)
     filtered = [row for row in aggregated if _share_row_matches_filter(row, status)]
+    
     start = (page - 1) * page_size
     end = start + page_size
-    
-    # 【核心优化】只对当前页要展示的这 30 条数据进行耗时的装饰计算，而不是几万条！
-    final_items = [_decorate_local_source(row) for row in filtered[start:end]]
-    
+    page_items = filtered[start:end]
+
+    # 3. 提取当前页需要展示的真实数据库 ID
+    needed_ids = set()
+    for item in page_items:
+        if item.get('source_ids'):
+            needed_ids.update(item['source_ids'])
+        elif item.get('id'):
+            needed_ids.add(item['id'])
+
+    # 4. 只为这 30 条数据去数据库拉取完整的 JSONB 字段 (耗时极低)
+    full_rows_map = {}
+    if needed_ids:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT id, raw_json FROM shared_rapid_sources WHERE id = ANY(%s)", (list(needed_ids),))
+                for r in _rows(cur.fetchall()):
+                    full_rows_map[r['id']] = r['raw_json']
+
+    # 5. 将完整的 raw_json 拼装回去，并执行装饰器
+    final_items = []
+    for item in page_items:
+        if item.get('source_ids'):
+            # 聚合季包：取第一个子项的 raw_json 作为代表
+            rep_id = item['source_ids'][0] if item['source_ids'] else None
+            item['raw_json'] = full_rows_map.get(rep_id, {})
+        else:
+            item['raw_json'] = full_rows_map.get(item.get('id'), {})
+        
+        final_items.append(_decorate_local_source(item))
+
     return jsonify({
         'success': True,
         'items': final_items,
         'total': len(filtered),
         'raw_total': raw_total,
-        'scanned_raw': len(rows),
+        'scanned_raw': len(light_rows),
         'page': page,
         'page_size': page_size,
     })
