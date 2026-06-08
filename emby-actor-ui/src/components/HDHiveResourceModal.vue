@@ -102,6 +102,10 @@
                     {{ res._season_match_label }}
                   </n-tag>
 
+                  <n-tag size="small" type="default" :bordered="true" v-if="res._shared_pool_version_label">
+                    {{ res._shared_pool_version_label }}
+                  </n-tag>
+
                   <n-tag size="small" type="success" :bordered="false" v-if="res._completion_label">
                     {{ res._completion_label }}
                   </n-tag>
@@ -319,7 +323,7 @@ const isChannel = (resource) => {
 const getResourceKey = (resource) => {
   return (
     resource?.unique_id ||
-    `${resource?.source_type || 'res'}:${resource?.slug || resource?.message_link || resource?.target_link || resource?.magnet_url || resource?.title}`
+    `${resource?.source_type || 'res'}:${resource?.source_kind || ''}:${resource?.source_id || resource?.source_ref_id || ''}:${resource?.sha1 || resource?.manifest_hash || resource?.slug || resource?.message_link || resource?.target_link || resource?.magnet_url || resource?.title}`
   );
 };
 
@@ -354,10 +358,10 @@ const fetchResources = async () => {
       media_type: getMediaType(),
       title: searchTitle.value || rawTitle.value || mediaTitle.value,
       year: mediaYear.value,
-      limit: 80,
+      limit: 100,
       hdhive_limit: 50,
       channel_limit: 50,
-      shared_limit: 50
+      shared_limit: 100
     };
 
     const season = props.seasonNumber || props.media.season_number;

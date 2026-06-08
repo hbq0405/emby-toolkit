@@ -381,6 +381,51 @@ def _first_cloud_text(*values):
     return ""
 
 
+def _shared_pool_version_rows(resource):
+    """把中心资源库聚合行拆成云搜索可展示的具体版本。
+
+    中心资源库为了列表整洁，会把同一电影/同一季的多版本折叠到 versions。
+    云资源搜索要给用户挑版本，不能只展示聚合主行，所以这里把 versions
+    展平为多张卡片；没有 versions 的资源保持原样。
+    """
+    parent = dict(resource or {})
+    raw_versions = parent.get("versions")
+    versions = [dict(x) for x in raw_versions if isinstance(x, dict)] if isinstance(raw_versions, list) else []
+    if not versions:
+        one = dict(parent)
+        one.pop("versions", None)
+        return [one]
+
+    rows = []
+    total = len(versions)
+    parent_source_id = parent.get("source_id") or parent.get("source_ref_id") or parent.get("hub_id")
+    for idx, version in enumerate(versions, start=1):
+        merged = dict(parent)
+        # 版本行里的 source_id / sha1 / summary / size 才代表真正要秒传的版本。
+        merged.update(version)
+        merged.pop("versions", None)
+        # children/pack_items 仍保持懒加载，不从列表卡片里携带大对象。
+        if not version.get("children"):
+            merged.pop("children", None)
+        if not version.get("pack_items"):
+            merged.pop("pack_items", None)
+        merged["_shared_pool_parent_source_id"] = parent_source_id
+        merged["_shared_pool_version_index"] = idx
+        merged["_shared_pool_version_count"] = total
+        merged["_shared_pool_is_version"] = True
+        # 聚合主行的季进度/懒加载标记要保留，版本行缺这些字段时前端仍能显示。
+        for key in (
+            "progress_current", "progress_total", "progress_text", "season_number", "tmdb_id",
+            "has_children", "children_loaded", "lazy_children_kind", "children_count", "child_count",
+            "pack_item_count", "is_completed_certified", "is_completed", "is_ongoing_hub",
+            "_completion_label", "release_year",
+        ):
+            if merged.get(key) in (None, "", [], {}) and parent.get(key) not in (None, "", [], {}):
+                merged[key] = parent.get(key)
+        rows.append(merged)
+    return rows
+
+
 def _normalize_shared_pool_resource(resource):
     # 把共享中心资源库展示行转换成云资源搜索卡片。
     item = dict(resource or {})
@@ -389,11 +434,23 @@ def _normalize_shared_pool_resource(resource):
         summary = item.get("summary_json") if isinstance(item.get("summary_json"), dict) else {}
     source_kind = str(item.get("source_kind") or "").strip()
     source_id = str(item.get("source_id") or item.get("source_ref_id") or "").strip()
-    unique = f"shared_pool:{source_kind}:{source_id}" if source_kind and source_id else f"shared_pool:{item.get('tmdb_id')}:{item.get('season_number') or ''}:{item.get('title') or item.get('file_name') or ''}"
+    sha1 = str(item.get("sha1") or "").strip()
+    manifest_hash = str(item.get("manifest_hash") or "").strip()
+    if source_kind and source_id:
+        unique = f"shared_pool:{source_kind}:{source_id}:{sha1 or manifest_hash}"
+    else:
+        unique = f"shared_pool:{item.get('tmdb_id')}:{item.get('season_number') or ''}:{sha1 or manifest_hash or item.get('title') or item.get('file_name') or ''}"
     title = item.get("title") or item.get("file_name") or "共享池资源"
     if item.get("progress_text") and str(item.get("display_type") or item.get("item_type") or "").lower() in {"pack", "season"}:
         if item.get("season_number") not in (None, "") and not re.search(r"\bS\d{1,3}\b|第\s*\d+\s*季", str(title), re.I):
             title = f"{title} S{int(item.get('season_number') or 0):02d}"
+
+    version_index = _safe_int(item.get("_shared_pool_version_index"), default=0)
+    version_count = _safe_int(item.get("_shared_pool_version_count"), default=0)
+    version_label = f"版本 {version_index}/{version_count}" if version_index and version_count > 1 else ""
+    progress_label = f"共享池 · {item.get('progress_text')}" if item.get("progress_text") else "共享池 · 可秒传"
+    remark_parts = [x for x in (item.get("status_message"), version_label, progress_label) if x]
+
     item.update({
         "source_type": "shared_pool",
         "source_name": "共享池",
@@ -409,11 +466,9 @@ def _normalize_shared_pool_resource(resource):
         "quality": _first_cloud_text(summary.get("video_display"), summary.get("codec"), summary.get("video_codec")),
         "source": _first_cloud_text(summary.get("effect"), summary.get("effect_key"), "共享秒传"),
         "source_detail": _first_cloud_text(summary.get("video_display"), summary.get("formatted_by")),
-        "remark": _first_cloud_text(
-            item.get("status_message"),
-            f"共享池 · {item.get('progress_text')}" if item.get("progress_text") else "共享池 · 可秒传"
-        ),
+        "remark": " · ".join(str(x) for x in remark_parts if str(x).strip()),
         "_season_match_label": item.get("progress_text") or "",
+        "_shared_pool_version_label": version_label,
         "_completion_label": "已完结" if item.get("is_completed_certified") or item.get("is_completed") else ("连载中" if item.get("is_ongoing_hub") else ""),
     })
     return item
@@ -498,8 +553,11 @@ def get_cloud_resources():
                 wanted_season = _safe_int(season, default=0, min_value=0)
                 if wanted_season > 0:
                     shared_items = [x for x in shared_items if _safe_int(x.get('season_number'), default=-999) == wanted_season]
-            shared_pool_total = len(shared_items)
-            for item in shared_items[:shared_limit]:
+            shared_version_items = []
+            for item in shared_items:
+                shared_version_items.extend(_shared_pool_version_rows(item))
+            shared_pool_total = len(shared_version_items)
+            for item in shared_version_items[:shared_limit]:
                 normalized = _normalize_shared_pool_resource(item)
                 key = _shared_pool_resource_key(normalized) or _cloud_resource_key(normalized)
                 if key and key in seen:
