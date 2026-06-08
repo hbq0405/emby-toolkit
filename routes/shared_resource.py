@@ -100,6 +100,11 @@ def _center_headers_for_cfg(cfg: Dict[str, Any]) -> Dict[str, str]:
 
 def _fetch_center_credit() -> Dict[str, Any]:
     client = SharedCenterClient()
+    pro_report = {}
+    try:
+        pro_report = client.report_current_pro_quota_auth()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] Pro 额度认证上报失败，继续同步贡献点: {e}")
     me = client.me()
     stats = client.stats()
     ledger = {}
@@ -123,6 +128,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
             'season_count': int(stats.get('display_season_count') or 0),
             'video_count': int(stats.get('video_count') or stats.get('raw_ffprobe') or 0),
         },
+        'pro_quota': (pro_report.get('pro_quota') or pro_report.get('quota') or stats.get('pro_quota') or me.get('pro_quota') or {}),
         'remote_devices': int(stats.get('devices') or 0),
         'raw_json': {'me': me, 'stats': stats},
     }

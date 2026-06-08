@@ -1,5 +1,6 @@
 # handler/shared_center_client.py
 # ETK 共享资源中心客户端（Rapid v2）：中心只保存资源索引/manifest，不保存 CK、不创建 115 分享。
+import hashlib
 import logging
 import urllib.parse
 from typing import Any, Dict, List
@@ -12,6 +13,63 @@ from database import settings_db
 
 logger = logging.getLogger(__name__)
 
+
+
+
+def _normalize_pro_tier(value: str = '') -> str:
+    text = str(value or '').strip().upper()
+    if text in {'M', 'MONTH', 'MONTHLY', '月卡'}:
+        return 'M'
+    if text in {'Y', 'YEAR', 'YEARLY', '年卡'}:
+        return 'Y'
+    if text in {'L', 'LIFETIME', 'FOREVER', '永久', '终身'}:
+        return 'L'
+    return ''
+
+
+def _sha256_or_empty(value: str = '') -> str:
+    text = str(value or '').strip()
+    return hashlib.sha256(text.encode('utf-8')).hexdigest() if text else ''
+
+
+def _infer_pro_tier_from_license(value: str = '') -> str:
+    text = str(value or '').strip().upper()
+    import re
+    match = re.search(r'ETK[-_]?([MYL])(?:[-_]|$)', text)
+    if match:
+        return match.group(1)
+    return _normalize_pro_tier(text)
+
+
+def build_current_pro_quota_report_payload() -> Dict[str, Any]:
+    """把客户端当前 Pro 认证状态整理成上报中心的 payload；只上报 hash，不传卡密/ServerID 明文。"""
+    app_cfg = config_manager.APP_CONFIG or {}
+    cfg = _shared_cfg()
+    license_key = ''
+    for key in ('pro_license_key', 'license_key'):
+        try:
+            license_key = str(settings_db.get_setting(key) or '').strip()
+        except Exception:
+            license_key = ''
+        if license_key:
+            break
+    tier = _normalize_pro_tier(app_cfg.get('pro_tier') or app_cfg.get('pro_level') or app_cfg.get('pro_card_type')) or _infer_pro_tier_from_license(license_key)
+    try:
+        import extensions
+        server_id = str(getattr(extensions, 'EMBY_SERVER_ID', '') or '').strip()
+    except Exception:
+        server_id = ''
+    install_id = str(cfg.get('p115_shared_install_id') or '').strip()
+    return {
+        'is_pro_active': bool(app_cfg.get('is_pro_active', False)),
+        'pro_tier': tier,
+        'pro_expire_time': str(app_cfg.get('pro_expire_time') or '').strip(),
+        'pro_license_hash': _sha256_or_empty(license_key),
+        'pro_server_id_hash': _sha256_or_empty(server_id),
+        'install_id_hash': _sha256_or_empty(install_id),
+        'client_version': _app_version(),
+        'auth_source': 'client_app_config',
+    }
 
 def _app_version() -> str:
     return str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0').strip() or '0.0.0'
@@ -178,6 +236,15 @@ class SharedCenterClient:
 
     def stats(self) -> Dict[str, Any]:
         return self._get('/api/v1/stats', timeout=12)
+
+    def pro_quota(self) -> Dict[str, Any]:
+        return self._get('/api/v1/pro-quota/me', timeout=12)
+
+    def report_pro_quota_auth(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return self._post('/api/v1/pro-quota/report', payload or build_current_pro_quota_report_payload(), timeout=15)
+
+    def report_current_pro_quota_auth(self) -> Dict[str, Any]:
+        return self.report_pro_quota_auth(build_current_pro_quota_report_payload())
 
     def credit_ledger(self, limit: int = 200) -> Dict[str, Any]:
         return self._get('/api/v1/credit/ledger', {'limit': max(1, min(int(limit or 200), 1000))}, timeout=15)

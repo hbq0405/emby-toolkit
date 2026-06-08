@@ -703,12 +703,47 @@ const centerResourceStats = computed(() => {
   return { movieCount, seasonCount, videoCount };
 });
 
+
+const proQuotaStats = computed(() => {
+  const credit = summary.value.credit || {};
+  const rawStats = credit?.raw_json?.stats || {};
+  const quota = credit.pro_quota || rawStats.pro_quota || credit?.raw_json?.me?.pro_quota || {};
+  const n = (value, fallback = 0) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  };
+  const tier = String(quota.pro_tier || quota.tier || '').trim().toUpperCase();
+  const label = quota.pro_label || ({ M: '月卡', Y: '年卡', L: '终身' }[tier] || tier);
+  return {
+    active: Boolean(quota.pro_active || quota.pro_valid),
+    usable: Boolean(quota.quota_usable),
+    tier,
+    label,
+    dailyGrant: n(quota.daily_grant),
+    balance: n(quota.quota_balance ?? quota.balance),
+    cap: n(quota.balance_cap ?? quota.cap),
+    expireTime: quota.pro_expire_time || '',
+    lastGrantDate: quota.last_grant_date || '',
+    lastVerifiedAt: quota.last_verified_at || '',
+  };
+});
+
+const creditCardDesc = computed(() => {
+  const credit = summary.value.credit || {};
+  const devices = `${credit.remote_devices ?? 0} 个设备`;
+  const quota = proQuotaStats.value;
+  if (!quota.active || !quota.tier) return devices;
+  const grant = quota.dailyGrant ? `今日 +${quota.dailyGrant}` : '今日未发放';
+  const capText = quota.cap ? `${quota.balance}/${quota.cap}` : `${quota.balance}`;
+  return `Pro ${quota.label || quota.tier} ${grant}，累计 ${capText} · ${devices}`;
+});
+
 const statCards = computed(() => {
   const shares = summary.value.shares || {};
   const credit = summary.value.credit || {};
   const centerStats = centerResourceStats.value;
   return [
-    { key: 'credit', label: '贡献点', value: credit.credit ?? 0, desc: `${credit.remote_devices ?? 0} 个设备` },
+    { key: 'credit', label: '贡献点', value: credit.credit ?? 0, desc: creditCardDesc.value },
     { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效共享` },
     { key: 'remote_sources', label: '中心资源', value: `电影 ${centerStats.movieCount} · 剧集 ${centerStats.seasonCount}`, desc: `共计视频 ${centerStats.videoCount} 个` },
     { key: 'share_requests', label: '求共享', value: credit.share_requests ?? credit.wanted_gaps ?? 0, desc: '活跃求共享需求' },

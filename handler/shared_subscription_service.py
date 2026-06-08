@@ -1288,10 +1288,41 @@ def _filter_files_before_transfer(
         'message': message,
     }
 
+
+def _handle_pro_quota_auth_event(client: SharedCenterClient, event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
+    event_id = str((event or {}).get('event_id') or '')
+    try:
+        resp = client.report_current_pro_quota_auth()
+        quota = resp.get('pro_quota') or resp.get('quota') or {}
+        tier = quota.get('pro_tier') or quota.get('tier') or '-'
+        balance = quota.get('quota_balance') if quota.get('quota_balance') is not None else quota.get('balance')
+        cap = quota.get('balance_cap') or quota.get('cap') or 0
+        daily = quota.get('daily_grant') or 0
+        message = f"Pro额度认证已上报：等级={tier}，今日赠送={daily}，累计={balance}/{cap}"
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='ok', message=message[:500])
+            except Exception:
+                pass
+        logger.info(f"  ➜ [共享资源] {message}")
+        return {'ok': True, 'event_id': event_id, 'event_type': 'pro_quota_auth_check', 'quota': quota, 'message': message}
+    except Exception as e:
+        msg = f"Pro额度认证上报失败：{e}"
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='failed', message=msg[:500])
+            except Exception:
+                pass
+        logger.warning(f"  ➜ [共享资源] {msg}")
+        return {'ok': False, 'event_id': event_id, 'event_type': 'pro_quota_auth_check', 'message': msg}
+
 def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
     client = SharedCenterClient()
     event_id = str(event.get('event_id') or '')
     payload = _event_payload(event)
+    event_type = str(event.get('event_type') or payload.get('event_type') or '').strip()
+    if event_type == 'pro_quota_auth_check':
+        return _handle_pro_quota_auth_event(client, event, ack=ack)
 
     # 消费端再兜底排除本机共享源；即使手动中心资源库/批量探测返回了 is_mine，
     # 也不能秒传自己的资源形成回旋镖。
