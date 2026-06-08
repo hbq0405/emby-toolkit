@@ -1260,6 +1260,149 @@ def all_library_share_candidates(
     return result
 
 
+
+def list_non_effective_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
+    """维护任务专用：找出需要重新登记的“非有效”本地共享源。
+
+    有效口径与一键登记增量过滤保持一致：
+    - status 属于 active / available / updating；
+    - center_status 未被 disabled；
+    - 已有 center_source_id 或 center_status=reported。
+
+    disabled / cancelled / deleted 属于用户/清理任务明确停用的源，不自动复活。
+    这里不访问 115、不检查中心 RAW、不收集分集文件，只返回本地索引行，
+    真正重登记交给 register_candidate_to_center 走统一登记链路。
+    """
+    try:
+        limit = max(1, min(int(limit or 300), 5000))
+    except Exception:
+        limit = 300
+
+    effective_statuses = list(_EFFECTIVE_SHARE_STATUSES)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM shared_rapid_sources
+                WHERE COALESCE(status, '') NOT IN ('disabled', 'cancelled', 'canceled', 'deleted')
+                  AND COALESCE(center_status, '') <> 'disabled'
+                  AND NOT (
+                        COALESCE(status, '') = ANY(%s)
+                    AND (
+                            COALESCE(center_source_id, '') <> ''
+                         OR COALESCE(center_status, '') = 'reported'
+                    )
+                  )
+                ORDER BY updated_at ASC NULLS LAST, id ASC
+                LIMIT %s
+                """,
+                (effective_statuses, limit),
+            )
+            return _rows(cur.fetchall())
+
+
+def list_unregistered_airing_episode_candidates(limit: int = 500) -> List[Dict[str, Any]]:
+    """维护任务专用：找出连载/追更季里新入库但尚未登记中心的分集。
+
+    只做本地数据库比对，不访问 115，不触发一致性校验：
+    - 候选来自 media_metadata.Episode 且 in_library=true；
+    - 父 Series / Season 处于 Watching、Paused、Pending，或 watchlist_is_airing=true；
+    - 排除已经有效登记到中心的 episode 源。
+    """
+    try:
+        limit = max(1, min(int(limit or 500), 5000))
+    except Exception:
+        limit = 500
+
+    existing_index = _load_effective_local_share_index()
+    # 先多取一批，后面还要用共享索引做精确去重过滤。
+    scan_limit = min(max(limit * 5, limit), 20000)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    e.*,
+                    p.title AS series_title,
+                    p.original_title AS series_original_title,
+                    p.release_year AS series_release_year,
+                    COALESCE(
+                        CASE WHEN LOWER(COALESCE(se.watching_status, '')) NOT IN ('', 'none') THEN se.watching_status END,
+                        CASE WHEN LOWER(COALESCE(p.watching_status, '')) NOT IN ('', 'none') THEN p.watching_status END,
+                        CASE WHEN LOWER(COALESCE(e.watching_status, '')) NOT IN ('', 'none') THEN e.watching_status END,
+                        ''
+                    ) AS effective_watching_status,
+                    COALESCE(NULLIF(se.total_episodes, 0), NULLIF(p.total_episodes, 0), NULLIF(e.total_episodes, 0), 0) AS effective_total_episodes,
+                    (
+                        COALESCE(se.watchlist_is_airing, FALSE)
+                     OR COALESCE(p.watchlist_is_airing, FALSE)
+                     OR COALESCE(e.watchlist_is_airing, FALSE)
+                    ) AS effective_is_airing
+                FROM media_metadata e
+                LEFT JOIN media_metadata p
+                  ON p.item_type='Series'
+                 AND p.tmdb_id=e.parent_series_tmdb_id
+                LEFT JOIN media_metadata se
+                  ON se.item_type='Season'
+                 AND se.parent_series_tmdb_id=e.parent_series_tmdb_id
+                 AND se.season_number=e.season_number
+                WHERE e.item_type='Episode'
+                  AND COALESCE(e.in_library, FALSE)=TRUE
+                  AND NULLIF(e.parent_series_tmdb_id, '') IS NOT NULL
+                  AND e.season_number IS NOT NULL
+                  AND e.episode_number IS NOT NULL
+                  AND (
+                        LOWER(COALESCE(
+                            CASE WHEN LOWER(COALESCE(se.watching_status, '')) NOT IN ('', 'none') THEN se.watching_status END,
+                            CASE WHEN LOWER(COALESCE(p.watching_status, '')) NOT IN ('', 'none') THEN p.watching_status END,
+                            CASE WHEN LOWER(COALESCE(e.watching_status, '')) NOT IN ('', 'none') THEN e.watching_status END,
+                            ''
+                        )) IN ('watching', 'paused', 'pending')
+                     OR COALESCE(se.watchlist_is_airing, FALSE)=TRUE
+                     OR COALESCE(p.watchlist_is_airing, FALSE)=TRUE
+                     OR COALESCE(e.watchlist_is_airing, FALSE)=TRUE
+                  )
+                ORDER BY COALESCE(e.date_added, e.last_updated_at, e.created_at) DESC NULLS LAST,
+                         e.parent_series_tmdb_id ASC, e.season_number ASC, e.episode_number ASC
+                LIMIT %s
+                """,
+                (scan_limit,),
+            )
+            rows = _rows(cur.fetchall())
+
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for row in rows:
+        row = dict(row or {})
+        if _episode_row_already_registered(row, existing_index):
+            continue
+        effective_status = str(row.get('effective_watching_status') or row.get('watching_status') or '').strip()
+        if effective_status:
+            row['watching_status'] = effective_status
+        total = _safe_int(row.get('effective_total_episodes'), 0)
+        if total > 0:
+            row['total_episodes'] = total
+        cand = _build_lightweight_share_candidate(row)
+        cand['item_type'] = 'Episode'
+        cand['share_item_type'] = 'Episode'
+        cand['_skip_fingerprint_repair'] = True
+        cand['_raw_repair_only'] = True
+        cand['source_provider'] = 'rapid_followup_backfill'
+        key = (
+            cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'),
+            _nullable_int(cand.get('season_number')),
+            _nullable_int(cand.get('episode_number')),
+            tuple(cand.get('file_sha1s') or []),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+        if len(out) >= limit:
+            break
+    return out
+
 def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
     """找出本机仍标记为共享、但本地媒体库已经完全没有对应文件的 Rapid 源。
 

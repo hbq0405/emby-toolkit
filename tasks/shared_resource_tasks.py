@@ -2965,52 +2965,87 @@ def reregister_local_sources(source_ids: List[int], *, source_provider: str = ''
     }
 
 
-def _repair_center_raw_missing_sources(limit: int = 200) -> Dict[str, Any]:
-    """维护任务：发现中心 RAW/summary 缺失时，用本地 RAW 自动补齐并重新登记。"""
-    rows, _ = shared_share_db.list_local_sources(status='all', keyword='', page=1, page_size=max(1, min(int(limit or 200), 100000)))
+def _reregister_non_effective_local_sources(limit: int = 300) -> Dict[str, Any]:
+    """维护任务：把本地非有效共享源重新走一遍统一登记流程。
+
+    取代旧的“中心 RAW 补齐”：不再逐条查询中心 RAW/summary，也不在维护任务里
+    扫全库触发季级一致性校验。只处理 shared_rapid_sources 本地状态不正常的记录。
+    """
+    rows = shared_share_db.list_non_effective_local_sources(limit=limit)
     if not rows:
-        return {'ok': True, 'checked': 0, 'need_repair': 0, 'repaired': 0, 'failed': 0}
-    client = SharedCenterClient()
-    checked = 0
-    need_repair = 0
-    repaired = 0
+        return {'ok': True, 'checked': 0, 'need_reregister': 0, 'reregistered': 0, 'failed': 0}
+
+    # reregister_local_sources 内部会按电影/季/集身份去重，并保持原 source_provider，
+    # 避免生成 maintenance_reregister 影子源。
+    source_ids = [int(r.get('id')) for r in rows if r.get('id')]
+    res = reregister_local_sources(source_ids, source_provider='')
+    items = res.get('items') or []
+    success = int(res.get('success_count') or 0)
+    failed = int(res.get('failed_count') or 0)
+    if success or failed:
+        logger.info(
+            "  ➜ [共享资源维护] 非有效状态重登记完成：候选=%s，去重后=%s，成功=%s，失败=%s",
+            len(rows),
+            len(items),
+            success,
+            failed,
+        )
+    return {
+        'ok': failed == 0,
+        'checked': len(rows),
+        'need_reregister': len(items) or len(rows),
+        'reregistered': success,
+        'failed': failed,
+        'items': items[:50],
+    }
+
+
+def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
+    """维护任务：为连载/追更季补登记新入库但尚未共享的分集。
+
+    只看本地 media_metadata + shared_rapid_sources 的差异，不触发季级一致性校验。
+    每个缺口按 Episode 粒度登记到中心公共 season_hub。
+    """
+    candidates = shared_share_db.list_unregistered_airing_episode_candidates(limit=limit)
+    if not candidates:
+        return {'ok': True, 'checked': 0, 'need_register': 0, 'registered': 0, 'failed': 0}
+
+    registered = 0
     failed = 0
     items = []
-    seen = set()
-    for row in rows:
-        row = dict(row or {})
-        status = str(row.get('status') or '').strip().lower()
-        center_status = str(row.get('center_status') or '').strip().lower()
-        if status in {'disabled', 'cancelled', 'canceled', 'deleted'}:
-            continue
-        if not (row.get('center_source_id') or center_status in {'reported', 'partial', 'raw_missing'}):
-            continue
-        cand = _candidate_from_local_source(row)
-        key = (cand.get('item_type'), cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'), cand.get('season_number'), cand.get('episode_number') if cand.get('item_type') == 'Episode' else None, cand.get('sha1') if cand.get('item_type') == 'Movie' else None)
-        if key in seen:
-            continue
-        seen.add(key)
-        files = shared_share_db.collect_files_for_candidate(cand) or []
-        if not files and row.get('sha1'):
-            files = [row]
-        checked += 1
-        need = _center_raw_need_repair(client, files)
-        if not need:
-            continue
-        need_repair += len(need)
-        # 维护任务只负责 RAW/summary_json 补齐，不做季包一致性校验。
+    for cand in candidates:
+        cand = dict(cand or {})
+        # 双保险：维护补齐不能借道 collect_files_for_candidate 触发 helpers.check_season_consistency。
+        cand['_skip_fingerprint_repair'] = True
         cand['_raw_repair_only'] = True
-        res = register_candidate_to_center(cand, source_provider='raw_repair')
-        if res.get('ok'):
-            repaired += 1
+        res = register_candidate_to_center(cand, source_provider='rapid_followup_backfill')
+        ok = bool(res.get('ok'))
+        if ok:
+            registered += 1
         else:
             failed += 1
-            try:
-                shared_share_db.update_local_source(int(row.get('id') or 0), last_error=res.get('message') or 'RAW 补齐失败')
-            except Exception:
-                pass
-        items.append({'id': row.get('id'), 'title': row.get('title') or row.get('file_name') or row.get('tmdb_id'), 'need': need[:10], 'ok': bool(res.get('ok')), 'message': res.get('message') or ''})
-    return {'ok': failed == 0, 'checked': checked, 'need_repair': need_repair, 'repaired': repaired, 'failed': failed, 'items': items[:50]}
+        items.append({
+            'candidate': cand,
+            'ok': ok,
+            'message': res.get('message') or '',
+            'result': res,
+        })
+
+    if registered or failed:
+        logger.info(
+            "  ➜ [共享资源维护] 追更补齐完成：待补=%s，成功=%s，失败=%s",
+            len(candidates),
+            registered,
+            failed,
+        )
+    return {
+        'ok': failed == 0,
+        'checked': len(candidates),
+        'need_register': len(candidates),
+        'registered': registered,
+        'failed': failed,
+        'items': items[:50],
+    }
 
 def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
     """维护任务里的轻量离线清理。
@@ -3099,14 +3134,19 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
         parts.append(f"RAW={snapshot.get('raw_ffprobe', 0)}")
         parts.append(f"缺口={snapshot.get('wanted_gaps', 0)}")
         parts.append(f"设备={snapshot.get('remote_devices', 0)}")
-    raw_repair = result.get('raw_repair') if isinstance(result.get('raw_repair'), dict) else {}
-    if raw_repair:
-        parts.append(f"RAW补齐={raw_repair.get('repaired', 0)}/{raw_repair.get('need_repair', 0)}")
-        if raw_repair.get('failed'):
-            parts.append(f"RAW失败={raw_repair.get('failed')}")
+    reregister = result.get('non_effective_reregister') if isinstance(result.get('non_effective_reregister'), dict) else {}
+    if reregister:
+        parts.append(f"非有效重登记={reregister.get('reregistered', 0)}/{reregister.get('need_reregister', 0)}")
+        if reregister.get('failed'):
+            parts.append(f"重登失败={reregister.get('failed')}")
+    followup = result.get('airing_episode_backfill') if isinstance(result.get('airing_episode_backfill'), dict) else {}
+    if followup:
+        parts.append(f"追更补齐={followup.get('registered', 0)}/{followup.get('need_register', 0)}")
+        if followup.get('failed'):
+            parts.append(f"补登失败={followup.get('failed')}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
-    for key in ('listener_error', 'offline_cleanup_error', 'raw_repair_error', 'credit_error'):
+    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'credit_error'):
         if result.get(key):
             parts.append(f"{key}={result.get(key)}")
     return '，'.join(parts)
@@ -3127,9 +3167,13 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
     except Exception as e:
         result['offline_cleanup_error'] = str(e)
     try:
-        result['raw_repair'] = _repair_center_raw_missing_sources(limit=300)
+        result['non_effective_reregister'] = _reregister_non_effective_local_sources(limit=300)
     except Exception as e:
-        result['raw_repair_error'] = str(e)
+        result['non_effective_reregister_error'] = str(e)
+    try:
+        result['airing_episode_backfill'] = _backfill_airing_episode_sources(limit=500)
+    except Exception as e:
+        result['airing_episode_backfill_error'] = str(e)
     try:
         result['credit'] = _sync_center_credit()
     except Exception as e:
