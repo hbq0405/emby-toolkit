@@ -200,18 +200,13 @@ def _min_text(values: List[Any]) -> str:
 
 
 def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """我的共享源展示聚合。
-
-    Rapid v2 里本机登记到中心的是电影源/分集源/完结季包源。
-    UI 不应该把同一季的分集散铺成几十行，否则停用只能一集集点。
-    这里只改变本机管理页展示口径：同一 tmdb_id + season_number 的 episode 源聚合为一个季行，
-    真正停用时仍按 source_ids 批量停用每个本机源。
-    """
-    decorated = [_decorate_local_source(r) for r in (rows or []) if isinstance(r, dict)]
+    """我的共享源展示聚合。"""
+    # 【优化】去掉耗时的 _decorate_local_source，直接使用原始数据
+    raw_rows = [r for r in (rows or []) if isinstance(r, dict)]
     groups: Dict[str, Dict[str, Any]] = {}
     singles: List[Dict[str, Any]] = []
 
-    for row in decorated:
+    for row in raw_rows:
         source_kind = str(row.get('source_kind') or '').strip().lower()
         item_type = str(row.get('item_type') or '').strip().lower()
         season = row.get('season_number')
@@ -286,7 +281,7 @@ def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         g['created_at'] = _min_text(created_values) or g.get('created_at')
         g['updated_at'] = _max_text(updated_values) or g.get('updated_at')
         g['share_remark'] = f"聚合显示：{g.get('aggregated_source_count') or len(g.get('source_ids') or [])} 个本机分集源"
-        out.append(_decorate_local_source(g))
+        out.append(g)  # 【优化】去掉这里的 _decorate_local_source
 
     out.extend(singles)
     out.sort(key=lambda r: str(r.get('updated_at') or r.get('created_at') or ''), reverse=True)
@@ -458,9 +453,13 @@ def api_list_local_sources():
     filtered = [row for row in aggregated if _share_row_matches_filter(row, status)]
     start = (page - 1) * page_size
     end = start + page_size
+    
+    # 【核心优化】只对当前页要展示的这 30 条数据进行耗时的装饰计算，而不是几万条！
+    final_items = [_decorate_local_source(row) for row in filtered[start:end]]
+    
     return jsonify({
         'success': True,
-        'items': filtered[start:end],
+        'items': final_items,
         'total': len(filtered),
         'raw_total': raw_total,
         'scanned_raw': len(rows),
