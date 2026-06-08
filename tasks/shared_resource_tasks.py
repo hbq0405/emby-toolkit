@@ -2920,6 +2920,77 @@ def reregister_local_source(source_id: int, *, source_provider: str = '') -> Dic
     return {'ok': bool(result.get('ok')), 'source_id': source_id, 'candidate': candidate, 'provider': provider, 'result': result, 'message': result.get('message') or ''}
 
 
+
+
+def _maintenance_candidate_label(candidate: Dict[str, Any], fallback: str = '') -> str:
+    """维护任务日志里显示可读片名 + SxxExx，避免只剩成功/失败数字。"""
+    candidate = candidate if isinstance(candidate, dict) else {}
+    title = str(
+        candidate.get('title')
+        or candidate.get('standard_title')
+        or candidate.get('display_title')
+        or candidate.get('series_title')
+        or fallback
+        or candidate.get('tmdb_id')
+        or candidate.get('parent_series_tmdb_id')
+        or '未知资源'
+    ).strip()
+    item_type = str(candidate.get('item_type') or candidate.get('share_item_type') or '').strip()
+    season = _safe_int_or_none(candidate.get('season_number'))
+    episode = _safe_int_or_none(candidate.get('episode_number'))
+    if item_type == 'Episode' and season is not None and episode is not None:
+        suffix = f"S{season:02d}E{episode:02d}"
+        if suffix.lower() not in title.lower():
+            title = f"{title} {suffix}"
+    elif item_type == 'Season' and season is not None:
+        suffix = f"S{season:02d}"
+        if suffix.lower() not in title.lower():
+            title = f"{title} {suffix}"
+    return title
+
+
+def _maintenance_result_reason(result: Dict[str, Any]) -> str:
+    """把登记失败结果压缩成一行日志原因。"""
+    result = result if isinstance(result, dict) else {}
+    parts = []
+    message = str(result.get('message') or '').strip()
+    if message:
+        parts.append(message)
+    missing_raw = result.get('missing_raw') if isinstance(result.get('missing_raw'), list) else []
+    if missing_raw:
+        names = []
+        for item in missing_raw[:3]:
+            if isinstance(item, dict):
+                names.append(str(item.get('file_name') or item.get('sha1') or '').strip())
+            else:
+                names.append(str(item or '').strip())
+        names = [x for x in names if x]
+        parts.append(f"RAW/摘要缺失 {len(missing_raw)} 个" + (f"：{'、'.join(names)}" if names else ''))
+    errors = result.get('errors') if isinstance(result.get('errors'), list) else []
+    if errors:
+        err_texts = []
+        for err in errors[:3]:
+            if isinstance(err, dict):
+                err_texts.append(str(err.get('error') or err.get('message') or err).strip())
+            else:
+                err_texts.append(str(err or '').strip())
+        err_texts = [x for x in err_texts if x]
+        if err_texts:
+            parts.append('错误：' + '；'.join(err_texts))
+    repair = result.get('fingerprint_repair') if isinstance(result.get('fingerprint_repair'), dict) else {}
+    if repair and repair.get('message'):
+        parts.append('指纹体检：' + str(repair.get('message')))
+    if not parts:
+        parts.append(str(result.get('error') or '未知原因'))
+    # 去重并截断，防止中心返回过长内容刷屏。
+    out = []
+    for part in parts:
+        part = str(part or '').strip()
+        if part and part not in out:
+            out.append(part)
+    text = '；'.join(out)
+    return text[:600] + ('...' if len(text) > 600 else '')
+
 def reregister_local_sources(source_ids: List[int], *, source_provider: str = '') -> Dict[str, Any]:
     rows = []
     for sid in source_ids or []:
@@ -3008,35 +3079,76 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
     """
     candidates = shared_share_db.list_unregistered_airing_episode_candidates(limit=limit)
     if not candidates:
-        return {'ok': True, 'checked': 0, 'need_register': 0, 'registered': 0, 'failed': 0}
+        return {'ok': True, 'checked': 0, 'need_register': 0, 'registered': 0, 'failed': 0, 'items': []}
 
     registered = 0
     failed = 0
     items = []
+    failed_items = []
     for cand in candidates:
         cand = dict(cand or {})
         # 双保险：维护补齐不能借道 collect_files_for_candidate 触发 helpers.check_season_consistency。
         cand['_skip_fingerprint_repair'] = True
         cand['_raw_repair_only'] = True
-        res = register_candidate_to_center(cand, source_provider='rapid_followup_backfill')
+        label = _maintenance_candidate_label(cand)
+        try:
+            res = register_candidate_to_center(cand, source_provider='rapid_followup_backfill')
+        except Exception as e:
+            res = {'ok': False, 'message': f'登记异常: {e}', 'error': str(e)}
+            logger.warning(
+                "  ➜ [共享资源维护] 追更补齐异常：%s，tmdb=%s，season=%s，episode=%s，err=%s",
+                label,
+                cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'),
+                cand.get('season_number'),
+                cand.get('episode_number'),
+                e,
+                exc_info=True,
+            )
         ok = bool(res.get('ok'))
+        reason = '' if ok else _maintenance_result_reason(res)
         if ok:
             registered += 1
+            logger.info(
+                "  ➜ [共享资源维护] 追更补齐成功：%s，tmdb=%s，season=%s，episode=%s",
+                label,
+                cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'),
+                cand.get('season_number'),
+                cand.get('episode_number'),
+            )
         else:
             failed += 1
+            fail_item = {
+                'title': label,
+                'tmdb_id': cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'),
+                'season_number': cand.get('season_number'),
+                'episode_number': cand.get('episode_number'),
+                'message': reason,
+            }
+            failed_items.append(fail_item)
+            logger.warning(
+                "  ➜ [共享资源维护] 追更补齐失败：%s，tmdb=%s，season=%s，episode=%s，原因=%s",
+                label,
+                fail_item.get('tmdb_id'),
+                fail_item.get('season_number'),
+                fail_item.get('episode_number'),
+                reason,
+            )
         items.append({
             'candidate': cand,
+            'title': label,
             'ok': ok,
-            'message': res.get('message') or '',
+            'message': reason or res.get('message') or '',
             'result': res,
         })
 
     if registered or failed:
+        sample = '；'.join([f"{x.get('title')}：{x.get('message')}" for x in failed_items[:5]])
         logger.info(
-            "  ➜ [共享资源维护] 追更补齐完成：待补=%s，成功=%s，失败=%s",
+            "  ➜ [共享资源维护] 追更补齐完成：待补=%s，成功=%s，失败=%s%s",
             len(candidates),
             registered,
             failed,
+            f"，失败明细={sample}" if sample else '',
         )
     return {
         'ok': failed == 0,
@@ -3044,6 +3156,7 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
         'need_register': len(candidates),
         'registered': registered,
         'failed': failed,
+        'failed_items': failed_items[:20],
         'items': items[:50],
     }
 
@@ -3143,7 +3256,9 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
     if followup:
         parts.append(f"追更补齐={followup.get('registered', 0)}/{followup.get('need_register', 0)}")
         if followup.get('failed'):
-            parts.append(f"补登失败={followup.get('failed')}")
+            failed_items = followup.get('failed_items') if isinstance(followup.get('failed_items'), list) else []
+            names = '、'.join([str(x.get('title') or '').strip() for x in failed_items[:3] if isinstance(x, dict) and str(x.get('title') or '').strip()])
+            parts.append(f"补登失败={followup.get('failed')}" + (f"（{names}）" if names else ''))
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
     for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'credit_error'):
