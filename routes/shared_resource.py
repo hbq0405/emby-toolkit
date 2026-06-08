@@ -422,16 +422,45 @@ def api_list_local_sources():
     keyword = request.args.get('keyword') or request.args.get('q') or ''
     page = max(1, int(request.args.get('page') or 1))
     page_size = max(1, min(int(request.args.get('page_size') or 30), 200))
+    raw_limit = max(1000, min(int(request.args.get('raw_limit') or 200000), 200000))
 
-    # Rapid v2 的“我的共享源”需要先按季聚合再筛选。
-    # 旧分享模式把 reported/partial 当 status 直接查库，会误过滤掉 active/available 源；
-    # 这里统一拉取本机匹配源后按 status + center_status 做展示筛选。
-    rows, _raw_total = shared_share_db.list_local_sources(status='all', keyword=keyword, page=1, page_size=100000)
+    # Rapid v2 的“我的共享源”必须先取完整本地源，再按季聚合、按 Rapid 状态筛选、最后分页。
+    # 注意：shared_share_db.list_local_sources 是通用分页查询，内部 page_size 上限 500；
+    # 如果这里误用 list_local_sources(page_size=100000)，几千条共享源会被截成前 500 条，
+    # 前端 total 也只剩聚合后的几十/几百条，看起来就“只有一页”。
+    if hasattr(shared_share_db, 'list_all_local_sources'):
+        rows, raw_total = shared_share_db.list_all_local_sources(
+            status='all', keyword=keyword, order_by='updated_desc', limit=raw_limit
+        )
+    else:
+        # 兼容旧 database/shared_share_db.py：分页循环取满，避免 500 上限截断。
+        rows, raw_total = [], 0
+        fetch_page = 1
+        while len(rows) < raw_limit:
+            batch, total = shared_share_db.list_local_sources(
+                status='all', keyword=keyword, page=fetch_page, page_size=500, order_by='updated_desc'
+            )
+            raw_total = max(raw_total, int(total or 0))
+            if not batch:
+                break
+            rows.extend(batch)
+            if len(batch) < 500 or len(rows) >= raw_total:
+                break
+            fetch_page += 1
+
     aggregated = _aggregate_local_sources(rows)
     filtered = [row for row in aggregated if _share_row_matches_filter(row, status)]
     start = (page - 1) * page_size
     end = start + page_size
-    return jsonify({'success': True, 'items': filtered[start:end], 'total': len(filtered)})
+    return jsonify({
+        'success': True,
+        'items': filtered[start:end],
+        'total': len(filtered),
+        'raw_total': raw_total,
+        'scanned_raw': len(rows),
+        'page': page,
+        'page_size': page_size,
+    })
 
 
 @shared_resource_bp.route('/shares/<int:source_id>/check', methods=['POST'])

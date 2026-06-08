@@ -289,6 +289,37 @@ def delete_local_sources(local_source_ids: List[int]) -> Dict[str, Any]:
 def list_local_sources(status='all', keyword='', page=1, page_size=30, order_by='created_desc') -> Tuple[List[Dict[str, Any]], int]:
     page = max(1, int(page or 1))
     page_size = min(500, max(1, int(page_size or 30)))
+    if '_local_sources_where_sql' in globals() and '_local_sources_order_sql' in globals():
+        where_sql, args = _local_sources_where_sql(status=status, keyword=keyword)
+        order_sql = _local_sources_order_sql(order_by=order_by)
+    else:
+        where, args = [], []
+        if status and status != 'all':
+            statuses = [s.strip() for s in str(status).split(',') if s.strip()]
+            where.append('status = ANY(%s)')
+            args.append(statuses)
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append('(title ILIKE %s OR file_name ILIKE %s OR tmdb_id ILIKE %s OR sha1 ILIKE %s OR center_source_id ILIKE %s)')
+            args.extend([kw, kw, kw, kw, kw])
+        where_sql = 'WHERE ' + ' AND '.join(where) if where else ''
+        order_sql = 'created_at DESC NULLS LAST, id DESC'
+        if order_by == 'updated_desc':
+            order_sql = 'updated_at DESC NULLS LAST, id DESC'
+        elif order_by == 'created_asc':
+            order_sql = 'created_at ASC NULLS LAST, id ASC'
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS n FROM shared_rapid_sources {where_sql}", args)
+            total = int((_row(cur.fetchone()) or {}).get('n') or 0)
+            cur.execute(f"SELECT * FROM shared_rapid_sources {where_sql} ORDER BY {order_sql} LIMIT %s OFFSET %s", args + [page_size, (page - 1) * page_size])
+            return _rows(cur.fetchall()), total
+
+
+def _local_sources_where_sql(status='all', keyword='') -> Tuple[str, List[Any]]:
+    """构造本地共享源列表查询条件。我的共享源需要先全量取出再按季聚合，
+    所以普通分页查询和管理页全量查询共用同一套 where，避免口径漂移。
+    """
     where, args = [], []
     if status and status != 'all':
         statuses = [s.strip() for s in str(status).split(',') if s.strip()]
@@ -299,16 +330,37 @@ def list_local_sources(status='all', keyword='', page=1, page_size=30, order_by=
         where.append('(title ILIKE %s OR file_name ILIKE %s OR tmdb_id ILIKE %s OR sha1 ILIKE %s OR center_source_id ILIKE %s)')
         args.extend([kw, kw, kw, kw, kw])
     where_sql = 'WHERE ' + ' AND '.join(where) if where else ''
+    return where_sql, args
+
+
+def _local_sources_order_sql(order_by='created_desc') -> str:
     order_sql = 'created_at DESC NULLS LAST, id DESC'
     if order_by == 'updated_desc':
         order_sql = 'updated_at DESC NULLS LAST, id DESC'
     elif order_by == 'created_asc':
         order_sql = 'created_at ASC NULLS LAST, id ASC'
+    return order_sql
+
+
+def list_all_local_sources(status='all', keyword='', order_by='created_desc', limit: int = 200000) -> Tuple[List[Dict[str, Any]], int]:
+    """我的共享源管理页专用：拉取完整候选集用于聚合后分页。
+
+    list_local_sources 为通用小查询保留了 page_size<=500 的保护；但“我的共享源”
+    需要先把分集源按季聚合、再按 Rapid 状态筛选、最后分页。若仍复用
+    list_local_sources(page_size=100000)，会被内部 500 上限截断，导致用户实际有
+    几千条共享源时前端只看到一页。
+    """
+    limit = max(1, min(int(limit or 200000), 200000))
+    where_sql, args = _local_sources_where_sql(status=status, keyword=keyword)
+    order_sql = _local_sources_order_sql(order_by=order_by)
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"SELECT COUNT(*) AS n FROM shared_rapid_sources {where_sql}", args)
             total = int((_row(cur.fetchone()) or {}).get('n') or 0)
-            cur.execute(f"SELECT * FROM shared_rapid_sources {where_sql} ORDER BY {order_sql} LIMIT %s OFFSET %s", args + [page_size, (page - 1) * page_size])
+            cur.execute(
+                f"SELECT * FROM shared_rapid_sources {where_sql} ORDER BY {order_sql} LIMIT %s",
+                args + [limit],
+            )
             return _rows(cur.fetchall()), total
 
 
