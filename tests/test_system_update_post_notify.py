@@ -195,15 +195,18 @@ class PostUpdateNotifyTests(unittest.TestCase):
             "target_version": "v10.2.6",
             "message": "容器健康检查通过。",
         }
+        user_db_mod = sys.modules["database.user_db"]
+        telegram_mod = sys.modules["handler.telegram"]
         with mock.patch("tasks.system_update.peek_post_update_status", return_value=payload):
             with mock.patch("tasks.system_update.clear_post_update_status", return_value=True) as clear_mock:
-                with mock.patch("handler.telegram.send_telegram_message") as send_mock:
-                    result = config_manager._notify_pending_system_update_result()
+                with mock.patch.object(user_db_mod, "get_admin_telegram_chat_ids", return_value=["10001"]):
+                    with mock.patch.object(telegram_mod, "send_telegram_message") as send_mock:
+                        result = config_manager._notify_pending_system_update_result()
 
         self.assertTrue(result)
         send_mock.assert_called_once()
         clear_mock.assert_called_once()
-        message = send_mock.call_args.args[1]
+        message = send_mock.call_args.args[1].replace("\\", "")
         self.assertIn("系统自动更新", message)
         self.assertIn("10.2.5", message)
         self.assertIn("v10.2.6", message)
@@ -216,10 +219,13 @@ class PostUpdateNotifyTests(unittest.TestCase):
             "target_version": "v10.2.6",
             "message": "容器健康检查通过。",
         }
+        user_db_mod = sys.modules["database.user_db"]
+        telegram_mod = sys.modules["handler.telegram"]
         with mock.patch("tasks.system_update.peek_post_update_status", return_value=payload):
             with mock.patch("tasks.system_update.clear_post_update_status", return_value=True) as clear_mock:
-                with mock.patch("handler.telegram.send_telegram_message", side_effect=RuntimeError("tg down")):
-                    result = config_manager._notify_pending_system_update_result()
+                with mock.patch.object(user_db_mod, "get_admin_telegram_chat_ids", return_value=["10001"]):
+                    with mock.patch.object(telegram_mod, "send_telegram_message", side_effect=RuntimeError("tg down")):
+                        result = config_manager._notify_pending_system_update_result()
 
         self.assertFalse(result)
         clear_mock.assert_not_called()
