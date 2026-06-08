@@ -102,6 +102,10 @@
                     {{ res._season_match_label }}
                   </n-tag>
 
+                  <n-tag size="small" type="default" :bordered="true" v-if="res._shared_pool_source_label">
+                    {{ res._shared_pool_source_label }}
+                  </n-tag>
+
                   <n-tag size="small" type="default" :bordered="true" v-if="res._shared_pool_version_label">
                     {{ res._shared_pool_version_label }}
                   </n-tag>

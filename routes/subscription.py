@@ -482,12 +482,109 @@ def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
     return tags
 
 
-def _shared_pool_version_rows(resource):
-    """把中心资源库聚合行拆成云搜索可展示的具体版本。
+def _shared_pool_summary_for_version(item: dict) -> dict:
+    """取一个共享池行/版本行的摘要，用来判断是否真的是不同内容版本。"""
+    item = item if isinstance(item, dict) else {}
+    for key in ("version_summary", "summary_json", "media_signature_json", "raw_summary_json"):
+        value = item.get(key)
+        if isinstance(value, dict) and value:
+            return value
+        value = _cloud_json_obj(value)
+        if value:
+            return value
+    return {}
 
-    中心资源库为了列表整洁，会把同一电影/同一季的多版本折叠到 versions。
-    云资源搜索要给用户挑版本，不能只展示聚合主行，所以这里把 versions
-    展平为多张卡片；没有 versions 的资源保持原样。
+
+def _shared_pool_source_count(item: dict) -> int:
+    """中心可能把同一内容的多个 holder/source 折叠到不同字段里，这里统一读取数量。"""
+    item = item if isinstance(item, dict) else {}
+    for key in (
+        "source_count", "sources_count", "shared_source_count", "share_source_count",
+        "holder_count", "holders_count", "mirror_count", "backup_count", "resource_count",
+    ):
+        count = _safe_int(item.get(key), default=0)
+        if count > 0:
+            return count
+    for key in ("source_ids", "source_list", "sources", "holders", "mirrors", "backups"):
+        value = item.get(key)
+        if isinstance(value, list) and value:
+            return len(value)
+    return 1
+
+
+def _shared_pool_version_identity(parent: dict, version: dict) -> str:
+    """生成“内容版本”指纹。
+
+    注意：共享中心里的 versions 可能既包含真正的内容版本，也包含同一内容的多个共享源。
+    云搜索不能把多个共享源显示成 1/4、2/4 这种版本，所以这里先按强指纹
+    （manifest_hash / sha1 / 版本 key）合并；没有强指纹时再按媒体摘要兜底合并。
+    """
+    parent = parent if isinstance(parent, dict) else {}
+    version = version if isinstance(version, dict) else {}
+    merged = dict(parent)
+    merged.update(version)
+
+    for key in ("manifest_hash", "sha1", "file_sha1", "content_hash", "hash"):
+        value = str(merged.get(key) or "").strip().upper()
+        if value:
+            return f"{key}:{value}"
+
+    # 季包如果已经带了 children/pack_items，按整季每集 SHA1 集合判断真实版本。
+    for child_key in ("pack_items", "children", "files"):
+        children = merged.get(child_key)
+        if isinstance(children, list) and children:
+            sha_parts = []
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                ep = _safe_int(child.get("episode_number"), default=0)
+                sha = str(child.get("sha1") or child.get("file_sha1") or "").strip().upper()
+                if sha:
+                    sha_parts.append(f"{ep}:{sha}" if ep > 0 else sha)
+            if sha_parts:
+                return f"{child_key}:" + "|".join(sorted(sha_parts))
+
+    summary = _shared_pool_summary_for_version(merged)
+    size = _safe_int(merged.get("size") or merged.get("total_size") or summary.get("size"), default=0)
+    parts = [
+        str(merged.get("source_kind") or parent.get("source_kind") or "").strip().lower(),
+        str(merged.get("item_type") or parent.get("item_type") or "").strip().lower(),
+        str(merged.get("tmdb_id") or parent.get("tmdb_id") or "").strip(),
+        str(merged.get("season_number") or parent.get("season_number") or "").strip(),
+        str(summary.get("resolution") or summary.get("resolution_display") or "").strip().lower(),
+        str(summary.get("effect") or summary.get("effect_key") or "").strip().lower(),
+        str(summary.get("codec") or summary.get("video_codec") or summary.get("codec_display") or "").strip().lower(),
+        str(summary.get("bit_depth") or "").strip().lower(),
+        str(summary.get("fps") or summary.get("frame_rate") or "").strip().lower(),
+        str(summary.get("video_display") or "").strip().lower(),
+        str(size) if size > 0 else "",
+    ]
+    compact = "|".join(parts)
+    return f"summary:{compact}" if compact.strip("|") else "summary:unknown"
+
+
+def _shared_pool_choose_representative(items: list[dict]) -> dict:
+    """同一内容版本有多个共享源时，列表只展示一个代表源。"""
+    candidates = [dict(x) for x in (items or []) if isinstance(x, dict)]
+    if not candidates:
+        return {}
+
+    def score(item: dict):
+        status = str(item.get("status") or item.get("center_status") or "").strip().lower()
+        status_score = 2 if status in {"alive", "available", "active", "reported"} else (1 if not status else 0)
+        source_score = 1 if (item.get("source_id") or item.get("source_ref_id")) else 0
+        size_score = _safe_int(item.get("size") or item.get("total_size"), default=0)
+        return (status_score, source_score, size_score)
+
+    return max(candidates, key=score)
+
+
+def _shared_pool_version_rows(resource):
+    """把中心资源库聚合行转换成云搜索卡片。
+
+    这里的关键点是：versions 里可能混有“真实内容版本”和“同一内容的多个共享源”。
+    只有内容指纹不同才拆成多个版本；同一内容的多个共享源只合并为一张卡片，
+    用“共享源 N”表示备份数量，避免出现“版本 1/4、2/4”这种误导。
     """
     parent = dict(resource or {})
     raw_versions = parent.get("versions")
@@ -495,25 +592,44 @@ def _shared_pool_version_rows(resource):
     if not versions:
         one = dict(parent)
         one.pop("versions", None)
+        one["_shared_pool_source_count"] = _shared_pool_source_count(one)
+        one["_shared_pool_is_version"] = False
         return [one]
 
+    grouped = []
+    group_index = {}
+    for version in versions:
+        key = _shared_pool_version_identity(parent, version)
+        if key not in group_index:
+            group_index[key] = len(grouped)
+            grouped.append({"key": key, "items": []})
+        group_index[key]
+        grouped[group_index[key]]["items"].append(version)
+
     rows = []
-    total = len(versions)
+    total_versions = len(grouped)
     parent_source_id = parent.get("source_id") or parent.get("source_ref_id") or parent.get("hub_id")
-    for idx, version in enumerate(versions, start=1):
+    for idx, group in enumerate(grouped, start=1):
+        group_items = group.get("items") or []
+        representative = _shared_pool_choose_representative(group_items)
+        source_count = sum(max(1, _shared_pool_source_count(item)) for item in group_items) or len(group_items) or 1
+
         merged = dict(parent)
         # 版本行里的 source_id / sha1 / summary / size 才代表真正要秒传的版本。
-        merged.update(version)
+        merged.update(representative)
         merged.pop("versions", None)
         # children/pack_items 仍保持懒加载，不从列表卡片里携带大对象。
-        if not version.get("children"):
+        if not representative.get("children"):
             merged.pop("children", None)
-        if not version.get("pack_items"):
+        if not representative.get("pack_items"):
             merged.pop("pack_items", None)
         merged["_shared_pool_parent_source_id"] = parent_source_id
-        merged["_shared_pool_version_index"] = idx
-        merged["_shared_pool_version_count"] = total
-        merged["_shared_pool_is_version"] = True
+        merged["_shared_pool_version_index"] = idx if total_versions > 1 else 0
+        merged["_shared_pool_version_count"] = total_versions if total_versions > 1 else 0
+        merged["_shared_pool_is_version"] = total_versions > 1
+        merged["_shared_pool_source_count"] = source_count
+        merged["_shared_pool_alternative_sources"] = group_items[:20]
+        merged["_shared_pool_content_key"] = group.get("key") or ""
         # 聚合主行的季进度/懒加载标记要保留，版本行缺这些字段时前端仍能显示。
         for key in (
             "progress_current", "progress_total", "progress_text", "season_number", "tmdb_id",
@@ -628,8 +744,10 @@ def _normalize_shared_pool_resource(resource):
     version_index = _safe_int(item.get("_shared_pool_version_index"), default=0)
     version_count = _safe_int(item.get("_shared_pool_version_count"), default=0)
     version_label = f"版本 {version_index}/{version_count}" if version_index and version_count > 1 else ""
+    source_count = _safe_int(item.get("_shared_pool_source_count") or item.get("source_count") or item.get("shared_source_count"), default=0)
+    source_label = f"共享源 {source_count}" if source_count > 1 else ""
     progress_label = f"共享池 · {item.get('progress_text')}" if item.get("progress_text") else "共享池 · 可秒传"
-    remark_parts = [x for x in (item.get("status_message"), version_label, progress_label) if x]
+    remark_parts = [x for x in (item.get("status_message"), source_label, version_label, progress_label) if x]
 
     item.update({
         "source_type": "shared_pool",
@@ -649,6 +767,8 @@ def _normalize_shared_pool_resource(resource):
         "remark": " · ".join(str(x) for x in remark_parts if str(x).strip()),
         "_season_match_label": item.get("progress_text") or "",
         "_shared_pool_version_label": version_label,
+        "_shared_pool_source_count": source_count,
+        "_shared_pool_source_label": source_label,
         "_shared_pool_tag_labels": _shared_pool_cloud_tag_labels(item),
         "_shared_pool_tags": _shared_pool_cloud_tag_labels(item),
         "_completion_label": "已完结" if item.get("is_completed_certified") or item.get("is_completed") else ("连载中" if item.get("is_ongoing_hub") else ""),
