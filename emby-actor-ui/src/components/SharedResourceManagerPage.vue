@@ -1673,74 +1673,187 @@ const centerGroupKey = (row) => {
 };
 
 const groupCenterSources = (items, orderBy = 'latest') => {
-  // 辅助函数 1：合并相同 SHA1 的版本，累加热度
+  const normSha1 = (value) => {
+    const text = String(value || '').trim().toUpperCase();
+    return /^[A-F0-9]{40}$/.test(text) ? text : '';
+  };
+  const sourceIdentity = (row) => String(
+    row?.source_file_id || row?.source_id || row?.source_ref_id || row?.episode_source_id || row?.center_source_id || row?.id || ''
+  ).trim();
+  const uniquePush = (arr, value) => {
+    const text = String(value || '').trim();
+    if (text && !arr.includes(text)) arr.push(text);
+  };
+  const childRowsForSignature = (row) => {
+    const children = Array.isArray(row?.children) ? row.children : [];
+    const packItems = Array.isArray(row?.pack_items) ? row.pack_items : [];
+    return children.length ? children : packItems;
+  };
+  const packManifestKey = (row) => {
+    const parts = [];
+    for (const child of childRowsForSignature(row)) {
+      const sha1 = normSha1(child?.sha1);
+      if (!sha1) continue;
+      const epRaw = child?.episode_number ?? '';
+      const epNum = Number(epRaw);
+      const epKey = Number.isFinite(epNum) && epNum > 0 ? String(epNum).padStart(4, '0') : String(epRaw || '').trim();
+      parts.push(`${epKey}:${sha1}`);
+    }
+    if (parts.length) return parts.sort().join('|');
+    const manifestHash = String(row?.manifest_hash || '').trim();
+    return manifestHash ? `manifest:${manifestHash}` : '';
+  };
+  const versionMergeKey = (row) => {
+    const typeLabel = centerTypeLabel(centerRowType(row));
+    const sourceKind = String(row?.source_kind || '').trim().toLowerCase();
+    const isPack = typeLabel === '季' || sourceKind === 'completed_season' || sourceKind === 'season_hub' || row?.is_collapsed_pack;
+    if (isPack) {
+      const manifest = packManifestKey(row);
+      // 季包只有“每一集 SHA1 全部一致”才算同一版本；任意一集不一致就是另一个版本。
+      if (manifest) return `pack:${manifest}`;
+    }
+    const sha1 = normSha1(row?.sha1);
+    if (sha1) return `sha1:${sha1}`;
+    return `source:${sourceIdentity(row) || JSON.stringify([row?.tmdb_id, row?.season_number, row?.episode_number, row?.file_name || row?.title || ''])}`;
+  };
+  const mergeChildLists = (left, right) => {
+    const out = [];
+    const seen = new Set();
+    for (const item of [...(Array.isArray(left) ? left : []), ...(Array.isArray(right) ? right : [])]) {
+      if (!item || typeof item !== 'object') continue;
+      const key = sourceIdentity(item) || `${item.episode_number ?? ''}:${normSha1(item.sha1)}:${item.file_name || ''}`;
+      // 只按具体中心子源去重，不按 SHA1 去重；相同 SHA1 的不同来源要留给后续 mergeVersions 累加资源数。
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      out.push(item);
+    }
+    return out;
+  };
+  const countKeys = ['resource_count', 'usable_resource_count', 'available_holder_count', 'holder_count'];
+  const maxKnownCount = (a, b, fallback = 1) => {
+    const nums = [fallback];
+    for (const row of [a, b]) {
+      for (const key of countKeys) {
+        const value = Number(row?.[key]);
+        if (Number.isFinite(value) && value > 0) nums.push(value);
+      }
+    }
+    return Math.max(...nums);
+  };
+
+  // 合并相同版本：电影/单集按 SHA1；季包按“完整 episode_number:SHA1 manifest”。
+  // 相同版本只显示一行，资源数按不同中心源/holder 合并；不同 SHA1/manifest 才显示多版本行。
   const mergeVersions = (versions) => {
     const merged = [];
-    const sha1Map = new Map();
-    for (const v of (versions || [])) {
-      const sha1 = v.sha1;
-      if (sha1 && sha1Map.has(sha1)) {
-        // 相同 SHA1，合并热度
-        const existing = sha1Map.get(sha1);
-        existing.success_count = (existing.success_count || 0) + (v.success_count || 0);
-        // 保留最新的更新时间
-        if (new Date(v.updated_at || 0) > new Date(existing.updated_at || 0)) {
-          existing.updated_at = v.updated_at;
+    const versionMap = new Map();
+    for (const raw of (versions || [])) {
+      if (!raw || typeof raw !== 'object') continue;
+      const key = versionMergeKey(raw);
+      const srcId = sourceIdentity(raw);
+      if (key && versionMap.has(key)) {
+        const existing = versionMap.get(key);
+        existing._merged_source_ids = Array.isArray(existing._merged_source_ids) ? existing._merged_source_ids : [];
+        uniquePush(existing._merged_source_ids, srcId);
+        for (const id of (raw._merged_source_ids || [])) uniquePush(existing._merged_source_ids, id);
+        const mergeCount = Math.max(existing._merged_source_ids.length || 1, maxKnownCount(existing, raw, 1));
+        for (const countKey of countKeys) existing[countKey] = mergeCount;
+        existing.source_merge_count = mergeCount;
+        existing.version_count = mergeCount;
+        existing.success_count = (existing.success_count || 0) + (raw.success_count || 0);
+        existing.fail_count = (existing.fail_count || 0) + (raw.fail_count || 0);
+        existing.size = Math.max(Number(existing.size || existing.total_size || 0), Number(raw.size || raw.total_size || 0)) || existing.size || raw.size;
+        existing.total_size = Math.max(Number(existing.total_size || existing.size || 0), Number(raw.total_size || raw.size || 0)) || existing.total_size || raw.total_size;
+        existing.children = mergeChildLists(existing.children, raw.children);
+        existing.pack_items = mergeChildLists(existing.pack_items, raw.pack_items);
+        if (centerCreatedTime(raw) > centerCreatedTime(existing)) {
+          existing.created_at = raw.created_at || existing.created_at;
+          existing.updated_at = raw.updated_at || existing.updated_at;
+          existing.sort_timestamp = raw.sort_timestamp || existing.sort_timestamp;
         }
       } else {
-        const newV = { ...v };
-        if (sha1) sha1Map.set(sha1, newV);
-        merged.push(newV);
+        const item = {
+          ...raw,
+          _version_merge_key: key,
+          _merged_source_ids: [],
+          children: Array.isArray(raw.children) ? [...raw.children] : raw.children,
+          pack_items: Array.isArray(raw.pack_items) ? [...raw.pack_items] : raw.pack_items,
+        };
+        uniquePush(item._merged_source_ids, srcId);
+        const initialCount = Math.max(item._merged_source_ids.length || 1, maxKnownCount(item, null, 1));
+        if (initialCount > 0) {
+          for (const countKey of countKeys) item[countKey] = initialCount;
+          item.source_merge_count = initialCount;
+        }
+        if (key) versionMap.set(key, item);
+        merged.push(item);
       }
     }
     return merged;
   };
 
-  // 辅助函数 2：对展开后的子集 (children) 按集号进行严格聚合
+  // 展开后的子集按集号聚合；同一集内部再按 SHA1 合并资源数。
   const groupChildren = (children) => {
     if (!children || !children.length) return undefined;
     const groups = new Map();
-    
     for (const child of children) {
-      const epNum = child.episode_number || 0;
-      if (!groups.has(epNum)) {
-        groups.set(epNum, {
+      const epNum = Number(child?.episode_number || 0) || 0;
+      const key = epNum || child?.file_name || child?.sha1 || sourceIdentity(child);
+      if (!groups.has(key)) {
+        groups.set(key, {
           ...child,
-          group_key: child.group_key || `ep_${epNum}`,
-          versions: [] // 初始化子节点的 versions 数组
+          group_key: child.group_key || `ep_${key}`,
+          versions: [],
         });
       }
-      // 收集该集的所有版本
       const childVersions = Array.isArray(child.versions) && child.versions.length ? child.versions : [child];
-      groups.get(epNum).versions.push(...childVersions);
+      groups.get(key).versions.push(...childVersions);
     }
 
     const result = [];
     for (const group of groups.values()) {
-      // 对同一集内的版本进行 SHA1 去重合并
       group.versions = mergeVersions(group.versions);
+      // 让子行自身也继承第一条版本的展示字段，避免树表标题/状态列读取空值。
+      if (group.versions[0]) {
+        Object.assign(group, {
+          ...group,
+          source_id: group.source_id || group.versions[0].source_id,
+          source_ref_id: group.source_ref_id || group.versions[0].source_ref_id,
+          sha1: group.sha1 || group.versions[0].sha1,
+          size: group.size || group.versions[0].size,
+          version_summary: group.version_summary || group.versions[0].version_summary,
+          summary_json: group.summary_json || group.versions[0].summary_json,
+          media_signature_json: group.media_signature_json || group.versions[0].media_signature_json,
+        });
+      }
       result.push(group);
     }
-    // 按集号排序
-    result.sort((a, b) => (a.episode_number || 0) - (b.episode_number || 0));
+    result.sort((a, b) => (Number(a.episode_number || 0) - Number(b.episode_number || 0)) || String(a.file_name || '').localeCompare(String(b.file_name || '')));
     return result;
   };
 
   let processedGroups = [];
 
-  // 新中心端数据处理 (带有 versions 数组)
   if ((items || []).some(item => Array.isArray(item?.versions))) {
     processedGroups = (items || []).map(item => {
       const topVersions = Array.isArray(item.versions) && item.versions.length ? item.versions : [item];
+      const allChildren = [];
+      for (const v of topVersions) {
+        allChildren.push(...(Array.isArray(v?.children) ? v.children : []));
+        // children 和 pack_items 通常内容相同；只有 children 为空时才用 pack_items，避免重复翻倍。
+        if (!Array.isArray(v?.children) || !v.children.length) {
+          allChildren.push(...(Array.isArray(v?.pack_items) ? v.pack_items : []));
+        }
+      }
+      if (Array.isArray(item.children)) allChildren.push(...item.children);
+      else if (Array.isArray(item.pack_items)) allChildren.push(...item.pack_items);
       return {
         ...item,
         group_key: item.group_key || item.display_group_key || centerGroupKey(item),
-        versions: mergeVersions(topVersions), // 处理顶层 SHA1 合并
-        children: groupChildren(item.children) // 递归处理展开后的子集
+        versions: mergeVersions(topVersions),
+        children: groupChildren(allChildren),
       };
     });
   } else {
-    // 兼容旧中心端散行数据处理
     const byKey = new Map();
     for (const item of (items || [])) {
       const key = centerGroupKey(item);
@@ -1749,28 +1862,31 @@ const groupCenterSources = (items, orderBy = 'latest') => {
         group = {
           ...item,
           group_key: key,
-          children: item.children, // 稍后统一处理
+          children: item.children,
+          pack_items: item.pack_items,
           versions: [],
         };
         byKey.set(key, group);
         processedGroups.push(group);
       }
       group.versions.push(item);
+      group.children = mergeChildLists(group.children, item.children);
+      group.pack_items = mergeChildLists(group.pack_items, item.pack_items);
     }
     for (const group of processedGroups) {
       group.versions = mergeVersions(group.versions);
-      group.children = groupChildren(group.children);
+      const allChildren = Array.isArray(group.children) && group.children.length ? group.children : group.pack_items;
+      group.children = groupChildren(allChildren);
     }
   }
 
-  // 排序逻辑
   for (const group of processedGroups) {
     if (orderBy === 'popular') {
       group.versions.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
       group.sort_val = Math.max(...group.versions.map(v => v.success_count || 0));
     } else if (orderBy === 'size') {
-      group.versions.sort((a, b) => (b.size || 0) - (a.size || 0));
-      group.sort_val = Math.max(...group.versions.map(v => v.size || 0));
+      group.versions.sort((a, b) => (b.size || b.total_size || 0) - (a.size || a.total_size || 0));
+      group.sort_val = Math.max(...group.versions.map(v => v.size || v.total_size || 0));
     } else if (orderBy === 'name') {
       group.versions.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
       group.sort_val = group.title || '';
@@ -1779,12 +1895,13 @@ const groupCenterSources = (items, orderBy = 'latest') => {
       group.sort_val = centerCreatedTime(group.versions[0]);
     }
     group.created_at = group.versions[0]?.created_at || group.created_at;
+    group.updated_at = group.versions[0]?.updated_at || group.updated_at;
   }
 
   processedGroups.sort((a, b) => {
     if (orderBy === 'popular' || orderBy === 'size') return b.sort_val - a.sort_val;
     if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
-    return b.sort_val - a.sort_val; // latest
+    return b.sort_val - a.sort_val;
   });
 
   return processedGroups;
@@ -2519,7 +2636,7 @@ const reregisterShare = (row) => {
   const countText = isBatch ? `该聚合项下 ${ids.length} 个本机源` : '该本机源';
   dialog.warning({
     title: '重新登记共享源',
-    content: `确定重新登记《${title}》的${countText}吗？系统会重新上传 RAW/summary_json，并按原共享类型原地重新登记中心；可用于修复中心 RAW 缺失导致的不可用状态。`,
+    content: `确定重新登记《${title}》的${countText}吗？系统会重新上传 RAW/summary_json，并向中心重新登记；可用于修复中心 RAW 缺失导致的不可用状态。`,
     positiveText: '重新登记',
     negativeText: '取消',
     onPositiveClick: async () => {
