@@ -2423,7 +2423,13 @@ const triggerSharedMaintenance = async () => {
 };
 
 const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献点流水失败'); } finally { ledgerLoading.value = false; } };
-const loadAll = async () => { await Promise.allSettled([loadSummary(), loadShares(), loadCenterSources(), loadLedger()]); };
+const loadAll = async () => {
+  const tasks = [loadSummary(), loadLedger()];
+  if (activeTab.value === 'center') tasks.push(loadCenterSources());
+  else if (activeTab.value === 'requests') tasks.push(loadShareRequests());
+  else tasks.push(loadShares());
+  await Promise.allSettled(tasks);
+};
 const handleTabChange = (name) => { if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'requests') loadShareRequests(); if (name === 'ledger') loadLedger(); };
 
 const registerCenterDevice = async () => {
