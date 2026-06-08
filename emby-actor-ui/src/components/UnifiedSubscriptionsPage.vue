@@ -193,7 +193,7 @@
                         <template #icon><n-icon :component="CloudDownloadIcon" /></template>
                       </n-button>
                     </template>
-                    影巢搜索
+                    云搜索
                   </n-tooltip>
 
                   <n-tooltip><template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>TMDb</n-tooltip>
