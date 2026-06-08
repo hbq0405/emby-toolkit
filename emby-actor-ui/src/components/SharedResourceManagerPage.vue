@@ -923,6 +923,11 @@ const ledgerEventLabel = (eventType) => {
     center_rapid_source_served_group: '共享资源被秒传',
     center_rapid_source_consumed: '秒传共享资源',
     center_rapid_source_consumed_group: '秒传共享资源',
+    center_daily_grant: 'Pro每日赠送额度',
+    center_rapid_quota_consumed: 'Pro额度抵扣',
+    center_tier_cap_adjust: 'Pro等级上限调整',
+    center_pro_expired_clear: 'Pro过期清空额度',
+    center_pro_inactive_clear: 'Pro认证失效清空额度',
     center_rapid_sign_success: '秒传签名成功',
     center_rapid_sign_failed: '秒传签名失败',
     center_rapid_sign_timeout: '秒传签名超时',
@@ -973,6 +978,11 @@ const ledgerReasonCodeLabel = (value) => ({
   backup_source_registered: '备份共享入池',
   shared_source_served: '共享资源被他人秒传',
   shared_source_consumed: '从共享中心秒传资源',
+  daily_grant: 'Pro每日赠送额度',
+  rapid_quota_consumed: 'Pro额度抵扣',
+  tier_cap_adjust: 'Pro等级上限调整',
+  pro_expired_clear: 'Pro过期清空额度',
+  pro_inactive_clear: 'Pro认证失效清空额度',
   share_request_escrow: '求共享冻结贡献点',
   share_request_refund: '求共享退回贡献点',
   share_request_bounty_paid: '求共享悬赏支付',
@@ -992,6 +1002,12 @@ const ledgerReasonCode = (row) => String(row?.reason || row?.event_type || '').t
 const isLedgerSignRow = (row) => ledgerCode(row).includes('rapid_sign') || ledgerReasonCode(row).startsWith('rapid_sign');
 const isLedgerConsumedRow = (row) => ledgerCode(row).includes('rapid_source_consumed') || ledgerReasonCode(row) === 'rapid_source_consumed' || ledgerCode(row).includes('shared_source_consumed') || ledgerReasonCode(row) === 'shared_source_consumed';
 const isLedgerServedRow = (row) => ledgerCode(row).includes('rapid_source_served') || ledgerReasonCode(row) === 'rapid_source_served' || ledgerCode(row).includes('shared_source_served') || ledgerReasonCode(row) === 'shared_source_served';
+const isLedgerProQuotaRow = (row) => {
+  const code = ledgerCode(row);
+  const reason = ledgerReasonCode(row);
+  const ledgerType = String(row?.ledger_type || '').trim().toLowerCase();
+  return ledgerType === 'pro_quota' || ['daily_grant', 'rapid_quota_consumed', 'tier_cap_adjust', 'pro_expired_clear', 'pro_inactive_clear'].includes(reason) || ['center_daily_grant', 'center_rapid_quota_consumed', 'center_tier_cap_adjust', 'center_pro_expired_clear', 'center_pro_inactive_clear'].includes(code);
+};
 const ledgerSxx = (value) => {
   const n = Number(value || 0);
   return Number.isFinite(n) && n > 0 ? `S${String(Math.trunc(n)).padStart(2, '0')}` : '';
@@ -1056,14 +1072,19 @@ const appendLedgerSeasonEpisode = (base, row, { aggregate = false } = {}) => {
 const ledgerCreditText = (row, rows = null) => {
   const delta = rows ? rows.reduce((sum, item) => sum + Number(item?.delta || 0), 0) : Number(row?.delta || 0);
   const count = rows ? rows.length : 0;
+  const proRows = rows ? rows.every(item => isLedgerProQuotaRow(item)) : isLedgerProQuotaRow(row);
+  const unitName = proRows ? 'Pro额度' : '贡献点';
   if (rows && count > 1 && rows.every(item => Number(item?.delta || 0) === Number(rows[0]?.delta || 0))) {
     const unit = Number(rows[0]?.delta || 0);
-    return `贡献点 ${formatDelta(unit)}*${count}`;
+    return `${unitName} ${formatDelta(unit)}*${count}`;
   }
-  if ((isLedgerConsumedRow(row) || isLedgerServedRow(row) || isLedgerSignRow(row)) && Math.abs(delta) > 1) {
-    return `贡献点 ${delta > 0 ? '+1' : '-1'}*${Math.abs(delta)}`;
+  if (proRows && Math.abs(delta) > 1 && ledgerReasonCode(row) === 'rapid_quota_consumed') {
+    return `${unitName} ${delta > 0 ? '+1' : '-1'}*${Math.abs(delta)}`;
   }
-  return `贡献点 ${formatDelta(delta)}`;
+  if (!proRows && (isLedgerConsumedRow(row) || isLedgerServedRow(row) || isLedgerSignRow(row)) && Math.abs(delta) > 1) {
+    return `${unitName} ${delta > 0 ? '+1' : '-1'}*${Math.abs(delta)}`;
+  }
+  return `${unitName} ${formatDelta(delta)}`;
 };
 const ledgerDisplayTitle = (row) => {
   if (row?.title_display) {
@@ -1076,6 +1097,13 @@ const ledgerDisplayTitle = (row) => {
   if (title && !title.startsWith('秒传签名：') && !/^未知资源\s+[A-Fa-f0-9]/.test(title)) return title;
   const raw = ledgerRawJson(row);
   const event = String(row?.event_type || '').toLowerCase();
+  if (isLedgerProQuotaRow(row)) {
+    const tier = String(row?.pro_tier || ledgerRawJson(row)?.center_ledger?.pro_tier || '').trim().toUpperCase();
+    const label = ({ M: '月卡', Y: '年卡', L: '终身' }[tier] || tier || '');
+    if (event.includes('daily_grant')) return label ? `Pro${label}` : 'Pro每日赠送额度';
+    if (event.includes('quota_consumed')) return title || 'Pro额度抵扣';
+    return label ? `Pro${label}` : 'Pro额度';
+  }
   if (event.includes('share_request')) return '求共享';
   if (isLedgerSignRow(row)) {
     const sha = ctx.sha1 || raw.sha1 || raw.file_sha1 || raw.sign_check || '';
@@ -1113,10 +1141,22 @@ const ledgerReasonDisplay = (row) => {
     center_rapid_source_served_group: `本机共享资源被他人秒传：${title}，${deltaText}`,
     center_rapid_source_registered: `共享资源登记入池：${title}，${deltaText}`,
     center_rapid_source_registered_group: `共享资源登记入池：${title}，${deltaText}`,
+    center_daily_grant: `Pro每日赠送额度：${title}，${deltaText}`,
+    center_rapid_quota_consumed: `Pro额度抵扣：${title}，${deltaText}`,
+    center_tier_cap_adjust: `Pro等级上限调整：${title}，${deltaText}`,
+    center_pro_expired_clear: `Pro过期清空额度：${title}，${deltaText}`,
+    center_pro_inactive_clear: `Pro认证失效清空额度：${title}，${deltaText}`,
   };
-  if (reasonMap[event]) return reasonMap[event];
+  if (reasonMap[event]) {
+    const balance = row?.balance_after ?? ledgerRawJson(row)?.center_ledger?.balance_after;
+    return isLedgerProQuotaRow(row) && balance !== undefined && balance !== null && balance !== '' ? `${reasonMap[event]}，余额 ${balance}` : reasonMap[event];
+  }
   const reasonLabel = ledgerReasonCodeLabel(reason) || ledgerReasonCodeLabel(event.replace(/^center_/, ''));
-  if (reasonLabel) return `${reasonLabel}：${title}，${deltaText}`;
+  if (reasonLabel) {
+    const balance = row?.balance_after ?? ledgerRawJson(row)?.center_ledger?.balance_after;
+    const suffix = isLedgerProQuotaRow(row) && balance !== undefined && balance !== null && balance !== '' ? `，余额 ${balance}` : '';
+    return `${reasonLabel}：${title}，${deltaText}${suffix}`;
+  }
   return reason || `${ledgerEventLabel(event)}：${title}，${deltaText}`;
 };
 

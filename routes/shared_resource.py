@@ -1231,6 +1231,11 @@ LEDGER_EVENT_LABEL_MAP = {
     'center_rapid_sign_job_failed': '秒传签名失败',
     'center_rapid_raw_uploaded': '上传媒体信息',
     'center_rapid_raw_ffprobe_uploaded': '上传媒体信息',
+    'center_daily_grant': 'Pro每日赠送额度',
+    'center_rapid_quota_consumed': 'Pro额度抵扣',
+    'center_tier_cap_adjust': 'Pro等级上限调整',
+    'center_pro_expired_clear': 'Pro过期清空额度',
+    'center_pro_inactive_clear': 'Pro认证失效清空额度',
     'share_created': '登记共享源',
     'share_reported_center': '登记中心',
     'share_raw_uploaded': '上传媒体信息',
@@ -1258,6 +1263,16 @@ LEDGER_REASON_LABEL_MAP = {
     'backup_source_registered': '备份共享入池',
     'shared_source_served': '共享资源被他人秒传',
     'shared_source_consumed': '从共享中心秒传资源',
+    'daily_grant': 'Pro每日赠送额度',
+    'rapid_quota_consumed': 'Pro额度抵扣',
+    'tier_cap_adjust': 'Pro等级上限调整',
+    'pro_expired_clear': 'Pro过期清空额度',
+    'pro_inactive_clear': 'Pro认证失效清空额度',
+    'center_daily_grant': 'Pro每日赠送额度',
+    'center_rapid_quota_consumed': 'Pro额度抵扣',
+    'center_tier_cap_adjust': 'Pro等级上限调整',
+    'center_pro_expired_clear': 'Pro过期清空额度',
+    'center_pro_inactive_clear': 'Pro认证失效清空额度',
 }
 
 
@@ -1527,12 +1542,31 @@ def _ledger_is_served_row(row: Dict[str, Any]) -> bool:
     return 'rapid_source_served' in code or reason == 'rapid_source_served' or 'shared_source_served' in code or reason == 'shared_source_served'
 
 
+def _ledger_is_pro_quota_row(row: Dict[str, Any]) -> bool:
+    row = row if isinstance(row, dict) else {}
+    code = _ledger_event_code(row)
+    reason = _ledger_reason_code(row)
+    ledger_type = str(row.get('ledger_type') or '').strip().lower()
+    return ledger_type == 'pro_quota' or reason in {
+        'daily_grant', 'rapid_quota_consumed', 'tier_cap_adjust',
+        'pro_expired_clear', 'pro_inactive_clear',
+    } or code in {
+        'center_daily_grant', 'center_rapid_quota_consumed', 'center_tier_cap_adjust',
+        'center_pro_expired_clear', 'center_pro_inactive_clear',
+    }
+
+
 def _ledger_credit_text(row: Dict[str, Any]) -> str:
     try:
         n = int(float((row or {}).get('delta') or 0))
     except Exception:
         n = 0
     sign = '+' if n > 0 else ''
+    if _ledger_is_pro_quota_row(row):
+        if abs(n) > 1 and _ledger_reason_code(row) == 'rapid_quota_consumed':
+            unit = '+1' if n > 0 else '-1'
+            return f"Pro额度 {unit}*{abs(n)}"
+        return f"Pro额度 {sign}{n}"
     # Rapid v2 这里的绝对值就是“视频数/签名次数”：-42 应显示为 -1*42。
     if (_ledger_is_consumed_row(row) or _ledger_is_served_row(row) or _ledger_is_sign_row(row)) and abs(n) > 1:
         unit = '+1' if n > 0 else '-1'
@@ -1588,7 +1622,14 @@ def _decorate_credit_ledger_item(row: Dict[str, Any]) -> Dict[str, Any]:
     for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind'):
         if row.get(key) in (None, '') and ctx.get(key) not in (None, ''):
             row[key] = ctx.get(key)
-    row['reason_display'] = f'{reason_label or event_label}：{title}，{delta_text}' if (reason_label or not reason) else reason
+    if _ledger_is_pro_quota_row(row):
+        tier_label = {'M': '月卡', 'Y': '年卡', 'L': '终身'}.get(str(row.get('pro_tier') or '').upper(), str(row.get('pro_tier') or '').upper())
+        title = title if title and title != '-' else (f'Pro{tier_label}' if tier_label else 'Pro额度')
+        balance = row.get('balance_after')
+        balance_text = f'，余额 {balance}' if balance not in (None, '') else ''
+        row['reason_display'] = f'{reason_label or event_label}：{title}，{delta_text}{balance_text}'
+    else:
+        row['reason_display'] = f'{reason_label or event_label}：{title}，{delta_text}' if (reason_label or not reason) else reason
     row['delta_display'] = _ledger_delta_text(row.get('delta'))
     return row
 
