@@ -27,7 +27,7 @@ from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
 from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events
 from .hdhive import task_hdhive_auto_checkin
-from .shared_resource_tasks import task_shared_resource_maintenance
+from .shared_resource_tasks import task_shared_resource_maintenance, share_all_library
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ TASK_HELP_TEXTS = {
     'hdhive-auto-checkin': '执行影巢自动签到，获取签到奖励或保持账号活跃。',
     'restore-nfo-and-images': '从备份或缓存中还原 NFO、海报、背景图等媒体附属文件。',
     'shared-resource-maintenance': '维护共享资源池，包含登记缺口、自动分享、状态检查、清理失效分享和共享订阅消费等。',
+    'share-all-library': '增量登记本地媒体库到共享中心。启动前会排除已有有效共享，只处理新增或需要修复的媒体。',
     'add-all-series-to-watchlist': '扫描全库剧集并加入智能追剧管理，适合首次处理存量剧集时使用。',
     'process_all_custom_collections': '立即重新生成所有自建合集，通常用于合集规则调整后手动刷新。',
     'process-single-custom-collection': '只刷新指定的单个自建合集，通常由合集详情页触发。',
@@ -325,6 +326,7 @@ def get_task_registry(context: str = 'all'):
         'fill-studio-images': (task_fill_studio_images, "补全工作室图标", 'media', False),
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', False),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', False),
+        'share-all-library': (share_all_library, "一键登记媒体库", 'media', False),
     }
 
     if context == 'chain':
