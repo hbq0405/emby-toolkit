@@ -1314,11 +1314,14 @@ def list_non_effective_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
 
 
 def list_unregistered_airing_episode_candidates(limit: int = 500) -> List[Dict[str, Any]]:
-    """维护任务专用：找出连载/追更季里新入库但尚未登记中心的分集。
+    """维护任务专用：找出“季条目明确处于追更中”的新入库分集。
 
     只做本地数据库比对，不访问 115，不触发一致性校验：
     - 候选来自 media_metadata.Episode 且 in_library=true；
-    - 父 Series / Season 处于 Watching、Paused、Pending，或 watchlist_is_airing=true；
+    - 只信同一父剧同一季的 Season 行 watching_status；
+    - 只有 Season.watching_status IN ('Watching', 'Paused') 才视为追更季；
+    - 不再参考 Series.watching_status / Episode.watching_status / watchlist_is_airing，
+      避免某一季连载时把同剧已完结旧季重新拉出来“鞭尸”；
     - 排除已经有效登记到中心的 episode 源。
     """
     try:
@@ -1338,42 +1341,22 @@ def list_unregistered_airing_episode_candidates(limit: int = 500) -> List[Dict[s
                     p.title AS series_title,
                     p.original_title AS series_original_title,
                     p.release_year AS series_release_year,
-                    COALESCE(
-                        CASE WHEN LOWER(COALESCE(se.watching_status, '')) NOT IN ('', 'none') THEN se.watching_status END,
-                        CASE WHEN LOWER(COALESCE(p.watching_status, '')) NOT IN ('', 'none') THEN p.watching_status END,
-                        CASE WHEN LOWER(COALESCE(e.watching_status, '')) NOT IN ('', 'none') THEN e.watching_status END,
-                        ''
-                    ) AS effective_watching_status,
-                    COALESCE(NULLIF(se.total_episodes, 0), NULLIF(p.total_episodes, 0), NULLIF(e.total_episodes, 0), 0) AS effective_total_episodes,
-                    (
-                        COALESCE(se.watchlist_is_airing, FALSE)
-                     OR COALESCE(p.watchlist_is_airing, FALSE)
-                     OR COALESCE(e.watchlist_is_airing, FALSE)
-                    ) AS effective_is_airing
+                    se.watching_status AS effective_watching_status,
+                    COALESCE(NULLIF(se.total_episodes, 0), NULLIF(e.total_episodes, 0), NULLIF(p.total_episodes, 0), 0) AS effective_total_episodes
                 FROM media_metadata e
-                LEFT JOIN media_metadata p
-                  ON p.item_type='Series'
-                 AND p.tmdb_id=e.parent_series_tmdb_id
-                LEFT JOIN media_metadata se
+                INNER JOIN media_metadata se
                   ON se.item_type='Season'
                  AND se.parent_series_tmdb_id=e.parent_series_tmdb_id
                  AND se.season_number=e.season_number
+                LEFT JOIN media_metadata p
+                  ON p.item_type='Series'
+                 AND p.tmdb_id=e.parent_series_tmdb_id
                 WHERE e.item_type='Episode'
                   AND COALESCE(e.in_library, FALSE)=TRUE
                   AND NULLIF(e.parent_series_tmdb_id, '') IS NOT NULL
                   AND e.season_number IS NOT NULL
                   AND e.episode_number IS NOT NULL
-                  AND (
-                        LOWER(COALESCE(
-                            CASE WHEN LOWER(COALESCE(se.watching_status, '')) NOT IN ('', 'none') THEN se.watching_status END,
-                            CASE WHEN LOWER(COALESCE(p.watching_status, '')) NOT IN ('', 'none') THEN p.watching_status END,
-                            CASE WHEN LOWER(COALESCE(e.watching_status, '')) NOT IN ('', 'none') THEN e.watching_status END,
-                            ''
-                        )) IN ('watching', 'paused', 'pending')
-                     OR COALESCE(se.watchlist_is_airing, FALSE)=TRUE
-                     OR COALESCE(p.watchlist_is_airing, FALSE)=TRUE
-                     OR COALESCE(e.watchlist_is_airing, FALSE)=TRUE
-                  )
+                  AND LOWER(COALESCE(se.watching_status, '')) IN ('watching', 'paused')
                 ORDER BY COALESCE(e.date_added, e.last_updated_at, e.created_at) DESC NULLS LAST,
                          e.parent_series_tmdb_id ASC, e.season_number ASC, e.episode_number ASC
                 LIMIT %s
@@ -1388,7 +1371,7 @@ def list_unregistered_airing_episode_candidates(limit: int = 500) -> List[Dict[s
         row = dict(row or {})
         if _episode_row_already_registered(row, existing_index):
             continue
-        effective_status = str(row.get('effective_watching_status') or row.get('watching_status') or '').strip()
+        effective_status = str(row.get('effective_watching_status') or '').strip()
         if effective_status:
             row['watching_status'] = effective_status
         total = _safe_int(row.get('effective_total_episodes'), 0)
