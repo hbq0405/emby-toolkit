@@ -1994,9 +1994,19 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         return {'ok': False, 'message': '共享资源未启用或中心未配置'}
     candidate = _normalize_series_candidate_identity(dict(candidate or {}))
     item_type = str(candidate.get('item_type') or '').strip()
+    should_register_completed = item_type == 'Season' and _candidate_is_completed_season(
+        candidate, source_provider=source_provider, files=None
+    )
+
     files = shared_share_db.collect_files_for_candidate(candidate)
     if not files and item_type in ('Season', 'Episode'):
-        repair_result = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
+        # 这里的 repair_candidate_fingerprints 会顺手调用季一致性检查。
+        # 连载季只需要补齐指纹/RAW 入口，不能在维护任务里刷“版本混杂/禁止季包分享”日志；
+        # 只有真正要登记 completed_season 的完结季，才允许输出一致性校验日志。
+        repair_result = shared_share_db.repair_candidate_fingerprints(
+            candidate,
+            log_result=bool(should_register_completed),
+        )
         files = shared_share_db.collect_files_for_candidate(candidate)
     else:
         repair_result = {}
@@ -2030,7 +2040,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         }
     animation_meta = _animation_meta_for_candidate(candidate)
     results = []
-    should_register_completed = item_type == 'Season' and _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
+    # should_register_completed 已在 collect/repair 前确定。连载季永远只登记分集进公共追更池，
+    # 不触发 completed_season 一致性校验。
     register_episode_pool = not (item_type == 'Season' and should_register_completed)
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     if item_type == 'Movie':

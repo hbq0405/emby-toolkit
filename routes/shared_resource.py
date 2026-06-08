@@ -569,9 +569,23 @@ def api_manual_validate():
     前端仍沿用 /shares/manual-validate 这个路由名，但这里不再校验 115 分享码/提取码，
     只确认本地能定位到可秒传文件，并检查 RAW 媒体信息是否可用于中心展示/匹配。
     """
-    data = _request_json()
-    consistency = shared_share_db.repair_candidate_fingerprints(data, log_result=True)
+    data = shared_tasks._normalize_series_candidate_identity(_request_json())
+    item_type = str(data.get('item_type') or '').strip()
+    should_check_completed = item_type == 'Season' and shared_tasks._candidate_is_completed_season(
+        data, source_provider=data.get('source_provider') or 'manual_rapid', files=None
+    )
+
     files = shared_share_db.collect_files_for_candidate(data)
+    consistency = {}
+    if not files or should_check_completed:
+        # 连载季/单集只做静默指纹修复；只有完结季才展示一致性校验结果。
+        consistency = shared_share_db.repair_candidate_fingerprints(
+            data,
+            log_result=bool(should_check_completed),
+        )
+        files = shared_share_db.collect_files_for_candidate(data)
+    if not should_check_completed:
+        consistency = {}
     root = shared_share_db.candidate_root_from_files(files)
     missing_raw = []
     for f in files:
