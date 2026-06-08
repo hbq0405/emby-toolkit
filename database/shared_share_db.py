@@ -4,8 +4,9 @@ import json
 import re
 import hashlib
 import logging
+import time
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Callable
 
 from database.connection import get_db_connection
 
@@ -763,10 +764,7 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         for ep_row in ep_rows:
             files.extend(_files_for_media_row(ep_row))
         consistency = None
-        # 一键登记只负责枚举候选，不能在“启动扫描阶段”顺手做季级体检；
-        # 真正登记时 register_candidate_to_center/collect_files_for_candidate 会再做修复。
-        # 否则前端任务栏会长时间停在初始化，看起来像没反应。
-        if not files and ep_rows and not row.get('_skip_candidate_fingerprint_repair'):
+        if not files and ep_rows:
             consistency = repair_candidate_fingerprints({**row, 'parent_series_tmdb_id': tmdb_id, 'item_type': 'Season', 'season_number': season}, log_result=True)
             files = []
             for ep_row in _episode_rows(tmdb_id, season):
@@ -785,14 +783,6 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     if consistency and isinstance(consistency, dict) and consistency.get('message'):
         message = f"{message}；{consistency.get('message')}"
     in_library = bool(resolvable or row.get('in_library'))
-
-    file_sha1s = sorted({_norm_sha1(f.get('sha1')) for f in files if _norm_sha1(f.get('sha1'))})
-    episode_file_sha1s = []
-    for f in files:
-        sha1 = _norm_sha1(f.get('sha1'))
-        ep_no = _nullable_int(f.get('episode_number'))
-        if sha1:
-            episode_file_sha1s.append({'episode_number': ep_no, 'sha1': sha1})
 
     return {
         'tmdb_id': tmdb_id,
@@ -817,9 +807,6 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'root_name': root.get('root_name') or title,
         'root_is_dir': root.get('root_is_dir') is not False,
         'file_count': len(files),
-        'file_sha1s': file_sha1s,
-        'episode_file_sha1s': episode_file_sha1s,
-        'manifest_hash': manifest_hash(files) if files else '',
         'resolvable': resolvable,
         'message': message,
         'consistency': consistency or {},
@@ -951,16 +938,7 @@ _EFFECTIVE_SHARE_STATUSES = {'active', 'available', 'updating'}
 
 
 def _load_effective_local_share_index(limit: int = 500000) -> Dict[str, Any]:
-    """读取本机已经有效登记到中心的共享索引，用于一键登记增量过滤。
-
-    只把“仍有效”的 Rapid 源放进索引：
-    - status 为 active / available / updating；
-    - center_status 未 disabled；
-    - 已有 center_source_id，或中心状态为 reported。
-
-    这样 error / inconsistent / incomplete / disabled 不会被当成有效共享，
-    一键登记仍会尝试重新补齐。
-    """
+    """读取本机已经有效登记到中心的共享索引，用于一键登记增量过滤。"""
     try:
         limit = max(1, min(int(limit or 500000), 500000))
     except Exception:
@@ -972,7 +950,6 @@ def _load_effective_local_share_index(limit: int = 500000) -> Dict[str, Any]:
         'movie_sha1s': set(),
         'episode_identities': set(),
         'episode_sha1s': set(),
-        'season_episode_sha1s': {},
         'completed_seasons': {},
     }
     with get_db_connection() as conn:
@@ -985,8 +962,6 @@ def _load_effective_local_share_index(limit: int = 500000) -> Dict[str, Any]:
                     s.tmdb_id,
                     s.season_number,
                     s.episode_number AS source_episode_number,
-                    s.status,
-                    s.center_status,
                     s.center_source_id,
                     s.manifest_hash,
                     NULLIF(UPPER(COALESCE(s.sha1, '')), '') AS source_sha1,
@@ -1030,12 +1005,9 @@ def _load_effective_local_share_index(limit: int = 500000) -> Dict[str, Any]:
                 index['episode_identities'].add((tmdb_id, season, ep_no))
                 if sha1:
                     index['episode_sha1s'].add((tmdb_id, season, ep_no, sha1))
-                    index['season_episode_sha1s'].setdefault((tmdb_id, season), set()).add((ep_no, sha1))
         elif kind == 'completed_season':
             if season is not None:
-                key = (tmdb_id, season)
-                # 有 manifest_hash 时后续可做精确跳过；没有也表示本季已有有效完结源。
-                index['completed_seasons'][key] = row.get('manifest_hash') or True
+                index['completed_seasons'][(tmdb_id, season)] = row.get('manifest_hash') or True
     index['source_count'] = len(index['source_ids'])
     return index
 
@@ -1116,49 +1088,6 @@ def _media_row_already_registered(row: Dict[str, Any], index: Dict[str, Any]) ->
     return False
 
 
-def _candidate_already_registered(candidate: Dict[str, Any], index: Dict[str, Any]) -> bool:
-    if not candidate or not index:
-        return False
-    item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
-    tmdb_id = str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or '').strip()
-    season = _nullable_int(candidate.get('season_number'))
-    episode = _nullable_int(candidate.get('episode_number'))
-    sha1s = [_norm_sha1(x) for x in (candidate.get('file_sha1s') or []) if _norm_sha1(x)]
-
-    if item_type == 'Movie':
-        if sha1s:
-            return all((tmdb_id, sha1) in index.get('movie_sha1s', set()) for sha1 in sha1s)
-        return tmdb_id in index.get('movie_identities', set())
-
-    if item_type == 'Episode':
-        if season is None or episode is None:
-            return False
-        if sha1s:
-            return all((tmdb_id, season, episode, sha1) in index.get('episode_sha1s', set()) for sha1 in sha1s)
-        return (tmdb_id, season, episode) in index.get('episode_identities', set())
-
-    if item_type == 'Season':
-        if season is None:
-            return False
-        completed_manifest = index.get('completed_seasons', {}).get((tmdb_id, season))
-        cand_manifest = str(candidate.get('manifest_hash') or '').strip()
-        if completed_manifest and (not cand_manifest or completed_manifest is True or completed_manifest == cand_manifest):
-            return True
-        episode_items = candidate.get('episode_file_sha1s') or []
-        checked = 0
-        for item in episode_items:
-            ep_no = _nullable_int((item or {}).get('episode_number'))
-            sha1 = _norm_sha1((item or {}).get('sha1'))
-            if ep_no is None or not sha1:
-                continue
-            checked += 1
-            if (tmdb_id, season, ep_no, sha1) not in index.get('episode_sha1s', set()):
-                return False
-        return checked > 0
-
-    return False
-
-
 def _existing_share_index_summary(index: Dict[str, Any]) -> Dict[str, int]:
     index = index or {}
     return {
@@ -1168,37 +1097,143 @@ def _existing_share_index_summary(index: Dict[str, Any]) -> Dict[str, int]:
         'completed_seasons': len(index.get('completed_seasons', {}) or {}),
     }
 
-def all_library_share_candidates(limit: int = 100000, *, exclude_existing: bool = True, return_stats: bool = False):
+
+def _emit_scan_progress(progress_callback: Callable[[int, str], None] = None, progress: int = -1, message: str = '') -> None:
+    """一键登记扫描阶段的轻量进度回调。这里不能依赖 task_manager，避免数据库层反向导入任务层。"""
+    if not callable(progress_callback):
+        return
+    try:
+        progress_callback(int(progress), str(message or ''))
+    except Exception:
+        pass
+
+
+def _build_lightweight_share_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
+    """全库扫描专用：只构建登记身份，不在扫描阶段解析 115 文件。"""
+    row = dict(row or {})
+    item_type = str(row.get('item_type') or '').strip()
+    season = row.get('season_number')
+    episode = row.get('episode_number')
+    if item_type in ('Season', 'Episode'):
+        tmdb_id = str(row.get('parent_series_tmdb_id') or row.get('tmdb_id') or '')
+    else:
+        tmdb_id = str(row.get('tmdb_id') or '')
+
+    share_item_type = item_type
+    if item_type == 'Movie':
+        share_type = 'movie_file'
+    elif item_type == 'Episode':
+        share_type = 'episode_file'
+    elif item_type == 'Season':
+        share_type = 'season_pack'
+        share_item_type = 'Season'
+    else:
+        share_type = 'series_pack'
+
+    title = _candidate_title(row, share_item_type, tmdb_id, season, episode)
+    sha1s = _row_sha1s(row)
+    episode_file_sha1s = []
+    if item_type == 'Episode':
+        ep_no = _nullable_int(episode)
+        for sha1 in sha1s:
+            episode_file_sha1s.append({'episode_number': ep_no, 'sha1': sha1})
+
+    return {
+        'tmdb_id': tmdb_id,
+        'share_tmdb_id': tmdb_id,
+        'item_type': item_type,
+        'share_item_type': share_item_type,
+        'parent_series_tmdb_id': row.get('parent_series_tmdb_id') or (tmdb_id if share_item_type in ('Season', 'Episode') else ''),
+        'season_number': season,
+        'episode_number': episode,
+        'title': title,
+        'standard_title': title,
+        'display_title': title,
+        'release_year': row.get('release_year') or row.get('series_release_year'),
+        'watching_status': row.get('watching_status') or '',
+        'season_status': row.get('watching_status') or '',
+        'total_episodes': _safe_int(row.get('total_episodes'), 0) or None,
+        'expected_episode_count': _safe_int(row.get('total_episodes'), 0) or None,
+        'in_library': bool(row.get('in_library')),
+        'source_in_library': bool(row.get('in_library')),
+        'share_type': share_type,
+        'root_fid': '',
+        'root_name': title,
+        'root_is_dir': item_type == 'Season',
+        'file_count': 0,
+        'file_sha1s': sha1s,
+        'episode_file_sha1s': episode_file_sha1s,
+        'manifest_hash': '',
+        'resolvable': True,
+        'message': '已加入登记队列，登记时再定位本地视频文件',
+        'consistency': {},
+        'source_provider': 'manual_rapid',
+        'raw_json': row,
+        '_lazy_collect_files': True,
+    }
+
+
+def all_library_share_candidates(
+    limit: int = 100000,
+    *,
+    exclude_existing: bool = True,
+    return_stats: bool = False,
+    progress_callback: Callable[[int, str], None] = None,
+):
     """一键登记媒体库候选。
 
-    默认开启增量过滤：先拉取本地 shared_rapid_sources / shared_rapid_source_files
-    中已经有效登记到中心的共享索引，再跳过对应电影、分集、季包。
-    中心端仍会最终去重，但这里先过滤可避免本机每次都把全库重新上传 RAW / 重新登记一遍。
+    扫描阶段只做“身份枚举 + 增量过滤”，不再解析每个候选的 115 文件；
+    真正登记时 register_candidate_to_center 会重新 collect_files_for_candidate。
     """
-    rows = _media_rows_for_search('', limit)
+    timings: Dict[str, float] = {}
+    t0 = time.perf_counter()
+
+    _emit_scan_progress(progress_callback, 1, '正在读取本机已有有效共享索引...')
     existing_index = _load_effective_local_share_index() if exclude_existing else {}
+    timings['load_existing_index_sec'] = round(time.perf_counter() - t0, 3)
+    existing_summary = _existing_share_index_summary(existing_index)
+
+    t_media = time.perf_counter()
+    _emit_scan_progress(
+        progress_callback,
+        2,
+        f"已有有效共享：资源 {existing_summary.get('source_count', 0)}，电影 {existing_summary.get('movie_files', 0)}，分集 {existing_summary.get('episode_files', 0)}，完结季 {existing_summary.get('completed_seasons', 0)}。正在读取媒体库候选..."
+    )
+    rows = _media_rows_for_search('', limit)
+    timings['load_media_rows_sec'] = round(time.perf_counter() - t_media, 3)
+
     result = []
     seen = set()
     skipped_existing = 0
     skipped_duplicate = 0
+    scanned = len(rows)
+    t_filter = time.perf_counter()
 
-    for row in rows:
+    _emit_scan_progress(progress_callback, 3, f'已读取媒体候选 {scanned} 个，正在做增量排除...')
+
+    for idx, row in enumerate(rows, 1):
         item_type = str(row.get('item_type') or '')
+        if idx == 1 or idx % 50 == 0 or idx == scanned:
+            progress = 3 + int((idx / max(scanned, 1)) * 7)
+            _emit_scan_progress(
+                progress_callback,
+                min(10, progress),
+                f'正在筛选媒体候选 {idx}/{scanned}，已排除有效共享 {skipped_existing}，待登记 {len(result)}...'
+            )
+
         if exclude_existing and _media_row_already_registered(row, existing_index):
             skipped_existing += 1
             continue
 
         if item_type == 'Movie':
-            cand = build_shareable_candidate(row)
+            cand = _build_lightweight_share_candidate(row)
             key = ('Movie', cand.get('tmdb_id'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Episode':
-            # 追更池按分集共享，谁先有谁服务。
-            cand = build_shareable_candidate(row)
+            cand = _build_lightweight_share_candidate(row)
             key = ('Episode', cand.get('tmdb_id'), cand.get('season_number'), cand.get('episode_number'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Season':
-            # 全库枚举阶段禁止触发季级体检，避免任务启动后长时间无进度；登记阶段会再补。
-            cand = build_shareable_candidate({**row, '_skip_candidate_fingerprint_repair': True})
-            key = ('Season', cand.get('tmdb_id'), cand.get('season_number'), cand.get('manifest_hash') or tuple(cand.get('file_sha1s') or []))
+            cand = _build_lightweight_share_candidate(row)
+            key = ('Season', cand.get('tmdb_id'), cand.get('season_number'))
         else:
             continue
 
@@ -1206,20 +1241,21 @@ def all_library_share_candidates(limit: int = 100000, *, exclude_existing: bool 
             skipped_duplicate += 1
             continue
         seen.add(key)
-
-        if exclude_existing and _candidate_already_registered(cand, existing_index):
-            skipped_existing += 1
-            continue
         result.append(cand)
+
+    timings['filter_candidates_sec'] = round(time.perf_counter() - t_filter, 3)
+    timings['total_scan_sec'] = round(time.perf_counter() - t0, 3)
+    _emit_scan_progress(progress_callback, 10, f'候选扫描完成：扫描 {scanned}，排除有效共享 {skipped_existing}，重复 {skipped_duplicate}，待登记 {len(result)}。')
 
     if return_stats:
         return {
             'items': result,
-            'scanned': len(rows),
+            'scanned': scanned,
             'total': len(result),
             'skipped_existing': skipped_existing,
             'skipped_duplicate': skipped_duplicate,
-            'existing_index': _existing_share_index_summary(existing_index),
+            'existing_index': existing_summary,
+            'timings': timings,
         }
     return result
 
