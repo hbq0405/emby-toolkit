@@ -574,6 +574,41 @@ def _format_shared_pool_cloud_title(item: dict) -> str:
     return base
 
 
+
+def _shared_pool_season_sort_number(item: dict) -> int:
+    """云资源搜索共享池排序：剧集按第 1/2/3 季自然顺序展示。"""
+    item = item if isinstance(item, dict) else {}
+    season = _safe_int(item.get("season_number"), default=0)
+    if season > 0:
+        return season
+    text = " ".join(str(item.get(k) or "") for k in ("title", "name", "file_name", "remark"))
+    for pattern in (r"第\s*(\d{1,3})\s*季", r"\bS(\d{1,3})\b", r"Season\s*(\d{1,3})"):
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return _safe_int(m.group(1), default=0)
+    return 0
+
+
+def _shared_pool_cloud_sort_key(index_and_item):
+    """共享池云搜索卡片排序。
+
+    中心资源库默认按最新共享排序没问题，但云搜索面向人工挑选；
+    搜同一部剧时应该按季号 1、2、3 展示，每季内再按版本序号展示。
+    """
+    index, item = index_and_item
+    item = item if isinstance(item, dict) else {}
+    media_type_rank = 0 if str(item.get("item_type") or item.get("display_type") or "").lower() in {"season", "pack", "series"} else 1
+    season = _shared_pool_season_sort_number(item)
+    version = _safe_int(item.get("_shared_pool_version_index"), default=0)
+    if version <= 0:
+        m = re.search(r"版本\s*(\d{1,3})\s*/", str(item.get("_shared_pool_version_label") or ""))
+        version = _safe_int(m.group(1), default=0) if m else 0
+    title = str(item.get("title") or item.get("name") or item.get("file_name") or "")
+    # 没有季号的电影/散资源保持原始顺序；有季号的剧集按季号升序。
+    season_rank = season if season > 0 else 9999
+    version_rank = version if version > 0 else 9999
+    return (media_type_rank, season_rank, version_rank, title, index)
+
 def _normalize_shared_pool_resource(resource):
     # 把共享中心资源库展示行转换成云资源搜索卡片。
     item = dict(resource or {})
@@ -686,13 +721,18 @@ def get_cloud_resources():
             client = SharedCenterClient()
             shared_item_type = 'Movie' if media_type == 'movie' else 'Pack'
             shared_status = 'alive,available' if media_type == 'movie' else 'alive,available,updating,inconsistent,incomplete'
+            # 剧集云搜索要先按季号重排，不能只取“最新共享”的前 N 条后再排序，
+            # 否则老一点的第 1 季可能被中心端分页截掉。这里多取一段，再本地按 1/2/3 季裁剪展示。
+            shared_fetch_limit = shared_limit
+            if media_type == 'tv' and season in (None, ''):
+                shared_fetch_limit = max(shared_limit, min(500, shared_limit * 5))
             shared_resp = client.list_display_sources(
                 q='' if tmdb_id else title,
                 status=shared_status,
                 item_type=shared_item_type,
                 tmdb_id=tmdb_id or '',
                 order_by='latest',
-                limit=shared_limit,
+                limit=shared_fetch_limit,
                 offset=0,
             )
             shared_items = [x for x in (shared_resp.get('items') or []) if isinstance(x, dict)]
@@ -703,6 +743,12 @@ def get_cloud_resources():
             shared_version_items = []
             for item in shared_items:
                 shared_version_items.extend(_shared_pool_version_rows(item))
+            shared_version_items = [
+                item for _, item in sorted(
+                    enumerate(shared_version_items),
+                    key=_shared_pool_cloud_sort_key,
+                )
+            ]
             shared_pool_total = len(shared_version_items)
             for item in shared_version_items[:shared_limit]:
                 # 中心旧数据可能没有 release_year，云搜索入口已带 year 时作为展示兜底。

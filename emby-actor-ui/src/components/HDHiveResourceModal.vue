@@ -37,14 +37,14 @@
             <n-button :type="sourceFilter === 'all' ? 'primary' : 'default'" @click="sourceFilter = 'all'">
               全部 {{ resources.length }}
             </n-button>
+            <n-button :type="sourceFilter === 'shared_pool' ? 'primary' : 'default'" @click="sourceFilter = 'shared_pool'">
+              共享池 {{ sharedPoolCount }}
+            </n-button>
             <n-button :type="sourceFilter === 'hdhive' ? 'primary' : 'default'" @click="sourceFilter = 'hdhive'">
               影巢 {{ hdhiveCount }}
             </n-button>
             <n-button :type="sourceFilter === 'channel' ? 'primary' : 'default'" @click="sourceFilter = 'channel'">
               频道 {{ channelCount }}
-            </n-button>
-            <n-button :type="sourceFilter === 'shared_pool' ? 'primary' : 'default'" @click="sourceFilter = 'shared_pool'">
-              共享池 {{ sharedPoolCount }}
             </n-button>
           </n-button-group>
         </div>
@@ -254,17 +254,60 @@ const hdhiveCount = computed(() => resources.value.filter((item) => isHDHive(ite
 const channelCount = computed(() => resources.value.filter((item) => isChannel(item)).length);
 const sharedPoolCount = computed(() => resources.value.filter((item) => isSharedPool(item)).length);
 
+const parseSeasonNumber = (resource) => {
+  const direct = Number(resource?.season_number || resource?._shared_pool_season_number || 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const text = `${resource?.title || ''} ${resource?.name || ''} ${resource?.remark || ''}`;
+  const matched = text.match(/第\s*(\d{1,3})\s*季/i) || text.match(/\bS(\d{1,3})\b/i) || text.match(/Season\s*(\d{1,3})/i);
+  const parsed = Number(matched?.[1] || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const parseSharedPoolVersionIndex = (resource) => {
+  const direct = Number(resource?._shared_pool_version_index || 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const matched = String(resource?._shared_pool_version_label || '').match(/版本\s*(\d{1,3})\s*\//);
+  const parsed = Number(matched?.[1] || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const sourceRank = (resource) => {
+  if (isSharedPool(resource)) return 0;
+  if (isHDHive(resource)) return 1;
+  if (isChannel(resource)) return 2;
+  return 9;
+};
+
+const sortCloudResources = (list) => {
+  return [...(list || [])]
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const rankDiff = sourceRank(a.item) - sourceRank(b.item);
+      if (rankDiff) return rankDiff;
+      if (isSharedPool(a.item) && isSharedPool(b.item)) {
+        const seasonA = parseSeasonNumber(a.item) || 9999;
+        const seasonB = parseSeasonNumber(b.item) || 9999;
+        if (seasonA !== seasonB) return seasonA - seasonB;
+        const versionA = parseSharedPoolVersionIndex(a.item) || 9999;
+        const versionB = parseSharedPoolVersionIndex(b.item) || 9999;
+        if (versionA !== versionB) return versionA - versionB;
+      }
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+};
+
 const displayResources = computed(() => {
   if (sourceFilter.value === 'hdhive') {
-    return resources.value.filter((item) => isHDHive(item));
+    return sortCloudResources(resources.value.filter((item) => isHDHive(item)));
   }
   if (sourceFilter.value === 'channel') {
-    return resources.value.filter((item) => isChannel(item));
+    return sortCloudResources(resources.value.filter((item) => isChannel(item)));
   }
   if (sourceFilter.value === 'shared_pool') {
-    return resources.value.filter((item) => isSharedPool(item));
+    return sortCloudResources(resources.value.filter((item) => isSharedPool(item)));
   }
-  return resources.value;
+  return sortCloudResources(resources.value);
 });
 
 const warningMessages = computed(() => stats.value?.warnings || []);
