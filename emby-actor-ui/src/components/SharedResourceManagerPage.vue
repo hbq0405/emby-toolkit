@@ -603,6 +603,24 @@ const shareRemarkNode = (row) => {
   return h(NTag, { type, size: 'small', round: true }, { default: () => source });
 };
 const isAutoShareRow = (row) => shareSourceText(row) === '自动共享';
+const normalizedShareStatuses = (row) => [
+  row?.status,
+  row?.review_status,
+  row?.center_status,
+].map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
+const shareInactiveStatuses = new Set(['disabled', 'cancelled', 'canceled', 'deleted']);
+const shareProblemStatuses = new Set(['failed', 'error', 'dead', 'expired', 'rejected', 'raw_missing', 'inconsistent', 'incomplete']);
+const shareUsableStatuses = new Set(['active', 'available', 'alive', 'reported', 'partial', 'usable']);
+const isInactiveShareRow = (row) => normalizedShareStatuses(row).some(v => shareInactiveStatuses.has(v));
+const isProblemShareRow = (row) => normalizedShareStatuses(row).some(v => shareProblemStatuses.has(v));
+const isEffectiveShareRow = (row) => {
+  const statuses = normalizedShareStatuses(row);
+  if (isInactiveShareRow(row) || isProblemShareRow(row)) return false;
+  return statuses.some(v => shareUsableStatuses.has(v));
+};
+const deleteShareDisabledTitle = (row) => isEffectiveShareRow(row)
+  ? '有效共享不能直接删除，请先停用，停用成功后再删除本地记录'
+  : '删除本地共享记录';
 
 const statusMap = {
   transferring: { text: '秒传中', type: 'warning' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
@@ -792,7 +810,8 @@ const shareColumns = [
       size: 'small',
       type: 'error',
       secondary: true,
-      title: '删除本地共享记录；有效共享会先同步中心取消登记',
+      disabled: isEffectiveShareRow(row),
+      title: deleteShareDisabledTitle(row),
       onClick: () => deleteShare(row),
     }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '删除' }),
   ]}) },
@@ -2938,12 +2957,13 @@ const cancelShare = (row) => {
 
 
 const deleteShare = (row) => {
+  if (isEffectiveShareRow(row)) {
+    return message.warning('有效共享不能直接删除，请先停用，停用成功后再删除本地记录');
+  }
   const ids = Array.isArray(row.source_ids) ? row.source_ids.filter(Boolean) : [];
   const isBatch = ids.length > 1;
   const title = row.title || row.root_name || row.file_name || '该资源';
-  const status = String(row.status || row.review_status || '').toLowerCase();
-  const centerStatus = String(row.center_status || '').toLowerCase();
-  const alreadyDisabled = status === 'disabled' || status === 'cancelled' || centerStatus === 'disabled' || centerStatus === 'cancelled';
+  const alreadyDisabled = isInactiveShareRow(row);
   const countText = isBatch ? `该聚合项下 ${ids.length} 个本机源` : '该本机源';
   dialog.warning({
     title: '删除共享源',
