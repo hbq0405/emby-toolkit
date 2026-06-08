@@ -1,5 +1,6 @@
 import importlib
 import sys
+import threading
 import types
 import unittest
 from unittest import mock
@@ -71,6 +72,12 @@ def _install_test_stubs():
     github_mod.get_github_releases = lambda *args, **kwargs: [{"version": "v10.2.4"}]
     sys.modules["handler.github"] = github_mod
 
+    telegram_mod = types.ModuleType("handler.telegram")
+    telegram_mod.send_telegram_message = lambda *args, **kwargs: None
+    telegram_mod.escape_markdown = lambda text: text
+    telegram_mod.threading = threading
+    sys.modules["handler.telegram"] = telegram_mod
+
     docker_mod = types.ModuleType("docker")
     docker_mod.from_env = lambda: None
     docker_mod.errors = types.SimpleNamespace(NotFound=Exception, ImageNotFound=Exception)
@@ -104,6 +111,7 @@ def _install_test_stubs():
 
 
 _install_test_stubs()
+sys.modules.pop("handler.telegram", None)
 telegram = importlib.import_module("handler.telegram")
 system_update = importlib.import_module("tasks.system_update")
 
@@ -285,14 +293,15 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
             with mock.patch.object(system_update, "resolve_update_target", return_value={"container_name": "etk-prod", "docker_image_name": "hbq0405/emby-toolkit:v10.2.4"}):
                 with mock.patch.object(system_update, "resolve_update_strategy", return_value={"strategy": "docker_helper", "helper_image": "hbq0405/emby-toolkit:latest"}):
                     with mock.patch.object(telegram, "send_telegram_message") as send_mock:
-                        with mock.patch("handler.telegram.threading.Thread") as thread_mock:
+                        with mock.patch.object(telegram.threading, "Thread") as thread_mock:
                             thread_mock.return_value.start.side_effect = lambda: thread_mock.call_args.kwargs["target"]()
 
                             registry = {
                                 "system-auto-update": (fake_update_task, "系统自动更新", "media")
                             }
-                            with mock.patch("tasks.core.get_task_registry", return_value=registry):
-                                telegram._execute_task_from_tg("10001", "system-auto-update")
+                            with mock.patch.dict(sys.modules, {"tasks.system_update": system_update}):
+                                with mock.patch("tasks.core.get_task_registry", return_value=registry):
+                                    telegram._execute_task_from_tg("10001", "system-auto-update")
 
         self.assertEqual(send_mock.call_count, 2)
         start_message = send_mock.call_args_list[0].args[1]

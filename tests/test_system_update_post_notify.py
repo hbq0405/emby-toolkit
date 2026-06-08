@@ -6,7 +6,18 @@ from unittest import mock
 
 
 def _install_stubs():
-    constants_mod = sys.modules.get("constants") or types.ModuleType("constants")
+    for module_name in [
+        "config_manager",
+        "constants",
+        "database",
+        "database.settings_db",
+        "database.user_db",
+        "handler.telegram",
+        "tasks.system_update",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    constants_mod = types.ModuleType("constants")
     constants_mod.CONFIG_FILE_NAME = "config.ini"
     constants_mod.CONFIG_OPTION_DB_HOST = "db_host"
     constants_mod.CONFIG_OPTION_DB_PORT = "db_port"
@@ -144,27 +155,27 @@ def _install_stubs():
     constants_mod.ENV_VAR_TMDB_API_BASE_URL = "TMDB_API_BASE_URL"
     sys.modules["constants"] = constants_mod
 
-    settings_db_mod = sys.modules.get("database.settings_db") or types.ModuleType("database.settings_db")
+    settings_db_mod = types.ModuleType("database.settings_db")
     settings_db_mod.get_setting = lambda key: {}
     settings_db_mod.save_setting = lambda key, value: None
     settings_db_mod.delete_setting = lambda key: True
 
-    user_db_mod = sys.modules.get("database.user_db") or types.ModuleType("database.user_db")
+    user_db_mod = types.ModuleType("database.user_db")
     user_db_mod.get_admin_telegram_chat_ids = lambda: ["10001"]
 
-    database_pkg = sys.modules.get("database") or types.ModuleType("database")
+    database_pkg = types.ModuleType("database")
     database_pkg.settings_db = settings_db_mod
     database_pkg.user_db = user_db_mod
     sys.modules["database"] = database_pkg
     sys.modules["database.settings_db"] = settings_db_mod
     sys.modules["database.user_db"] = user_db_mod
 
-    handler_telegram_mod = sys.modules.get("handler.telegram") or types.ModuleType("handler.telegram")
+    handler_telegram_mod = types.ModuleType("handler.telegram")
     handler_telegram_mod.send_telegram_message = lambda *args, **kwargs: None
     handler_telegram_mod.escape_markdown = lambda text: text
     sys.modules["handler.telegram"] = handler_telegram_mod
 
-    tasks_system_update = sys.modules.get("tasks.system_update") or types.ModuleType("tasks.system_update")
+    tasks_system_update = types.ModuleType("tasks.system_update")
     tasks_system_update.consume_post_update_status = lambda: None
     tasks_system_update.peek_post_update_status = lambda: None
     tasks_system_update.clear_post_update_status = lambda: True
