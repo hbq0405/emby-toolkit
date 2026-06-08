@@ -891,9 +891,20 @@ def collect_files_for_candidate(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     season = _nullable_int(data.get('season_number'))
     episode = _nullable_int(data.get('episode_number'))
     files = []
-    if item_type in ('Season', 'Episode') and not data.get('_raw_repair_only') and not data.get('_skip_fingerprint_repair'):
-        # 普通登记可复用季级指纹体检补齐旧库；RAW 修复/重新登记/预校验不能触发一致性校验，
-        # 否则点一次“重新登记”会把连载季拉去做完结季体检。
+    # 只有“明确完结季”才允许走 helpers.check_season_consistency。
+    # 连载季 / 单集只做本地文件定位，不做季级一致性校验，避免维护任务或一键登记把连载季拖去体检。
+    watching_status = str(data.get('watching_status') or data.get('season_status') or '').strip().lower()
+    provider = str(data.get('source_provider') or data.get('_original_source_provider') or '').strip().lower()
+    is_completed_season = (
+        item_type == 'Season'
+        and (
+            bool(data.get('_force_completed_season'))
+            or watching_status in {'Completed', 'complete', 'ended', 'end', '完结', '已完结'}
+            or provider == 'rapid_completed_season'
+        )
+    )
+    if is_completed_season and not data.get('_raw_repair_only') and not data.get('_skip_fingerprint_repair'):
+        # 完结季必须严格体检；这里只负责补齐/校验所需指纹，是否允许登记由任务层统一拦截。
         repair_candidate_fingerprints(data, log_result=True)
 
     if item_type == 'Movie':
