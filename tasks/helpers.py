@@ -1139,9 +1139,11 @@ def check_season_consistency(
 ) -> Dict[str, Any]:
     """统一检查指定季本地文件是否满足“无需洗版/可分享季包”的一致性条件。
 
-    规则继承自 watchlist_processor 原实现：
+    规则继承自 watchlist_processor 原实现并收紧完结季质量门禁：
     1. 本地在库集数必须不少于 expected_episode_count（传 0 则不检查集数）。
-    2. 每集主资产的分辨率、制作组、编码、HDR/杜比版本必须完全统一。
+    2. 分辨率、编码是硬必填，且整季必须完全一致。
+    3. HDR/杜比特效、制作组是可选维度；整季都没有则不参与校验，
+       但只要任一集标注了该维度，就要求每一集都标注且完全一致。
 
     repair_missing_fingerprints=True 时，会在当前季范围内尝试补齐缺失的 115 PC/SHA1，
     不调用 media.task_repair_p115_fingerprints，也不会扫描全库。调用方传入 processor 时，
@@ -1323,6 +1325,10 @@ def check_season_consistency(
         signatures = []
         invalid = []
 
+        def _known_signature_value(value: Any) -> str:
+            text = str(value or '').strip()
+            return '' if not text or text.lower() == 'unknown' or text == '未知' else text
+
         for row in rows or []:
             assets = _season_consistency_asset_items(row.get('asset_details_json'))
             ep_no = row.get('episode_number')
@@ -1343,20 +1349,24 @@ def check_season_consistency(
             group_name = _season_consistency_release_group(main_asset)
             effect_key = _season_consistency_effect_key(main_asset)
 
-            if effect_key == 'Unknown':
+            if not _known_signature_value(resolution) or not _known_signature_value(codec):
                 invalid.append({
                     'tmdb_id': row.get('tmdb_id'),
                     'season_number': row.get('season_number'),
                     'episode_number': ep_no,
                     'title': title,
-                    'reason': '无法解析 HDR/杜比版本信息',
+                    'reason': f"缺少必填媒体参数：{'分辨率' if not _known_signature_value(resolution) else ''}{'、' if (not _known_signature_value(resolution) and not _known_signature_value(codec)) else ''}{'编码' if not _known_signature_value(codec) else ''}",
                 })
                 continue
 
             resolutions.add(resolution)
             codecs.add(codec)
-            groups.add(group_name)
-            effects.add(effect_key)
+            # HDR/杜比、制作组不是必填：全季都没有时不参与一致性校验；
+            # 但只要任一集存在，就要求所有集都有且值一致。
+            if _known_signature_value(group_name):
+                groups.add(group_name)
+            if _known_signature_value(effect_key):
+                effects.add(effect_key)
             signatures.append({
                 'tmdb_id': row.get('tmdb_id'),
                 'season_number': row.get('season_number'),
@@ -1366,6 +1376,8 @@ def check_season_consistency(
                 'release_group': group_name,
                 'codec': codec,
                 'effect': effect_key,
+                'has_release_group': bool(_known_signature_value(group_name)),
+                'has_effect': bool(_known_signature_value(effect_key)),
                 'file_name': main_asset.get('path') or main_asset.get('file_name') or main_asset.get('name') or title,
             })
 
@@ -1393,7 +1405,18 @@ def check_season_consistency(
                 'series_name': series_name,
             }
 
-        is_consistent = bool(signatures) and len(resolutions) == 1 and len(groups) == 1 and len(codecs) == 1 and len(effects) == 1
+        effect_required = bool(effects)
+        group_required = bool(groups)
+        missing_effect = [s for s in signatures if effect_required and not s.get('has_effect')]
+        missing_group = [s for s in signatures if group_required and not s.get('has_release_group')]
+
+        is_consistent = (
+            bool(signatures)
+            and len(resolutions) == 1
+            and len(codecs) == 1
+            and (not effect_required or (not missing_effect and len(effects) == 1))
+            and (not group_required or (not missing_group and len(groups) == 1))
+        )
         result = {
             'ok': is_consistent,
             'reason': 'ok' if is_consistent else 'season_asset_inconsistent',
@@ -1405,6 +1428,10 @@ def check_season_consistency(
             'release_groups': sorted(groups),
             'codecs': sorted(codecs),
             'effects': sorted(effects),
+            'effect_required': effect_required,
+            'release_group_required': group_required,
+            'missing_effect': missing_effect[:20],
+            'missing_release_group': missing_group[:20],
             'signatures': signatures,
             'fingerprint_repair': fingerprint_repair_stats,
             'series_name': series_name,
@@ -1412,22 +1439,29 @@ def check_season_consistency(
 
         if is_consistent:
             res = next(iter(resolutions))
-            grp = next(iter(groups))
             codec = next(iter(codecs))
-            effect = next(iter(effects))
-            result['message'] = f"季包一致性校验通过：{_season_label_text()} [{res} / {grp} / {codec} / {effect}]。"
+            grp = next(iter(groups)) if groups else '未标注'
+            effect = next(iter(effects)) if effects else '未标注'
+            result['message'] = f"季包一致性校验通过：{_season_label_text()} [{res} / {codec} / 制作组:{grp} / HDR/杜比:{effect}]。"
             if log_result:
-                logger.info(f"  ➜ [一致性检查] {_season_label_text()} 完美达标: [{res} / {grp} / {codec} / {effect}]，跳过洗版/允许季包分享。")
+                logger.info(f"  ➜ [一致性检查] {_season_label_text()} 完美达标: [{res} / {codec} / 制作组:{grp} / HDR/杜比:{effect}]，跳过洗版/允许季包分享。")
             return result
 
-        result['message'] = (
-            f"季包一致性校验失败：{_season_label_text()}版本混杂；"
-            f"分辨率{sorted(resolutions)}，制作组{sorted(groups)}，编码{sorted(codecs)}，HDR/杜比{sorted(effects)}"
-        )
+        detail_parts = [f"分辨率{sorted(resolutions)}", f"编码{sorted(codecs)}"]
+        if group_required:
+            detail_parts.append(f"制作组{sorted(groups)}")
+            if missing_group:
+                detail_parts.append(f"缺制作组标识 {len(missing_group)} 集")
+        if effect_required:
+            detail_parts.append(f"HDR/杜比{sorted(effects)}")
+            if missing_effect:
+                detail_parts.append(f"缺HDR/杜比标识 {len(missing_effect)} 集")
+        result['message'] = f"季包一致性校验失败：{_season_label_text()}版本混杂；" + '，'.join(detail_parts)
         if log_result:
             logger.info(
                 f"  ➜ [一致性检查] {_season_label_text()} 版本混杂，需要洗版/禁止季包分享。"
-                f"分布: 分辨率{resolutions}, 制作组{groups}, 编码{codecs}, HDR/杜比{effects}"
+                f"分布: 分辨率{resolutions}, 编码{codecs}, 制作组{groups}, HDR/杜比{effects}, "
+                f"缺制作组={len(missing_group)}, 缺HDR/杜比={len(missing_effect)}"
             )
         return result
 
