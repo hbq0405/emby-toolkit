@@ -1241,6 +1241,8 @@ def _tg_resource_resolution(resource: dict) -> str:
 
 
 def _tg_resource_pan_text(resource: dict) -> str:
+    if resource.get("_tg_source") == "shared_pool" or resource.get("_cloud_source") == "shared_pool":
+        return "🟢 共享池"
     if resource.get("_tg_source") == "channel" or resource.get("source") == "channel":
         return "📡 频道"
     pan_type = str(resource.get("pan_type") or "115").upper()
@@ -1248,6 +1250,8 @@ def _tg_resource_pan_text(resource: dict) -> str:
 
 
 def _tg_resource_points_text(resource: dict) -> str:
+    if resource.get("_tg_source") == "shared_pool" or resource.get("_cloud_source") == "shared_pool":
+        return "✅ 已持有" if bool(resource.get("already_owned")) else "⚡ 可秒传"
     if resource.get("_tg_source") == "channel" or resource.get("source") == "channel":
         return "🆓 可转存"
     points = resource.get("unlock_points")
@@ -1286,6 +1290,288 @@ def _tg_resource_quality_text(resource: dict, limit: int = 96) -> str:
     return ""
 
 
+
+
+def _tg_sp_int(value, default=0):
+    try:
+        if value in (None, ''):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _tg_sp_json(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            obj = json.loads(value)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _tg_sp_bool(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {'1', 'true', 'yes', 'y', 'on', '是', '启用', '开启'}:
+        return True
+    if text in {'0', 'false', 'no', 'n', 'off', '否', '停用', '关闭'}:
+        return False
+    return None
+
+
+def _tg_sp_size_text(value) -> str:
+    try:
+        size = float(value or 0)
+    except Exception:
+        size = 0
+    if size <= 0:
+        return ''
+    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    idx = 0
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024.0
+        idx += 1
+    if units[idx] in {'GB', 'TB'}:
+        return f'{size:.2f} {units[idx]}' if size < 100 else f'{size:.0f} {units[idx]}'
+    if units[idx] == 'MB':
+        return f'{size:.0f} MB'
+    return f'{int(size)} {units[idx]}'
+
+
+def _tg_sp_first(*values) -> str:
+    for value in values:
+        if value not in (None, '', [], {}):
+            return str(value).strip()
+    return ''
+
+
+def _tg_sp_tag_containers(item: dict) -> list[dict]:
+    item = item if isinstance(item, dict) else {}
+    out = [item]
+    for key in (
+        'version_summary', 'summary_json', 'media_signature_json', 'raw_summary_json', 'rapid_meta_json',
+        'clean_version_meta_json', 'short_drama_meta_json', 'animation_meta_json', 'completed_certified_meta_json',
+    ):
+        obj = _tg_sp_json(item.get(key))
+        if obj:
+            out.append(obj)
+    return out
+
+
+def _tg_sp_flag(item: dict, flag_key: str, meta_key: str = '') -> bool:
+    for part in _tg_sp_tag_containers(item):
+        state = _tg_sp_bool(part.get(flag_key)) if flag_key in part else None
+        if state is True:
+            return True
+        meta = _tg_sp_json(part.get(meta_key)) if meta_key else {}
+        state = _tg_sp_bool(meta.get(flag_key)) if flag_key in meta else None
+        if state is True:
+            return True
+    return False
+
+
+def _tg_sp_tags(item: dict) -> list[str]:
+    tags = []
+    def add(label):
+        label = str(label or '').strip()
+        if label and label not in tags:
+            tags.append(label)
+    if _tg_sp_flag(item, 'is_clean_version', 'clean_version_meta_json'):
+        add('纯净版')
+    if _tg_sp_flag(item, 'is_short_drama', 'short_drama_meta_json'):
+        add('短剧')
+    if _tg_sp_flag(item, 'is_animation', 'animation_meta_json'):
+        add('动漫')
+    skip = {'已完结', '完结', '已认证完结', '完结认证', '连载中', '可用'}
+    for part in _tg_sp_tag_containers(item):
+        raw = part.get('tag_labels')
+        if isinstance(raw, str):
+            raw = [x.strip() for x in re.split(r'[,，/|]', raw) if x.strip()]
+        if isinstance(raw, list):
+            for label in raw:
+                label = str(label or '').strip()
+                if label and label not in skip:
+                    add(label)
+    return tags
+
+
+def _tg_sp_versions(resource: dict) -> list[dict]:
+    parent = dict(resource or {})
+    versions = parent.get('versions')
+    versions = [dict(x) for x in versions if isinstance(x, dict)] if isinstance(versions, list) else []
+    if not versions:
+        one = dict(parent)
+        one.pop('versions', None)
+        return [one]
+    rows = []
+    total = len(versions)
+    parent_source_id = parent.get('source_id') or parent.get('source_ref_id') or parent.get('hub_id')
+    inherit_keys = (
+        'progress_current', 'progress_total', 'progress_text', 'season_number', 'tmdb_id', 'release_year',
+        'has_children', 'children_loaded', 'lazy_children_kind', 'children_count', 'child_count', 'pack_item_count',
+        'is_completed_certified', 'is_completed', 'is_ongoing_hub', 'is_clean_version', 'clean_version_meta_json',
+        'is_short_drama', 'short_drama_meta_json', 'is_animation', 'animation_meta_json', 'tag_labels',
+    )
+    for idx, version in enumerate(versions, 1):
+        row = dict(parent)
+        row.update(version)
+        row.pop('versions', None)
+        if not version.get('children'):
+            row.pop('children', None)
+        if not version.get('pack_items'):
+            row.pop('pack_items', None)
+        row['_shared_pool_parent_source_id'] = parent_source_id
+        row['_shared_pool_version_index'] = idx
+        row['_shared_pool_version_count'] = total
+        for key in inherit_keys:
+            if row.get(key) in (None, '', [], {}) and parent.get(key) not in (None, '', [], {}):
+                row[key] = parent.get(key)
+        rows.append(row)
+    return rows
+
+
+def _tg_sp_year(*values) -> str:
+    for value in values:
+        m = re.search(r'(19|20)\d{2}', str(value or ''))
+        if m:
+            return m.group(0)
+    return ''
+
+
+def _tg_sp_title(item: dict) -> str:
+    item = item if isinstance(item, dict) else {}
+    raw_title = str(item.get('title') or item.get('name') or item.get('file_name') or '共享池资源').strip()
+    year = _tg_sp_year(item.get('release_year'), item.get('year'), item.get('release_date'), item.get('first_air_date'))
+    season = _tg_sp_int(item.get('season_number'), 0)
+    display_kind = str(item.get('display_type') or item.get('item_type') or item.get('source_kind') or '').lower()
+    source_kind = str(item.get('source_kind') or '').lower()
+    is_pack = season > 0 and (display_kind in {'pack', 'season', 'series'} or source_kind in {'season_hub', 'completed_season'} or item.get('progress_text'))
+    base = raw_title
+    if is_pack:
+        base = re.sub(r'\s*(?:第\s*\d+\s*季|S\d{1,3}|Season\s*\d{1,3})\s*$', '', base, flags=re.I).strip() or raw_title
+    if year and not re.search(rf'[（(]\s*{re.escape(year)}\s*[）)]', base):
+        base = f'{base}（{year}）'
+    if is_pack and not re.search(r'第\s*\d+\s*季', base):
+        base = f'{base}第 {season} 季'
+    return base
+
+
+def _tg_sp_season(item: dict) -> int:
+    item = item if isinstance(item, dict) else {}
+    season = _tg_sp_int(item.get('season_number'), 0)
+    if season > 0:
+        return season
+    text = ' '.join(str(item.get(k) or '') for k in ('title', 'name', 'file_name', 'remark'))
+    for pattern in (r'第\s*(\d{1,3})\s*季', r'\bS(\d{1,3})\b', r'Season\s*(\d{1,3})'):
+        m = re.search(pattern, text, re.I)
+        if m:
+            return _tg_sp_int(m.group(1), 0)
+    return 0
+
+
+def _tg_sp_sort_key(index_and_item):
+    index, item = index_and_item
+    kind_text = str((item or {}).get('item_type') or (item or {}).get('display_type') or (item or {}).get('source_kind') or '').lower()
+    media_rank = 0 if kind_text in {'season', 'pack', 'series', 'season_hub', 'completed_season'} else 1
+    season = _tg_sp_season(item)
+    version = _tg_sp_int((item or {}).get('_shared_pool_version_index'), 0)
+    return (media_rank, season if season > 0 else 9999, version if version > 0 else 9999, index)
+
+
+def _tg_sp_normalize(resource: dict, *, fallback_year: str = '') -> dict:
+    item = dict(resource or {})
+    if not item.get('release_year') and fallback_year and fallback_year != '未知年份':
+        item['release_year'] = fallback_year
+    summary = item.get('version_summary') if isinstance(item.get('version_summary'), dict) else {}
+    if not summary:
+        summary = item.get('summary_json') if isinstance(item.get('summary_json'), dict) else {}
+    source_kind = str(item.get('source_kind') or '').strip()
+    source_id = str(item.get('source_id') or item.get('source_ref_id') or '').strip()
+    sha1 = str(item.get('sha1') or '').strip()
+    manifest_hash = str(item.get('manifest_hash') or '').strip()
+    unique = f'shared_pool:{source_kind}:{source_id}:{sha1 or manifest_hash}' if source_kind and source_id else f"shared_pool:{item.get('tmdb_id')}:{item.get('season_number') or ''}:{sha1 or manifest_hash or item.get('title') or ''}"
+    version_index = _tg_sp_int(item.get('_shared_pool_version_index'), 0)
+    version_count = _tg_sp_int(item.get('_shared_pool_version_count'), 0)
+    version_label = f'版本 {version_index}/{version_count}' if version_index and version_count > 1 else ''
+    tags = _tg_sp_tags(item)
+    item.update({
+        '_tg_source': 'shared_pool',
+        '_cloud_source': 'shared_pool',
+        'source_type': 'shared_pool',
+        'source_name': '共享池',
+        'unique_id': unique,
+        'title': _tg_sp_title(item),
+        'name': _tg_sp_title(item),
+        'pan_type': 'rapid115',
+        'already_owned': bool(item.get('is_mine')),
+        'unlock_points': 0,
+        'share_size': _tg_sp_first(item.get('share_size'), _tg_sp_size_text(item.get('size') or item.get('total_size'))),
+        'video_resolution': _tg_sp_first(summary.get('resolution'), summary.get('resolution_display')),
+        'quality': _tg_sp_first(summary.get('video_display'), summary.get('codec'), summary.get('video_codec')),
+        'source': _tg_sp_first(summary.get('effect'), summary.get('effect_key'), '共享秒传'),
+        'source_detail': _tg_sp_first(summary.get('video_display'), summary.get('formatted_by')),
+        'remark': ' · '.join(x for x in (item.get('status_message') or '', version_label, f"共享池 · {item.get('progress_text')}" if item.get('progress_text') else '共享池 · 可秒传') if str(x).strip()),
+        '_season_match_label': item.get('progress_text') or '',
+        '_shared_pool_version_label': version_label,
+        '_shared_pool_tag_labels': tags,
+        '_shared_pool_tags': tags,
+        '_completion_label': '已完结' if item.get('is_completed_certified') or item.get('is_completed') else ('连载中' if item.get('is_ongoing_hub') else ''),
+    })
+    return item
+
+
+def _tg_query_shared_pool_resources(tmdb_id, media_type: str, title: str, year: str, target_season=None):
+    try:
+        from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+    except Exception as e:
+        return [], 0, [f'共享池模块不可用：{e}']
+    if not shared_center_enabled():
+        return [], 0, []
+    try:
+        limit = _TG_RESOURCE_COLLECT_LIMIT
+        fetch_limit = max(limit, min(500, limit * 6)) if media_type == 'tv' and target_season in (None, '') else limit
+        resp = SharedCenterClient().list_display_sources(
+            q='' if tmdb_id else title,
+            status='alive,available' if media_type == 'movie' else 'alive,available,updating,inconsistent,incomplete',
+            item_type='Movie' if media_type == 'movie' else 'Pack',
+            tmdb_id=str(tmdb_id or ''),
+            order_by='latest',
+            limit=fetch_limit,
+            offset=0,
+        )
+        rows = [x for x in (resp.get('items') or []) if isinstance(x, dict)]
+        if media_type == 'tv' and target_season not in (None, ''):
+            wanted = _tg_sp_int(target_season, 0)
+            if wanted > 0:
+                rows = [x for x in rows if _tg_sp_int(x.get('season_number'), -999) == wanted]
+        expanded = []
+        for row in rows:
+            expanded.extend(_tg_sp_versions(row))
+        expanded = [x for _, x in sorted(enumerate(expanded), key=_tg_sp_sort_key)]
+        total = len(expanded)
+        out, seen = [], set()
+        for row in expanded[:limit]:
+            item = _tg_sp_normalize(row, fallback_year=year)
+            key = item.get('unique_id') or f"{item.get('source_kind')}:{item.get('source_id')}:{item.get('sha1')}"
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            out.append(item)
+        return out, total, []
+    except Exception as e:
+        logger.error(f"  ➜ [TG资源搜索] 共享池查询失败: {e}", exc_info=True)
+        return [], 0, [f'共享池查询失败：{e}']
+
 def _tg_is_similar_text(a: str, b: str) -> bool:
     a_norm = re.sub(r"\s+", "", str(a or "")).lower()
     b_norm = re.sub(r"\s+", "", str(b or "")).lower()
@@ -1300,6 +1586,18 @@ def _tg_resource_line(index: int, resource: dict) -> str:
     extra = []
     if resource.get("_completion_label"):
         extra.append(str(resource.get("_completion_label")))
+    if resource.get("_shared_pool_version_label"):
+        extra.append(str(resource.get("_shared_pool_version_label")))
+    tags = resource.get("_shared_pool_tag_labels") or resource.get("_shared_pool_tags") or []
+    if isinstance(tags, list):
+        tag_texts = []
+        for tag in tags:
+            label = tag.get("label") if isinstance(tag, dict) else tag
+            label = str(label or "").strip()
+            if label and label not in tag_texts:
+                tag_texts.append(label)
+        if tag_texts:
+            extra.append("标签：" + "/".join(tag_texts[:5]))
     if resource.get("_season_match_label"):
         extra.append(str(resource.get("_season_match_label")))
     if resource.get("_tg_source") == "channel" or resource.get("source") == "channel":
@@ -1333,6 +1631,7 @@ def _tg_format_hdhive_resources(
     filtered_count: int,
     used_filtered: bool,
     channel_count: int = 0,
+    shared_pool_count: int = 0,
     notes: list = None,
     page: int = 0,
     total_count: int = None,
@@ -1351,9 +1650,14 @@ def _tg_format_hdhive_resources(
 
     hdhive_count = raw_count or 0
     channel_count = channel_count or 0
-    source_text = f"🪺 影巢 {hdhive_count} 条"
+    shared_pool_count = shared_pool_count or 0
+    source_parts = []
+    if shared_pool_count:
+        source_parts.append(f"🟢 共享池 {shared_pool_count} 条")
+    source_parts.append(f"🪺 影巢 {hdhive_count} 条")
     if channel_count:
-        source_text += f" / 📡 频道 {channel_count} 条"
+        source_parts.append(f"📡 频道 {channel_count} 条")
+    source_text = " / ".join(source_parts)
 
     if media_type == "tv":
         count_text = f"🔎 {source_text}；剧集手动搜索不按季过滤。"
@@ -1489,10 +1793,18 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
         hdhive_used_filtered = False
         hdhive_resources = []
         channel_resources = []
+        shared_pool_resources = []
+        shared_pool_total = 0
 
         try:
             season_tip = "（剧集全量，不按季过滤）" if media_type == "tv" else ""
-            _tg_send_plain(chat_id, f"⏳ 正在查询资源：{title} ({year}){season_tip}\n来源：影巢 + 已配置监听频道", disable_notification=True)
+            _tg_send_plain(chat_id, f"⏳ 正在查询资源：{title} ({year}){season_tip}\n来源：共享池 + 影巢 + 已配置监听频道", disable_notification=True)
+
+            # 0. 查询共享池：可直接秒传，展示顺序固定排在影巢前。
+            shared_pool_resources, shared_pool_total, shared_notes = _tg_query_shared_pool_resources(
+                tmdb_id=tmdb_id, media_type=media_type, title=title, year=year, target_season=target_season
+            )
+            notes.extend(shared_notes or [])
 
             # 1. 查询影巢资源：失败不直接中断，继续查频道。
             try:
@@ -1567,17 +1879,11 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                 logger.error(f"  ➜ [TG资源搜索] 频道资源查询失败: {e}", exc_info=True)
                 notes.append(f"频道搜索失败：{e}")
 
-            # 3. 合并展示：影巢优先，但第一页固定给频道结果留几个位置；后续全部靠翻页查看。
+            # 3. 合并展示：共享池优先，其次影巢，最后频道。
             all_resources = []
-            if channel_resources:
-                first_page_channel_slots = min(len(channel_resources), 4)
-                first_page_hdhive_slots = max(0, _TG_RESOURCE_PAGE_SIZE - first_page_channel_slots)
-                hdhive_quota = min(len(hdhive_resources), first_page_hdhive_slots)
-                all_resources.extend(hdhive_resources[:hdhive_quota])
-                all_resources.extend(channel_resources)
-                all_resources.extend(hdhive_resources[hdhive_quota:])
-            else:
-                all_resources = list(hdhive_resources)
+            all_resources.extend(shared_pool_resources)
+            all_resources.extend(hdhive_resources)
+            all_resources.extend(channel_resources)
 
             all_resources = all_resources[:_TG_RESOURCE_COLLECT_LIMIT]
             if not all_resources:
@@ -1595,6 +1901,7 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                     "filtered_count": hdhive_filtered_count,
                     "used_filtered": hdhive_used_filtered,
                     "channel_count": len(channel_resources),
+                    "shared_pool_count": shared_pool_total,
                     "notes": notes,
                 })
                 reply_markup = {
@@ -1616,6 +1923,7 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                 "filtered_count": hdhive_filtered_count,
                 "used_filtered": hdhive_used_filtered,
                 "channel_count": len(channel_resources),
+                "shared_pool_count": shared_pool_total,
                 "notes": notes,
             })
 
@@ -1654,6 +1962,7 @@ def _tg_show_resource_page(chat_id: str, page: int):
             session.get("filtered_count") or 0,
             bool(session.get("used_filtered")),
             channel_count=session.get("channel_count") or 0,
+            shared_pool_count=session.get("shared_pool_count") or 0,
             notes=session.get("notes") or [],
             page=page,
             total_count=len(all_resources),
@@ -1686,6 +1995,55 @@ def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
 
     # 开始转存后清理会话，避免用户重复点按钮造成重复转存。
     _tg_clear_session(chat_id)
+
+    if source == "shared_pool":
+        def run_shared_pool_transfer():
+            try:
+                from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+                from handler.shared_subscription_service import consume_center_source_payload
+
+                if not shared_center_enabled():
+                    _tg_send_plain(chat_id, "❌ 共享池未启用或未配置中心地址，无法秒传。")
+                    return
+
+                shared_source = dict(resource or {})
+                source_kind = str(shared_source.get('source_kind') or '').strip()
+                source_id = str(shared_source.get('source_id') or shared_source.get('source_ref_id') or '').strip()
+                if not source_kind or not source_id:
+                    _tg_send_plain(chat_id, "❌ 共享池资源缺少 source_kind/source_id，无法秒传。")
+                    return
+
+                _tg_send_plain(chat_id, f"⏳ 已选择共享池资源：{_tg_resource_title(shared_source)}\n正在执行 115 秒传，请稍后查看通知/日志。", disable_notification=True)
+
+                # 连载公共包列表页只返回壳，真正秒传前按需加载该季 children。
+                if source_kind == 'season_hub' and not (shared_source.get('children') or shared_source.get('pack_items')):
+                    child_resp = SharedCenterClient().list_display_children(
+                        source_kind='season_hub',
+                        source_id=source_id,
+                        hub_id=shared_source.get('hub_id') or source_id,
+                        limit=5000,
+                    )
+                    children = child_resp.get('children') or child_resp.get('items') or []
+                    pack_items = child_resp.get('pack_items') or children
+                    shared_source['children'] = children
+                    shared_source['pack_items'] = pack_items
+
+                result = consume_center_source_payload(shared_source)
+                ok = bool(result.get('ok') or result.get('success'))
+                msg = result.get('message') or (
+                    f"共享池秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}"
+                    if ok else "共享池秒传失败"
+                )
+                if ok:
+                    _tg_send_plain(chat_id, f"✅ 共享池秒传已提交：{display_title}\n{msg}")
+                else:
+                    _tg_send_plain(chat_id, f"❌ 共享池秒传失败：{display_title}\n{msg}")
+            except Exception as e:
+                logger.error(f"  ➜ [TG资源搜索] 共享池秒传失败: {e}", exc_info=True)
+                _tg_send_plain(chat_id, f"❌ 共享池秒传异常：{e}")
+
+        threading.Thread(target=run_shared_pool_transfer, name="TG_Resource_Search_SharedPool", daemon=True).start()
+        return
 
     if source == "channel":
         try:
@@ -2241,7 +2599,7 @@ def _setup_bot_commands(bot_token: str):
             commands.append({"command": cmd_name, "description": f"🚀 {desc}"})
 
     # 在菜单最下方追加资源搜索和“查看所有任务”的备选命令
-    commands.append({"command": "search", "description": "🔎 搜索影巢资源并转存"})
+    commands.append({"command": "search", "description": "🔎 搜索云资源并转存/秒传"})
     commands.append({"command": "all_tasks", "description": "📋 查看所有可用任务"})
 
     api_url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
