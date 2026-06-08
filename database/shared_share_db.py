@@ -763,7 +763,10 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         for ep_row in ep_rows:
             files.extend(_files_for_media_row(ep_row))
         consistency = None
-        if not files and ep_rows:
+        # 一键登记只负责枚举候选，不能在“启动扫描阶段”顺手做季级体检；
+        # 真正登记时 register_candidate_to_center/collect_files_for_candidate 会再做修复。
+        # 否则前端任务栏会长时间停在初始化，看起来像没反应。
+        if not files and ep_rows and not row.get('_skip_candidate_fingerprint_repair'):
             consistency = repair_candidate_fingerprints({**row, 'parent_series_tmdb_id': tmdb_id, 'item_type': 'Season', 'season_number': season}, log_result=True)
             files = []
             for ep_row in _episode_rows(tmdb_id, season):
@@ -782,6 +785,14 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     if consistency and isinstance(consistency, dict) and consistency.get('message'):
         message = f"{message}；{consistency.get('message')}"
     in_library = bool(resolvable or row.get('in_library'))
+
+    file_sha1s = sorted({_norm_sha1(f.get('sha1')) for f in files if _norm_sha1(f.get('sha1'))})
+    episode_file_sha1s = []
+    for f in files:
+        sha1 = _norm_sha1(f.get('sha1'))
+        ep_no = _nullable_int(f.get('episode_number'))
+        if sha1:
+            episode_file_sha1s.append({'episode_number': ep_no, 'sha1': sha1})
 
     return {
         'tmdb_id': tmdb_id,
@@ -806,6 +817,9 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'root_name': root.get('root_name') or title,
         'root_is_dir': root.get('root_is_dir') is not False,
         'file_count': len(files),
+        'file_sha1s': file_sha1s,
+        'episode_file_sha1s': episode_file_sha1s,
+        'manifest_hash': manifest_hash(files) if files else '',
         'resolvable': resolvable,
         'message': message,
         'consistency': consistency or {},
@@ -932,28 +946,281 @@ def collect_files_for_candidate(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def all_library_share_candidates(limit: int = 100000) -> List[Dict[str, Any]]:
+
+_EFFECTIVE_SHARE_STATUSES = {'active', 'available', 'updating'}
+
+
+def _load_effective_local_share_index(limit: int = 500000) -> Dict[str, Any]:
+    """读取本机已经有效登记到中心的共享索引，用于一键登记增量过滤。
+
+    只把“仍有效”的 Rapid 源放进索引：
+    - status 为 active / available / updating；
+    - center_status 未 disabled；
+    - 已有 center_source_id，或中心状态为 reported。
+
+    这样 error / inconsistent / incomplete / disabled 不会被当成有效共享，
+    一键登记仍会尝试重新补齐。
+    """
+    try:
+        limit = max(1, min(int(limit or 500000), 500000))
+    except Exception:
+        limit = 500000
+
+    index = {
+        'source_ids': set(),
+        'movie_identities': set(),
+        'movie_sha1s': set(),
+        'episode_identities': set(),
+        'episode_sha1s': set(),
+        'season_episode_sha1s': {},
+        'completed_seasons': {},
+    }
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    s.id,
+                    s.source_kind,
+                    s.tmdb_id,
+                    s.season_number,
+                    s.episode_number AS source_episode_number,
+                    s.status,
+                    s.center_status,
+                    s.center_source_id,
+                    s.manifest_hash,
+                    NULLIF(UPPER(COALESCE(s.sha1, '')), '') AS source_sha1,
+                    f.episode_number AS file_episode_number,
+                    NULLIF(UPPER(COALESCE(f.sha1, '')), '') AS file_sha1
+                FROM shared_rapid_sources s
+                LEFT JOIN shared_rapid_source_files f ON f.local_source_id = s.id
+                WHERE COALESCE(s.status, '') = ANY(%s)
+                  AND COALESCE(s.center_status, '') <> 'disabled'
+                  AND (
+                        COALESCE(s.center_source_id, '') <> ''
+                     OR COALESCE(s.center_status, '') = 'reported'
+                  )
+                ORDER BY s.updated_at DESC NULLS LAST, s.id DESC
+                LIMIT %s
+                """,
+                (list(_EFFECTIVE_SHARE_STATUSES), limit),
+            )
+            rows = _rows(cur.fetchall())
+
+    for row in rows:
+        source_id = row.get('id')
+        if source_id:
+            index['source_ids'].add(int(source_id))
+        kind = str(row.get('source_kind') or '').strip().lower()
+        tmdb_id = str(row.get('tmdb_id') or '').strip()
+        season = _nullable_int(row.get('season_number'))
+        source_ep = _nullable_int(row.get('source_episode_number'))
+        file_ep = _nullable_int(row.get('file_episode_number'))
+        ep_no = file_ep if file_ep is not None else source_ep
+        sha1 = _norm_sha1(row.get('file_sha1')) or _norm_sha1(row.get('source_sha1'))
+        if not tmdb_id:
+            continue
+
+        if kind == 'movie':
+            index['movie_identities'].add(tmdb_id)
+            if sha1:
+                index['movie_sha1s'].add((tmdb_id, sha1))
+        elif kind == 'episode':
+            if season is not None and ep_no is not None:
+                index['episode_identities'].add((tmdb_id, season, ep_no))
+                if sha1:
+                    index['episode_sha1s'].add((tmdb_id, season, ep_no, sha1))
+                    index['season_episode_sha1s'].setdefault((tmdb_id, season), set()).add((ep_no, sha1))
+        elif kind == 'completed_season':
+            if season is not None:
+                key = (tmdb_id, season)
+                # 有 manifest_hash 时后续可做精确跳过；没有也表示本季已有有效完结源。
+                index['completed_seasons'][key] = row.get('manifest_hash') or True
+    index['source_count'] = len(index['source_ids'])
+    return index
+
+
+def _row_sha1s(row: Dict[str, Any]) -> List[str]:
+    return [_norm_sha1(x) for x in _as_array((row or {}).get('file_sha1_json')) if _norm_sha1(x)]
+
+
+def _is_completed_status(value: Any) -> bool:
+    return str(value or '').strip().lower() in {'completed', 'complete', 'ended', 'end', '完结', '已完结'}
+
+
+def _movie_row_already_registered(row: Dict[str, Any], index: Dict[str, Any]) -> bool:
+    tmdb_id = str((row or {}).get('tmdb_id') or '').strip()
+    if not tmdb_id:
+        return False
+    sha1s = _row_sha1s(row)
+    if sha1s:
+        return all((tmdb_id, sha1) in index.get('movie_sha1s', set()) for sha1 in sha1s)
+    return tmdb_id in index.get('movie_identities', set())
+
+
+def _episode_row_already_registered(row: Dict[str, Any], index: Dict[str, Any]) -> bool:
+    parent = str((row or {}).get('parent_series_tmdb_id') or (row or {}).get('tmdb_id') or '').strip()
+    season = _nullable_int((row or {}).get('season_number'))
+    episode = _nullable_int((row or {}).get('episode_number'))
+    if not parent or season is None or episode is None:
+        return False
+    sha1s = _row_sha1s(row)
+    if sha1s:
+        return all((parent, season, episode, sha1) in index.get('episode_sha1s', set()) for sha1 in sha1s)
+    return (parent, season, episode) in index.get('episode_identities', set())
+
+
+def _season_episode_rows_all_registered(parent_tmdb_id: str, season_number, index: Dict[str, Any]) -> bool:
+    parent = str(parent_tmdb_id or '').strip()
+    season = _nullable_int(season_number)
+    if not parent or season is None:
+        return False
+    rows = _episode_rows(parent, season)
+    if not rows:
+        return False
+    has_file = False
+    for ep_row in rows:
+        ep_no = _nullable_int(ep_row.get('episode_number'))
+        if ep_no is None:
+            return False
+        sha1s = _row_sha1s(ep_row)
+        if sha1s:
+            has_file = True
+            if not all((parent, season, ep_no, sha1) in index.get('episode_sha1s', set()) for sha1 in sha1s):
+                return False
+        elif (parent, season, ep_no) not in index.get('episode_identities', set()):
+            return False
+    return has_file
+
+
+def _season_row_already_registered(row: Dict[str, Any], index: Dict[str, Any]) -> bool:
+    parent = str((row or {}).get('parent_series_tmdb_id') or (row or {}).get('tmdb_id') or '').strip()
+    season = _nullable_int((row or {}).get('season_number'))
+    if not parent or season is None:
+        return False
+    if _is_completed_status((row or {}).get('watching_status')) and (parent, season) in index.get('completed_seasons', {}):
+        return True
+    return _season_episode_rows_all_registered(parent, season, index)
+
+
+def _media_row_already_registered(row: Dict[str, Any], index: Dict[str, Any]) -> bool:
+    if not index:
+        return False
+    item_type = str((row or {}).get('item_type') or '').strip()
+    if item_type == 'Movie':
+        return _movie_row_already_registered(row, index)
+    if item_type == 'Episode':
+        return _episode_row_already_registered(row, index)
+    if item_type == 'Season':
+        return _season_row_already_registered(row, index)
+    return False
+
+
+def _candidate_already_registered(candidate: Dict[str, Any], index: Dict[str, Any]) -> bool:
+    if not candidate or not index:
+        return False
+    item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
+    tmdb_id = str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    season = _nullable_int(candidate.get('season_number'))
+    episode = _nullable_int(candidate.get('episode_number'))
+    sha1s = [_norm_sha1(x) for x in (candidate.get('file_sha1s') or []) if _norm_sha1(x)]
+
+    if item_type == 'Movie':
+        if sha1s:
+            return all((tmdb_id, sha1) in index.get('movie_sha1s', set()) for sha1 in sha1s)
+        return tmdb_id in index.get('movie_identities', set())
+
+    if item_type == 'Episode':
+        if season is None or episode is None:
+            return False
+        if sha1s:
+            return all((tmdb_id, season, episode, sha1) in index.get('episode_sha1s', set()) for sha1 in sha1s)
+        return (tmdb_id, season, episode) in index.get('episode_identities', set())
+
+    if item_type == 'Season':
+        if season is None:
+            return False
+        completed_manifest = index.get('completed_seasons', {}).get((tmdb_id, season))
+        cand_manifest = str(candidate.get('manifest_hash') or '').strip()
+        if completed_manifest and (not cand_manifest or completed_manifest is True or completed_manifest == cand_manifest):
+            return True
+        episode_items = candidate.get('episode_file_sha1s') or []
+        checked = 0
+        for item in episode_items:
+            ep_no = _nullable_int((item or {}).get('episode_number'))
+            sha1 = _norm_sha1((item or {}).get('sha1'))
+            if ep_no is None or not sha1:
+                continue
+            checked += 1
+            if (tmdb_id, season, ep_no, sha1) not in index.get('episode_sha1s', set()):
+                return False
+        return checked > 0
+
+    return False
+
+
+def _existing_share_index_summary(index: Dict[str, Any]) -> Dict[str, int]:
+    index = index or {}
+    return {
+        'source_count': int(index.get('source_count') or 0),
+        'movie_files': len(index.get('movie_sha1s', set()) or []),
+        'episode_files': len(index.get('episode_sha1s', set()) or []),
+        'completed_seasons': len(index.get('completed_seasons', {}) or {}),
+    }
+
+def all_library_share_candidates(limit: int = 100000, *, exclude_existing: bool = True, return_stats: bool = False):
+    """一键登记媒体库候选。
+
+    默认开启增量过滤：先拉取本地 shared_rapid_sources / shared_rapid_source_files
+    中已经有效登记到中心的共享索引，再跳过对应电影、分集、季包。
+    中心端仍会最终去重，但这里先过滤可避免本机每次都把全库重新上传 RAW / 重新登记一遍。
+    """
     rows = _media_rows_for_search('', limit)
+    existing_index = _load_effective_local_share_index() if exclude_existing else {}
     result = []
     seen = set()
+    skipped_existing = 0
+    skipped_duplicate = 0
+
     for row in rows:
         item_type = str(row.get('item_type') or '')
+        if exclude_existing and _media_row_already_registered(row, existing_index):
+            skipped_existing += 1
+            continue
+
         if item_type == 'Movie':
             cand = build_shareable_candidate(row)
-            key = ('Movie', cand.get('tmdb_id'))
-            if key not in seen:
-                seen.add(key); result.append(cand)
+            key = ('Movie', cand.get('tmdb_id'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Episode':
             # 追更池按分集共享，谁先有谁服务。
             cand = build_shareable_candidate(row)
-            key = ('Episode', cand.get('tmdb_id'), cand.get('season_number'), cand.get('episode_number'), tuple(_as_array(row.get('file_sha1_json'))))
-            if key not in seen:
-                seen.add(key); result.append(cand)
+            key = ('Episode', cand.get('tmdb_id'), cand.get('season_number'), cand.get('episode_number'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Season':
-            cand = build_shareable_candidate(row)
-            key = ('Season', cand.get('tmdb_id'), cand.get('season_number'))
-            if key not in seen:
-                seen.add(key); result.append(cand)
+            # 全库枚举阶段禁止触发季级体检，避免任务启动后长时间无进度；登记阶段会再补。
+            cand = build_shareable_candidate({**row, '_skip_candidate_fingerprint_repair': True})
+            key = ('Season', cand.get('tmdb_id'), cand.get('season_number'), cand.get('manifest_hash') or tuple(cand.get('file_sha1s') or []))
+        else:
+            continue
+
+        if key in seen:
+            skipped_duplicate += 1
+            continue
+        seen.add(key)
+
+        if exclude_existing and _candidate_already_registered(cand, existing_index):
+            skipped_existing += 1
+            continue
+        result.append(cand)
+
+    if return_stats:
+        return {
+            'items': result,
+            'scanned': len(rows),
+            'total': len(result),
+            'skipped_existing': skipped_existing,
+            'skipped_duplicate': skipped_duplicate,
+            'existing_index': _existing_share_index_summary(existing_index),
+        }
     return result
 
 

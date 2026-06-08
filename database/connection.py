@@ -773,9 +773,12 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_center_source ON shared_rapid_sources(source_kind, center_source_id);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_media ON shared_rapid_sources(tmdb_id, item_type, season_number, episode_number);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_sha1 ON shared_rapid_sources(UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
+                    # 一键登记增量过滤：快速扫描本机仍有效、已上报中心的共享源。
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_effective_share_scan ON shared_rapid_sources(source_kind, tmdb_id, season_number, episode_number, status, center_status) WHERE status IN ('active','available','updating') AND center_status <> 'disabled';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_source ON shared_rapid_source_files(local_source_id);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_sha1 ON shared_rapid_source_files(UPPER(sha1));")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_episode ON shared_rapid_source_files(tmdb_id, season_number, episode_number);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_source_episode_sha1 ON shared_rapid_source_files(local_source_id, tmdb_id, season_number, episode_number, UPPER(sha1));")
 
 
                 except Exception as e_index:

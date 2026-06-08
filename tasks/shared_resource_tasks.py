@@ -2363,29 +2363,123 @@ def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tm
     return result
 
 
-def share_all_library(max_items: int = 100000) -> Dict[str, Any]:
+def _task_status(progress: int, message: str) -> None:
+    try:
+        task_manager.update_status_from_thread(progress, message)
+    except Exception:
+        pass
+
+
+def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]:
+    """一键登记媒体库。
+
+    现在按增量执行：启动时先加载本地有效共享索引，已经 reported 且仍有效的
+    movie / episode / completed_season 不再重复登记。
+    """
+    # 兼容旧调用 share_all_library(1000)。任务系统会传 processor 进来。
+    if isinstance(processor, (int, float)) and max_items == 100000:
+        max_items = int(processor)
+        processor = None
+
     if not _enabled():
+        _task_status(0, '共享资源未启用，跳过一键登记。')
         return {'ok': False, 'message': '共享资源未启用'}
     if not _FULL_SHARE_LOCK.acquire(blocking=False):
+        _task_status(0, '全库登记任务正在运行，本次跳过。')
         return {'ok': False, 'message': '全库登记任务正在运行'}
     try:
-        candidates = shared_share_db.all_library_share_candidates(limit=max_items)
+        _task_status(1, '正在扫描本地媒体库，并加载已有有效共享索引...')
+        logger.info('  ➜ [共享资源] 一键登记媒体库开始：扫描本地媒体库，增量排除已有有效共享。')
+
+        candidate_stats = shared_share_db.all_library_share_candidates(
+            limit=max_items,
+            exclude_existing=True,
+            return_stats=True,
+        )
+        candidates = candidate_stats.get('items') or []
         total = len(candidates)
+        skipped_existing = int(candidate_stats.get('skipped_existing') or 0)
+        skipped_duplicate = int(candidate_stats.get('skipped_duplicate') or 0)
+        scanned = int(candidate_stats.get('scanned') or 0)
+        existing_summary = candidate_stats.get('existing_index') or {}
+
+        _task_status(5, f'扫描完成：媒体候选 {scanned}，已排除有效共享 {skipped_existing}，待登记 {total}。')
+        logger.info(
+            '  ➜ [共享资源] 一键登记媒体库扫描完成：扫描 %s，跳过已有有效共享 %s，跳过重复候选 %s，待登记 %s，已有索引=%s',
+            scanned, skipped_existing, skipped_duplicate, total, existing_summary,
+        )
+
+        if total <= 0:
+            msg = f'无需登记：扫描 {scanned} 个候选，已排除有效共享 {skipped_existing} 个。'
+            _task_status(100, msg)
+            logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：{msg}")
+            return {
+                'ok': True,
+                'total': 0,
+                'success': 0,
+                'failed': 0,
+                'skipped_existing': skipped_existing,
+                'skipped_duplicate': skipped_duplicate,
+                'scanned': scanned,
+                'message': msg,
+            }
+
         ok = failed = 0
+        items = []
         for idx, cand in enumerate(candidates, 1):
+            if processor is not None and hasattr(processor, 'is_stop_requested') and processor.is_stop_requested():
+                msg = f'任务已中断：已处理 {idx - 1}/{total}，成功 {ok}，失败 {failed}。'
+                _task_status(max(5, min(99, int(5 + ((idx - 1) / max(total, 1)) * 90))), msg)
+                logger.info(f"  ➜ [共享资源] 一键登记媒体库中断：{msg}")
+                return {
+                    'ok': False,
+                    'cancelled': True,
+                    'total': total,
+                    'success': ok,
+                    'failed': failed,
+                    'skipped_existing': skipped_existing,
+                    'skipped_duplicate': skipped_duplicate,
+                    'scanned': scanned,
+                    'items': items[:50],
+                    'message': msg,
+                }
+
+            title = cand.get('title') or cand.get('display_title') or cand.get('tmdb_id') or f'候选 {idx}'
+            progress = max(5, min(95, int(5 + ((idx - 1) / max(total, 1)) * 90)))
+            _task_status(progress, f'正在登记 {idx}/{total}：{title}（成功 {ok}，失败 {failed}，已跳过 {skipped_existing}）')
             try:
                 res = register_candidate_to_center(cand, source_provider='rapid_all_library')
+                item = {'title': title, 'ok': bool(res.get('ok')), 'message': res.get('message') or ''}
                 if res.get('ok'):
                     ok += 1
                 else:
                     failed += 1
-                if idx % 20 == 0:
-                    logger.info(f"  ➜ [共享资源] 一键登记媒体库进度：{idx}/{total}，成功 {ok}，失败 {failed}")
+                items.append(item)
+                if idx % 10 == 0 or idx == total:
+                    _task_status(
+                        max(5, min(95, int(5 + (idx / max(total, 1)) * 90))),
+                        f'一键登记进度：{idx}/{total}，成功 {ok}，失败 {failed}，已跳过 {skipped_existing}。'
+                    )
+                    logger.info(f"  ➜ [共享资源] 一键登记媒体库进度：{idx}/{total}，成功 {ok}，失败 {failed}，已跳过 {skipped_existing}")
             except Exception as e:
                 failed += 1
-                logger.warning(f"  ➜ [共享资源] 一键登记媒体库失败: {cand.get('title') or cand.get('tmdb_id')} -> {e}")
-        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}")
-        return {'ok': True, 'total': total, 'success': ok, 'failed': failed}
+                items.append({'title': title, 'ok': False, 'message': str(e)})
+                logger.warning(f"  ➜ [共享资源] 一键登记媒体库失败: {title} -> {e}")
+
+        msg = f'一键登记完成：扫描 {scanned}，跳过已有有效共享 {skipped_existing}，登记成功 {ok}，失败 {failed}。'
+        _task_status(100, msg)
+        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}，已跳过 {skipped_existing}")
+        return {
+            'ok': True,
+            'total': total,
+            'success': ok,
+            'failed': failed,
+            'skipped_existing': skipped_existing,
+            'skipped_duplicate': skipped_duplicate,
+            'scanned': scanned,
+            'items': items[:50],
+            'message': msg,
+        }
     finally:
         _FULL_SHARE_LOCK.release()
 
@@ -2859,7 +2953,7 @@ def trigger_shared_resource_maintenance_task() -> bool:
 
 def trigger_share_all_library_task() -> bool:
     try:
-        return bool(task_manager.submit_task(lambda processor=None: share_all_library(), task_name='一键登记媒体库', processor_type='media'))
+        return bool(task_manager.submit_task(share_all_library, task_name='一键登记媒体库', processor_type='media'))
     except Exception:
         threading.Thread(target=share_all_library, name='shared-rapid-share-all', daemon=True).start()
         return True

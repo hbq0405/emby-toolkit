@@ -31,9 +31,16 @@ task_worker_thread: Optional[threading.Thread] = None
 task_worker_lock = threading.Lock()
 
 def update_status_from_thread(progress: int, message: str):
-    """由处理器或任务函数调用，用于更新任务状态。"""
+    """由处理器或任务函数调用，用于更新任务状态。
+
+    progress 约定为 0-100；传入负数表示只更新消息。
+    不在这里重置 is_running，避免前端轮询刚收到回调就被清空。
+    """
     if progress >= 0:
-        background_task_status["progress"] = progress
+        try:
+            background_task_status["progress"] = max(0, min(100, int(progress)))
+        except Exception:
+            background_task_status["progress"] = progress
     background_task_status["message"] = message
 
 def get_task_status() -> dict:
@@ -50,7 +57,15 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
     
     with task_lock:
         if not processor:
-            logger.error(f"任务 '{task_name}' 无法启动：对应的处理器未初始化。")
+            msg = f"任务 '{task_name}' 无法启动：对应的处理器未初始化。"
+            logger.error(msg)
+            background_task_status.update({
+                "is_running": False,
+                "current_action": "无",
+                "last_action": task_name,
+                "progress": 0,
+                "message": msg,
+            })
             return
 
         processor.clear_stop_signal()
@@ -85,11 +100,17 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
             if not silent:
                 logger.info(f"  ➜ 后台任务 '{task_name}' 结束，最终状态: {final_message}")
 
+            # 保留最后一次任务回调，避免前端低频轮询时刚完成就被重置成“等待任务”，
+            # 导致用户看不到任务结果。下一次 submit_task 会覆盖这些字段。
             background_task_status.update({
-                "is_running": False, "current_action": "无", "progress": 0, "message": "等待任务"
+                "is_running": False,
+                "current_action": "无",
+                "progress": current_progress,
+                "message": final_message,
+                "last_action": task_name,
             })
             processor.clear_stop_signal()
-            logger.trace(f"后台任务 '{task_name}' 状态已重置。")
+            logger.trace(f"后台任务 '{task_name}' 状态已完成并保留最终回调。")
 
 def task_worker_function():
     """
@@ -121,7 +142,15 @@ def task_worker_function():
             logger.trace(f"任务 '{task_name}' 请求使用 '{processor_type}' 处理器。")
 
             if not processor_to_use:
-                logger.error(f"任务 '{task_name}' 无法执行：类型为 '{processor_type}' 的处理器未初始化或不存在。")
+                msg = f"任务 '{task_name}' 无法执行：类型为 '{processor_type}' 的处理器未初始化或不存在。"
+                logger.error(msg)
+                background_task_status.update({
+                    "is_running": False,
+                    "current_action": "无",
+                    "last_action": task_name,
+                    "progress": 0,
+                    "message": msg,
+                })
                 task_queue.task_done()
                 continue
 
@@ -166,6 +195,15 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
         if not silent:
             frontend_log_queue.clear()
             logger.trace(f"  ➜ 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
+
+        # 提交瞬间就写状态，避免任务线程启动/候选扫描期间前端仍显示“等待任务”。
+        background_task_status.update({
+            "is_running": True,
+            "current_action": task_name,
+            "last_action": task_name,
+            "progress": 0,
+            "message": f"{task_name} 已提交，等待任务线程启动...",
+        })
         
         # ★★★ 核心修复：将 processor_type 与静默标志加入任务信息元组 ★★★
         task_info = (task_function, task_name, processor_type, args, kwargs, silent)
