@@ -999,7 +999,7 @@ def _process_tg_queue():
                                     """, (tmdb_id, tmdb_id))
                                     rows = cursor.fetchall()
                                     for r in rows:
-                                        if r['subscription_status'] in ['SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
+                                        if r['subscription_status'] in ['WANTED','SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
                                             should_process = True
                                             break
                                 
