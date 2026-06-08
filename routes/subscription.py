@@ -381,6 +381,107 @@ def _first_cloud_text(*values):
     return ""
 
 
+
+def _cloud_json_obj(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            import json as _json
+            parsed = _json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _cloud_bool_state(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "是", "启用", "开启"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "否", "停用", "关闭"}:
+        return False
+    return None
+
+
+def _shared_pool_tag_containers(item: dict) -> list[dict]:
+    item = item if isinstance(item, dict) else {}
+    out = [item]
+    for key in (
+        "version_summary", "summary_json", "media_signature_json", "raw_summary_json", "rapid_meta_json",
+        "clean_version_meta_json", "short_drama_meta_json", "animation_meta_json", "completed_certified_meta_json",
+    ):
+        value = _cloud_json_obj(item.get(key))
+        if value:
+            out.append(value)
+    return out
+
+
+def _shared_pool_flag_enabled(item: dict, flag_key: str, meta_key: str = "") -> bool:
+    """读取共享池中心源标签。顶层/摘要/专用 meta 任一显式 true 即认为命中。"""
+    for part in _shared_pool_tag_containers(item):
+        state = _cloud_bool_state(part.get(flag_key)) if flag_key in part else None
+        if state is True:
+            return True
+        meta = _cloud_json_obj(part.get(meta_key)) if meta_key else {}
+        state = _cloud_bool_state(meta.get(flag_key)) if flag_key in meta else None
+        if state is True:
+            return True
+    return False
+
+
+def _shared_pool_plain_tag_labels(item: dict) -> list[str]:
+    labels: list[str] = []
+    for part in _shared_pool_tag_containers(item):
+        raw = part.get("tag_labels")
+        if isinstance(raw, str):
+            raw = [x.strip() for x in re.split(r"[,，/|]", raw) if x.strip()]
+        if isinstance(raw, list):
+            for label in raw:
+                text = str(label or "").strip()
+                if text and text not in labels:
+                    labels.append(text)
+    return labels
+
+
+def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
+    """云资源搜索共享池卡片额外标签。中心资源库已有的纯净版/短剧/动漫等标签不能丢。"""
+    tags: list[dict] = []
+    seen: set[str] = set()
+
+    def add(label: str, tag_type: str = "default", bordered: bool = False):
+        label = str(label or "").strip()
+        if not label or label in seen:
+            return
+        seen.add(label)
+        tags.append({"label": label, "type": tag_type, "bordered": bool(bordered)})
+
+    if _shared_pool_flag_enabled(item, "is_clean_version", "clean_version_meta_json"):
+        add("纯净版", "warning", False)
+    if _shared_pool_flag_enabled(item, "is_short_drama", "short_drama_meta_json"):
+        add("短剧", "info", False)
+    if _shared_pool_flag_enabled(item, "is_animation", "animation_meta_json"):
+        add("动漫", "success", False)
+
+    # 保留中心端扩展标签；已完结/连载中由现有 _completion_label 单独展示，避免重复。
+    skip = {"已完结", "完结", "已认证完结", "完结认证", "连载中", "可用"}
+    for label in _shared_pool_plain_tag_labels(item):
+        if label in skip:
+            continue
+        if label in {"纯净版", "短剧", "动漫"}:
+            # 上面已按更清晰颜色加过。
+            add(label, {"纯净版": "warning", "短剧": "info", "动漫": "success"}.get(label, "default"), False)
+        else:
+            add(label, "default", True)
+    return tags
+
+
 def _shared_pool_version_rows(resource):
     """把中心资源库聚合行拆成云搜索可展示的具体版本。
 
@@ -418,12 +519,59 @@ def _shared_pool_version_rows(resource):
             "progress_current", "progress_total", "progress_text", "season_number", "tmdb_id",
             "has_children", "children_loaded", "lazy_children_kind", "children_count", "child_count",
             "pack_item_count", "is_completed_certified", "is_completed", "is_ongoing_hub",
+            "is_clean_version", "clean_version_meta_json", "is_short_drama", "short_drama_meta_json",
+            "is_animation", "animation_meta_json", "tag_labels",
             "_completion_label", "release_year",
         ):
             if merged.get(key) in (None, "", [], {}) and parent.get(key) not in (None, "", [], {}):
                 merged[key] = parent.get(key)
         rows.append(merged)
     return rows
+
+
+def _cloud_year_text(*values):
+    for value in values:
+        match = re.search(r"(19|20)\d{2}", str(value or ""))
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _format_shared_pool_cloud_title(item: dict) -> str:
+    """共享池云搜索标题：影视名（年份）第 N 季。
+
+    中心资源库内部为了排序/聚合会保留 S01 这类机器友好标题；云搜索面向用户，
+    剧集包统一显示成“家业（2026）第 1 季”，电影显示成“阿凡达（2009）”。
+    """
+    item = item if isinstance(item, dict) else {}
+    raw_title = str(item.get("title") or item.get("name") or item.get("file_name") or "共享池资源").strip()
+    year = _cloud_year_text(item.get("release_year"), item.get("year"), item.get("release_date"), item.get("first_air_date"))
+    season = _safe_int(item.get("season_number"), default=0)
+    display_kind = str(item.get("display_type") or item.get("item_type") or item.get("source_kind") or "").strip().lower()
+    source_kind = str(item.get("source_kind") or "").strip().lower()
+    is_pack = bool(
+        season > 0
+        and (
+            display_kind in {"pack", "season", "series"}
+            or source_kind in {"season_hub", "completed_season"}
+            or item.get("progress_text")
+        )
+    )
+
+    # 去掉历史 S01 / Season 1 / 第 1 季 后缀，再重新按中文口径拼接。
+    base = raw_title
+    if is_pack:
+        base = re.sub(r"\s*(?:第\s*\d+\s*季|S\d{1,3}|Season\s*\d{1,3})\s*$", "", base, flags=re.I).strip() or raw_title
+
+    has_year = bool(year and re.search(rf"[（(]\s*{re.escape(year)}\s*[）)]", base))
+    if year and not has_year:
+        base = f"{base}（{year}）"
+
+    if is_pack:
+        season_label = f"第 {season} 季"
+        if not re.search(r"第\s*\d+\s*季", base):
+            base = f"{base}{season_label}"
+    return base
 
 
 def _normalize_shared_pool_resource(resource):
@@ -440,10 +588,7 @@ def _normalize_shared_pool_resource(resource):
         unique = f"shared_pool:{source_kind}:{source_id}:{sha1 or manifest_hash}"
     else:
         unique = f"shared_pool:{item.get('tmdb_id')}:{item.get('season_number') or ''}:{sha1 or manifest_hash or item.get('title') or item.get('file_name') or ''}"
-    title = item.get("title") or item.get("file_name") or "共享池资源"
-    if item.get("progress_text") and str(item.get("display_type") or item.get("item_type") or "").lower() in {"pack", "season"}:
-        if item.get("season_number") not in (None, "") and not re.search(r"\bS\d{1,3}\b|第\s*\d+\s*季", str(title), re.I):
-            title = f"{title} S{int(item.get('season_number') or 0):02d}"
+    title = _format_shared_pool_cloud_title(item)
 
     version_index = _safe_int(item.get("_shared_pool_version_index"), default=0)
     version_count = _safe_int(item.get("_shared_pool_version_count"), default=0)
@@ -469,6 +614,8 @@ def _normalize_shared_pool_resource(resource):
         "remark": " · ".join(str(x) for x in remark_parts if str(x).strip()),
         "_season_match_label": item.get("progress_text") or "",
         "_shared_pool_version_label": version_label,
+        "_shared_pool_tag_labels": _shared_pool_cloud_tag_labels(item),
+        "_shared_pool_tags": _shared_pool_cloud_tag_labels(item),
         "_completion_label": "已完结" if item.get("is_completed_certified") or item.get("is_completed") else ("连载中" if item.get("is_ongoing_hub") else ""),
     })
     return item
@@ -558,6 +705,10 @@ def get_cloud_resources():
                 shared_version_items.extend(_shared_pool_version_rows(item))
             shared_pool_total = len(shared_version_items)
             for item in shared_version_items[:shared_limit]:
+                # 中心旧数据可能没有 release_year，云搜索入口已带 year 时作为展示兜底。
+                if isinstance(item, dict) and not item.get('release_year') and year:
+                    item = dict(item)
+                    item['release_year'] = year
                 normalized = _normalize_shared_pool_resource(item)
                 key = _shared_pool_resource_key(normalized) or _cloud_resource_key(normalized)
                 if key and key in seen:

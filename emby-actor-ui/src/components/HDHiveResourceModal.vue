@@ -109,6 +109,16 @@
                   <n-tag size="small" type="success" :bordered="false" v-if="res._completion_label">
                     {{ res._completion_label }}
                   </n-tag>
+
+                  <n-tag
+                    v-for="tag in sharedPoolTags(res)"
+                    :key="tag.label"
+                    size="small"
+                    :type="tag.type || 'default'"
+                    :bordered="tag.bordered !== false"
+                  >
+                    {{ tag.label }}
+                  </n-tag>
                 </n-space>
 
                 <div v-if="formatQuality(res)" style="font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 4px;">
@@ -204,24 +214,30 @@ const stripSeasonSuffix = (value) => {
     .trim();
 };
 
-const mediaTitle = computed(() => {
-  if (!props.media) return '';
-
-  let title = stripSeasonSuffix(rawTitle.value) || '未知影视';
-  const sNum = props.seasonNumber || props.media.season_number;
-
-  if (sNum && !title.includes('季')) {
-    title += ` 第 ${sNum} 季`;
-  }
-
-  return title;
-});
-
 const mediaYear = computed(() => {
   const media = props.media || {};
   const value = media.year || media.release_year || media.first_air_year || media.release_date || media.first_air_date;
   const match = String(value || '').match(/\d{4}/);
   return match ? match[0] : '';
+});
+
+const formatTitleWithYearAndSeason = (raw, year, seasonNumber) => {
+  let title = stripSeasonSuffix(raw) || '未知影视';
+  const y = String(year || '').match(/\d{4}/)?.[0] || '';
+  if (y && !new RegExp(`[（(]\\s*${y}\\s*[）)]`).test(title)) {
+    title += `（${y}）`;
+  }
+  const sNum = Number(seasonNumber || 0);
+  if (sNum > 0 && !/第\s*\d+\s*季/.test(title)) {
+    title += `第 ${sNum} 季`;
+  }
+  return title;
+};
+
+const mediaTitle = computed(() => {
+  if (!props.media) return '';
+  const sNum = props.seasonNumber || props.media.season_number;
+  return formatTitleWithYearAndSeason(rawTitle.value, mediaYear.value, sNum);
 });
 
 const isSharedPool = (resource) => {
@@ -338,6 +354,33 @@ const formatSource = (resource) => {
   if (Array.isArray(values)) return values.filter(Boolean).join(', ');
   if (typeof values === 'string' && values !== 'channel') return values;
   return '';
+};
+
+
+const sharedPoolTags = (resource) => {
+  if (!isSharedPool(resource)) return [];
+  const raw = resource?._shared_pool_tag_labels || resource?._shared_pool_tags || [];
+  const seen = new Set();
+  const tags = [];
+  const pushTag = (tag, fallbackType = 'default', bordered = true) => {
+    const obj = typeof tag === 'string' ? { label: tag, type: fallbackType, bordered } : { ...(tag || {}) };
+    const label = String(obj.label || obj.name || obj.text || '').trim();
+    if (!label || seen.has(label)) return;
+    if (label === resource?._completion_label) return;
+    seen.add(label);
+    tags.push({ label, type: obj.type || fallbackType, bordered: obj.bordered !== undefined ? obj.bordered : bordered });
+  };
+  if (Array.isArray(raw)) {
+    raw.forEach((tag) => pushTag(tag));
+  }
+  if (resource?.is_clean_version) pushTag({ label: '纯净版', type: 'warning', bordered: false });
+  if (resource?.is_short_drama) pushTag({ label: '短剧', type: 'info', bordered: false });
+  if (resource?.is_animation) pushTag({ label: '动漫', type: 'success', bordered: false });
+  const labels = resource?.tag_labels;
+  if (Array.isArray(labels)) {
+    labels.forEach((label) => pushTag(String(label), 'default', true));
+  }
+  return tags;
 };
 
 const formatQuality = (resource) => {
