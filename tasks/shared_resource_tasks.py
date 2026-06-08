@@ -1994,22 +1994,22 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         return {'ok': False, 'message': '共享资源未启用或中心未配置'}
     candidate = _normalize_series_candidate_identity(dict(candidate or {}))
     item_type = str(candidate.get('item_type') or '').strip()
+    raw_repair_only = bool(candidate.get('_raw_repair_only'))
     should_register_completed = item_type == 'Season' and _candidate_is_completed_season(
-        candidate, source_provider=source_provider, files=None
+        candidate,
+        source_provider=source_provider,
+        files=None,
     )
+    allow_consistency_check = bool(should_register_completed and not raw_repair_only)
 
     files = shared_share_db.collect_files_for_candidate(candidate)
-    if not files and item_type in ('Season', 'Episode'):
-        # 这里的 repair_candidate_fingerprints 会顺手调用季一致性检查。
-        # 连载季只需要补齐指纹/RAW 入口，不能在维护任务里刷“版本混杂/禁止季包分享”日志；
-        # 只有真正要登记 completed_season 的完结季，才允许输出一致性校验日志。
-        repair_result = shared_share_db.repair_candidate_fingerprints(
-            candidate,
-            log_result=bool(should_register_completed),
-        )
+    repair_result = {}
+    if not files and allow_consistency_check:
+        # 只有真正登记完结季包时，才允许走一致性/指纹修复链路。
+        # RAW/summary 补齐、维护任务、手动重新登记只做已有本地文件的 RAW 上传，
+        # 不能在维护任务里对所有连载季刷一致性校验。
+        repair_result = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
         files = shared_share_db.collect_files_for_candidate(candidate)
-    else:
-        repair_result = {}
     if not files:
         return {
             'ok': False,
@@ -2040,8 +2040,9 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         }
     animation_meta = _animation_meta_for_candidate(candidate)
     results = []
-    # should_register_completed 已在 collect/repair 前确定。连载季永远只登记分集进公共追更池，
-    # 不触发 completed_season 一致性校验。
+    if item_type == 'Season' and not should_register_completed:
+        should_register_completed = _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
+        allow_consistency_check = bool(should_register_completed and not raw_repair_only)
     register_episode_pool = not (item_type == 'Season' and should_register_completed)
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     if item_type == 'Movie':
@@ -2134,7 +2135,9 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'rapid_meta_json': _apply_animation_tag({'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path'), 'preid': preid or ''}, animation_meta),
             })
         expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes'), 0)
-        consistency = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
+        consistency = {}
+        if allow_consistency_check:
+            consistency = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
         status = _completed_status_from_files(completed_files, expected)
         common_signature = {}
         for _cf in completed_files:
@@ -2582,7 +2585,10 @@ def reregister_local_source(source_id: int, *, source_provider: str = 'manual_re
     if not row:
         return {'ok': False, 'message': '本地共享源不存在', 'source_id': source_id}
     candidate = _candidate_from_local_source(row)
-    provider = str(row.get('source_provider') or source_provider or 'manual_reregister')
+    # “重新登记”按钮是 RAW/summary 补齐入口，只应重新上传 RAW 并恢复中心可用状态，
+    # 不应沿用旧 provider 触发完结季一致性校验。
+    candidate['_raw_repair_only'] = True
+    provider = str(source_provider or 'manual_reregister')
     result = register_candidate_to_center(candidate, source_provider=provider)
     if not result.get('ok'):
         try:
@@ -2616,7 +2622,8 @@ def reregister_local_sources(source_ids: List[int], *, source_provider: str = 'm
     ok_count = 0
     failed = 0
     for row, cand in deduped:
-        provider = str(row.get('source_provider') or source_provider or 'manual_reregister')
+        cand['_raw_repair_only'] = True
+        provider = str(source_provider or 'manual_reregister')
         res = register_candidate_to_center(cand, source_provider=provider)
         if res.get('ok'):
             ok_count += 1
@@ -2669,7 +2676,9 @@ def _repair_center_raw_missing_sources(limit: int = 200) -> Dict[str, Any]:
         if not need:
             continue
         need_repair += len(need)
-        res = register_candidate_to_center(cand, source_provider=row.get('source_provider') or 'raw_repair')
+        # 维护任务只负责 RAW/summary_json 补齐，不做季包一致性校验。
+        cand['_raw_repair_only'] = True
+        res = register_candidate_to_center(cand, source_provider='raw_repair')
         if res.get('ok'):
             repaired += 1
         else:
