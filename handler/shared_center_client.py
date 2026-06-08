@@ -207,10 +207,11 @@ class SharedCenterClient:
 
     def list_display_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent,incomplete',
                              item_type: str = '', tmdb_id: str = '', order_by: str = 'latest',
-                             limit: int = 200, offset: int = 0, **_ignored) -> Dict[str, Any]:
+                             limit: int = 200, offset: int = 0, force_refresh: bool = False, **_ignored) -> Dict[str, Any]:
         """中心资源库展示口径：由中心端分页、筛选、聚合。
 
         默认只返回电影和季容器；连载季返回公共 season_hub，单集只作为 children/pack_items。
+        force_refresh=True 时绕过中心端展示缓存并重建缓存。
         """
         return self._get('/api/v1/sources/display-list', {
             'q': q or '',
@@ -220,6 +221,7 @@ class SharedCenterClient:
             'order_by': order_by or 'latest',
             'limit': max(1, min(int(limit or 200), 1000)),
             'offset': max(0, int(offset or 0)),
+            'force_refresh': 1 if force_refresh else 0,
         }, timeout=30)
 
     def list_hubs(self, *, q: str = '', status: str = '', tmdb_id: str = '', limit: int = 200, offset: int = 0) -> Dict[str, Any]:

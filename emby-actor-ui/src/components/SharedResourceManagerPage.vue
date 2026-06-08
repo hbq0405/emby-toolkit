@@ -22,7 +22,7 @@
                 <template #icon><n-icon :component="RefreshIcon" /></template>
                 刷新贡献点
               </n-button>
-              <n-button type="primary" ghost :loading="loading" @click="loadAll">
+              <n-button type="primary" ghost :loading="loading" @click="loadAll(true)">
                 <template #icon><n-icon :component="SyncIcon" /></template>
                 刷新列表
               </n-button>
@@ -2181,7 +2181,7 @@ const saveSharedConfig = async () => {
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
 
-const loadCenterSources = async () => {
+const loadCenterSources = async (forceRefresh = false) => {
   centerLoading.value = true;
   try {
     const params = {
@@ -2192,6 +2192,7 @@ const loadCenterSources = async () => {
       limit: centerPagination.pageSize,
       offset: (centerPagination.page - 1) * centerPagination.pageSize,
     };
+    if (forceRefresh) params.force_refresh = 1;
     const res = await axios.get('/api/shared/resources/center/sources', { params });
     centerSources.value = res.data?.items || [];
     centerPagination.itemCount = Number(res.data?.total || 0);
@@ -2423,9 +2424,9 @@ const triggerSharedMaintenance = async () => {
 };
 
 const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献点流水失败'); } finally { ledgerLoading.value = false; } };
-const loadAll = async () => {
+const loadAll = async (forceRefresh = false) => {
   const tasks = [loadSummary(), loadLedger()];
-  if (activeTab.value === 'center') tasks.push(loadCenterSources());
+  if (activeTab.value === 'center') tasks.push(loadCenterSources(forceRefresh));
   else if (activeTab.value === 'requests') tasks.push(loadShareRequests());
   else tasks.push(loadShares());
   await Promise.allSettled(tasks);

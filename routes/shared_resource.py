@@ -821,6 +821,10 @@ def api_center_sources():
             order_by=request.args.get('order_by') or 'latest',
             limit=int(request.args.get('limit') or request.args.get('page_size') or 200),
             offset=int(request.args.get('offset') or 0),
+            force_refresh=_boolish(
+                request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
+                False,
+            ),
         )
 
         def _decorate_center_row(row):
