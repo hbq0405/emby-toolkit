@@ -653,7 +653,7 @@ const getActionInfo = (item) => {
   }
 
   if (item.resubscribe_source === 'hdhive') {
-    return { text: '影巢', type: 'warning' };
+    return { text: '云搜索', type: 'warning' };
   }
 
   return { text: '洗版', type: 'primary' };
