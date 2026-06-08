@@ -43,6 +43,9 @@
             <n-button :type="sourceFilter === 'channel' ? 'primary' : 'default'" @click="sourceFilter = 'channel'">
               频道 {{ channelCount }}
             </n-button>
+            <n-button :type="sourceFilter === 'shared_pool' ? 'primary' : 'default'" @click="sourceFilter = 'shared_pool'">
+              共享池 {{ sharedPoolCount }}
+            </n-button>
           </n-button-group>
         </div>
 
@@ -64,10 +67,10 @@
                 <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
                   <n-tag
                     size="small"
-                    :type="isChannel(res) ? 'info' : 'warning'"
+                    :type="isSharedPool(res) ? 'success' : (isChannel(res) ? 'info' : 'warning')"
                     :bordered="false"
                   >
-                    {{ isChannel(res) ? '频道' : '影巢' }}
+                    {{ isSharedPool(res) ? '共享池' : (isChannel(res) ? '频道' : '影巢') }}
                   </n-tag>
                   <div style="font-weight: 700; font-size: 15px; line-height: 1.4; word-break: break-all;">
                     {{ res.title || res.name || '未命名资源' }}
@@ -119,7 +122,8 @@
 
               <div style="flex-shrink: 0; min-width: 92px; text-align: right;">
                 <div style="font-size: 12px; color: #f0a020; margin-bottom: 6px;">
-                  <span v-if="isChannel(res)">可转存</span>
+                  <span v-if="isSharedPool(res)">可秒传</span>
+                  <span v-else-if="isChannel(res)">可转存</span>
                   <span v-else-if="res.already_owned">已解锁</span>
                   <span v-else-if="res.unlock_points === 0 || res.unlock_points === null">免费</span>
                   <span v-else>需 {{ res.unlock_points }} 积分</span>
@@ -127,12 +131,12 @@
 
                 <n-button
                   type="primary"
-                  :color="isChannel(res) ? '#2080f0' : '#f0a020'"
+                  :color="isSharedPool(res) ? '#18a058' : (isChannel(res) ? '#2080f0' : '#f0a020')"
                   size="small"
                   @click="download(res)"
                   :loading="downloadingKey === getResourceKey(res)"
                 >
-                  {{ isOffline(res.pan_type) || res.magnet_url ? '离线下载' : '一键转存' }}
+                  {{ isSharedPool(res) ? '秒传' : (isOffline(res.pan_type) || res.magnet_url ? '离线下载' : '一键转存') }}
                 </n-button>
               </div>
             </div>
@@ -216,15 +220,29 @@ const mediaYear = computed(() => {
   return match ? match[0] : '';
 });
 
-const hdhiveCount = computed(() => resources.value.filter((item) => !isChannel(item)).length);
+const isSharedPool = (resource) => {
+  const source = String(resource?.source_type || resource?._cloud_source || resource?.source || '').toLowerCase();
+  return source === 'shared_pool' || source === 'shared' || source === 'shared_center' || source === 'center';
+};
+
+const isHDHive = (resource) => {
+  const source = String(resource?.source_type || resource?._cloud_source || resource?.source || '').toLowerCase();
+  return !isSharedPool(resource) && !isChannel(resource) && (source === 'hdhive' || source === 'hive' || Boolean(resource?.slug));
+};
+
+const hdhiveCount = computed(() => resources.value.filter((item) => isHDHive(item)).length);
 const channelCount = computed(() => resources.value.filter((item) => isChannel(item)).length);
+const sharedPoolCount = computed(() => resources.value.filter((item) => isSharedPool(item)).length);
 
 const displayResources = computed(() => {
   if (sourceFilter.value === 'hdhive') {
-    return resources.value.filter((item) => !isChannel(item));
+    return resources.value.filter((item) => isHDHive(item));
   }
   if (sourceFilter.value === 'channel') {
     return resources.value.filter((item) => isChannel(item));
+  }
+  if (sourceFilter.value === 'shared_pool') {
+    return resources.value.filter((item) => isSharedPool(item));
   }
   return resources.value;
 });
@@ -232,7 +250,7 @@ const displayResources = computed(() => {
 const warningMessages = computed(() => stats.value?.warnings || []);
 const summaryText = computed(() => {
   if (!stats.value) return '';
-  return `影巢 ${stats.value.hdhive_filtered || 0}/${stats.value.hdhive_total || 0} 条，频道 ${stats.value.channel_total || 0} 条，当前展示 ${stats.value.shown || resources.value.length} 条。剧集云搜索默认不按季过滤，方便肉眼挑选。`;
+  return `共享池 ${stats.value.shared_pool_total || 0} 条，影巢 ${stats.value.hdhive_filtered || 0}/${stats.value.hdhive_total || 0} 条，频道 ${stats.value.channel_total || 0} 条，当前展示 ${stats.value.shown || resources.value.length} 条。剧集云搜索默认不按季过滤，方便肉眼挑选。`;
 });
 
 const formatPanType = (type) => {
@@ -241,6 +259,7 @@ const formatPanType = (type) => {
   const t = String(type).toLowerCase();
 
   if (t === '115') return '115网盘';
+  if (t === 'rapid115' || t === 'rapid' || t === 'shared_pool') return '115秒传';
   if (t === 'magnet') return '磁力链接';
   if (t === 'ed2k') return '电驴 ED2K';
   if (t === 'bt') return 'BT 种子';
@@ -255,7 +274,9 @@ const isOffline = (type) => {
 };
 
 const getPanTypeColor = (type) => {
-  if (!type || String(type).toLowerCase() === '115') return 'primary';
+  const t = String(type || '').toLowerCase();
+  if (t === 'rapid115' || t === 'rapid' || t === 'shared_pool') return 'success';
+  if (!type || t === '115') return 'primary';
   return 'info';
 };
 
@@ -290,8 +311,9 @@ const getTmdbId = () => {
 };
 
 const isChannel = (resource) => {
+  if (isSharedPool(resource)) return false;
   const source = String(resource?.source_type || resource?._cloud_source || resource?.source || '').toLowerCase();
-  return source === 'channel' || source === 'tg' || Boolean(resource?.target_link || resource?.magnet_url) && !resource?.slug;
+  return source === 'channel' || source === 'tg' || (Boolean(resource?.target_link || resource?.magnet_url) && !resource?.slug);
 };
 
 const getResourceKey = (resource) => {
@@ -334,7 +356,8 @@ const fetchResources = async () => {
       year: mediaYear.value,
       limit: 80,
       hdhive_limit: 50,
-      channel_limit: 50
+      channel_limit: 50,
+      shared_limit: 50
     };
 
     const season = props.seasonNumber || props.media.season_number;
@@ -372,7 +395,7 @@ const download = async (resource) => {
 
   try {
     const payload = {
-      source_type: resource.source_type || resource._cloud_source || (resource.slug ? 'hdhive' : 'channel'),
+      source_type: resource.source_type || resource._cloud_source || (isSharedPool(resource) ? 'shared_pool' : (resource.slug ? 'hdhive' : 'channel')),
       resource,
       slug: resource.slug,
       tmdb_id: getTmdbId(),

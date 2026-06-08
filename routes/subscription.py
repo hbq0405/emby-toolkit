@@ -8,6 +8,8 @@ from handler.hdhive_client import HDHiveClient
 from tasks.hdhive import task_download_from_hdhive, filter_hdhive_resources
 from handler.tg_userbot import TGUserBotManager, tg_task_queue
 from handler.tg_media_candidate import build_channel_task_payload
+from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+from handler.shared_subscription_service import consume_center_source_payload
 import threading
 
 subscription_bp = Blueprint('subscription_bp', __name__, url_prefix='/api/subscription')
@@ -29,13 +31,18 @@ def get_subscription_status():
     tg_userbot_configured = bool(
         tg_cfg.get('enabled') and tg_cfg.get('api_id') and tg_cfg.get('api_hash') and tg_cfg.get('channels')
     )
+    try:
+        shared_pool_configured = bool(shared_center_enabled())
+    except Exception:
+        shared_pool_configured = False
 
     return jsonify({
         "success": True,
         "mp_configured": bool(mp_url),
         "hdhive_configured": bool(hdhive_configured),
         "tg_userbot_configured": tg_userbot_configured,
-        "cloud_search_configured": bool(hdhive_configured or tg_userbot_configured)
+        "shared_pool_configured": shared_pool_configured,
+        "cloud_search_configured": bool(hdhive_configured or tg_userbot_configured or shared_pool_configured)
     })
 
 # ==========================================
@@ -342,6 +349,86 @@ def _normalize_channel_resource(resource):
     return item
 
 
+
+def _format_bytes_for_cloud(size):
+    try:
+        n = int(float(size or 0))
+    except Exception:
+        n = 0
+    if n <= 0:
+        return ""
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(n)
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    if idx <= 1:
+        return f"{int(value)} {units[idx]}"
+    return f"{value:.2f} {units[idx]}"
+
+
+def _first_cloud_text(*values):
+    for value in values:
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, list):
+            text = ", ".join(str(x) for x in value if str(x or "").strip())
+        else:
+            text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _normalize_shared_pool_resource(resource):
+    # 把共享中心资源库展示行转换成云资源搜索卡片。
+    item = dict(resource or {})
+    summary = item.get("version_summary") if isinstance(item.get("version_summary"), dict) else {}
+    if not summary:
+        summary = item.get("summary_json") if isinstance(item.get("summary_json"), dict) else {}
+    source_kind = str(item.get("source_kind") or "").strip()
+    source_id = str(item.get("source_id") or item.get("source_ref_id") or "").strip()
+    unique = f"shared_pool:{source_kind}:{source_id}" if source_kind and source_id else f"shared_pool:{item.get('tmdb_id')}:{item.get('season_number') or ''}:{item.get('title') or item.get('file_name') or ''}"
+    title = item.get("title") or item.get("file_name") or "共享池资源"
+    if item.get("progress_text") and str(item.get("display_type") or item.get("item_type") or "").lower() in {"pack", "season"}:
+        if item.get("season_number") not in (None, "") and not re.search(r"\bS\d{1,3}\b|第\s*\d+\s*季", str(title), re.I):
+            title = f"{title} S{int(item.get('season_number') or 0):02d}"
+    item.update({
+        "source_type": "shared_pool",
+        "source_name": "共享池",
+        "_cloud_source": "shared_pool",
+        "unique_id": unique,
+        "title": title,
+        "name": title,
+        "pan_type": "rapid115",
+        "already_owned": bool(item.get("is_mine")),
+        "unlock_points": 0,
+        "share_size": _first_cloud_text(item.get("share_size"), _format_bytes_for_cloud(item.get("size") or item.get("total_size"))),
+        "video_resolution": _first_cloud_text(summary.get("resolution"), summary.get("resolution_display")),
+        "quality": _first_cloud_text(summary.get("video_display"), summary.get("codec"), summary.get("video_codec")),
+        "source": _first_cloud_text(summary.get("effect"), summary.get("effect_key"), "共享秒传"),
+        "source_detail": _first_cloud_text(summary.get("video_display"), summary.get("formatted_by")),
+        "remark": _first_cloud_text(
+            item.get("status_message"),
+            f"共享池 · {item.get('progress_text')}" if item.get("progress_text") else "共享池 · 可秒传"
+        ),
+        "_season_match_label": item.get("progress_text") or "",
+        "_completion_label": "已完结" if item.get("is_completed_certified") or item.get("is_completed") else ("连载中" if item.get("is_ongoing_hub") else ""),
+    })
+    return item
+
+
+def _shared_pool_resource_key(resource):
+    if not isinstance(resource, dict):
+        return ""
+    for key in ("unique_id", "source_id", "source_ref_id", "hub_id"):
+        value = resource.get(key)
+        if value:
+            return f"shared_pool:{value}"
+    return ""
+
+
 def _strip_season_suffix(text):
     value = str(text or "").strip()
     if not value:
@@ -378,6 +465,7 @@ def get_cloud_resources():
     collect_limit = _safe_int(request.args.get('limit'), default=50, min_value=1, max_value=100)
     hdhive_limit = _safe_int(request.args.get('hdhive_limit'), default=collect_limit, min_value=1, max_value=100)
     channel_limit = _safe_int(request.args.get('channel_limit'), default=collect_limit, min_value=1, max_value=100)
+    shared_limit = _safe_int(request.args.get('shared_limit'), default=collect_limit, min_value=1, max_value=100)
 
     if not tmdb_id and not title:
         return jsonify({"success": False, "message": "缺少 TMDB ID 或搜索标题"}), 400
@@ -386,8 +474,44 @@ def get_cloud_resources():
     hdhive_total = 0
     hdhive_filtered = 0
     channel_total = 0
+    shared_pool_total = 0
     resources = []
     seen = set()
+
+    # 0. 共享池资源。共享池已经是本机可直接秒传的中心资源，优先展示。
+    try:
+        if shared_center_enabled():
+            client = SharedCenterClient()
+            shared_item_type = 'Movie' if media_type == 'movie' else 'Pack'
+            shared_status = 'alive,available' if media_type == 'movie' else 'alive,available,updating,inconsistent,incomplete'
+            shared_resp = client.list_display_sources(
+                q='' if tmdb_id else title,
+                status=shared_status,
+                item_type=shared_item_type,
+                tmdb_id=tmdb_id or '',
+                order_by='latest',
+                limit=shared_limit,
+                offset=0,
+            )
+            shared_items = [x for x in (shared_resp.get('items') or []) if isinstance(x, dict)]
+            if media_type == 'tv' and season not in (None, ''):
+                wanted_season = _safe_int(season, default=0, min_value=0)
+                if wanted_season > 0:
+                    shared_items = [x for x in shared_items if _safe_int(x.get('season_number'), default=-999) == wanted_season]
+            shared_pool_total = len(shared_items)
+            for item in shared_items[:shared_limit]:
+                normalized = _normalize_shared_pool_resource(item)
+                key = _shared_pool_resource_key(normalized) or _cloud_resource_key(normalized)
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                resources.append(normalized)
+        else:
+            warnings.append('共享池未启用或未配置中心地址，已跳过共享池搜索。')
+    except Exception as e:
+        logger.error(f"  ➜ 云资源搜索：共享池查询失败: {e}", exc_info=True)
+        warnings.append(f"共享池搜索失败：{e}")
 
     # 1. 影巢资源。云搜索属于手动搜索场景，剧集默认不按季过滤，避免用户误以为搜不到资源。
     if tmdb_id:
@@ -467,6 +591,7 @@ def get_cloud_resources():
         "data": resources[:collect_limit],
         "total": len(resources),
         "stats": {
+            "shared_pool_total": shared_pool_total,
             "hdhive_total": hdhive_total,
             "hdhive_filtered": hdhive_filtered,
             "channel_total": channel_total,
@@ -490,6 +615,38 @@ def trigger_cloud_download():
     raw_media_type = data.get('media_type') or resource.get('media_type') or resource.get('item_type')
     media_type = _normalize_hdhive_media_type(raw_media_type)
     title = data.get('title') or resource.get('title') or resource.get('name') or '未知影视'
+
+    if source_type in {'shared_pool', 'shared', 'shared_center', 'center', '共享池'} or resource.get('source_kind') in {'movie', 'episode', 'completed_season', 'season_hub'}:
+        if not shared_center_enabled():
+            return jsonify({"success": False, "message": "共享池未启用或未配置中心地址"}), 401
+
+        shared_source = dict(resource or {})
+        source_kind = str(shared_source.get('source_kind') or '').strip()
+        source_id = str(shared_source.get('source_id') or shared_source.get('source_ref_id') or '').strip()
+        if not source_kind or not source_id:
+            return jsonify({"success": False, "message": "共享池资源缺少 source_kind/source_id，无法秒传"}), 400
+
+        # 列表页为了秒开只返回季包壳；公共连载季真正秒传前必须展开一次，拿到该季 children。
+        if source_kind == 'season_hub' and not (shared_source.get('children') or shared_source.get('pack_items')):
+            try:
+                child_resp = SharedCenterClient().list_display_children(
+                    source_kind='season_hub',
+                    source_id=source_id,
+                    hub_id=shared_source.get('hub_id') or source_id,
+                    limit=5000,
+                )
+                children = child_resp.get('children') or child_resp.get('items') or []
+                pack_items = child_resp.get('pack_items') or children
+                shared_source['children'] = children
+                shared_source['pack_items'] = pack_items
+            except Exception as e:
+                return jsonify({"success": False, "message": f"加载共享池季包明细失败：{e}"}), 500
+
+        result = consume_center_source_payload(shared_source)
+        ok = bool(result.get('ok') or result.get('success'))
+        status_code = 200 if ok else 400
+        msg = result.get('message') or (f"共享池秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}" if ok else "共享池秒传失败")
+        return jsonify({"success": ok, "message": msg, "data": result}), status_code
 
     if source_type in {'hdhive', 'hive', '影巢'} or slug:
         if not slug:
