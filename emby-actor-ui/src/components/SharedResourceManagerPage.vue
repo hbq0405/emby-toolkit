@@ -2519,7 +2519,7 @@ const reregisterShare = (row) => {
   const countText = isBatch ? `该聚合项下 ${ids.length} 个本机源` : '该本机源';
   dialog.warning({
     title: '重新登记共享源',
-    content: `确定重新登记《${title}》的${countText}吗？系统会重新上传 RAW/summary_json，并向中心重新登记；可用于修复中心 RAW 缺失导致的不可用状态。`,
+    content: `确定重新登记《${title}》的${countText}吗？系统会重新上传 RAW/summary_json，并按原共享类型原地重新登记中心；可用于修复中心 RAW 缺失导致的不可用状态。`,
     positiveText: '重新登记',
     negativeText: '取消',
     onPositiveClick: async () => {

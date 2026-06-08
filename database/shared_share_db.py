@@ -798,8 +798,9 @@ def collect_files_for_candidate(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     season = _nullable_int(data.get('season_number'))
     episode = _nullable_int(data.get('episode_number'))
     files = []
-    if item_type in ('Season', 'Episode'):
-        # 先复用完结季一致性检查里的指纹体检逻辑，确保旧库里 root_fid/parent_id 缺失时也能补齐。
+    if item_type in ('Season', 'Episode') and not data.get('_raw_repair_only') and not data.get('_skip_fingerprint_repair'):
+        # 普通登记可复用季级指纹体检补齐旧库；RAW 修复/重新登记/预校验不能触发一致性校验，
+        # 否则点一次“重新登记”会把连载季拉去做完结季体检。
         repair_candidate_fingerprints(data, log_result=True)
 
     if item_type == 'Movie':

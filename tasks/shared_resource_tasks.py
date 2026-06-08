@@ -1138,6 +1138,12 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, 
     sig = _media_signature(raw, file_info) if raw else {}
     sig = _apply_animation_tag(sig, animation_meta)
     preid = _ensure_file_preid(file_info)
+    # size 不能只信 p115_filesystem_cache。第三方 STRM/旧库补齐 RAW 时，
+    # cache 可能缺 size，但 RAW 里通常有 MediaSourceInfo.Size / format.size。
+    # 如果这里写 None，中心端整季 total_size 会被 0 或单集大小污染。
+    final_size = _file_size_from_cache(file_info) or (_infer_size_from_raw(raw) if raw else 0) or 0
+    if final_size > 0:
+        file_info['size'] = final_size
     rapid_meta = {
         'fid': file_info.get('fid') or file_info.get('file_id') or '',
         'pick_code': file_info.get('pick_code') or file_info.get('pc') or '',
@@ -1148,7 +1154,7 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, 
     return {
         'sha1': _norm_sha1(file_info.get('sha1')),
         'preid': preid or None,
-        'size': _file_size_from_cache(file_info) or None,
+        'size': final_size or None,
         'file_name': file_info.get('file_name') or file_info.get('name') or '',
         'quality': sig.get('resolution') or '',
         'has_raw_ffprobe': bool(raw_uploaded),
@@ -1841,6 +1847,8 @@ def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider
     candidate = dict(candidate or {})
     if str(candidate.get('item_type') or '').strip() != 'Season':
         return False
+    if _cfg_bool(candidate.get('_force_completed_season'), False):
+        return True
     provider = str(source_provider or candidate.get('source_provider') or '').strip().lower()
     if provider == 'rapid_completed_season':
         return True
@@ -2129,8 +2137,11 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             sig = _media_signature(raw, f) if raw else {}
             sig = _apply_animation_tag(sig, animation_meta)
             preid = _ensure_file_preid(f)
+            final_size = _file_size_from_cache(f) or _infer_size_from_raw(raw) or 0
+            if final_size > 0:
+                f['size'] = final_size
             completed_files.append({
-                'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'preid': preid or None, 'size': _file_size_from_cache(f) or None,
+                'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'preid': preid or None, 'size': final_size or None,
                 'file_name': f.get('file_name') or '', 'quality': sig.get('resolution') or '', 'media_signature_json': sig,
                 'rapid_meta_json': _apply_animation_tag({'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path'), 'preid': preid or ''}, animation_meta),
             })
@@ -2576,29 +2587,50 @@ def _candidate_from_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         'file_name': row.get('file_name') if final_type == 'Movie' else None,
         'root_fid': row.get('root_fid'),
         'root_name': row.get('root_name'),
+        '_original_source_kind': source_kind,
+        '_original_source_provider': row.get('source_provider') or '',
+        '_original_center_source_id': row.get('center_source_id') or '',
     }
+    # 完结季源重新登记必须继续走 completed_season_source，不能降级成连载分集池。
+    # 否则中心会出现同季公共 season_hub，甚至用单集版本摘要/大小污染整季展示。
+    if source_kind == 'completed_season':
+        candidate['watching_status'] = 'Completed'
+        candidate['_force_completed_season'] = True
     return {k: v for k, v in candidate.items() if v not in (None, '')}
 
 
-def reregister_local_source(source_id: int, *, source_provider: str = 'manual_reregister') -> Dict[str, Any]:
+def _reregister_provider_for_row(row: Dict[str, Any], requested: str = '') -> str:
+    """重新登记应保持原 provider，避免生成 manual_reregister 影子源。"""
+    row = dict(row or {})
+    source_kind = str(row.get('source_kind') or '').strip().lower()
+    if source_kind == 'completed_season':
+        return 'rapid_completed_season'
+    original = str(row.get('source_provider') or '').strip()
+    requested = str(requested or '').strip()
+    if requested and requested != 'manual_reregister':
+        return requested
+    return original or 'manual_rapid'
+
+
+def reregister_local_source(source_id: int, *, source_provider: str = '') -> Dict[str, Any]:
     row = shared_share_db.get_local_source(int(source_id or 0))
     if not row:
         return {'ok': False, 'message': '本地共享源不存在', 'source_id': source_id}
     candidate = _candidate_from_local_source(row)
-    # “重新登记”按钮是 RAW/summary 补齐入口，只应重新上传 RAW 并恢复中心可用状态，
-    # 不应沿用旧 provider 触发完结季一致性校验。
+    # “重新登记”是原共享源的原地修复：重新上传 RAW/summary_json，
+    # provider 保持原值，完结季保持 completed_season_source，避免生成影子源或降级成连载分集池。
     candidate['_raw_repair_only'] = True
-    provider = str(source_provider or 'manual_reregister')
+    provider = _reregister_provider_for_row(row, source_provider)
     result = register_candidate_to_center(candidate, source_provider=provider)
     if not result.get('ok'):
         try:
             shared_share_db.update_local_source(int(source_id), last_error=result.get('message') or '重新登记失败')
         except Exception:
             pass
-    return {'ok': bool(result.get('ok')), 'source_id': source_id, 'candidate': candidate, 'result': result, 'message': result.get('message') or ''}
+    return {'ok': bool(result.get('ok')), 'source_id': source_id, 'candidate': candidate, 'provider': provider, 'result': result, 'message': result.get('message') or ''}
 
 
-def reregister_local_sources(source_ids: List[int], *, source_provider: str = 'manual_reregister') -> Dict[str, Any]:
+def reregister_local_sources(source_ids: List[int], *, source_provider: str = '') -> Dict[str, Any]:
     rows = []
     for sid in source_ids or []:
         try:
@@ -2623,7 +2655,7 @@ def reregister_local_sources(source_ids: List[int], *, source_provider: str = 'm
     failed = 0
     for row, cand in deduped:
         cand['_raw_repair_only'] = True
-        provider = str(source_provider or 'manual_reregister')
+        provider = _reregister_provider_for_row(row, source_provider)
         res = register_candidate_to_center(cand, source_provider=provider)
         if res.get('ok'):
             ok_count += 1
@@ -2633,7 +2665,7 @@ def reregister_local_sources(source_ids: List[int], *, source_provider: str = 'm
                 shared_share_db.update_local_source(int(row.get('id') or 0), last_error=res.get('message') or '重新登记失败')
             except Exception:
                 pass
-        items.append({'id': row.get('id'), 'candidate': cand, 'ok': bool(res.get('ok')), 'message': res.get('message') or '', 'result': res})
+        items.append({'id': row.get('id'), 'candidate': cand, 'provider': provider, 'ok': bool(res.get('ok')), 'message': res.get('message') or '', 'result': res})
     return {
         'ok': ok_count > 0,
         'success_count': ok_count,

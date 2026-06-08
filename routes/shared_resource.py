@@ -457,7 +457,7 @@ def api_reregister_local_source(source_id: int):
     row = shared_share_db.get_local_source(source_id)
     if not row:
         return jsonify({'success': False, 'message': '本地共享源不存在'}), 404
-    result = shared_tasks.reregister_local_source(source_id, source_provider='manual_reregister')
+    result = shared_tasks.reregister_local_source(source_id)
     status = 200 if result.get('ok') else 400
     return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '重新登记完成', 'data': result}), status
 
@@ -474,7 +474,7 @@ def api_reregister_local_sources_batch():
             ids.append(sid)
     if not ids:
         return jsonify({'success': False, 'message': '缺少要重新登记的本地源 ID'}), 400
-    result = shared_tasks.reregister_local_sources(ids, source_provider='manual_reregister')
+    result = shared_tasks.reregister_local_sources(ids)
     status = 200 if result.get('ok') else 400
     return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '重新登记完成', 'data': result}), status
 
@@ -572,6 +572,7 @@ def api_manual_validate():
     data = shared_tasks._normalize_series_candidate_identity(_request_json())
     # 手动预校验只检查本地是否能定位视频、是否能生成 RAW/summary_json。
     # 不再调用 repair_candidate_fingerprints，避免连载季/维护前预检触发季包一致性校验。
+    data['_skip_fingerprint_repair'] = True
     consistency = {}
     files = shared_share_db.collect_files_for_candidate(data)
     root = shared_share_db.candidate_root_from_files(files)
