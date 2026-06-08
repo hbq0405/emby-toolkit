@@ -1,18 +1,40 @@
 import importlib
 import sys
+import threading
 import types
 import unittest
 from unittest import mock
 
 
 def _install_test_stubs():
-    config_manager_mod = sys.modules.get("config_manager") or types.ModuleType("config_manager")
+    for module_name in [
+        "config_manager",
+        "constants",
+        "extensions",
+        "handler.emby",
+        "handler.tg_media_candidate",
+        "handler.p115_service",
+        "handler.github",
+        "handler.telegram",
+        "docker",
+        "task_manager",
+        "tasks.core",
+        "tasks.system_update",
+        "database",
+        "database.user_db",
+        "database.request_db",
+        "database.media_db",
+        "database.connection",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    config_manager_mod = types.ModuleType("config_manager")
     config_manager_mod.APP_CONFIG = {}
     config_manager_mod.PERSISTENT_DATA_PATH = "/tmp"
     config_manager_mod.get_proxies_for_requests = lambda: None
     sys.modules["config_manager"] = config_manager_mod
 
-    constants_mod = sys.modules.get("constants") or types.ModuleType("constants")
+    constants_mod = types.ModuleType("constants")
     constants_mod.APP_VERSION = "10.2.3"
     constants_mod.CONFIG_OPTION_TELEGRAM_BOT_TOKEN = "telegram_bot_token"
     constants_mod.CONFIG_OPTION_TELEGRAM_CHANNEL_ID = "telegram_channel_id"
@@ -28,44 +50,50 @@ def _install_test_stubs():
     constants_mod.GITHUB_REPO_NAME = "emby-toolkit"
     sys.modules["constants"] = constants_mod
 
-    extensions_mod = sys.modules.get("extensions") or types.ModuleType("extensions")
+    extensions_mod = types.ModuleType("extensions")
     extensions_mod.media_processor_instance = types.SimpleNamespace(config={})
     extensions_mod.watchlist_processor_instance = types.SimpleNamespace(config={})
     extensions_mod.actor_subscription_processor_instance = types.SimpleNamespace(config={})
     sys.modules["extensions"] = extensions_mod
 
-    emby_mod = sys.modules.get("handler.emby") or types.ModuleType("handler.emby")
+    emby_mod = types.ModuleType("handler.emby")
     emby_mod.get_emby_item_details = lambda *args, **kwargs: {}
     sys.modules["handler.emby"] = emby_mod
 
-    tg_candidate_mod = sys.modules.get("handler.tg_media_candidate") or types.ModuleType("handler.tg_media_candidate")
+    tg_candidate_mod = types.ModuleType("handler.tg_media_candidate")
     tg_candidate_mod.build_channel_task_payload = lambda *args, **kwargs: {}
     sys.modules["handler.tg_media_candidate"] = tg_candidate_mod
 
-    p115_service_mod = sys.modules.get("handler.p115_service") or types.ModuleType("handler.p115_service")
+    p115_service_mod = types.ModuleType("handler.p115_service")
     p115_service_mod.P115Service = object
     sys.modules["handler.p115_service"] = p115_service_mod
 
-    github_mod = sys.modules.get("handler.github") or types.ModuleType("handler.github")
+    github_mod = types.ModuleType("handler.github")
     github_mod.get_github_releases = lambda *args, **kwargs: [{"version": "v10.2.4"}]
     sys.modules["handler.github"] = github_mod
 
-    docker_mod = sys.modules.get("docker") or types.ModuleType("docker")
+    telegram_mod = types.ModuleType("handler.telegram")
+    telegram_mod.send_telegram_message = lambda *args, **kwargs: None
+    telegram_mod.escape_markdown = lambda text: text
+    telegram_mod.threading = threading
+    sys.modules["handler.telegram"] = telegram_mod
+
+    docker_mod = types.ModuleType("docker")
     docker_mod.from_env = lambda: None
     docker_mod.errors = types.SimpleNamespace(NotFound=Exception, ImageNotFound=Exception)
     sys.modules["docker"] = docker_mod
 
-    task_manager_mod = sys.modules.get("task_manager") or types.ModuleType("task_manager")
+    task_manager_mod = types.ModuleType("task_manager")
     task_manager_mod.update_status_from_thread = lambda *args, **kwargs: None
     sys.modules["task_manager"] = task_manager_mod
 
-    tasks_core_mod = sys.modules.get("tasks.core") or types.ModuleType("tasks.core")
+    tasks_core_mod = types.ModuleType("tasks.core")
     tasks_core_mod.get_task_registry = lambda context="all": {}
     sys.modules["tasks.core"] = tasks_core_mod
 
-    database_pkg = sys.modules.get("database") or types.ModuleType("database")
+    database_pkg = types.ModuleType("database")
     for name in ["user_db", "request_db", "media_db"]:
-        mod = sys.modules.get(f"database.{name}") or types.ModuleType(f"database.{name}")
+        mod = types.ModuleType(f"database.{name}")
         if name == "user_db":
             mod.get_admin_telegram_chat_ids = lambda: []
             mod.get_user_telegram_chat_id = lambda *args, **kwargs: None
@@ -77,12 +105,13 @@ def _install_test_stubs():
         sys.modules[f"database.{name}"] = mod
     sys.modules["database"] = database_pkg
 
-    database_connection_mod = sys.modules.get("database.connection") or types.ModuleType("database.connection")
+    database_connection_mod = types.ModuleType("database.connection")
     database_connection_mod.get_db_connection = lambda: None
     sys.modules["database.connection"] = database_connection_mod
 
 
 _install_test_stubs()
+sys.modules.pop("handler.telegram", None)
 telegram = importlib.import_module("handler.telegram")
 system_update = importlib.import_module("tasks.system_update")
 
@@ -264,14 +293,15 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
             with mock.patch.object(system_update, "resolve_update_target", return_value={"container_name": "etk-prod", "docker_image_name": "hbq0405/emby-toolkit:v10.2.4"}):
                 with mock.patch.object(system_update, "resolve_update_strategy", return_value={"strategy": "docker_helper", "helper_image": "hbq0405/emby-toolkit:latest"}):
                     with mock.patch.object(telegram, "send_telegram_message") as send_mock:
-                        with mock.patch("handler.telegram.threading.Thread") as thread_mock:
+                        with mock.patch.object(telegram.threading, "Thread") as thread_mock:
                             thread_mock.return_value.start.side_effect = lambda: thread_mock.call_args.kwargs["target"]()
 
                             registry = {
                                 "system-auto-update": (fake_update_task, "系统自动更新", "media")
                             }
-                            with mock.patch("tasks.core.get_task_registry", return_value=registry):
-                                telegram._execute_task_from_tg("10001", "system-auto-update")
+                            with mock.patch.dict(sys.modules, {"tasks.system_update": system_update}):
+                                with mock.patch("tasks.core.get_task_registry", return_value=registry):
+                                    telegram._execute_task_from_tg("10001", "system-auto-update")
 
         self.assertEqual(send_mock.call_count, 2)
         start_message = send_mock.call_args_list[0].args[1]
@@ -368,8 +398,11 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
         self.assertEqual(kwargs["entrypoint"][0:2], ["python", "-c"])
         self.assertIn("if __name__ == \"__main__\":", kwargs["entrypoint"][2])
         self.assertNotIn("/tmp/etk_update_helper.py", kwargs["entrypoint"][2])
+        self.assertTrue(kwargs["auto_remove"])
         self.assertEqual(kwargs["volumes"]["/srv/etk-config"], {"bind": "/config", "mode": "rw"})
         self.assertEqual(kwargs["environment"]["ETK_UPDATE_STATUS_PATH"], "/config/system_update_result.json")
+        self.assertEqual(kwargs["labels"]["com.embytoolkit.role"], "system-update-helper")
+        self.assertEqual(kwargs["labels"]["com.embytoolkit.target-container"], "emby-toolkit")
 
     def test_run_docker_helper_fails_fast_when_status_path_is_not_persisted_mount(self):
         fake_client = mock.Mock()

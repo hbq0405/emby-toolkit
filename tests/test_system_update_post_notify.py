@@ -6,7 +6,18 @@ from unittest import mock
 
 
 def _install_stubs():
-    constants_mod = sys.modules.get("constants") or types.ModuleType("constants")
+    for module_name in [
+        "config_manager",
+        "constants",
+        "database",
+        "database.settings_db",
+        "database.user_db",
+        "handler.telegram",
+        "tasks.system_update",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    constants_mod = types.ModuleType("constants")
     constants_mod.CONFIG_FILE_NAME = "config.ini"
     constants_mod.CONFIG_OPTION_DB_HOST = "db_host"
     constants_mod.CONFIG_OPTION_DB_PORT = "db_port"
@@ -90,6 +101,7 @@ def _install_stubs():
     constants_mod.CONFIG_OPTION_ETK_SERVER_URL = "etk_server_url"
     constants_mod.CONFIG_OPTION_115_ENABLE_SYNC_DELETE = "p115_enable_sync_delete"
     constants_mod.CONFIG_OPTION_115_GENERATE_MEDIAINFO = "p115_generate_mediainfo"
+    constants_mod.CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION = "p115_mediainfo_assisted_recognition"
     constants_mod.CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"
     constants_mod.CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"
     constants_mod.CONFIG_OPTION_115_MEDIAINFO_CENTER = "p115_mediainfo_center"
@@ -143,27 +155,27 @@ def _install_stubs():
     constants_mod.ENV_VAR_TMDB_API_BASE_URL = "TMDB_API_BASE_URL"
     sys.modules["constants"] = constants_mod
 
-    settings_db_mod = sys.modules.get("database.settings_db") or types.ModuleType("database.settings_db")
+    settings_db_mod = types.ModuleType("database.settings_db")
     settings_db_mod.get_setting = lambda key: {}
     settings_db_mod.save_setting = lambda key, value: None
     settings_db_mod.delete_setting = lambda key: True
 
-    user_db_mod = sys.modules.get("database.user_db") or types.ModuleType("database.user_db")
+    user_db_mod = types.ModuleType("database.user_db")
     user_db_mod.get_admin_telegram_chat_ids = lambda: ["10001"]
 
-    database_pkg = sys.modules.get("database") or types.ModuleType("database")
+    database_pkg = types.ModuleType("database")
     database_pkg.settings_db = settings_db_mod
     database_pkg.user_db = user_db_mod
     sys.modules["database"] = database_pkg
     sys.modules["database.settings_db"] = settings_db_mod
     sys.modules["database.user_db"] = user_db_mod
 
-    handler_telegram_mod = sys.modules.get("handler.telegram") or types.ModuleType("handler.telegram")
+    handler_telegram_mod = types.ModuleType("handler.telegram")
     handler_telegram_mod.send_telegram_message = lambda *args, **kwargs: None
     handler_telegram_mod.escape_markdown = lambda text: text
     sys.modules["handler.telegram"] = handler_telegram_mod
 
-    tasks_system_update = sys.modules.get("tasks.system_update") or types.ModuleType("tasks.system_update")
+    tasks_system_update = types.ModuleType("tasks.system_update")
     tasks_system_update.consume_post_update_status = lambda: None
     tasks_system_update.peek_post_update_status = lambda: None
     tasks_system_update.clear_post_update_status = lambda: True
@@ -183,15 +195,18 @@ class PostUpdateNotifyTests(unittest.TestCase):
             "target_version": "v10.2.6",
             "message": "容器健康检查通过。",
         }
+        user_db_mod = sys.modules["database.user_db"]
+        telegram_mod = sys.modules["handler.telegram"]
         with mock.patch("tasks.system_update.peek_post_update_status", return_value=payload):
             with mock.patch("tasks.system_update.clear_post_update_status", return_value=True) as clear_mock:
-                with mock.patch("handler.telegram.send_telegram_message") as send_mock:
-                    result = config_manager._notify_pending_system_update_result()
+                with mock.patch.object(user_db_mod, "get_admin_telegram_chat_ids", return_value=["10001"]):
+                    with mock.patch.object(telegram_mod, "send_telegram_message") as send_mock:
+                        result = config_manager._notify_pending_system_update_result()
 
         self.assertTrue(result)
         send_mock.assert_called_once()
         clear_mock.assert_called_once()
-        message = send_mock.call_args.args[1]
+        message = send_mock.call_args.args[1].replace("\\", "")
         self.assertIn("系统自动更新", message)
         self.assertIn("10.2.5", message)
         self.assertIn("v10.2.6", message)
@@ -204,10 +219,13 @@ class PostUpdateNotifyTests(unittest.TestCase):
             "target_version": "v10.2.6",
             "message": "容器健康检查通过。",
         }
+        user_db_mod = sys.modules["database.user_db"]
+        telegram_mod = sys.modules["handler.telegram"]
         with mock.patch("tasks.system_update.peek_post_update_status", return_value=payload):
             with mock.patch("tasks.system_update.clear_post_update_status", return_value=True) as clear_mock:
-                with mock.patch("handler.telegram.send_telegram_message", side_effect=RuntimeError("tg down")):
-                    result = config_manager._notify_pending_system_update_result()
+                with mock.patch.object(user_db_mod, "get_admin_telegram_chat_ids", return_value=["10001"]):
+                    with mock.patch.object(telegram_mod, "send_telegram_message", side_effect=RuntimeError("tg down")):
+                        result = config_manager._notify_pending_system_update_result()
 
         self.assertFalse(result)
         clear_mock.assert_not_called()

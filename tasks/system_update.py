@@ -18,6 +18,10 @@ DEFAULT_IMAGE_NAME_TAG = 'hbq0405/emby-toolkit:latest'
 DEFAULT_UPDATE_STRATEGY = 'docker_helper'
 DEFAULT_HELPER_IMAGE = 'hbq0405/emby-toolkit:latest'
 UPDATE_STATUS_FILE = 'system_update_result.json'
+DOCKER_HELPER_LABELS = {
+    'com.embytoolkit.role': 'system-update-helper',
+    'com.embytoolkit.target-container': DEFAULT_CONTAINER_NAME,
+}
 
 DOCKER_HELPER_SCRIPT = r"""
 import json
@@ -576,6 +580,12 @@ def _build_helper_environment(status_path, container_name, image_name_tag, versi
     }
 
 
+def _build_helper_labels(container_name):
+    labels = dict(DOCKER_HELPER_LABELS)
+    labels['com.embytoolkit.target-container'] = _clean_version_text(container_name, DEFAULT_CONTAINER_NAME)
+    return labels
+
+
 def _ensure_helper_image(client, helper_image, version_info):
     try:
         client.images.get(helper_image)
@@ -633,10 +643,11 @@ def _run_docker_helper(client, helper_image, container_name, image_name_tag, ver
         output = client.containers.run(
             image=helper_image,
             entrypoint=["python", "-c", DOCKER_HELPER_SCRIPT],
-            remove=True,
             detach=False,
+            auto_remove=True,
             environment=env,
             volumes=volumes,
+            labels=_build_helper_labels(container_name),
         )
         logger.debug(f"Docker helper 输出: {_decode_container_output(output)}")
     except Exception as e:
