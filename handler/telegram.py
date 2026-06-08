@@ -1273,14 +1273,28 @@ def _tg_resource_size_text(resource: dict) -> str:
 
 def _tg_resource_quality_text(resource: dict, limit: int = 96) -> str:
     # 尽量提取一行“版本/质量/来源”摘要，和备注分开展示。
+    # 不只按完全相同去重，还要跳过已经包含在 video_display 里的子项，
+    # 例如 quality="4K · Dolby Vision P7 / HDR10 · HEVC" 时，不再追加 source="Dolby Vision P7 / HDR10"。
     preferred = []
+
+    def append_unique(value):
+        value = _tg_flatten_resource_value(value)
+        if not value:
+            return
+        norm = re.sub(r'[\s/\-_.·|,，]+', '', value).lower()
+        if not norm:
+            return
+        for old in preferred:
+            old_norm = re.sub(r'[\s/\-_.·|,，]+', '', str(old or '')).lower()
+            if norm == old_norm or norm in old_norm or old_norm in norm:
+                return
+        preferred.append(value)
+
     for key in ("quality", "source", "video_codec", "audio", "format", "category", "edition"):
-        value = _tg_flatten_resource_value(resource.get(key))
-        if value:
-            preferred.append(value)
+        append_unique(resource.get(key))
 
     if preferred:
-        return _tg_truncate(" / ".join(dict.fromkeys(preferred)), limit=limit)
+        return _tg_truncate(" / ".join(preferred), limit=limit)
 
     # 字段不全时，用名称字段兜底，但避免把 slug 当质量说明。
     for key in ("title", "name", "resource_name", "share_name", "filename", "file_name"):
@@ -1352,6 +1366,43 @@ def _tg_sp_first(*values) -> str:
         if value not in (None, '', [], {}):
             return str(value).strip()
     return ''
+
+
+def _tg_sp_quality_summary(summary: dict) -> str:
+    """共享池展示用媒体参数摘要。
+
+    中心端的 video_display 通常已经包含：分辨率 / HDR(杜比) / 编码 / 位深 / 帧率。
+    TG 展示时不能再把 effect 当作 source 拼一次，否则会出现
+    "Dolby Vision / HDR10 ... / Dolby Vision / HDR10" 这种重复。
+    """
+    summary = summary if isinstance(summary, dict) else {}
+    video_display = _tg_sp_first(summary.get('video_display'))
+    if video_display:
+        return video_display
+
+    parts = []
+
+    def add(value):
+        value = str(value or '').strip()
+        if not value:
+            return
+        norm = re.sub(r'[\s/\-_.·|,，]+', '', value).lower()
+        if not norm:
+            return
+        for old in parts:
+            old_norm = re.sub(r'[\s/\-_.·|,，]+', '', str(old or '')).lower()
+            if norm == old_norm or norm in old_norm or old_norm in norm:
+                return
+        parts.append(value)
+
+    add(_tg_sp_first(summary.get('resolution'), summary.get('resolution_display')))
+    add(_tg_sp_first(summary.get('effect'), summary.get('effect_key')))
+    add(_tg_sp_first(summary.get('codec'), summary.get('video_codec'), summary.get('codec_display')))
+    bit_depth = _tg_sp_first(summary.get('bit_depth'))
+    if bit_depth:
+        add(f"{bit_depth}bit" if str(bit_depth).isdigit() else bit_depth)
+    add(_tg_sp_first(summary.get('fps'), summary.get('frame_rate')))
+    return ' · '.join(parts)
 
 
 def _tg_sp_tag_containers(item: dict) -> list[dict]:
@@ -1516,9 +1567,11 @@ def _tg_sp_normalize(resource: dict, *, fallback_year: str = '') -> dict:
         'unlock_points': 0,
         'share_size': _tg_sp_first(item.get('share_size'), _tg_sp_size_text(item.get('size') or item.get('total_size'))),
         'video_resolution': _tg_sp_first(summary.get('resolution'), summary.get('resolution_display')),
-        'quality': _tg_sp_first(summary.get('video_display'), summary.get('codec'), summary.get('video_codec')),
-        'source': _tg_sp_first(summary.get('effect'), summary.get('effect_key'), '共享秒传'),
-        'source_detail': _tg_sp_first(summary.get('video_display'), summary.get('formatted_by')),
+        'quality': _tg_sp_quality_summary(summary),
+        # 共享池的 source 不再塞 HDR/杜比信息；quality 里已经包含 effect，
+        # 否则 TG 资源行会把 Dolby Vision / HDR10 拼两遍。
+        'source': '',
+        'source_detail': _tg_sp_first(_tg_sp_quality_summary(summary), summary.get('formatted_by')),
         'remark': ' · '.join(x for x in (item.get('status_message') or '', version_label, f"共享池 · {item.get('progress_text')}" if item.get('progress_text') else '共享池 · 可秒传') if str(x).strip()),
         '_season_match_label': item.get('progress_text') or '',
         '_shared_pool_version_label': version_label,
