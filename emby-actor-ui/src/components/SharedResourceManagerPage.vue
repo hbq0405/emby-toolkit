@@ -101,8 +101,10 @@
               :columns="centerColumns"
               :data="groupedCenterSources"
               :pagination="centerPagination"
-              :row-key="row => row.group_key || row.source_id"
+              :row-key="centerTableRowKey"
+              :expanded-row-keys="centerExpandedRowKeys"
               :scroll-x="1680"
+              @update:expanded-row-keys="handleCenterExpandedRowKeys"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
             />
@@ -368,6 +370,8 @@ const summary = ref({ shares: {}, credit: {} });
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
+const centerExpandedRowKeys = ref([]);
+const centerChildrenLoading = reactive({});
 const shareRequests = ref([]);
 const shareRequestSearchKeyword = ref('');
 const shareRequestSearchItems = ref([]);
@@ -1672,6 +1676,38 @@ const centerGroupKey = (row) => {
   return `${baseType}:${tmdb || title}:${season}:${episode}`;
 };
 
+const centerTableRowKey = (row) => String(
+  row?.group_key || row?.display_group_key || row?.source_id || row?.source_ref_id || row?.hub_id || row?.episode_source_id || row?.source_file_id || centerGroupKey(row)
+).trim();
+
+const centerIsLazyPlaceholder = (row) => Boolean(row?.__center_lazy_placeholder);
+const centerChildCount = (row) => Number(row?.children_count || row?.child_count || row?.pack_item_count || row?.file_count || 0) || 0;
+const centerCanLazyLoadChildren = (row) => {
+  if (!row || centerIsLazyPlaceholder(row)) return false;
+  const typeLabel = centerTypeLabel(centerRowType(row));
+  const kind = String(row?.source_kind || '').toLowerCase();
+  if (typeLabel !== '季' && !['completed_season', 'season_hub'].includes(kind) && !row?.is_collapsed_pack) return false;
+  return Boolean(row?.has_children || row?.lazy_children_kind || centerChildCount(row) > 0 || kind === 'completed_season' || kind === 'season_hub');
+};
+const centerChildrenAreLoaded = (row) => Boolean(row?.children_loaded || row?._center_children_loaded || (Array.isArray(row?.children) && row.children.length && !row.children.some(centerIsLazyPlaceholder)));
+const centerNeedsLoadChildren = (row) => centerCanLazyLoadChildren(row) && !centerChildrenAreLoaded(row);
+const centerLazyPlaceholder = (row) => {
+  const key = centerTableRowKey(row);
+  const count = centerChildCount(row);
+  const loading = Boolean(centerChildrenLoading[key]);
+  return {
+    __center_lazy_placeholder: true,
+    group_key: `${key}:lazy-children`,
+    source_id: `${key}:lazy-children`,
+    item_type: 'Episode',
+    display_type: 'Episode',
+    title: loading ? '正在加载集明细…' : `展开后加载集明细${count ? `（${count} 集）` : ''}`,
+    status: loading ? 'loading' : 'pending',
+    status_label: loading ? '加载中' : '待加载',
+    versions: [],
+  };
+};
+
 const groupCenterSources = (items, orderBy = 'latest') => {
   const normSha1 = (value) => {
     const text = String(value || '').trim().toUpperCase();
@@ -1903,6 +1939,12 @@ const groupCenterSources = (items, orderBy = 'latest') => {
     if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
     return b.sort_val - a.sort_val;
   });
+
+  for (const group of processedGroups) {
+    if (centerNeedsLoadChildren(group) && (!Array.isArray(group.children) || !group.children.length)) {
+      group.children = [centerLazyPlaceholder(group)];
+    }
+  }
 
   return processedGroups;
 };
@@ -2194,12 +2236,113 @@ const loadCenterSources = async (forceRefresh = false) => {
     };
     if (forceRefresh) params.force_refresh = 1;
     const res = await axios.get('/api/shared/resources/center/sources', { params });
+    centerExpandedRowKeys.value = [];
+    clearCenterChildrenLoading();
     centerSources.value = res.data?.items || [];
     centerPagination.itemCount = Number(res.data?.total || 0);
   } catch (e) {
     message.error(e.response?.data?.message || '加载中心资源库失败');
   } finally {
     centerLoading.value = false;
+  }
+};
+
+
+const clearCenterChildrenLoading = () => {
+  Object.keys(centerChildrenLoading).forEach(key => delete centerChildrenLoading[key]);
+};
+
+const collectCenterSourceIds = (row) => {
+  const ids = [];
+  const push = (value) => {
+    const text = String(value || '').trim();
+    if (text && !ids.includes(text) && !text.includes(':lazy-children')) ids.push(text);
+  };
+  const visit = (item) => {
+    if (!item || typeof item !== 'object') return;
+    (Array.isArray(item._merged_source_ids) ? item._merged_source_ids : []).forEach(push);
+    push(item.source_id || item.source_ref_id || item.center_source_id);
+  };
+  visit(row);
+  (Array.isArray(row?.versions) ? row.versions : []).forEach(visit);
+  return ids.filter(id => !id.startsWith('hub_'));
+};
+
+const findCenterGroupByKey = (rows, key) => {
+  const target = String(key || '');
+  for (const row of rows || []) {
+    if (centerTableRowKey(row) === target) return row;
+    const found = findCenterGroupByKey(row?.children || [], target);
+    if (found) return found;
+  }
+  return null;
+};
+
+const centerItemMatchesLazyTarget = (item, target, sourceIds, hubId, targetKey) => {
+  if (!item || typeof item !== 'object') return false;
+  if (centerTableRowKey(item) === targetKey || centerGroupKey(item) === targetKey) return true;
+  const itemHub = String(item.hub_id || item.source_id || item.source_ref_id || '').trim();
+  if (hubId && itemHub === hubId) return true;
+  const itemIds = collectCenterSourceIds(item);
+  if (String(item.source_id || item.source_ref_id || '').trim()) itemIds.push(String(item.source_id || item.source_ref_id).trim());
+  return sourceIds.some(id => itemIds.includes(id));
+};
+
+const applyCenterLoadedChildren = (target, children, packItems) => {
+  const sourceIds = collectCenterSourceIds(target);
+  const hubId = String(target?.hub_id || (target?.source_kind === 'season_hub' ? (target.source_id || target.source_ref_id) : '') || '').trim();
+  const targetKey = centerTableRowKey(target);
+  const normalizedChildren = Array.isArray(children) ? children : [];
+  const normalizedPackItems = Array.isArray(packItems) ? packItems : normalizedChildren;
+  centerSources.value = (centerSources.value || []).map(item => {
+    if (centerItemMatchesLazyTarget(item, target, sourceIds, hubId, targetKey)) {
+      return {
+        ...item,
+        children: normalizedChildren,
+        pack_items: normalizedPackItems,
+        children_loaded: true,
+        _center_children_loaded: true,
+        has_children: normalizedChildren.length > 0,
+      };
+    }
+    return item;
+  });
+};
+
+const loadCenterSourceChildren = async (row) => {
+  if (!centerNeedsLoadChildren(row)) return;
+  const key = centerTableRowKey(row);
+  if (!key || centerChildrenLoading[key]) return;
+  centerChildrenLoading[key] = true;
+  try {
+    const sourceKind = String(row?.source_kind || row?.lazy_children_kind || '').toLowerCase();
+    const isHub = sourceKind === 'season_hub' || row?.is_ongoing_hub;
+    const sourceIds = collectCenterSourceIds(row);
+    const params = {
+      source_kind: isHub ? 'season_hub' : 'completed_season',
+      source_id: isHub ? (row?.hub_id || row?.source_id || row?.source_ref_id || '') : (sourceIds[0] || row?.source_id || row?.source_ref_id || ''),
+      source_ids: isHub ? '' : sourceIds.join(','),
+      hub_id: row?.hub_id || '',
+      limit: 5000,
+    };
+    const res = await axios.get('/api/shared/resources/center/sources/children', { params });
+    const children = res.data?.children || res.data?.items || [];
+    const packItems = res.data?.pack_items || children;
+    applyCenterLoadedChildren(row, children, packItems);
+  } catch (e) {
+    message.error(e.response?.data?.message || '加载季包集明细失败');
+  } finally {
+    delete centerChildrenLoading[key];
+  }
+};
+
+const handleCenterExpandedRowKeys = async (keys) => {
+  const oldKeys = new Set(centerExpandedRowKeys.value || []);
+  centerExpandedRowKeys.value = keys || [];
+  const newlyExpanded = (keys || []).filter(key => !oldKeys.has(key));
+  for (const key of newlyExpanded) {
+    const row = findCenterGroupByKey(groupedCenterSources.value || [], key);
+    if (row && centerNeedsLoadChildren(row)) await loadCenterSourceChildren(row);
   }
 };
 

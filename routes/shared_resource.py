@@ -879,6 +879,83 @@ def api_center_sources():
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
 
 
+@shared_resource_bp.route('/center/sources/children', methods=['GET'])
+@admin_required
+def api_center_source_children():
+    """中心资源库季包展开懒加载：默认列表不再携带 children/pack_items。"""
+    try:
+        raw_ids = request.args.get('source_ids') or ''
+        source_ids = []
+        for value in str(raw_ids).replace(';', ',').split(','):
+            value = value.strip()
+            if value and value not in source_ids:
+                source_ids.append(value)
+        source_id = str(request.args.get('source_id') or '').strip()
+        if source_id and source_id not in source_ids:
+            source_ids.insert(0, source_id)
+        client = SharedCenterClient()
+        resp = client.list_display_children(
+            source_kind=request.args.get('source_kind') or '',
+            source_id=source_id,
+            source_ids=source_ids,
+            hub_id=request.args.get('hub_id') or '',
+            limit=int(request.args.get('limit') or 5000),
+            offset=int(request.args.get('offset') or 0),
+        )
+
+        def _decorate_center_row(row):
+            if not isinstance(row, dict):
+                return {}
+            row = dict(row)
+            for key in ('versions', 'children', 'pack_items'):
+                if isinstance(row.get(key), list):
+                    row[key] = [_decorate_center_row(x) for x in row.get(key) if isinstance(x, dict)]
+            short_direct = _center_direct_flag_state(row, 'is_short_drama', 'short_drama_meta_json')
+            if short_direct is False:
+                row['is_short_drama'] = False
+                row['short_drama_meta_json'] = row.get('short_drama_meta_json') or {'is_short_drama': False, 'manual_override': True}
+            else:
+                short_meta = _center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json')
+                if short_meta:
+                    row['is_short_drama'] = True
+                    row['short_drama_meta_json'] = short_meta
+            animation_meta = _center_flag_meta(row, 'is_animation', 'animation_meta_json')
+            if animation_meta:
+                row['is_animation'] = True
+                row['animation_meta_json'] = animation_meta
+            completed_certified = _center_source_is_completed_certified(row)
+            completed_meta = _center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json') if completed_certified else {}
+            if completed_certified:
+                row['is_completed_certified'] = True
+                row['is_completed'] = True
+                row['completed_certified_meta_json'] = completed_meta or {
+                    'is_completed_certified': True,
+                    'certified_by': 'completed_season_source',
+                    'status': row.get('status'),
+                }
+            elif row.get('source_kind') != 'completed_season':
+                row['is_completed_certified'] = False
+                row['is_completed'] = False
+                row.pop('completed_certified_meta_json', None)
+            if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
+                row['version_summary'] = {}
+                row['summary_json'] = {}
+                row['media_signature_json'] = {}
+            else:
+                row['version_summary'] = _center_version_summary(row)
+            if not row.get('size') and row.get('total_size'):
+                row['size'] = row.get('total_size')
+            row = _apply_local_season_meta(row)
+            return row
+
+        for key in ('items', 'children', 'pack_items', 'parents'):
+            if isinstance(resp.get(key), list):
+                resp[key] = [_decorate_center_row(row) for row in resp.get(key) if isinstance(row, dict)]
+        return jsonify({'success': True, **resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e), 'items': [], 'children': [], 'pack_items': [], 'total': 0}), 500
+
+
 @shared_resource_bp.route('/center/import', methods=['POST'])
 @admin_required
 def api_center_import():

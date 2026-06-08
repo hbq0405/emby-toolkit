@@ -224,6 +224,26 @@ class SharedCenterClient:
             'force_refresh': 1 if force_refresh else 0,
         }, timeout=30)
 
+
+    def list_display_children(self, *, source_kind: str = '', source_id: str = '', source_ids: List[str] | None = None,
+                              hub_id: str = '', limit: int = 5000, offset: int = 0, **_ignored) -> Dict[str, Any]:
+        """中心资源库懒加载子项：展开季包时再取 children / pack_items。"""
+        ids = []
+        for value in source_ids or []:
+            text = str(value or '').strip()
+            if text and text not in ids:
+                ids.append(text)
+        if source_id and source_id not in ids:
+            ids.insert(0, str(source_id).strip())
+        return self._get('/api/v1/sources/display-children', {
+            'source_kind': source_kind or '',
+            'source_id': source_id or '',
+            'source_ids': ','.join(ids),
+            'hub_id': hub_id or '',
+            'limit': max(1, min(int(limit or 5000), 20000)),
+            'offset': max(0, int(offset or 0)),
+        }, timeout=30)
+
     def list_hubs(self, *, q: str = '', status: str = '', tmdb_id: str = '', limit: int = 200, offset: int = 0) -> Dict[str, Any]:
         return self._get('/api/v1/hubs/list', {'q': q or '', 'status': status or '', 'tmdb_id': tmdb_id or '', 'limit': limit, 'offset': offset}, timeout=20)
 
