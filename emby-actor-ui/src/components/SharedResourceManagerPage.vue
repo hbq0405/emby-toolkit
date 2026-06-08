@@ -2843,11 +2843,12 @@ const confirmShareAllLibrary = () => {
     onPositiveClick: async () => {
       shareAllLoading.value = true;
       try {
-        const res = await axios.post('/api/shared/resources/shares/share-library', {});
-        message.success(res.data?.message || '已启动一键登记媒体库任务');
-        await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]);
+        const res = await axios.post('/api/tasks/run', {
+          task_name: 'share-all-library'
+        });
+        message.success(res.data?.message || '一键登记媒体库任务已提交');
       } catch (e) {
-        message.error(e.response?.data?.message || '启动一键登记媒体库失败');
+        message.error(e.response?.data?.error || e.response?.data?.message || '启动一键登记媒体库失败');
       } finally {
         shareAllLoading.value = false;
       }

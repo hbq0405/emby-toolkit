@@ -772,22 +772,6 @@ def api_manual_create():
     return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '共享源已登记中心', 'data': result}), status
 
 
-@shared_resource_bp.route('/shares/share-library', methods=['POST'])
-@admin_required
-def api_share_library():
-    data = _request_json()
-    max_items = int(data.get('max_items') or 100000)
-    # 默认异步，避免前端等待全库扫描。
-    def _runner():
-        try:
-            shared_tasks.share_all_library(max_items=max_items)
-        except Exception as e:
-            logger.error(f"  ➜ [共享资源] 一键登记媒体库任务失败: {e}", exc_info=True)
-    threading.Thread(target=_runner, name='shared-rapid-register-all-library', daemon=True).start()
-    return jsonify({'success': True, 'message': '已启动一键登记媒体库任务；不会创建 115 分享，只登记中心秒传索引'})
-
-
-
 def _json_dict(value):
     if isinstance(value, dict):
         return value
