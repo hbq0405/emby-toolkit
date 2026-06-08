@@ -808,6 +808,39 @@ def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     })
     return {k: v for k, v in out.items() if v not in (None, '', [], {})}
 
+
+def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
+    """中心资源库列表兜底瘦身。
+
+    即使中心端旧版本在搜索/筛选时仍返回 children/pack_items，客户端列表接口也只把
+    季包壳传给前端；真正展开时再调用 /center/sources/children 按需加载。
+    """
+    if not isinstance(row, dict):
+        return {}
+    row = dict(row)
+    for key in ('versions',):
+        if isinstance(row.get(key), list):
+            row[key] = [_strip_center_display_children(x) for x in row.get(key) if isinstance(x, dict)]
+    child_values = []
+    for key in ('children', 'pack_items'):
+        value = row.get(key)
+        if isinstance(value, list) and value:
+            child_values.extend([x for x in value if isinstance(x, dict)])
+        row.pop(key, None)
+    if child_values:
+        row['has_children'] = True
+        row['children_loaded'] = False
+        if not row.get('children_count'):
+            row['children_count'] = len(child_values)
+        if not row.get('child_count'):
+            row['child_count'] = row.get('children_count')
+        if not row.get('pack_item_count'):
+            row['pack_item_count'] = row.get('children_count')
+        if not row.get('lazy_children_kind'):
+            kind = str(row.get('source_kind') or '').strip().lower()
+            row['lazy_children_kind'] = 'season_hub' if kind == 'season_hub' else 'completed_season'
+    return row
+
 @shared_resource_bp.route('/center/sources', methods=['GET'])
 @admin_required
 def api_center_sources():
@@ -873,7 +906,11 @@ def api_center_sources():
             row = _apply_local_season_meta(row)
             return row
 
-        resp['items'] = [_decorate_center_row(row) for row in (resp.get('items') or []) if isinstance(row, dict)]
+        resp['items'] = [
+            _strip_center_display_children(_decorate_center_row(row))
+            for row in (resp.get('items') or [])
+            if isinstance(row, dict)
+        ]
         return jsonify({'success': True, **resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
