@@ -1135,6 +1135,7 @@ def check_season_consistency(
     log_result: bool = True,
     processor=None,
     repair_missing_fingerprints: bool = True,
+    require_expected_episode_count: bool = False,
 ) -> Dict[str, Any]:
     """统一检查指定季本地文件是否满足“无需洗版/可分享季包”的一致性条件。
 
@@ -1230,6 +1231,27 @@ def check_season_consistency(
                     _update_series_label(row.get('series_title') or row.get('parent_title'))
 
         local_episode_count = len(rows or [])
+        if require_expected_episode_count and expected_episode_count <= 0:
+            message = (
+                f"季包一致性校验失败：{_season_label_text()}缺少官方总集数，"
+                f"不能视为完结达标。请先刷新该季 TMDb 元数据/total_episodes。"
+            )
+            if log_result:
+                logger.info(
+                    f"  ➜ [一致性检查] {_season_label_text()} 缺少官方总集数，"
+                    f"不能视为完结达标。"
+                )
+            return {
+                'ok': False,
+                'reason': 'expected_episode_count_missing',
+                'message': message,
+                'tmdb_id': tmdb_id,
+                'season_number': season_number_int,
+                'expected_episode_count': expected_episode_count,
+                'local_episode_count': local_episode_count,
+                'series_name': series_name,
+            }
+
         if expected_episode_count and local_episode_count < expected_episode_count:
             message = (
                 f"季包一致性校验失败：{_season_label_text()}本地集数不足 "

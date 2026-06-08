@@ -486,11 +486,17 @@ def _media_rows_for_search(keyword: str = '', limit: int = 200) -> List[Dict[str
                     m.*,
                     p.title AS series_title,
                     p.original_title AS series_original_title,
-                    p.release_year AS series_release_year
+                    p.release_year AS series_release_year,
+                    se.watching_status AS season_watching_status,
+                    se.total_episodes AS season_total_episodes
                 FROM media_metadata m
                 LEFT JOIN media_metadata p
                   ON p.item_type = 'Series'
                  AND p.tmdb_id = COALESCE(NULLIF(m.parent_series_tmdb_id, ''), CASE WHEN m.item_type='Series' THEN m.tmdb_id ELSE NULL END)
+                LEFT JOIN media_metadata se
+                  ON se.item_type = 'Season'
+                 AND se.season_number = m.season_number
+                 AND COALESCE(NULLIF(se.parent_series_tmdb_id, ''), se.tmdb_id) = COALESCE(NULLIF(m.parent_series_tmdb_id, ''), CASE WHEN m.item_type='Season' THEN m.tmdb_id ELSE NULL END)
                 WHERE {' AND '.join(where)}
                 ORDER BY
                     CASE m.item_type WHEN 'Movie' THEN 0 WHEN 'Series' THEN 1 WHEN 'Season' THEN 2 ELSE 3 END,
@@ -661,7 +667,14 @@ def repair_candidate_fingerprints(data: Dict[str, Any], *, log_result: bool = Tr
     if not parent_tmdb_id or season_number is None:
         return {'ok': False, 'reason': 'missing_identity', 'message': '缺少父剧 TMDb ID 或季号，无法执行季级指纹体检'}
 
+    is_completed_season = _is_completed_season_candidate(data)
     expected = _safe_int(data.get('expected_episode_count') or data.get('total_episodes'), 0)
+    if is_completed_season and expected <= 0:
+        expected = _strict_expected_episode_count_for_season(parent_tmdb_id, season_number)
+        if expected > 0:
+            data['expected_episode_count'] = expected
+            data['total_episodes'] = expected
+    require_expected = bool(data.get('_require_expected_episode_count') or is_completed_season)
     series_name = str(data.get('series_title') or data.get('title') or '').strip()
     if not series_name or re.search(r'\bS\d{1,3}(?:E\d{1,4})?\b|第\s*\d+\s*季', series_name, re.IGNORECASE):
         series_name = _series_title_for_consistency(parent_tmdb_id) or series_name
@@ -677,6 +690,7 @@ def repair_candidate_fingerprints(data: Dict[str, Any], *, log_result: bool = Tr
             log_result=log_result,
             processor=None,
             repair_missing_fingerprints=True,
+            require_expected_episode_count=require_expected,
         )
     except Exception as e:
         logger.warning(
@@ -1031,6 +1045,71 @@ def _is_completed_status(value: Any) -> bool:
     return str(value or '').strip().lower() in {'completed', 'complete', 'ended', 'end', '完结', '已完结'}
 
 
+def _is_completed_season_candidate(data: Dict[str, Any]) -> bool:
+    data = dict(data or {})
+    item_type = str(data.get('item_type') or data.get('share_item_type') or '').strip()
+    if item_type != 'Season':
+        return False
+    provider = str(data.get('source_provider') or data.get('_original_source_provider') or '').strip().lower()
+    watching_status = str(data.get('watching_status') or data.get('season_status') or '').strip()
+    return bool(
+        data.get('_force_completed_season')
+        or provider == 'rapid_completed_season'
+        or _is_completed_status(watching_status)
+    )
+
+
+def _strict_expected_episode_count_for_season(parent_tmdb_id: str, season_number) -> int:
+    """读取指定季的官方总集数，绝不回退成本地已入库集数。
+
+    完结季质量门禁必须使用 Season.total_episodes 或 Episode.total_episodes
+    这类元数据字段；如果字段缺失，就返回 0，让调用方按“缺少官方总集数”拦截。
+    不能用 COUNT(已入库集) 兜底，否则历史脏数据 9/27 会被误判为 9/9 达标。
+    """
+    parent = str(parent_tmdb_id or '').strip()
+    season = _nullable_int(season_number)
+    if not parent or season is None:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT MAX(NULLIF(total_episodes, 0))::integer AS total
+                    FROM media_metadata
+                    WHERE item_type='Season'
+                      AND season_number=%s
+                      AND COALESCE(NULLIF(parent_series_tmdb_id, ''), tmdb_id)=%s
+                    """,
+                    (season, parent),
+                )
+                row = _row(cur.fetchone()) or {}
+                value = _safe_int(row.get('total'), 0)
+                if value > 0:
+                    return value
+
+                cur.execute(
+                    """
+                    SELECT MAX(NULLIF(total_episodes, 0))::integer AS total
+                    FROM media_metadata
+                    WHERE item_type='Episode'
+                      AND parent_series_tmdb_id=%s
+                      AND season_number=%s
+                    """,
+                    (parent, season),
+                )
+                row = _row(cur.fetchone()) or {}
+                value = _safe_int(row.get('total'), 0)
+                if value > 0:
+                    return value
+    except Exception as e:
+        logger.debug(
+            "  ➜ [共享资源] 读取完结季官方总集数失败: tmdb=%s, season=%s, err=%s",
+            parent, season, e,
+        )
+    return 0
+
+
 def _movie_row_already_registered(row: Dict[str, Any], index: Dict[str, Any]) -> bool:
     tmdb_id = str((row or {}).get('tmdb_id') or '').strip()
     if not tmdb_id:
@@ -1149,6 +1228,10 @@ def _build_lightweight_share_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         for sha1 in sha1s:
             episode_file_sha1s.append({'episode_number': ep_no, 'sha1': sha1})
 
+    strict_total = _safe_int(row.get('season_total_episodes'), 0) if item_type in ('Season', 'Episode') else 0
+    if strict_total <= 0:
+        strict_total = _safe_int(row.get('total_episodes'), 0)
+
     return {
         'tmdb_id': tmdb_id,
         'share_tmdb_id': tmdb_id,
@@ -1163,8 +1246,8 @@ def _build_lightweight_share_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'release_year': row.get('release_year') or row.get('series_release_year'),
         'watching_status': row.get('watching_status') or '',
         'season_status': row.get('watching_status') or '',
-        'total_episodes': _safe_int(row.get('total_episodes'), 0) or None,
-        'expected_episode_count': _safe_int(row.get('total_episodes'), 0) or None,
+        'total_episodes': strict_total or None,
+        'expected_episode_count': strict_total or None,
         'in_library': bool(row.get('in_library')),
         'source_in_library': bool(row.get('in_library')),
         'share_type': share_type,
@@ -1217,6 +1300,7 @@ def all_library_share_candidates(
     seen = set()
     skipped_existing = 0
     skipped_duplicate = 0
+    skipped_completed_episode = 0
     scanned = len(rows)
     t_filter = time.perf_counter()
 
@@ -1229,7 +1313,7 @@ def all_library_share_candidates(
             _emit_scan_progress(
                 progress_callback,
                 min(10, progress),
-                f'正在筛选媒体候选 {idx}/{scanned}，已排除有效共享 {skipped_existing}，待登记 {len(result)}...'
+                f'正在筛选媒体候选 {idx}/{scanned}，已排除有效共享 {skipped_existing}，已屏蔽完结季分集 {skipped_completed_episode}，待登记 {len(result)}...'
             )
 
         if exclude_existing and _media_row_already_registered(row, existing_index):
@@ -1240,6 +1324,11 @@ def all_library_share_candidates(
             cand = _build_lightweight_share_candidate(row)
             key = ('Movie', cand.get('tmdb_id'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Episode':
+            # 完结季必须以 Season 候选走严格一致性门禁；
+            # 一键登记不能绕过季门禁，把历史脏数据的零散分集登记进中心 season_hub。
+            if _is_completed_status(row.get('season_watching_status')):
+                skipped_completed_episode += 1
+                continue
             cand = _build_lightweight_share_candidate(row)
             key = ('Episode', cand.get('tmdb_id'), cand.get('season_number'), cand.get('episode_number'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Season':
@@ -1256,7 +1345,7 @@ def all_library_share_candidates(
 
     timings['filter_candidates_sec'] = round(time.perf_counter() - t_filter, 3)
     timings['total_scan_sec'] = round(time.perf_counter() - t0, 3)
-    _emit_scan_progress(progress_callback, 10, f'候选扫描完成：扫描 {scanned}，排除有效共享 {skipped_existing}，重复 {skipped_duplicate}，待登记 {len(result)}。')
+    _emit_scan_progress(progress_callback, 10, f'候选扫描完成：扫描 {scanned}，排除有效共享 {skipped_existing}，屏蔽完结季分集 {skipped_completed_episode}，重复 {skipped_duplicate}，待登记 {len(result)}。')
 
     if return_stats:
         return {
@@ -1265,6 +1354,7 @@ def all_library_share_candidates(
             'total': len(result),
             'skipped_existing': skipped_existing,
             'skipped_duplicate': skipped_duplicate,
+            'skipped_completed_episode': skipped_completed_episode,
             'existing_index': existing_summary,
             'timings': timings,
         }

@@ -1851,7 +1851,10 @@ def _completed_season_consistency_gate(candidate: Dict[str, Any], *, log_result:
         return {'ok': True, 'skipped': True, 'reason': 'not_completed_season'}
 
     try:
-        consistency = shared_share_db.repair_candidate_fingerprints(candidate, log_result=log_result)
+        consistency = shared_share_db.repair_candidate_fingerprints(
+            {**candidate, '_require_expected_episode_count': True},
+            log_result=log_result,
+        )
     except Exception as e:
         consistency = {'ok': False, 'reason': 'check_error', 'message': str(e)}
 
@@ -1881,8 +1884,8 @@ def _completed_gate_status_from_consistency(consistency: Dict[str, Any]) -> Dict
     if consistency.get('ok'):
         return {'status': 'available', 'message': consistency.get('message') or '完结季一致性校验通过'}
     reason = str(consistency.get('reason') or '')
-    if reason == 'episode_count_insufficient':
-        return {'status': 'incomplete', 'message': consistency.get('message') or '完结季本地集数不足'}
+    if reason in ('episode_count_insufficient', 'expected_episode_count_missing'):
+        return {'status': 'incomplete', 'message': consistency.get('message') or '完结季本地集数不足/缺少官方总集数'}
     if reason in ('season_asset_inconsistent', 'asset_details_missing'):
         return {'status': 'inconsistent', 'message': consistency.get('message') or '完结季一致性校验失败'}
     return {'status': 'inconsistent', 'message': consistency.get('message') or '完结季一致性校验异常'}
@@ -2069,23 +2072,22 @@ def _series_identity_from_db(parent_series_tmdb_id: str, season_number=None) -> 
                         if total and total > 0:
                             out['expected_episode_count'] = total
 
-                    if not out.get('expected_episode_count'):
-                        cur.execute(
-                            """
-                            SELECT COUNT(DISTINCT episode_number)::integer AS n
-                            FROM media_metadata
-                            WHERE parent_series_tmdb_id=%s
-                              AND item_type='Episode'
-                              AND season_number=%s
-                              AND in_library=TRUE
-                              AND episode_number IS NOT NULL
-                            """,
-                            (parent, season),
-                        )
-                        cnt = cur.fetchone()
-                        count = _safe_int((cnt or {}).get('n'), 0) if cnt else 0
-                        if count > 0:
-                            out['expected_episode_count'] = count
+                    cur.execute(
+                        """
+                        SELECT COUNT(DISTINCT episode_number)::integer AS n
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id=%s
+                          AND item_type='Episode'
+                          AND season_number=%s
+                          AND in_library=TRUE
+                          AND episode_number IS NOT NULL
+                        """,
+                        (parent, season),
+                    )
+                    cnt = cur.fetchone()
+                    count = _safe_int((cnt or {}).get('n'), 0) if cnt else 0
+                    if count > 0:
+                        out['local_episode_count'] = count
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 查询剧集公共标题失败: tmdb={parent}, season={season}, err={e}")
     return out
@@ -2558,18 +2560,19 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
         total = len(candidates)
         skipped_existing = int(candidate_stats.get('skipped_existing') or 0)
         skipped_duplicate = int(candidate_stats.get('skipped_duplicate') or 0)
+        skipped_completed_episode = int(candidate_stats.get('skipped_completed_episode') or 0)
         scanned = int(candidate_stats.get('scanned') or 0)
         existing_summary = candidate_stats.get('existing_index') or {}
         timings = candidate_stats.get('timings') or {}
 
-        _task_status(10, f'扫描完成：媒体候选 {scanned}，已排除有效共享 {skipped_existing}，待登记 {total}。')
+        _task_status(10, f'扫描完成：媒体候选 {scanned}，已排除有效共享 {skipped_existing}，已屏蔽完结季分集 {skipped_completed_episode}，待登记 {total}。')
         logger.info(
-            '  ➜ [共享资源] 一键登记媒体库扫描完成：扫描 %s，跳过已有有效共享 %s，跳过重复候选 %s，待登记 %s，已有索引=%s，耗时=%s',
-            scanned, skipped_existing, skipped_duplicate, total, existing_summary, timings,
+            '  ➜ [共享资源] 一键登记媒体库扫描完成：扫描 %s，跳过已有有效共享 %s，屏蔽完结季分集 %s，跳过重复候选 %s，待登记 %s，已有索引=%s，耗时=%s',
+            scanned, skipped_existing, skipped_completed_episode, skipped_duplicate, total, existing_summary, timings,
         )
 
         if total <= 0:
-            msg = f'无需登记：扫描 {scanned} 个候选，已排除有效共享 {skipped_existing} 个。'
+            msg = f'无需登记：扫描 {scanned} 个候选，已排除有效共享 {skipped_existing} 个，已屏蔽完结季分集 {skipped_completed_episode} 个。'
             _task_status(100, msg)
             logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：{msg}")
             return {
@@ -2579,6 +2582,7 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                 'failed': 0,
                 'skipped_existing': skipped_existing,
                 'skipped_duplicate': skipped_duplicate,
+                'skipped_completed_episode': skipped_completed_episode,
                 'scanned': scanned,
                 'timings': timings,
                 'message': msg,
@@ -2601,6 +2605,7 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                     'skipped_bad_completed': skipped_bad_completed,
                     'skipped_existing': skipped_existing,
                     'skipped_duplicate': skipped_duplicate,
+                    'skipped_completed_episode': skipped_completed_episode,
                     'scanned': scanned,
                     'items': items[:50],
                     'timings': timings,
@@ -2642,9 +2647,9 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                 items.append({'title': title, 'ok': False, 'message': str(e)})
                 logger.warning(f"  ➜ [共享资源] 一键登记媒体库失败: {title} -> {e}")
 
-        msg = f'一键登记完成：扫描 {scanned}，跳过已有有效共享 {skipped_existing}，完结季不合格跳过 {skipped_bad_completed}，登记成功 {ok}，失败 {failed}。'
+        msg = f'一键登记完成：扫描 {scanned}，跳过已有有效共享 {skipped_existing}，屏蔽完结季分集 {skipped_completed_episode}，完结季不合格跳过 {skipped_bad_completed}，登记成功 {ok}，失败 {failed}。'
         _task_status(100, msg)
-        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}，完结季不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}")
+        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}，屏蔽完结季分集 {skipped_completed_episode}，完结季不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}")
         return {
             'ok': True,
             'total': total,
@@ -2653,6 +2658,7 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
             'skipped_bad_completed': skipped_bad_completed,
             'skipped_existing': skipped_existing,
             'skipped_duplicate': skipped_duplicate,
+            'skipped_completed_episode': skipped_completed_episode,
             'scanned': scanned,
             'items': items[:50],
             'timings': timings,
