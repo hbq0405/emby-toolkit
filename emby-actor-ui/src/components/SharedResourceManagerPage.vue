@@ -619,7 +619,7 @@ const isEffectiveShareRow = (row) => {
   return statuses.some(v => shareUsableStatuses.has(v));
 };
 const deleteShareDisabledTitle = (row) => isEffectiveShareRow(row)
-  ? '有效共享不能直接删除，请先停用，停用成功后再删除本地记录'
+  ? '有效共享不能直接删除，除非媒体项已不存在，判定为无效共享后再删除本地记录'
   : '删除本地共享记录';
 
 const statusMap = {
