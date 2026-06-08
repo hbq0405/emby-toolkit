@@ -78,6 +78,20 @@ def _norm_sha1(value: str) -> str:
     return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
 
 
+def _normalize_source_kind(value: str) -> str:
+    """把前端/中心返回的 Movie、display_type、旧 kind 统一成中心接口认可的小写 source_kind。"""
+    text = str(value or '').strip().lower().replace('-', '_')
+    if text in ('movie', 'movie_file', 'movie_folder', 'film'):
+        return 'movie'
+    if text in ('episode', 'episode_file', 'single'):
+        return 'episode'
+    if text in ('completed_season', 'season', 'season_pack', 'tv_pack', 'pack'):
+        return 'completed_season'
+    if text in ('season_hub', 'hub', 'ongoing_hub'):
+        return 'season_hub'
+    return text
+
+
 def _rapid_size_to_int(value, default=0) -> int:
     """把中心端/本地缓存里的 size / file_size / 0.69 GB 统一转成字节。"""
     try:
@@ -958,16 +972,10 @@ def _event_payload(event: Dict[str, Any]) -> Dict[str, Any]:
 
 def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[str, str, List[Dict[str, Any]]]:
     payload = _event_payload(event)
-    source_kind = str(event.get('source_kind') or payload.get('source_kind') or '').strip()
+    source_kind = _normalize_source_kind(event.get('source_kind') or payload.get('source_kind') or '')
     source_id = str(event.get('source_ref_id') or payload.get('source_id') or payload.get('source_ref_id') or '').strip()
     if not source_kind:
-        source_kind = str(payload.get('kind') or payload.get('item_type') or '').strip().lower()
-        if source_kind == 'movie':
-            source_kind = 'movie'
-        elif source_kind == 'episode':
-            source_kind = 'episode'
-        elif source_kind in ('season', 'completed_season'):
-            source_kind = 'completed_season'
+        source_kind = _normalize_source_kind(payload.get('kind') or payload.get('item_type') or payload.get('display_type') or '')
 
     # 兼容中心返回的 completed season 包：列表接口只给源摘要，真正文件清单要再取 manifest。
     # 如果 manifest 为空，不能再显示“秒传完成 0/0”，这属于 manifest 缺失/旧数据，需要重新登记该季。
@@ -1444,7 +1452,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             f.setdefault('source_kind', source_kind)
             f.setdefault('source_id', source_id)
             f.setdefault('source_ref_id', source_id)
-            file_source_kind = str(f.get('source_kind') or source_kind or '').strip()
+            file_source_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
             file_source_id = str(f.get('source_id') or f.get('source_ref_id') or source_id or '').strip()
             result = rapid_save_file(f, target_cid=target_cid)
             if result.get('ok'):
@@ -1479,19 +1487,30 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             else:
                 errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
 
+    report_errors = []
+    report_results = []
+    skipped_report_sources = []
+
     if ok_count:
         report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for report_kind, report_id, report_file in success_sources:
+            report_kind = _normalize_source_kind(report_kind)
             if report_kind not in ('movie', 'episode', 'completed_season') or not report_id:
+                skipped_report_sources.append({'source_kind': report_kind, 'source_id': report_id, 'file': (report_file or {}).get('file_name') or (report_file or {}).get('sha1')})
                 continue
             key = (report_kind, report_id)
             group = report_groups.setdefault(key, {'count': 0, 'file': report_file})
             group['count'] += 1
+        if not report_groups:
+            logger.warning(
+                f"  ➜ [共享资源] 秒传已成功但没有可上报的中心源，热度不会增加："
+                f"source={source_kind}:{source_id}, skipped={skipped_report_sources[:5]}"
+            )
         for (report_kind, report_id), group in report_groups.items():
             report_file = group.get('file') or {}
             success_file_count = max(1, int(group.get('count') or 1))
             try:
-                client.report_transfer(
+                report_resp = client.report_transfer(
                     report_kind,
                     report_id,
                     'success',
@@ -1499,11 +1518,16 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                     total_count=success_file_count,
                     message=f'本机秒传成功：{success_file_count} 个视频；{report_file.get("file_name") or report_file.get("sha1") or report_id}',
                 )
+                report_results.append({'source_kind': report_kind, 'source_id': report_id, **(report_resp or {})})
+                if report_resp and report_resp.get('inserted') is False:
+                    logger.info(f"  ➜ [共享资源] 秒传成功已上报过，本次不重复增加热度：{report_kind}:{report_id}")
             except Exception as e:
-                logger.warning(f"  ➜ [共享资源] 上报秒传成功失败: {e}")
+                err = {'source_kind': report_kind, 'source_id': report_id, 'error': str(e)}
+                report_errors.append(err)
+                logger.warning(f"  ➜ [共享资源] 上报秒传成功失败，热度不会增加: {err}")
         _kick_115_organize_detached(reason=f'rapid:{source_kind}:{source_id}')
     else:
-        fail_kind = source_kind if source_kind in ('movie', 'episode', 'completed_season') else ''
+        fail_kind = _normalize_source_kind(source_kind) if _normalize_source_kind(source_kind) in ('movie', 'episode', 'completed_season') else ''
         if fail_kind and source_id:
             try:
                 client.report_transfer(
@@ -1528,6 +1552,8 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         'ok': ok_count > 0, 'message': message, 'event_id': event_id,
         'source_kind': source_kind, 'source_id': source_id,
         'success_count': ok_count, 'total': len(files), 'errors': errors,
+        'report_results': report_results, 'report_errors': report_errors,
+        'skipped_report_sources': skipped_report_sources,
         'preflight': locals().get('preflight', {}),
     }
 
@@ -1783,13 +1809,10 @@ def consume_center_source_payload(source: Dict[str, Any], mode: str = 'rapid', c
     if context:
         for k, v in dict(context or {}).items():
             source.setdefault(k, v)
-    source_kind = str(source.get('source_kind') or source.get('kind') or '').strip()
+    source_kind = _normalize_source_kind(source.get('source_kind') or source.get('kind') or '')
     source_id = str(source.get('source_id') or source.get('source_ref_id') or source.get('episode_source_id') or '').strip()
     if not source_kind:
-        item_type = str(source.get('item_type') or source.get('display_type') or '').strip().lower()
-        if item_type == 'movie': source_kind = 'movie'
-        elif item_type == 'episode': source_kind = 'episode'
-        elif item_type in ('season', 'completed_season'): source_kind = 'completed_season'
+        source_kind = _normalize_source_kind(source.get('item_type') or source.get('display_type') or '')
     if not source_id and source_kind == 'episode':
         source_id = str(source.get('episode_source_id') or '').strip()
     if not source_kind or not source_id:

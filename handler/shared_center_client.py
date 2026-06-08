@@ -259,8 +259,14 @@ class SharedCenterClient:
         return self._get('/api/v1/gaps/open', {'limit': max(1, min(int(limit or 200), 1000))}, timeout=15)
 
     def list_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent', mine_only: bool = False,
-                     source_kind: str = '', item_type: str = '', tmdb_id: str = '', limit: int = 200, offset: int = 0,
+                     source_kind: str = '', item_type: str = '', tmdb_id: str = '', source_id: str = '',
+                     source_ids: List[str] | None = None, limit: int = 200, offset: int = 0,
                      **_ignored) -> Dict[str, Any]:
+        ids = []
+        for value in source_ids or []:
+            text = str(value or '').strip()
+            if text and text not in ids:
+                ids.append(text)
         return self._get('/api/v1/sources/list', {
             'q': q or '',
             'status': status or 'alive,available,updating,inconsistent',
@@ -268,6 +274,8 @@ class SharedCenterClient:
             'source_kind': source_kind or '',
             'item_type': item_type or '',
             'tmdb_id': tmdb_id or '',
+            'source_id': source_id or '',
+            'source_ids': ','.join(ids),
             'limit': max(1, min(int(limit or 200), 1000)),
             'offset': max(0, int(offset or 0)),
         }, timeout=25)
