@@ -481,6 +481,7 @@ const shareStatusOptions = [
   { label: '已上报中心', value: 'reported' },
   { label: '本地未上报', value: 'local' },
   { label: '不合格/异常', value: 'failed' },
+  { label: 'RAW缺失', value: 'raw_missing' },
   { label: '已停用', value: 'disabled' },
 ];
 
@@ -604,7 +605,7 @@ const statusMap = {
   active: { text: '本地可用', type: 'success' }, available: { text: '可用', type: 'success' }, alive: { text: '可用', type: 'success' },
   pending: { text: '待验证', type: 'warning' }, replenish: { text: '待补充', type: 'error' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
   reported: { text: '已登记', type: 'success' }, local: { text: '本地未登记', type: 'default' }, partial: { text: '部分登记', type: 'warning' },
-  inconsistent: { text: '不一致', type: 'error' }, incomplete: { text: '不完整', type: 'warning' }, disabled: { text: '已停用', type: 'default' },
+  inconsistent: { text: '不一致', type: 'error' }, incomplete: { text: '不完整', type: 'warning' }, raw_missing: { text: 'RAW缺失', type: 'error' }, disabled: { text: '已停用', type: 'default' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
   not_reported: { text: '未登记', type: 'default' },
   open: { text: '求共享中', type: 'success' }, fulfilled: { text: '已完成', type: 'success' },
@@ -713,7 +714,14 @@ const shareColumns = [
   } },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '备注', key: 'share_remark', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareRemarkNode(row) },
-  { title: '操作', key: 'actions', width: 110, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
+  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
+    h(NButton, {
+      size: 'small',
+      type: 'primary',
+      secondary: true,
+      title: '重新上传 RAW/summary_json，并重新登记中心',
+      onClick: () => reregisterShare(row),
+    }, { icon: () => h(NIcon, null, { default: () => h(ShareIcon) }), default: () => '重新登记' }),
     h(NButton, {
       size: 'small',
       type: 'error',
@@ -2501,6 +2509,33 @@ const manualCreateShare = async () => {
   } catch (e) {
     message.error(e.response?.data?.message || '登记资源失败');
   } finally { manualCreating.value = false; }
+};
+
+
+const reregisterShare = (row) => {
+  const ids = Array.isArray(row.source_ids) ? row.source_ids.filter(Boolean) : [];
+  const isBatch = ids.length > 1;
+  const title = row.title || row.root_name || row.file_name || '该资源';
+  const countText = isBatch ? `该聚合项下 ${ids.length} 个本机源` : '该本机源';
+  dialog.warning({
+    title: '重新登记共享源',
+    content: `确定重新登记《${title}》的${countText}吗？系统会重新上传 RAW/summary_json，并向中心重新登记；可用于修复中心 RAW 缺失导致的不可用状态。`,
+    positiveText: '重新登记',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        if (isBatch) {
+          await axios.post('/api/shared/resources/shares/reregister-batch', { ids });
+        } else {
+          await axios.post(`/api/shared/resources/shares/${row.id}/reregister`, {});
+        }
+        message.success('已重新登记共享源');
+        await Promise.allSettled([loadShares(), loadCenterSources(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '重新登记失败');
+      }
+    }
+  });
 };
 
 const cancelShare = (row) => {

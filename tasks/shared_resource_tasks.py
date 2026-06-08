@@ -991,6 +991,24 @@ def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, A
         return {}
 
 
+
+
+def _summary_json_usable_for_center(summary: Dict[str, Any]) -> bool:
+    """中心资源库展示摘要必须非空且包含至少一个可展示字段。"""
+    if not isinstance(summary, dict) or not summary:
+        return False
+    for key in (
+        'resolution', 'width', 'height', 'video_codec', 'codec', 'video_display',
+        'fps', 'frame_rate', 'bitrate', 'audio_list', 'subtitle_list', 'audios', 'subtitles',
+    ):
+        value = summary.get(key)
+        if value in (None, '', [], {}):
+            continue
+        if isinstance(value, (int, float)) and float(value) <= 0:
+            continue
+        return True
+    return False
+
 def _prepare_raw_upload_entry(file_info: Dict[str, Any]) -> Dict[str, Any]:
     sha1 = _norm_sha1(file_info.get('sha1'))
     if not sha1:
@@ -1000,17 +1018,22 @@ def _prepare_raw_upload_entry(file_info: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     final_size = _file_size_from_cache(file_info) or _infer_size_from_raw(raw) or None
     summary_json = _build_raw_ffprobe_summary_for_center(raw, file_info, final_size or 0)
-    if summary_json:
-        logger.debug(
-            f"  ➜ [共享资源] 已生成中心格式化 MediaInfo 摘要: "
-            f"sha1={sha1[:8]}..., formatted_by={summary_json.get('formatted_by') or '-'}, "
-            f"audio={summary_json.get('audio_count')}, subtitle={summary_json.get('subtitle_count')}"
+    if not _summary_json_usable_for_center(summary_json):
+        logger.warning(
+            f"  ➜ [共享资源] RAW 存在但无法生成中心展示摘要，拒绝上传/登记: "
+            f"{file_info.get('file_name') or file_info.get('name') or sha1}"
         )
+        return {}
+    logger.debug(
+        f"  ➜ [共享资源] 已生成中心格式化 MediaInfo 摘要: "
+        f"sha1={sha1[:8]}..., formatted_by={summary_json.get('formatted_by') or '-'}, "
+        f"audio={summary_json.get('audio_count')}, subtitle={summary_json.get('subtitle_count')}"
+    )
     return {
         'sha1': sha1,
         'size': final_size,
         'raw_ffprobe_json': raw,
-        'summary_json': summary_json or None,
+        'summary_json': summary_json,
     }
 
 
@@ -1052,6 +1075,55 @@ def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -
             errors.append({'sha1': sha, 'error': str(e)})
     return {'ok': not errors, 'uploaded': uploaded, 'count': len(uploaded), 'errors': errors}
 
+
+
+
+def _raw_batch_missing_for_files(files: List[Dict[str, Any]], uploaded_sha1s: Dict[str, bool]) -> List[Dict[str, Any]]:
+    missing = []
+    seen = set()
+    uploaded_sha1s = uploaded_sha1s or {}
+    for f in files or []:
+        sha1 = _norm_sha1((f or {}).get('sha1'))
+        if not sha1 or sha1 in seen:
+            continue
+        seen.add(sha1)
+        if not uploaded_sha1s.get(sha1):
+            missing.append({'sha1': sha1, 'file_name': (f or {}).get('file_name') or (f or {}).get('name') or sha1})
+    return missing
+
+
+def _center_raw_need_repair(client: SharedCenterClient, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sha1s = []
+    by_sha1 = {}
+    for f in files or []:
+        sha1 = _norm_sha1((f or {}).get('sha1'))
+        if sha1 and sha1 not in by_sha1:
+            by_sha1[sha1] = f
+            sha1s.append(sha1)
+    if not sha1s:
+        return []
+    try:
+        resp = client.raw_batch(sha1s)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 查询中心 RAW 状态失败: {e}")
+        return []
+    need = []
+    missing = set(_norm_sha1(x) for x in (resp.get('missing') or []) if _norm_sha1(x))
+    for sha1 in missing:
+        f = by_sha1.get(sha1) or {}
+        need.append({'sha1': sha1, 'file_name': f.get('file_name') or f.get('name') or sha1, 'reason': 'center_raw_missing'})
+    for item in resp.get('items') or []:
+        sha1 = _norm_sha1((item or {}).get('sha1'))
+        if not sha1:
+            continue
+        if item.get('raw_ready') is False:
+            f = by_sha1.get(sha1) or {}
+            need.append({'sha1': sha1, 'file_name': f.get('file_name') or f.get('name') or sha1, 'reason': item.get('raw_ready_reason') or 'center_raw_not_ready'})
+            continue
+        if not _summary_json_usable_for_center((item or {}).get('summary_json') or {}):
+            f = by_sha1.get(sha1) or {}
+            need.append({'sha1': sha1, 'file_name': f.get('file_name') or f.get('name') or sha1, 'reason': 'center_summary_missing'})
+    return need
 
 def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any]) -> bool:
     entry = _prepare_raw_upload_entry(file_info)
@@ -1941,10 +2013,23 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
     client = SharedCenterClient()
     raw_batch_result = _upload_raw_batch(client, files)
     uploaded_sha1s = raw_batch_result.get('uploaded') or {}
-    animation_meta = _animation_meta_for_candidate(candidate)
-    results = []
     uploaded = int(raw_batch_result.get('count') or 0)
     errors = list(raw_batch_result.get('errors') or [])
+    raw_missing = _raw_batch_missing_for_files(files, uploaded_sha1s)
+    if raw_missing:
+        names = '、'.join([str(x.get('file_name') or x.get('sha1')) for x in raw_missing[:5]])
+        if len(raw_missing) > 5:
+            names += f" 等 {len(raw_missing)} 个"
+        return {
+            'ok': False,
+            'message': f'RAW/summary_json 缺失，已拒绝登记中心：{names}',
+            'raw_uploaded_count': uploaded,
+            'missing_raw': raw_missing,
+            'errors': errors,
+            'fingerprint_repair': repair_result or {},
+        }
+    animation_meta = _animation_meta_for_candidate(candidate)
+    results = []
     should_register_completed = item_type == 'Season' and _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
     register_episode_pool = not (item_type == 'Season' and should_register_completed)
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
@@ -2446,6 +2531,145 @@ def _sync_center_credit() -> Dict[str, Any]:
     return {'snapshot': saved, 'synced_ledger': synced}
 
 
+
+
+def _candidate_from_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(row or {})
+    source_kind = str(row.get('source_kind') or '').strip().lower()
+    item_type = str(row.get('item_type') or '').strip()
+    tmdb_id = str(row.get('tmdb_id') or row.get('parent_series_tmdb_id') or row.get('series_tmdb_id') or '').strip()
+    season = _safe_int_or_none(row.get('season_number'))
+    episode = _safe_int_or_none(row.get('episode_number'))
+    if source_kind == 'movie' or item_type == 'Movie':
+        final_type = 'Movie'
+    elif source_kind in ('completed_season', 'episode', 'episode_group') or item_type in ('Season', 'Episode') or season is not None:
+        # Rapid v2 手动补齐/重新登记按“季”粒度处理，避免单集源继续散铺。
+        final_type = 'Season' if season is not None else 'Episode'
+    else:
+        final_type = item_type or 'Movie'
+    candidate = {
+        'tmdb_id': tmdb_id,
+        'parent_series_tmdb_id': tmdb_id if final_type in ('Season', 'Episode') else row.get('parent_series_tmdb_id'),
+        'series_tmdb_id': tmdb_id if final_type in ('Season', 'Episode') else row.get('series_tmdb_id'),
+        'item_type': final_type,
+        'season_number': season,
+        'episode_number': episode if final_type == 'Episode' else None,
+        'title': row.get('title') or row.get('root_name') or row.get('file_name') or '',
+        'release_year': row.get('release_year'),
+        'expected_episode_count': row.get('expected_episode_count') or row.get('total_episodes') or row.get('file_count'),
+        'total_episodes': row.get('expected_episode_count') or row.get('total_episodes') or row.get('file_count'),
+        'sha1': row.get('sha1') if final_type == 'Movie' else None,
+        'file_name': row.get('file_name') if final_type == 'Movie' else None,
+        'root_fid': row.get('root_fid'),
+        'root_name': row.get('root_name'),
+    }
+    return {k: v for k, v in candidate.items() if v not in (None, '')}
+
+
+def reregister_local_source(source_id: int, *, source_provider: str = 'manual_reregister') -> Dict[str, Any]:
+    row = shared_share_db.get_local_source(int(source_id or 0))
+    if not row:
+        return {'ok': False, 'message': '本地共享源不存在', 'source_id': source_id}
+    candidate = _candidate_from_local_source(row)
+    provider = str(row.get('source_provider') or source_provider or 'manual_reregister')
+    result = register_candidate_to_center(candidate, source_provider=provider)
+    if not result.get('ok'):
+        try:
+            shared_share_db.update_local_source(int(source_id), last_error=result.get('message') or '重新登记失败')
+        except Exception:
+            pass
+    return {'ok': bool(result.get('ok')), 'source_id': source_id, 'candidate': candidate, 'result': result, 'message': result.get('message') or ''}
+
+
+def reregister_local_sources(source_ids: List[int], *, source_provider: str = 'manual_reregister') -> Dict[str, Any]:
+    rows = []
+    for sid in source_ids or []:
+        try:
+            row = shared_share_db.get_local_source(int(sid))
+        except Exception:
+            row = None
+        if row:
+            rows.append(dict(row))
+    if not rows:
+        return {'ok': False, 'message': '没有找到可重新登记的本地共享源', 'items': []}
+    deduped = []
+    seen = set()
+    for row in rows:
+        cand = _candidate_from_local_source(row)
+        key = (cand.get('item_type'), cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'), cand.get('season_number'), cand.get('episode_number') if cand.get('item_type') == 'Episode' else None, cand.get('sha1') if cand.get('item_type') == 'Movie' else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((row, cand))
+    items = []
+    ok_count = 0
+    failed = 0
+    for row, cand in deduped:
+        provider = str(row.get('source_provider') or source_provider or 'manual_reregister')
+        res = register_candidate_to_center(cand, source_provider=provider)
+        if res.get('ok'):
+            ok_count += 1
+        else:
+            failed += 1
+            try:
+                shared_share_db.update_local_source(int(row.get('id') or 0), last_error=res.get('message') or '重新登记失败')
+            except Exception:
+                pass
+        items.append({'id': row.get('id'), 'candidate': cand, 'ok': bool(res.get('ok')), 'message': res.get('message') or '', 'result': res})
+    return {
+        'ok': ok_count > 0,
+        'success_count': ok_count,
+        'failed_count': failed,
+        'items': items,
+        'message': f'重新登记完成：成功 {ok_count}，失败 {failed}',
+    }
+
+
+def _repair_center_raw_missing_sources(limit: int = 200) -> Dict[str, Any]:
+    """维护任务：发现中心 RAW/summary 缺失时，用本地 RAW 自动补齐并重新登记。"""
+    rows, _ = shared_share_db.list_local_sources(status='all', keyword='', page=1, page_size=max(1, min(int(limit or 200), 100000)))
+    if not rows:
+        return {'ok': True, 'checked': 0, 'need_repair': 0, 'repaired': 0, 'failed': 0}
+    client = SharedCenterClient()
+    checked = 0
+    need_repair = 0
+    repaired = 0
+    failed = 0
+    items = []
+    seen = set()
+    for row in rows:
+        row = dict(row or {})
+        status = str(row.get('status') or '').strip().lower()
+        center_status = str(row.get('center_status') or '').strip().lower()
+        if status in {'disabled', 'cancelled', 'canceled', 'deleted'}:
+            continue
+        if not (row.get('center_source_id') or center_status in {'reported', 'partial', 'raw_missing'}):
+            continue
+        cand = _candidate_from_local_source(row)
+        key = (cand.get('item_type'), cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'), cand.get('season_number'), cand.get('episode_number') if cand.get('item_type') == 'Episode' else None, cand.get('sha1') if cand.get('item_type') == 'Movie' else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        files = shared_share_db.collect_files_for_candidate(cand) or []
+        if not files and row.get('sha1'):
+            files = [row]
+        checked += 1
+        need = _center_raw_need_repair(client, files)
+        if not need:
+            continue
+        need_repair += len(need)
+        res = register_candidate_to_center(cand, source_provider=row.get('source_provider') or 'raw_repair')
+        if res.get('ok'):
+            repaired += 1
+        else:
+            failed += 1
+            try:
+                shared_share_db.update_local_source(int(row.get('id') or 0), last_error=res.get('message') or 'RAW 补齐失败')
+            except Exception:
+                pass
+        items.append({'id': row.get('id'), 'title': row.get('title') or row.get('file_name') or row.get('tmdb_id'), 'need': need[:10], 'ok': bool(res.get('ok')), 'message': res.get('message') or ''})
+    return {'ok': failed == 0, 'checked': checked, 'need_repair': need_repair, 'repaired': repaired, 'failed': failed, 'items': items[:50]}
+
 def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
     """维护任务里的轻量离线清理。
 
@@ -2533,9 +2757,14 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
         parts.append(f"RAW={snapshot.get('raw_ffprobe', 0)}")
         parts.append(f"缺口={snapshot.get('wanted_gaps', 0)}")
         parts.append(f"设备={snapshot.get('remote_devices', 0)}")
+    raw_repair = result.get('raw_repair') if isinstance(result.get('raw_repair'), dict) else {}
+    if raw_repair:
+        parts.append(f"RAW补齐={raw_repair.get('repaired', 0)}/{raw_repair.get('need_repair', 0)}")
+        if raw_repair.get('failed'):
+            parts.append(f"RAW失败={raw_repair.get('failed')}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
-    for key in ('listener_error', 'offline_cleanup_error', 'credit_error'):
+    for key in ('listener_error', 'offline_cleanup_error', 'raw_repair_error', 'credit_error'):
         if result.get(key):
             parts.append(f"{key}={result.get(key)}")
     return '，'.join(parts)
@@ -2555,6 +2784,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['offline_cleanup'] = _cleanup_offline_local_sources(limit=300)
     except Exception as e:
         result['offline_cleanup_error'] = str(e)
+    try:
+        result['raw_repair'] = _repair_center_raw_missing_sources(limit=300)
+    except Exception as e:
+        result['raw_repair_error'] = str(e)
     try:
         result['credit'] = _sync_center_credit()
     except Exception as e:

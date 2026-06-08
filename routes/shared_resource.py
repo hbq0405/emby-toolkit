@@ -364,7 +364,7 @@ def _share_row_matches_filter(row: Dict[str, Any], status_filter: str) -> bool:
 
     live = status in {'active', 'available'}
     disabled = status in {'disabled', 'cancelled', 'canceled', 'deleted'} or center_status in {'disabled', 'cancelled', 'canceled'}
-    failed = status in {'failed', 'error', 'dead', 'expired', 'rejected', 'inconsistent', 'incomplete'} or center_status in {'failed', 'error', 'dead', 'expired', 'rejected'}
+    failed = status in {'failed', 'error', 'dead', 'expired', 'rejected', 'inconsistent', 'incomplete', 'raw_missing'} or center_status in {'failed', 'error', 'dead', 'expired', 'rejected', 'raw_missing'}
     reported = center_status in {'reported', 'partial'} or has_center_id
     local_only = not has_center_id and center_status in {'', 'local', 'pending', 'not_reported'}
 
@@ -447,6 +447,36 @@ def api_report_local_source(source_id: int):
     }
     result = shared_tasks.register_candidate_to_center(candidate, source_provider=row.get('source_provider') or 'manual_rapid')
     return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '已登记中心', 'data': result})
+
+
+
+@shared_resource_bp.route('/shares/<int:source_id>/reregister', methods=['POST'])
+@admin_required
+def api_reregister_local_source(source_id: int):
+    """重新登记本地源：重新上传 RAW/summary_json，并恢复中心可用状态。"""
+    row = shared_share_db.get_local_source(source_id)
+    if not row:
+        return jsonify({'success': False, 'message': '本地共享源不存在'}), 404
+    result = shared_tasks.reregister_local_source(source_id, source_provider='manual_reregister')
+    status = 200 if result.get('ok') else 400
+    return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '重新登记完成', 'data': result}), status
+
+
+@shared_resource_bp.route('/shares/reregister-batch', methods=['POST'])
+@admin_required
+def api_reregister_local_sources_batch():
+    data = _request_json()
+    raw_ids = data.get('ids') or data.get('source_ids') or []
+    ids = []
+    for value in raw_ids if isinstance(raw_ids, list) else []:
+        sid = _safe_int(value, 0)
+        if sid > 0 and sid not in ids:
+            ids.append(sid)
+    if not ids:
+        return jsonify({'success': False, 'message': '缺少要重新登记的本地源 ID'}), 400
+    result = shared_tasks.reregister_local_sources(ids, source_provider='manual_reregister')
+    status = 200 if result.get('ok') else 400
+    return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '重新登记完成', 'data': result}), status
 
 
 @shared_resource_bp.route('/shares/<int:source_id>/cancel', methods=['POST'])
@@ -546,8 +576,13 @@ def api_manual_validate():
     missing_raw = []
     for f in files:
         sha1 = str(f.get('sha1') or '').upper()
-        if sha1 and not (shared_share_db.raw_ffprobe_for_sha1(sha1) or {}).get('raw_ffprobe_json'):
-            missing_raw.append({'sha1': sha1, 'file_name': f.get('file_name')})
+        # 不只检查 RAW 是否存在，还要确认能生成中心资源库展示用 summary_json。
+        try:
+            entry = shared_tasks._prepare_raw_upload_entry(f)
+        except Exception:
+            entry = {}
+        if sha1 and not entry:
+            missing_raw.append({'sha1': sha1, 'file_name': f.get('file_name'), 'reason': 'RAW 或 summary_json 缺失'})
 
     if not files:
         message = '没有找到可登记视频文件'
