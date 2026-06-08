@@ -435,6 +435,49 @@ def _center_nested_parts_for_gate(source: Dict[str, Any]) -> List[Dict[str, Any]
     return out
 
 
+def _source_is_tv_for_runtime_tags(source_info: Dict[str, Any]) -> bool:
+    """短剧/纯净版只对电视剧资源生效。
+
+    Movie 即使物理时长低于 25 分钟，也不能被打短剧/纯净版标签；
+    中心消费门禁同样只在明确是 Series/Season/Episode/season_hub 时拦截。
+    """
+    if not isinstance(source_info, dict):
+        return False
+
+    parts = _center_nested_parts_for_gate(source_info)
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+
+        raw = part.get('raw_ffprobe_json') if isinstance(part.get('raw_ffprobe_json'), dict) else part
+        etk = raw.get('_etk') if isinstance(raw, dict) and isinstance(raw.get('_etk'), dict) else {}
+
+        item_type = str(
+            part.get('item_type')
+            or part.get('share_item_type')
+            or part.get('media_type')
+            or part.get('type')
+            or etk.get('item_type')
+            or etk.get('type')
+            or ''
+        ).strip().lower()
+        source_kind = str(part.get('source_kind') or part.get('kind') or '').strip().lower()
+        source_id = str(part.get('source_id') or part.get('center_source_id') or '').strip().lower()
+
+        if item_type in {'series', 'season', 'episode', 'tv'}:
+            return True
+        if source_kind in {'season', 'episode', 'episode_group', 'completed_season', 'season_hub'}:
+            return True
+        if source_id.startswith(('season_hub:', 'episode:', 'completed_season:')):
+            return True
+        if part.get('season_number') not in (None, '') or part.get('episode_number') not in (None, ''):
+            return True
+        if part.get('parent_series_tmdb_id') or part.get('series_tmdb_id'):
+            return True
+
+    return False
+
+
 def _center_flag_meta_for_gate(source: Dict[str, Any], flag_key: str, meta_key: str) -> Dict[str, Any]:
     for part in _center_nested_parts_for_gate(source):
         meta = _json_obj(part.get(meta_key))
@@ -447,10 +490,11 @@ def _center_flag_meta_for_gate(source: Dict[str, Any], flag_key: str, meta_key: 
 def _shared_transfer_gate(source: Dict[str, Any]) -> Dict[str, Any]:
     cfg = settings_db.get_shared_resource_config() or {}
     title = str((source or {}).get('title') or (source or {}).get('file_name') or (source or {}).get('source_id') or '').strip() or '该资源'
-    if _cfg_bool(cfg.get('p115_shared_block_clean_version_transfer'), False):
+    is_tv_resource = _source_is_tv_for_runtime_tags(source or {})
+    if is_tv_resource and _cfg_bool(cfg.get('p115_shared_block_clean_version_transfer'), False):
         if _center_flag_meta_for_gate(source or {}, 'is_clean_version', 'clean_version_meta_json'):
             return {'ok': False, 'reason': 'blocked_clean_version', 'message': f'已开启“不秒传纯净版”，跳过《{title}》。'}
-    if _cfg_bool(cfg.get('p115_shared_block_short_drama_transfer'), False):
+    if is_tv_resource and _cfg_bool(cfg.get('p115_shared_block_short_drama_transfer'), False):
         if _center_flag_meta_for_gate(source or {}, 'is_short_drama', 'short_drama_meta_json'):
             return {'ok': False, 'reason': 'blocked_short_drama', 'message': f'已开启“不秒传短剧”，跳过《{title}》。'}
     return {'ok': True}
@@ -1425,8 +1469,23 @@ def _short_drama_meta_from_runtime(
 
 
 def _short_drama_meta_from_raw(raw: Dict[str, Any], source_info: Dict[str, Any] = None) -> Dict[str, Any]:
+    runtime = _physical_runtime_minutes_from_raw(raw)
+    checked = runtime > 0
+    if not _source_is_tv_for_runtime_tags(source_info or {}):
+        return {
+            'is_short_drama': False,
+            'short_drama_checked': False,
+            'reason': 'non_tv_skipped',
+            'runtime_minutes': round(runtime, 2) if checked else None,
+            'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+            'runtime_source': 'raw_ffprobe',
+            'tv_type_required': True,
+            'genre_gate_checked': False,
+            'genre_gate_passed': None,
+            'genres_json_contains_animation': False,
+        }
     return _short_drama_meta_from_runtime(
-        _physical_runtime_minutes_from_raw(raw),
+        runtime,
         source='raw_ffprobe',
         animation_genre=_short_drama_source_has_animation_genre(source_info or {}),
     )
@@ -1443,6 +1502,18 @@ def _apply_short_drama_meta(summary: Dict[str, Any], raw: Dict[str, Any], source
 
 
 def _detect_short_drama_for_completed_season(candidate: Dict[str, Any], completed_files: List[Dict[str, Any]], source_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not _source_is_tv_for_runtime_tags(candidate or {}):
+        return {
+            'is_short_drama': False,
+            'short_drama_checked': False,
+            'reason': 'non_tv_skipped',
+            'comparable_count': 0,
+            'max_runtime_minutes': _SHORT_DRAMA_MAX_RUNTIME_MINUTES,
+            'tv_type_required': True,
+            'genre_gate_checked': False,
+            'genre_gate_passed': None,
+            'genres_json_contains_animation': False,
+        }
     if _short_drama_source_has_animation_genre(candidate or {}):
         return {
             'is_short_drama': False,
@@ -1620,6 +1691,13 @@ def _detect_clean_version_for_completed_season(
     - 只生成中心端标签，消费端不再二次兜底识别。
     """
     candidate = dict(candidate or {})
+    if not _source_is_tv_for_runtime_tags(candidate):
+        return {
+            'is_clean_version': False,
+            'clean_version_checked': False,
+            'reason': 'non_tv_skipped',
+            'tv_type_required': True,
+        }
     parent = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     season = _safe_int_or_none(candidate.get('season_number'))
     if not parent or season is None:
@@ -2026,7 +2104,23 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             'fingerprint_repair': repair_result or {},
         }
 
+    # RAW 摘要生成发生在正式登记前，先把候选类型补进 file_info。
+    # 否则电影/剧集的时长标签门禁拿不到 item_type，容易把电影短片误判成短剧。
+    candidate_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    if item_type == 'Movie':
+        candidate_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
     for _f in files:
+        if item_type == 'Movie':
+            _f.setdefault('item_type', 'Movie')
+            _f.setdefault('tmdb_id', candidate_tmdb_id)
+        elif item_type in ('Season', 'Episode'):
+            _f.setdefault('item_type', 'Episode')
+            _f.setdefault('tmdb_id', candidate_tmdb_id)
+            _f.setdefault('parent_series_tmdb_id', candidate_tmdb_id)
+            _f.setdefault('series_tmdb_id', candidate_tmdb_id)
+            _f.setdefault('season_number', candidate.get('season_number'))
+            if item_type == 'Episode':
+                _f.setdefault('episode_number', candidate.get('episode_number'))
         _ensure_file_preid(_f)
     root = shared_share_db.candidate_root_from_files(files)
     client = SharedCenterClient()
