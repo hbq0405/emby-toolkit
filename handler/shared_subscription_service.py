@@ -243,6 +243,177 @@ def _target_cid() -> str:
     return cid
 
 
+def _safe_115_folder_name(value: Any, fallback: str = '共享季包') -> str:
+    """生成 115 临时接收目录名：保留 TMDb/Season 识别信息，清理路径危险字符。"""
+    text = str(value or '').strip()
+    if not text:
+        text = fallback
+    text = re.sub(r'[\\/:*?"<>|\r\n\t]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip(' ._-')
+    return (text or fallback)[:180]
+
+
+def _first_nonempty(*values):
+    for value in values:
+        if value not in (None, '', [], {}):
+            return value
+    return None
+
+
+def _season_package_context(payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    payload = payload or {}
+    first = next((f for f in (files or []) if isinstance(f, dict)), {}) or {}
+
+    season_number = _first_nonempty(
+        payload.get('season_number'), first.get('season_number')
+    )
+    try:
+        season_number = int(float(season_number)) if season_number not in (None, '') else None
+    except Exception:
+        season_number = None
+    if season_number is None:
+        season_number, _ = _guess_se_from_source(first, payload)
+
+    tmdb_id = str(_first_nonempty(
+        payload.get('parent_series_tmdb_id'), payload.get('series_tmdb_id'), payload.get('parent_tmdb_id'),
+        first.get('parent_series_tmdb_id'), first.get('series_tmdb_id'), first.get('parent_tmdb_id'),
+        payload.get('tmdb_id'), first.get('tmdb_id'),
+    ) or '').strip()
+
+    title = str(_first_nonempty(
+        payload.get('title'), payload.get('name'), payload.get('series_title'), payload.get('series_name'),
+        first.get('title'), first.get('series_title'), first.get('series_name'),
+    ) or '').strip()
+
+    year = str(_first_nonempty(
+        payload.get('release_year'), payload.get('year'), first.get('release_year'), first.get('year')
+    ) or '').strip()
+    if not re.fullmatch(r'(19|20)\d{2}', year):
+        year = ''
+
+    return {
+        'tmdb_id': tmdb_id,
+        'title': title,
+        'release_year': year,
+        'season_number': season_number,
+    }
+
+
+def _build_season_package_temp_dir_name(
+    *,
+    source_kind: str,
+    source_id: str,
+    payload: Dict[str, Any],
+    files: List[Dict[str, Any]],
+) -> Tuple[str, Dict[str, Any]]:
+    ctx = _season_package_context(payload, files)
+    title = _safe_115_folder_name(ctx.get('title') or f'共享季包 {str(source_id or "")[:8]}')
+    year_part = f" ({ctx['release_year']})" if ctx.get('release_year') else ''
+    tmdb_part = f" {{tmdb={ctx['tmdb_id']}}}" if ctx.get('tmdb_id') else ''
+
+    season_number = ctx.get('season_number')
+    if season_number is not None:
+        season_part = f" - Season {int(season_number):02d}"
+    else:
+        season_part = ' - Season'
+
+    name = _safe_115_folder_name(f'{title}{year_part}{tmdb_part}{season_part}', fallback=f'共享季包 {str(source_id or "")[:8]}')
+    ctx.update({'source_kind': source_kind, 'source_id': source_id})
+    return name, ctx
+
+
+def _prepare_rapid_target_dir_for_source(
+    *,
+    base_target_cid: str,
+    source_kind: str,
+    source_id: str,
+    payload: Dict[str, Any],
+    files: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """季包秒传先落到待整理下的临时标准剧目录，避免整理阶段把每集当 root item 单独处理。"""
+    normalized_kind = _normalize_source_kind(source_kind)
+    files = [f for f in (files or []) if isinstance(f, dict)]
+
+    # 单集/电影仍保持原逻辑：直接秒传到待整理根目录。
+    if normalized_kind not in ('completed_season', 'season_hub') or len(files) <= 1:
+        return {
+            'target_cid': str(base_target_cid),
+            'base_target_cid': str(base_target_cid),
+            'season_package_temp_dir': False,
+        }
+
+    folder_name, ctx = _build_season_package_temp_dir_name(
+        source_kind=normalized_kind,
+        source_id=source_id,
+        payload=payload or {},
+        files=files,
+    )
+
+    try:
+        p115 = P115Service.get_client()
+        if not p115:
+            raise RuntimeError('115 客户端未初始化')
+
+        mk_resp = p115.fs_mkdir(folder_name, str(base_target_cid))
+        if not isinstance(mk_resp, dict) or not mk_resp.get('state'):
+            raise RuntimeError(str(mk_resp))
+
+        temp_cid = str(
+            mk_resp.get('cid')
+            or mk_resp.get('file_id')
+            or mk_resp.get('id')
+            or (mk_resp.get('data') or {}).get('file_id')
+            or (mk_resp.get('data') or {}).get('cid')
+            or ''
+        ).strip()
+        if not temp_cid:
+            raise RuntimeError(f'创建成功但未返回 CID: {mk_resp}')
+
+        # 给整理扫描补一个权威上下文；目录名已经带 {tmdb=}，这里是双保险。
+        try:
+            if ctx.get('tmdb_id') and ctx.get('title'):
+                P115CacheManager.save_transfer_context(
+                    root_name=folder_name,
+                    tmdb_id=ctx.get('tmdb_id'),
+                    media_type='tv',
+                    title=ctx.get('title'),
+                    season_number=ctx.get('season_number'),
+                    source='shared-permanent-import',
+                    source_kind=normalized_kind,
+                    source_kinds=[normalized_kind, 'shared_transfer_context'],
+                    confidence='high',
+                    authority_role='expected',
+                    evidence=[f'rapid:{normalized_kind}:{source_id}'],
+                )
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 保存季包整理上下文失败：{folder_name} -> {e}")
+
+        logger.info(
+            f"  ➜ [共享资源] 季包秒传启用临时接收目录：{folder_name} "
+            f"(cid={temp_cid}, files={len(files)})"
+        )
+        return {
+            'target_cid': temp_cid,
+            'base_target_cid': str(base_target_cid),
+            'season_package_temp_dir': True,
+            'folder_name': folder_name,
+            'folder_cid': temp_cid,
+            'context': ctx,
+        }
+    except Exception as e:
+        # 不因为临时目录创建失败阻断秒传，最多回退旧逻辑。
+        logger.warning(
+            f"  ➜ [共享资源] 创建季包临时接收目录失败，回退待整理根目录："
+            f"source={normalized_kind}:{source_id}, err={e}"
+        )
+        return {
+            'target_cid': str(base_target_cid),
+            'base_target_cid': str(base_target_cid),
+            'season_package_temp_dir': False,
+            'temp_dir_error': str(e),
+        }
+
+
 def _rapid_success(resp: Any) -> bool:
     if isinstance(resp, dict):
         if resp.get('state') is True or resp.get('success') is True:
@@ -1436,7 +1607,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'match_filter': match_filter,
         }
 
-    target_cid = _target_cid()
+    base_target_cid = _target_cid()
 
     clean_flag = _center_clean_version_flagged(source_kind, payload, files)
     if _block_clean_version_transfer_enabled() and clean_flag.get('blocked'):
@@ -1491,6 +1662,15 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'preflight': preflight,
             'washing_rejected': bool(preflight.get('washing_rejected')),
         }
+
+    rapid_target = _prepare_rapid_target_dir_for_source(
+        base_target_cid=base_target_cid,
+        source_kind=source_kind,
+        source_id=source_id,
+        payload=payload,
+        files=files,
+    )
+    target_cid = str(rapid_target.get('target_cid') or base_target_cid)
 
     ok_count = 0
     errors = []
@@ -1605,6 +1785,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         'report_results': report_results, 'report_errors': report_errors,
         'skipped_report_sources': skipped_report_sources,
         'preflight': locals().get('preflight', {}),
+        'rapid_target': locals().get('rapid_target', {}),
     }
 
 
