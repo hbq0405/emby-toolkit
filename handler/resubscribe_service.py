@@ -608,6 +608,76 @@ class WashingService:
         return None
    
     @classmethod
+    def evaluate_file_priority(
+        cls,
+        sha1: str,
+        file_name: str,
+        file_size: int,
+        target_cid: str,
+        media_type: str,
+        original_lang: str = None,
+        has_external_subtitle: bool = False,
+    ) -> Dict[str, Any]:
+        """只计算当前文件在洗版模板里的优先级，不做新旧版本比较。
+
+        返回的 level 语义与 get_level 保持一致：
+        - -1：命中排除规则；
+        - 0：未达标 / 无法评分；
+        - 1：当前模板下最佳档；
+        - 2+：可用但不是最佳档；
+        - None：没有配置优先级规则，暂不写入有效评分。
+        """
+        result = {
+            "ok": False,
+            "level": None,
+            "reason": "",
+            "target_cid": str(target_cid or ""),
+            "media_type": media_type,
+        }
+
+        sha1_text = str(sha1 or "").strip().upper()
+        if not sha1_text:
+            result["level"] = 0
+            result["reason"] = "缺少 SHA1，无法计算洗版优先级"
+            return result
+
+        raw_info = cls._get_raw_info_by_sha1(sha1_text)
+        if not raw_info:
+            result["level"] = 0
+            result["reason"] = "无法获取媒体流信息，无法计算洗版优先级"
+            return result
+
+        if isinstance(raw_info, list) and len(raw_info) > 0:
+            new_video_info = dict(raw_info[0])
+        elif isinstance(raw_info, dict):
+            new_video_info = dict(raw_info)
+        else:
+            new_video_info = {}
+
+        new_video_info["filename"] = file_name
+        new_video_info["_file_size"] = file_size
+        new_video_info["_original_lang"] = original_lang
+        new_video_info["has_external_subtitle"] = has_external_subtitle
+
+        db_media_type = "Movie" if str(media_type or "").lower() == "movie" else "Series"
+        result["db_media_type"] = db_media_type
+
+        priorities = cls._load_priorities(db_media_type, str(target_cid or ""))
+        if not priorities:
+            result["ok"] = True
+            result["level"] = None
+            result["reason"] = "未配置优先级规则，未记录洗版等级"
+            return result
+
+        norm_new = cls._normalize_info(new_video_info)
+        level, reason = cls.get_level(norm_new, priorities)
+        result["ok"] = True
+        result["level"] = int(level) if level is not None else None
+        result["reason"] = reason
+        return result
+
+
+    @classmethod
     def decide_washing_action(
         cls,
         sha1: str,

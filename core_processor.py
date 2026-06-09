@@ -1668,6 +1668,130 @@ class MediaProcessor:
                 logger.warning(f"  ➜ 从 p115_mediainfo_cache 提取物理时长失败: {e}")
             return None
         
+        def _json_loads_list(value):
+            if isinstance(value, list):
+                return value
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = json.loads(value)
+                    return parsed if isinstance(parsed, list) else []
+                except Exception:
+                    return []
+            return []
+
+        def _washing_best_sort_key(row):
+            level = row.get('level')
+            try:
+                level = int(level)
+            except Exception:
+                return 10 ** 9
+            return level if level > 0 else 10 ** 8 + abs(level)
+
+        def _load_washing_snapshot_from_p115_cache(sha1_list, pickcode_list):
+            raw_sha1s = _json_loads_list(sha1_list) if isinstance(sha1_list, str) else (sha1_list or [])
+            sha1s = []
+            for s in raw_sha1s:
+                text = str(s or '').strip().upper()
+                if text and text not in sha1s:
+                    sha1s.append(text)
+
+            raw_pcs = _json_loads_list(pickcode_list) if isinstance(pickcode_list, str) else (pickcode_list or [])
+            pcs = []
+            for pc in raw_pcs:
+                text = str(pc or '').strip()
+                if text and text not in pcs:
+                    pcs.append(text)
+
+            if not sha1s and not pcs:
+                return [], None
+
+            clauses = []
+            params = []
+            if sha1s:
+                clauses.append("UPPER(sha1) = ANY(%s)")
+                params.append(sha1s)
+            if pcs:
+                clauses.append("pick_code = ANY(%s)")
+                params.append(pcs)
+
+            try:
+                cursor.execute(
+                    f"""
+                    SELECT id, name, sha1, pick_code, size,
+                           washing_level, washing_level_reason,
+                           washing_target_cid, washing_media_type,
+                           washing_identity_json, washing_evaluated_at
+                    FROM p115_filesystem_cache
+                    WHERE ({' OR '.join(clauses)})
+                      AND washing_level IS NOT NULL
+                    ORDER BY washing_evaluated_at DESC NULLS LAST, updated_at DESC NULLS LAST
+                    """,
+                    tuple(params)
+                )
+                rows = cursor.fetchall() or []
+            except Exception as e:
+                logger.debug(f"  ➜ [洗版优先级] 读取 115 文件缓存评分失败: {e}")
+                return [], None
+
+            versions = []
+            seen = set()
+            for row in rows:
+                sha1 = str(row.get('sha1') or '').strip().upper()
+                pc = str(row.get('pick_code') or '').strip()
+                key = sha1 or pc or str(row.get('id') or '')
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+
+                level = row.get('washing_level')
+                try:
+                    level = int(level) if level is not None else None
+                except Exception:
+                    level = None
+
+                identity = row.get('washing_identity_json') or {}
+                if isinstance(identity, str):
+                    try:
+                        identity = json.loads(identity)
+                    except Exception:
+                        identity = {}
+
+                evaluated_at = row.get('washing_evaluated_at')
+                versions.append({
+                    'sha1': sha1,
+                    'pick_code': pc,
+                    'fid': str(row.get('id') or ''),
+                    'file_name': row.get('name') or '',
+                    'size': row.get('size') or 0,
+                    'level': level,
+                    'reason': row.get('washing_level_reason') or '',
+                    'target_cid': row.get('washing_target_cid') or '',
+                    'media_type': row.get('washing_media_type') or '',
+                    'identity': identity if isinstance(identity, dict) else {},
+                    'evaluated_at': evaluated_at.isoformat() if evaluated_at else None,
+                })
+
+            best = min(versions, key=_washing_best_sort_key) if versions else None
+            return versions, best
+
+        def _apply_washing_snapshot(record, sha1_list, pickcode_list):
+            versions, best = _load_washing_snapshot_from_p115_cache(sha1_list, pickcode_list)
+            record['washing_version_json'] = json.dumps(versions, ensure_ascii=False)
+            if best:
+                record['washing_level'] = best.get('level')
+                record['washing_level_reason'] = best.get('reason')
+                record['washing_sha1'] = best.get('sha1')
+                record['washing_target_cid'] = best.get('target_cid')
+                record['washing_media_type'] = best.get('media_type')
+                record['washing_evaluated_at'] = best.get('evaluated_at')
+            else:
+                record['washing_level'] = None
+                record['washing_level_reason'] = None
+                record['washing_sha1'] = None
+                record['washing_target_cid'] = None
+                record['washing_media_type'] = None
+                record['washing_evaluated_at'] = None
+
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
             genres_raw = details.get('genres', [])
@@ -1890,6 +2014,7 @@ class MediaProcessor:
                     movie_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                     movie_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                     movie_record['in_library'] = True
+                    _apply_washing_snapshot(movie_record, all_sha1s, all_pcs)
 
                 # media_metadata.runtime_minutes 只保存 TMDb 官方片长。
                 # 实际文件时长已经由 parse_full_asset_details 写入 asset_details_json.runtime_minutes。
@@ -2258,6 +2383,7 @@ class MediaProcessor:
                         episode_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                         episode_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                         episode_record['in_library'] = True
+                        _apply_washing_snapshot(episode_record, all_sha1s, all_pcs)
                         # 不允许用物理/Emby 时长覆盖 media_metadata.runtime_minutes；
                         # 物理时长只保存在 asset_details_json[*].runtime_minutes。
                             
@@ -2390,6 +2516,7 @@ class MediaProcessor:
                     episode_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                     episode_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                     episode_record['in_library'] = True
+                    _apply_washing_snapshot(episode_record, all_sha1s, all_pcs)
 
                     # 不允许用物理/Emby 时长覆盖 media_metadata.runtime_minutes；
                     # 物理时长只保存在 asset_details_json[*].runtime_minutes。
@@ -2411,7 +2538,10 @@ class MediaProcessor:
                 "date_added", "official_rating_json", "genres_json", "directors_json", "production_companies_json", 
                 "networks_json", "countries_json", "keywords_json", "ignore_reason", "asset_details_json",
                 "runtime_minutes", "overview_embedding", "total_episodes", "watchlist_tmdb_status",
-                "imdb_id", "tagline"
+                "imdb_id", "tagline",
+                "washing_level", "washing_level_reason", "washing_sha1",
+                "washing_target_cid", "washing_media_type", "washing_version_json",
+                "washing_evaluated_at"
             ]
             data_for_batch = []
             for record in records_to_upsert:
@@ -2441,6 +2571,7 @@ class MediaProcessor:
                 if db_row_complete['emby_item_ids_json'] is None: db_row_complete['emby_item_ids_json'] = '[]'
                 if db_row_complete['file_sha1_json'] is None: db_row_complete['file_sha1_json'] = '[]'
                 if db_row_complete['file_pickcode_json'] is None: db_row_complete['file_pickcode_json'] = '[]'
+                if db_row_complete.get('washing_version_json') is None: db_row_complete['washing_version_json'] = '[]'
 
                 r_date = db_row_complete.get('release_date')
                 if not r_date: db_row_complete['release_date'] = None

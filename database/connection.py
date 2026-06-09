@@ -242,6 +242,15 @@ def init_db():
                         waiting_for_completed_pack BOOLEAN DEFAULT FALSE,
                         active_washing BOOLEAN DEFAULT FALSE,
 
+                        -- 洗版优先级快照（主动洗版门禁用）
+                        washing_level INTEGER,
+                        washing_level_reason TEXT,
+                        washing_sha1 TEXT,
+                        washing_target_cid TEXT,
+                        washing_media_type TEXT,
+                        washing_version_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        washing_evaluated_at TIMESTAMP WITH TIME ZONE,
+
                         -- 内部管理字段
                         last_synced_at TIMESTAMP WITH TIME ZONE,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -453,6 +462,12 @@ def init_db():
                         pick_code TEXT,
                         preid TEXT,               -- 文件前 128KB SHA1，用于 115 秒传 upload/init
                         size BIGINT DEFAULT 0,
+                        washing_level INTEGER,
+                        washing_level_reason TEXT,
+                        washing_target_cid TEXT,
+                        washing_media_type TEXT,
+                        washing_identity_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        washing_evaluated_at TIMESTAMP WITH TIME ZONE,
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), -- 最后同步时间
                         
                         -- 复合唯一约束：同一个父目录下不能有同名文件 (用于快速查找)
@@ -623,7 +638,13 @@ def init_db():
                             "sha1": "TEXT",
                             "pick_code": "TEXT",
                             "preid": "TEXT",
-                            "size": "BIGINT DEFAULT 0"
+                            "size": "BIGINT DEFAULT 0",
+                            "washing_level": "INTEGER",
+                            "washing_level_reason": "TEXT",
+                            "washing_target_cid": "TEXT",
+                            "washing_media_type": "TEXT",
+                            "washing_identity_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+                            "washing_evaluated_at": "TIMESTAMP WITH TIME ZONE"
                         },
                         'p115_mediainfo_cache': {
                             "raw_ffprobe_json": "JSONB"
@@ -641,7 +662,14 @@ def init_db():
                         },
                         'media_metadata': {
                             "imdb_id": "TEXT",
-                            "tagline": "TEXT"
+                            "tagline": "TEXT",
+                            "washing_level": "INTEGER",
+                            "washing_level_reason": "TEXT",
+                            "washing_sha1": "TEXT",
+                            "washing_target_cid": "TEXT",
+                            "washing_media_type": "TEXT",
+                            "washing_version_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
+                            "washing_evaluated_at": "TIMESTAMP WITH TIME ZONE"
                         },
                         'resubscribe_rules': {
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
@@ -759,6 +787,8 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_pick_code ON p115_filesystem_cache (pick_code) WHERE pick_code IS NOT NULL AND pick_code <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_preid ON p115_filesystem_cache (preid) WHERE preid IS NOT NULL AND preid <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_local_path ON p115_filesystem_cache (local_path) WHERE local_path IS NOT NULL AND local_path <> '';")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_washing_level ON p115_filesystem_cache (washing_level) WHERE washing_level IS NOT NULL;")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_washing_level ON media_metadata (washing_level) WHERE washing_level IS NOT NULL AND in_library = TRUE;")
 
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_shared_credit_ledger_created ON shared_credit_ledger_local (created_at DESC);")
 
