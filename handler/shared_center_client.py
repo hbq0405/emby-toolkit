@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import requests
@@ -41,19 +42,62 @@ def _infer_pro_tier_from_license(value: str = '') -> str:
     return _normalize_pro_tier(text)
 
 
+def _parse_pro_expire_time(value: str = ''):
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        if text.startswith('2099'):
+            return datetime.max.replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+
+def _pro_expire_state(expire_time: str = '') -> str:
+    parsed = _parse_pro_expire_time(expire_time)
+    if not parsed:
+        return 'unknown'
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return 'active' if parsed > datetime.now(timezone.utc) else 'expired'
+
+
+def _setting_text(key: str) -> str:
+    try:
+        return str(settings_db.get_setting(key) or '').strip()
+    except Exception:
+        return ''
+
+
 def build_current_pro_quota_report_payload() -> Dict[str, Any]:
     """把客户端当前 Pro 认证状态整理成上报中心的 payload；只上报 hash，不传卡密/ServerID 明文。"""
     app_cfg = config_manager.APP_CONFIG or {}
     cfg = _shared_cfg()
     license_key = ''
     for key in ('pro_license_key', 'license_key'):
-        try:
-            license_key = str(settings_db.get_setting(key) or '').strip()
-        except Exception:
-            license_key = ''
+        license_key = _setting_text(key)
         if license_key:
             break
     tier = _normalize_pro_tier(app_cfg.get('pro_tier') or app_cfg.get('pro_level') or app_cfg.get('pro_card_type')) or _infer_pro_tier_from_license(license_key)
+    app_is_pro_active = bool(app_cfg.get('is_pro_active', False))
+    pro_expire_time = str(app_cfg.get('pro_expire_time') or '').strip() or _setting_text('pro_expire_time')
+    expire_state = _pro_expire_state(pro_expire_time)
+    effective_is_pro_active = app_is_pro_active
+    auth_state = 'active' if app_is_pro_active else 'inactive'
+    auth_grace = False
+
+    # 共享中心的 Pro 额度是累计权益，不能因为本机到认证服务的短暂网络抖动
+    # 把 APP_CONFIG.is_pro_active 瞬时 false 上报成“明确失效”。只要本地仍有
+    # 未过期卡密记录，就按宽限认证上报；真正过期/无卡密才让中心停用额度。
+    if not effective_is_pro_active and license_key and expire_state == 'active':
+        effective_is_pro_active = True
+        auth_state = 'grace_local_unverified'
+        auth_grace = True
+    elif app_is_pro_active and expire_state == 'expired':
+        effective_is_pro_active = False
+        auth_state = 'expired_local'
+
     try:
         import extensions
         server_id = str(getattr(extensions, 'EMBY_SERVER_ID', '') or '').strip()
@@ -61,14 +105,18 @@ def build_current_pro_quota_report_payload() -> Dict[str, Any]:
         server_id = ''
     install_id = str(cfg.get('p115_shared_install_id') or '').strip()
     return {
-        'is_pro_active': bool(app_cfg.get('is_pro_active', False)),
+        'is_pro_active': effective_is_pro_active,
         'pro_tier': tier,
-        'pro_expire_time': str(app_cfg.get('pro_expire_time') or '').strip(),
+        'pro_expire_time': pro_expire_time,
         'pro_license_hash': _sha256_or_empty(license_key),
         'pro_server_id_hash': _sha256_or_empty(server_id),
         'install_id_hash': _sha256_or_empty(install_id),
         'client_version': _app_version(),
-        'auth_source': 'client_app_config',
+        'auth_source': 'client_local_license_grace' if auth_grace else 'client_app_config',
+        'auth_state': auth_state,
+        'auth_grace': auth_grace,
+        'local_app_is_pro_active': app_is_pro_active,
+        'pro_expire_state': expire_state,
     }
 
 def _app_version() -> str:
