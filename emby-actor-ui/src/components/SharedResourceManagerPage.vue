@@ -319,6 +319,29 @@
     <n-modal v-model:show="showCenterDetailModal" preset="card" :title="centerDetailModalTitle" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
       <n-spin :show="centerDetailLoading">
         <div v-if="activeCenterDetailRow" class="center-detail-body">
+          <!-- ★ 新增：图文并茂的头部信息区 -->
+          <div class="center-detail-header-new">
+            <img :src="centerPosterUrl(activeCenterDetailRow)" class="detail-poster" @error="onCenterPosterError" />
+            <div class="detail-info">
+              <div class="detail-title">
+                {{ centerBaseTitle(activeCenterDetailRow) }}
+                <span class="detail-year" v-if="centerDisplayYear(activeCenterDetailRow)">({{ centerDisplayYear(activeCenterDetailRow) }})</span>
+              </div>
+              <div class="detail-meta">
+                {{ centerCardMetaText(activeCenterDetailRow) }} · 包含 {{ centerDetailVersions.length }} 个版本
+                <span v-if="centerTmdbMeta(activeCenterDetailRow).vote_average" class="detail-rating">
+                  ⭐ {{ centerTmdbMeta(activeCenterDetailRow).vote_average }}
+                </span>
+              </div>
+              <div class="detail-overview">
+                {{ centerTmdbMeta(activeCenterDetailRow).overview || '暂无简介' }}
+              </div>
+            </div>
+          </div>
+          
+          <n-divider style="margin: 4px 0 12px 0;" />
+
+          <!-- 版本列表 -->
           <div class="center-version-detail-list">
             <div v-for="version in centerDetailVersions" :key="centerVersionKey(version)" class="center-version-detail-card">
               <div class="center-version-main">
@@ -2542,48 +2565,44 @@ const centerDetailModalTitle = computed(() => {
   }
   return title;
 });
+// ★ 修改 1：按热度 (success_count) 降序排序
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
   const versions = Array.isArray(row.versions) && row.versions.length ? row.versions : [row];
-  return versions.filter(v => v && !centerIsLazyPlaceholder(v));
+  return versions
+    .filter(v => v && !centerIsLazyPlaceholder(v))
+    .sort((a, b) => (b.success_count || 0) - (a.success_count || 0)); 
 });
-const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || Math.random());
-const centerVersionTitle = (row) => {
-  const summary = centerVersionSummary(row) || {};
-  let fpsStr = '';
-  if (summary.fps) {
-    // 如果自带了 fps 字母就不再追加，防止变成 fpsfps
-    fpsStr = String(summary.fps).toLowerCase().includes('fps') ? summary.fps : `${summary.fps} fps`;
-  }
-  const parts = [summary.resolution, compactEffectText(summary.effect), summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : '', fpsStr].filter(v => v && v !== '-');
-  return parts.join(' · ') || centerSeasonText(row) || '资源版本';
-};
+
+// ★ 修改 2：热度放第一个标签 + 彻底修复 FPS 叠词
 const centerVersionTags = (row) => {
   const summary = centerVersionSummary(row) || {};
   const tags = [];
   
-  // ★ 恢复进度显示 (从被删掉的顶部卡片移植过来)
+  // 1. 热度放第一个
+  centerTagPush(tags, `🔥 热度 ${row.success_count || 0}`, 'error', 'popularity');
+
+  // 2. 进度显示
   const progress = centerProgressText(row);
   if (progress) {
-    // 去掉了那个多余的斜杠判断，只要是连载中，就直接拼上“更新至”
-    const progressLabel = centerIsOngoingHub(row) 
-      ? `更新至 ${progress} 集` 
-      : progress;
+    const progressLabel = centerIsOngoingHub(row) ? `更新至 ${progress} 集` : progress;
     centerTagPush(tags, progressLabel, 'info', 'progress');
   }
 
+  // 3. 基础参数
   centerTagPush(tags, formatCenterSize(row), 'default', 'size');
   centerTagPush(tags, summary.resolution, 'success', 'resolution');
   centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
   centerTagPush(tags, codec, 'default', 'codec');
   
-  // 修复标签里的 fps 叠词 Bug
-  let fpsStr = '';
+  // 4. 彻底修复 FPS 叠词 (暴力剔除原有的 fps 字母，统一在最后加一个)
   if (summary.fps) {
-    fpsStr = String(summary.fps).toLowerCase().includes('fps') ? String(summary.fps) : `${summary.fps} fps`;
+    const cleanFps = String(summary.fps).replace(/fps/ig, '').trim();
+    if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'default', 'fps');
   }
-  centerTagPush(tags, fpsStr, 'default', 'fps');
+  
+  // 5. 其他标签
   if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
@@ -2592,30 +2611,6 @@ const centerVersionTags = (row) => {
   centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   return tags;
-};
-const centerEpisodePreview = (row) => {
-  const children = [...(Array.isArray(row?.children) ? row.children : []), ...(!Array.isArray(row?.children) || !row.children.length ? (Array.isArray(row?.pack_items) ? row.pack_items : []) : [])]
-    .filter(x => x && !centerIsLazyPlaceholder(x));
-  if (!children.length) return '';
-  const nums = children.map(x => Number(x?.episode_number || 0)).filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
-  if (!nums.length) return `包含 ${children.length} 个文件`;
-  const shown = nums.slice(0, 18).map(n => `E${String(n).padStart(2, '0')}`).join('、');
-  return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
-};
-const openCenterDetail = async (row) => {
-  if (!row) return;
-  const key = centerTableRowKey(row);
-  activeCenterDetailRow.value = row;
-  showCenterDetailModal.value = true;
-  if (!centerNeedsLoadChildren(row)) return;
-  centerDetailLoading.value = true;
-  try {
-    await loadCenterSourceChildren(row);
-    await nextTick();
-    activeCenterDetailRow.value = findCenterGroupByKey(groupedCenterSources.value || [], key) || row;
-  } finally {
-    centerDetailLoading.value = false;
-  }
 };
 
 const ledgerColumns = [
@@ -4042,5 +4037,63 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
 }
-
+/* 弹窗头部图文排版 */
+.center-detail-header-new {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 4px;
+}
+.detail-poster {
+  width: 130px;
+  height: 195px;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+  flex-shrink: 0;
+  background-color: #1a1a1a;
+}
+.detail-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.detail-title {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #fff;
+}
+.detail-year {
+  font-size: 18px;
+  font-weight: normal;
+  opacity: 0.7;
+  margin-left: 6px;
+}
+.detail-meta {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.detail-rating {
+  color: #f7b824;
+  font-weight: bold;
+  background: rgba(247, 184, 36, 0.15);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+.detail-overview {
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.85);
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-align: justify;
+}
 </style>
