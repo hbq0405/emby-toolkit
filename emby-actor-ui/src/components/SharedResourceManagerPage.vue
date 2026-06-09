@@ -2561,13 +2561,24 @@ const centerVersionTitle = (row) => {
 const centerVersionTags = (row) => {
   const summary = centerVersionSummary(row) || {};
   const tags = [];
+  
+  // ★ 恢复进度显示 (从被删掉的顶部卡片移植过来)
+  const progress = centerProgressText(row);
+  if (progress) {
+    // 如果是连载中且只有数字没有斜杠，显示得更直观一点
+    const progressLabel = centerIsOngoingHub(row) && !String(progress).includes('/') 
+      ? `更新至 ${progress} 集` 
+      : progress;
+    centerTagPush(tags, progressLabel, 'info', 'progress');
+  }
+
   centerTagPush(tags, formatCenterSize(row), 'default', 'size');
   centerTagPush(tags, summary.resolution, 'success', 'resolution');
   centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
   centerTagPush(tags, codec, 'default', 'codec');
   
-  // ★ 修复标签里的 fps 叠词 Bug
+  // 修复标签里的 fps 叠词 Bug
   let fpsStr = '';
   if (summary.fps) {
     fpsStr = String(summary.fps).toLowerCase().includes('fps') ? String(summary.fps) : `${summary.fps} fps`;
@@ -2582,14 +2593,6 @@ const centerVersionTags = (row) => {
   if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
   centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   return tags;
-};
-const centerTrackDetailText = (row) => {
-  const audio = compactTrackText(versionAudioTracks(row));
-  const sub = compactTrackText(versionSubtitleTracks(row));
-  const parts = [];
-  if (audio && audio !== '-') parts.push(`音轨 ${audio}`);
-  if (sub && sub !== '-') parts.push(`字幕 ${sub}`);
-  return parts.join(' · ');
 };
 const centerEpisodePreview = (row) => {
   const children = [...(Array.isArray(row?.children) ? row.children : []), ...(!Array.isArray(row?.children) || !row.children.length ? (Array.isArray(row?.pack_items) ? row.pack_items : []) : [])]
