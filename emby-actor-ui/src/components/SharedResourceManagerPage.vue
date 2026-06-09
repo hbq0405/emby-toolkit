@@ -316,7 +316,7 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showCenterDetailModal" preset="card" :title="centerDetailModalTitle" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
+    <n-modal v-model:show="showCenterDetailModal" preset="card" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
       <n-spin :show="centerDetailLoading">
         <div v-if="activeCenterDetailRow" class="center-detail-body">
           <!-- ★ 新增：图文并茂的头部信息区 -->
@@ -329,8 +329,11 @@
               </div>
               <div class="detail-meta">
                 {{ centerCardMetaText(activeCenterDetailRow) }} · 包含 {{ centerDetailVersions.length }} 个版本
+                <span v-if="centerDisplayGenres(activeCenterDetailRow)" class="detail-genres">
+                  · {{ centerDisplayGenres(activeCenterDetailRow) }}
+                </span>
                 <span v-if="centerTmdbMeta(activeCenterDetailRow).vote_average" class="detail-rating">
-                  ⭐ {{ centerTmdbMeta(activeCenterDetailRow).vote_average }}
+                  ⭐ {{ Number(centerTmdbMeta(activeCenterDetailRow).vote_average).toFixed(1) }}
                 </span>
               </div>
               <div class="detail-overview">
@@ -2410,6 +2413,27 @@ const centerDisplayTitle = (row) => {
     return se ? `${base} ${se}` : base;
   }
   return base;
+};
+const centerDisplayGenres = (row) => {
+  const meta = centerTmdbMeta(row);
+  let genres = meta.genres;
+  if (!genres) return '';
+  
+  // 兼容本地数据库存的字符串格式 (如 "科幻,冒险")
+  if (typeof genres === 'string') {
+    try {
+      genres = JSON.parse(genres);
+    } catch (e) {
+      genres = genres.split(/[,，、/]/);
+    }
+  }
+  
+  // 提取并截取前 3 个
+  if (Array.isArray(genres)) {
+    const names = genres.map(g => typeof g === 'object' ? g.name : g).filter(Boolean);
+    return names.slice(0, 3).join(' / ');
+  }
+  return '';
 };
 const centerPosterWallPrimaryTitle = (row) => {
   const base = centerBaseTitle(row) || '未知资源';

@@ -736,7 +736,7 @@ def check_and_replenish_pool():
 @discover_bp.route('/tmdb/summary-batch', methods=['POST'])
 @any_login_required
 def api_tmdb_summary_batch():
-    """批量获取 TMDb 基础信息（多线程极速版 + 海报/评分/简介）"""
+    """批量获取 TMDb 基础信息（多线程极速版 + 海报/评分/简介/类型）"""
     import requests
     import concurrent.futures
     data = request.json or {}
@@ -758,31 +758,31 @@ def api_tmdb_summary_batch():
             if season_number is not None and str(season_number).isdigit(): season_tuples.append((tmdb_id, int(season_number)))
             else: tv_ids.append(tmdb_id)
                 
-    # 1. 本地数据库极速查询（增加 overview 和 rating）
+    # 1. 本地数据库极速查询（增加 genres）
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 if movie_ids:
-                    cur.execute("SELECT tmdb_id, poster_path, overview, rating FROM media_metadata WHERE item_type = 'Movie' AND tmdb_id = ANY(%s)", (movie_ids,))
+                    cur.execute("SELECT tmdb_id, poster_path, overview, rating, genres FROM media_metadata WHERE item_type = 'Movie' AND tmdb_id = ANY(%s)", (movie_ids,))
                     for row in cur.fetchall():
-                        by_key[f"movie:{row['tmdb_id']}:"] = {'poster_path': row['poster_path'], 'overview': row['overview'], 'vote_average': row['rating']}
+                        by_key[f"movie:{row['tmdb_id']}:"] = {'poster_path': row['poster_path'], 'overview': row['overview'], 'vote_average': row['rating'], 'genres': row['genres']}
                 if tv_ids:
-                    cur.execute("SELECT tmdb_id, poster_path, overview, rating FROM media_metadata WHERE item_type = 'Series' AND tmdb_id = ANY(%s)", (tv_ids,))
+                    cur.execute("SELECT tmdb_id, poster_path, overview, rating, genres FROM media_metadata WHERE item_type = 'Series' AND tmdb_id = ANY(%s)", (tv_ids,))
                     for row in cur.fetchall():
-                        by_key[f"tv:{row['tmdb_id']}:"] = {'poster_path': row['poster_path'], 'overview': row['overview'], 'vote_average': row['rating']}
+                        by_key[f"tv:{row['tmdb_id']}:"] = {'poster_path': row['poster_path'], 'overview': row['overview'], 'vote_average': row['rating'], 'genres': row['genres']}
                 if season_tuples:
                     conditions, args = [], []
                     for tv_id, s_num in season_tuples:
                         conditions.append("(parent_series_tmdb_id = %s AND season_number = %s)")
                         args.extend([tv_id, s_num])
                     if conditions:
-                        cur.execute(f"SELECT parent_series_tmdb_id, season_number, poster_path, overview, rating FROM media_metadata WHERE item_type = 'Season' AND ({' OR '.join(conditions)})", args)
+                        cur.execute(f"SELECT parent_series_tmdb_id, season_number, poster_path, overview, rating, genres FROM media_metadata WHERE item_type = 'Season' AND ({' OR '.join(conditions)})", args)
                         for row in cur.fetchall():
-                            by_key[f"tv:{row['parent_series_tmdb_id']}:{row['season_number']}"] = {'poster_path': row['poster_path'], 'overview': row['overview'], 'vote_average': row['rating']}
+                            by_key[f"tv:{row['parent_series_tmdb_id']}:{row['season_number']}"] = {'poster_path': row['poster_path'], 'overview': row['overview'], 'vote_average': row['rating'], 'genres': row['genres']}
     except Exception as e:
         logger.error(f"批量查询本地媒体库海报失败: {e}")
 
-    # 2. TMDB API 补全
+    # 2. TMDB API 补全（增加 genres 解析）
     missing_items = [item for item in items if f"{item.get('media_type')}:{item.get('tmdb_id')}:{item.get('season_number') or ''}" not in by_key]
     proxies = getattr(config_manager, 'get_proxies_for_requests', lambda: None)()
     
@@ -802,7 +802,8 @@ def api_tmdb_summary_batch():
                 return key, {
                     'poster_path': resp.get('poster_path'),
                     'overview': resp.get('overview'),
-                    'vote_average': round(resp.get('vote_average', 0), 1) if resp.get('vote_average') else None
+                    'vote_average': round(resp.get('vote_average', 0), 1) if resp.get('vote_average') else None,
+                    'genres': [g.get('name') for g in resp.get('genres', [])] if resp.get('genres') else []
                 }
         except Exception:
             pass
