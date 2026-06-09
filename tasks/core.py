@@ -25,7 +25,7 @@ from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
 from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
-from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events
+from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events, task_recalculate_library_washing_priorities
 from .hdhive import task_hdhive_auto_checkin
 from .shared_resource_tasks import task_shared_resource_maintenance, share_all_library
 
@@ -80,6 +80,7 @@ TASK_HELP_TEXTS = {
     'fill-studio-images': '补全制作公司/工作室图标，让媒体详情页展示更完整。',
     'shared-share-status-sync': '高频同步共享分享状态，检查分享是否仍可用并更新中心状态。',
     'system-auto-update': '检查并执行系统容器自动更新，适合需要保持 ETK 最新版本时使用。',
+    'recalculate_library_washing_priorities': '重新计算媒体库中每个媒体的洗版优先级，适合调整洗版规则或新增优先级因素后使用。',
 }
 
 
@@ -327,6 +328,7 @@ def get_task_registry(context: str = 'all'):
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', False),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', False),
         'share-all-library': (share_all_library, "一键登记媒体库", 'media', False),
+        'recalculate_library_washing_priorities': (task_recalculate_library_washing_priorities, "重新计算洗版优先级", 'media', False),
     }
 
     if context == 'chain':
