@@ -427,8 +427,15 @@ class SharedCenterClient:
     def create_rapid_sign_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post('/api/v1/rapid-sign/jobs', payload or {}, timeout=15)
 
-    def wait_rapid_sign_job(self, job_id: str, timeout: int = 45) -> Dict[str, Any]:
-        return self._get(f"/api/v1/rapid-sign/jobs/{urllib.parse.quote(str(job_id))}/wait", {'timeout': max(1, min(int(timeout or 45), 55))}, timeout=max(10, int(timeout or 45) + 10))
+    def wait_rapid_sign_job(self, job_id: str, timeout: int = 75) -> Dict[str, Any]:
+        # 等待时间必须大于中心端 pending/claimed 重新分配阈值，
+        # 否则 holder 短暂离线时请求端会先超时返回，中心来不及判失败/扣分/换 holder。
+        wait_timeout = max(1, min(int(timeout or 75), 80))
+        return self._get(
+            f"/api/v1/rapid-sign/jobs/{urllib.parse.quote(str(job_id))}/wait",
+            {'timeout': wait_timeout},
+            timeout=max(10, wait_timeout + 10),
+        )
 
     def poll_rapid_sign_jobs(self, *, timeout: int = 1, limit: int = 3) -> Dict[str, Any]:
         return self._get('/api/v1/rapid-sign/jobs/poll', {'timeout': max(0, min(int(timeout or 1), 55)), 'limit': max(1, min(int(limit or 3), 20))}, timeout=max(8, int(timeout or 1) + 8))

@@ -401,17 +401,79 @@ def _prepare_rapid_target_dir_for_source(
             'context': ctx,
         }
     except Exception as e:
-        # 不因为临时目录创建失败阻断秒传，最多回退旧逻辑。
+        # 季包必须落临时目录，不能回退到待整理根目录；否则一季几十集会再次被整理成
+        # 根目录单文件，失败时也难以清理已秒传的部分文件。
         logger.warning(
-            f"  ➜ [共享资源] 创建季包临时接收目录失败，回退待整理根目录："
+            f"  ➜ [共享资源] 创建季包临时接收目录失败，拒绝本次季包秒传："
             f"source={normalized_kind}:{source_id}, err={e}"
         )
         return {
             'target_cid': str(base_target_cid),
             'base_target_cid': str(base_target_cid),
             'season_package_temp_dir': False,
+            'temp_dir_required': True,
             'temp_dir_error': str(e),
         }
+
+
+def _cleanup_rapid_temp_dir(rapid_target: Dict[str, Any], *, reason: str = '') -> Dict[str, Any]:
+    """删除季包秒传临时接收目录。
+
+    完结季/公共季包必须全量秒传成功才允许进入整理；只要有一集失败，就把临时目录
+    整个删除，避免 8/9 这种半季被批量移动入库。
+    """
+    if not isinstance(rapid_target, dict) or not rapid_target.get('season_package_temp_dir'):
+        return {'ok': True, 'skipped': True}
+    folder_cid = str(rapid_target.get('folder_cid') or rapid_target.get('target_cid') or '').strip()
+    folder_name = str(rapid_target.get('folder_name') or folder_cid or '').strip()
+    if not folder_cid:
+        return {'ok': False, 'skipped': True, 'message': '缺少临时目录 CID'}
+    try:
+        p115 = P115Service.get_client()
+        if not p115:
+            raise RuntimeError('115 客户端未初始化')
+        resp = p115.fs_delete([folder_cid])
+        ok = bool(isinstance(resp, dict) and resp.get('state'))
+        if ok:
+            logger.warning(
+                f"  ➜ [共享资源] 已删除季包临时接收目录：{folder_name} "
+                f"(cid={folder_cid})，原因：{reason or 'season package aborted'}"
+            )
+        else:
+            logger.warning(
+                f"  ➜ [共享资源] 删除季包临时接收目录失败：{folder_name} "
+                f"(cid={folder_cid})，resp={resp}"
+            )
+        return {'ok': ok, 'response': resp, 'folder_cid': folder_cid, 'folder_name': folder_name}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 删除季包临时接收目录异常：{folder_name} (cid={folder_cid}) -> {e}")
+        return {'ok': False, 'error': str(e), 'folder_cid': folder_cid, 'folder_name': folder_name}
+
+
+def _report_transfer_failed_safely(
+    client: SharedCenterClient,
+    *,
+    source_kind: str,
+    source_id: str,
+    files: List[Dict[str, Any]],
+    errors: List[Any],
+    message: str = '',
+) -> Dict[str, Any]:
+    fail_kind = _normalize_source_kind(source_kind)
+    if fail_kind not in ('movie', 'episode', 'completed_season') or not source_id:
+        return {'ok': False, 'skipped': True, 'reason': 'unsupported_source_kind'}
+    try:
+        return client.report_transfer(
+            fail_kind,
+            source_id,
+            'failed',
+            success_count=0,
+            total_count=len(files or []),
+            message=(message or json.dumps(errors or [], ensure_ascii=False))[:1000],
+        ) or {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 上报秒传失败失败：{fail_kind}:{source_id} -> {e}")
+        return {'ok': False, 'error': str(e)}
 
 
 def _rapid_success(resp: Any) -> bool:
@@ -544,7 +606,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     if not job_id:
         raise RuntimeError(f'中心未返回 sign_job id: {create_resp}')
     logger.info(f"  ➜ [负载均衡签名] 签名任务已创建：等待源客户端签名...")
-    wait_resp = client.wait_rapid_sign_job(job_id, timeout=45)
+    wait_resp = client.wait_rapid_sign_job(job_id, timeout=75)
     status = str(wait_resp.get('status') or (wait_resp.get('job') or {}).get('status') or '')
     sign_val = str(wait_resp.get('sign_val') or (wait_resp.get('job') or {}).get('sign_val') or '').strip().upper()
     if status != 'done' or not _norm_sha1(sign_val):
@@ -1672,31 +1734,66 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     )
     target_cid = str(rapid_target.get('target_cid') or base_target_cid)
 
+    is_package_transfer = source_kind in ('completed_season', 'season_hub') and len(files) > 1
+    if is_package_transfer and rapid_target.get('temp_dir_required') and not rapid_target.get('season_package_temp_dir'):
+        message = f"季包临时接收目录创建失败，放弃本次整季入库：{rapid_target.get('temp_dir_error') or 'unknown'}"
+        _report_transfer_failed_safely(client, source_kind=source_kind, source_id=source_id, files=files, errors=[message], message=message)
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='failed', message=message[:500])
+            except Exception:
+                pass
+        return {
+            'ok': False,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'success_count': 0,
+            'total': len(files),
+            'errors': [{'error': message}],
+            'preflight': locals().get('preflight', {}),
+            'rapid_target': rapid_target,
+            'aborted_season_package': True,
+        }
+
     ok_count = 0
     errors = []
     success_sources = []
+    RAPID_TRANSFER_MAX_RETRIES = 3
 
     def _rapid_transfer_one(raw_file: Dict[str, Any]) -> Dict[str, Any]:
         f = dict(raw_file or {})
-        try:
-            f.setdefault('source_kind', source_kind)
-            f.setdefault('source_id', source_id)
-            f.setdefault('source_ref_id', source_id)
-            file_source_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
-            file_source_id = str(f.get('source_id') or f.get('source_ref_id') or source_id or '').strip()
-            result = rapid_save_file(f, target_cid=target_cid)
-            if result.get('ok'):
-                return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
-            return {'ok': False, 'file': f, 'error': {'file': f.get('file_name') or f.get('sha1'), 'response': result.get('response')}}
-        except Exception as e:
-            return {'ok': False, 'file': f, 'error': {'file': f.get('file_name') or f.get('sha1'), 'error': str(e)}}
+        f.setdefault('source_kind', source_kind)
+        f.setdefault('source_id', source_id)
+        f.setdefault('source_ref_id', source_id)
+        file_source_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
+        file_source_id = str(f.get('source_id') or f.get('source_ref_id') or source_id or '').strip()
+        file_label = f.get('file_name') or f.get('name') or f.get('sha1') or 'unknown'
+        last_error = None
+        attempts = RAPID_TRANSFER_MAX_RETRIES + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                if attempt > 1:
+                    logger.warning(
+                        f"  ➜ [共享资源] 秒传重试 {attempt - 1}/{RAPID_TRANSFER_MAX_RETRIES}：{file_label}"
+                    )
+                    time.sleep(min(1.5 * attempt, 6.0))
+                result = rapid_save_file(f, target_cid=target_cid)
+                if result.get('ok'):
+                    result['attempt'] = attempt
+                    return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
+                last_error = {'file': file_label, 'response': result.get('response'), 'result': result, 'attempt': attempt}
+            except Exception as e:
+                last_error = {'file': file_label, 'error': str(e), 'attempt': attempt}
+        return {'ok': False, 'file': f, 'error': last_error or {'file': file_label, 'error': 'unknown'}}
 
     # 完结季/公共季包通常会触发多文件 status=7 签名；并发发起秒传，中心才能把 sign_job
     # 同时派给多个 holder，避免一集一集串行等待。单文件/电影仍走轻量串行。
-    parallel_transfer = source_kind in ('completed_season', 'season_hub') and len(files) > 1
+    parallel_transfer = is_package_transfer
     if parallel_transfer:
         max_workers = max(1, min(len(files), 8))
-        logger.info(f"  ➜ [共享资源] 季包秒传启用并发签名调度：files={len(files)}, workers={max_workers}")
+        logger.info(f"  ➜ [共享资源] 季包秒传启用并发签名调度：files={len(files)}, workers={max_workers}, retries={RAPID_TRANSFER_MAX_RETRIES}")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='shared-rapid-transfer') as executor:
             future_map = {executor.submit(_rapid_transfer_one, f): f for f in files}
             for future in concurrent.futures.as_completed(future_map):
@@ -1704,7 +1801,6 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                 if item.get('ok'):
                     ok_count += 1
                     success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
-                    _register_local_rapid_holder(client, source_kind=item.get('kind'), source_id=item.get('id'), file_info=item.get('file') or {})
                 else:
                     errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
     else:
@@ -1713,13 +1809,53 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             if item.get('ok'):
                 ok_count += 1
                 success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
-                _register_local_rapid_holder(client, source_kind=item.get('kind'), source_id=item.get('id'), file_info=item.get('file') or {})
             else:
                 errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
 
     report_errors = []
     report_results = []
     skipped_report_sources = []
+    cleanup_result = {}
+
+    # 季包必须全量成功。任何一集连续重试后仍失败，整季放弃入库，删除临时目录，
+    # 不上报 success，不触发整理，避免 8/9 半季污染媒体库。消费端贡献点也不会被扣除。
+    if is_package_transfer and ok_count != len(files):
+        message = f'季包秒传不完整，已放弃整季入库：成功 {ok_count}/{len(files)}，失败 {len(errors)} 个文件'
+        cleanup_result = _cleanup_rapid_temp_dir(rapid_target, reason=message)
+        fail_report = _report_transfer_failed_safely(
+            client,
+            source_kind=source_kind,
+            source_id=source_id,
+            files=files,
+            errors=errors,
+            message=message,
+        )
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='failed', message=message[:500])
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源] ACK 中心事件失败: {e}")
+        logger.warning(f"  ➜ [共享资源] {message}；临时目录清理结果：{cleanup_result}")
+        return {
+            'ok': False,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'success_count': 0,
+            'rapid_success_count': ok_count,
+            'total': len(files),
+            'errors': errors,
+            'failed_report': fail_report,
+            'cleanup_result': cleanup_result,
+            'preflight': locals().get('preflight', {}),
+            'rapid_target': locals().get('rapid_target', {}),
+            'aborted_season_package': True,
+        }
+
+    # 到这里才说明成功文件会留在网盘里；此时再登记本机 holder，避免季包失败清理后留下假 holder。
+    for report_kind, report_id, report_file in success_sources:
+        _register_local_rapid_holder(client, source_kind=report_kind, source_id=report_id, file_info=report_file or {})
 
     if ok_count:
         report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -1757,19 +1893,14 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                 logger.warning(f"  ➜ [共享资源] 上报秒传成功失败，热度不会增加: {err}")
         _kick_115_organize_detached(reason=f'rapid:{source_kind}:{source_id}')
     else:
-        fail_kind = _normalize_source_kind(source_kind) if _normalize_source_kind(source_kind) in ('movie', 'episode', 'completed_season') else ''
-        if fail_kind and source_id:
-            try:
-                client.report_transfer(
-                    fail_kind,
-                    source_id,
-                    'failed',
-                    success_count=0,
-                    total_count=len(files),
-                    message=json.dumps(errors, ensure_ascii=False)[:1000],
-                )
-            except Exception:
-                pass
+        _report_transfer_failed_safely(
+            client,
+            source_kind=source_kind,
+            source_id=source_id,
+            files=files,
+            errors=errors,
+            message=json.dumps(errors, ensure_ascii=False)[:1000],
+        )
 
     if ack and event_id:
         try:
