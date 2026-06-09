@@ -732,3 +732,87 @@ def check_and_replenish_pool():
             
     except Exception as e:
         logger.error(f"检查并补充推荐池时出错: {e}", exc_info=True)
+
+@discover_bp.route('/tmdb/summary-batch', methods=['POST'])
+@any_login_required
+def api_tmdb_summary_batch():
+    """批量获取 TMDb 基础信息（修复共享资源中心海报墙不显示的问题）"""
+    import requests
+    data = request.json or {}
+    items = data.get('items') or []
+    if not items:
+        return jsonify({'success': True, 'by_key': {}})
+        
+    by_key = {}
+    api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
+    
+    # 1. 提取需要查询的 tmdb_id
+    movie_ids, tv_ids, season_tuples = [], [], []
+    for item in items:
+        media_type = item.get('media_type')
+        tmdb_id = str(item.get('tmdb_id') or '')
+        season_number = item.get('season_number')
+        if not tmdb_id: continue
+        
+        if media_type == 'movie':
+            movie_ids.append(tmdb_id)
+        elif media_type == 'tv':
+            if season_number is not None and str(season_number).isdigit():
+                season_tuples.append((tmdb_id, int(season_number)))
+            else:
+                tv_ids.append(tmdb_id)
+                
+    # 2. 优先从本地数据库快速获取海报（极速响应，防 TMDB 接口超时）
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if movie_ids:
+                    cur.execute("SELECT tmdb_id, title, release_year, poster_path FROM media_metadata WHERE item_type = 'Movie' AND tmdb_id = ANY(%s)", (movie_ids,))
+                    for row in cur.fetchall():
+                        by_key[f"movie:{row['tmdb_id']}:"] = {'title': row['title'], 'year': str(row['release_year'] or '')[:4], 'poster_path': row['poster_path']}
+                if tv_ids:
+                    cur.execute("SELECT tmdb_id, title, release_year, poster_path FROM media_metadata WHERE item_type = 'Series' AND tmdb_id = ANY(%s)", (tv_ids,))
+                    for row in cur.fetchall():
+                        by_key[f"tv:{row['tmdb_id']}:"] = {'title': row['title'], 'year': str(row['release_year'] or '')[:4], 'poster_path': row['poster_path']}
+                if season_tuples:
+                    conditions, args = [], []
+                    for tv_id, s_num in season_tuples:
+                        conditions.append("(parent_series_tmdb_id = %s AND season_number = %s)")
+                        args.extend([tv_id, s_num])
+                    if conditions:
+                        cur.execute(f"SELECT parent_series_tmdb_id, season_number, title, release_year, poster_path FROM media_metadata WHERE item_type = 'Season' AND ({' OR '.join(conditions)})", args)
+                        for row in cur.fetchall():
+                            by_key[f"tv:{row['parent_series_tmdb_id']}:{row['season_number']}"] = {'title': row['title'], 'year': str(row['release_year'] or '')[:4], 'poster_path': row['poster_path']}
+    except Exception as e:
+        logger.error(f"批量查询本地媒体库海报失败: {e}")
+
+    # 3. 找出本地没找到的，去 TMDB API 查 (限制数量防止超时)
+    missing_items = [item for item in items if f"{item.get('media_type')}:{item.get('tmdb_id')}:{item.get('season_number') or ''}" not in by_key]
+    
+    # 自动获取系统的代理配置（如果有）
+    proxies = getattr(config_manager, 'get_proxies_for_requests', lambda: None)()
+    
+    for item in missing_items[:30]: # 最多查30个，防止接口卡死
+        media_type = item.get('media_type')
+        tmdb_id = str(item.get('tmdb_id') or '')
+        season_number = item.get('season_number')
+        key = f"{media_type}:{tmdb_id}:{season_number or ''}"
+        
+        try:
+            if media_type == 'movie':
+                url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}&language=zh-CN"
+                resp = requests.get(url, proxies=proxies, timeout=5).json()
+                if resp.get('id'):
+                    by_key[key] = {'title': resp.get('title'), 'year': str(resp.get('release_date') or '')[:4], 'poster_path': resp.get('poster_path')}
+            elif media_type == 'tv':
+                if season_number is not None and str(season_number).isdigit():
+                    url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_number}?api_key={api_key}&language=zh-CN"
+                else:
+                    url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}&language=zh-CN"
+                resp = requests.get(url, proxies=proxies, timeout=5).json()
+                if resp.get('id') or resp.get('_id'):
+                    by_key[key] = {'title': resp.get('name'), 'year': str(resp.get('air_date') or resp.get('first_air_date') or '')[:4], 'poster_path': resp.get('poster_path')}
+        except Exception as e:
+            logger.debug(f"TMDB API 补全失败: {key}, {e}")
+
+    return jsonify({'success': True, 'by_key': by_key})
