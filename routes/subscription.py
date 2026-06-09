@@ -450,6 +450,109 @@ def _shared_pool_plain_tag_labels(item: dict) -> list[str]:
     return labels
 
 
+def _cloud_track_text_values(value) -> list[str]:
+    """把音轨/字幕字段统一展开成可匹配文本。
+
+    共享池的 MediaInfo 摘要可能是字符串数组，也可能是
+    [{display, language, title, codec}] 这类对象；这里只抽取短文本，
+    不把整个资源 JSON 都扫进去，避免标题/备注误触发。
+    """
+    out: list[str] = []
+
+    def add_text(text):
+        text = str(text or "").strip()
+        if text and text not in out:
+            out.append(text)
+
+    def walk(v, depth: int = 0):
+        if v in (None, "", [], {}):
+            return
+        if isinstance(v, (str, int, float, bool)):
+            add_text(v)
+            return
+        if isinstance(v, list):
+            for x in v[:80]:
+                walk(x, depth + 1)
+            return
+        if isinstance(v, dict):
+            # 只取音轨/字幕对象常见的描述字段，避免把 unrelated meta 全部拼进去。
+            for key in (
+                "display", "DisplayTitle", "title", "Title", "name", "Name",
+                "language", "Language", "lang", "DisplayLanguage",
+                "codec", "Codec", "channel_layout", "channels"
+            ):
+                if key in v:
+                    walk(v.get(key), depth + 1)
+            return
+
+    walk(value)
+    return out
+
+
+def _shared_pool_track_texts(item: dict, kind: str) -> list[str]:
+    item = item if isinstance(item, dict) else {}
+    if kind == "audio":
+        keys = (
+            "audio_list", "audios", "audio_tracks", "audio", "audio_track",
+            "default_audio", "default_audio_track", "audio_languages", "languages",
+        )
+    else:
+        keys = (
+            "subtitle_list", "subtitles", "subtitle_tracks", "subtitle", "subtitles_text",
+            "default_subtitle", "default_subtitle_track", "subtitle_languages",
+        )
+
+    texts: list[str] = []
+    for part in _shared_pool_tag_containers(item):
+        for key in keys:
+            for text in _cloud_track_text_values(part.get(key)):
+                if text and text not in texts:
+                    texts.append(text)
+    return texts
+
+
+def _contains_mandarin_audio_text(text: str) -> bool:
+    """格式化后的音轨标题命中“国语/普通话”即认为有国语音轨。"""
+    text = str(text or "").strip()
+    if not text:
+        return False
+    return "国语" in text or "普通话" in text or "普通話" in text
+
+
+def _contains_chinese_subtitle_text(text: str) -> bool:
+    """格式化后的字幕标题只按中文关键词打“中字”标签，不再扫英文语言码。"""
+    text = str(text or "").strip()
+    if not text:
+        return False
+    return any(token in text for token in ("中文", "简中", "繁中", "简体", "繁体", "中英"))
+
+
+def _contains_special_effect_subtitle_text(text: str) -> bool:
+    text = str(text or "").strip()
+    return bool(text and "特效" in text)
+
+
+def _contains_bilingual_subtitle_text(text: str) -> bool:
+    text = str(text or "").strip()
+    return bool(text and ("双语" in text or "雙語" in text))
+
+
+def _shared_pool_has_mandarin_audio(item: dict) -> bool:
+    return any(_contains_mandarin_audio_text(text) for text in _shared_pool_track_texts(item, "audio"))
+
+
+def _shared_pool_has_chinese_subtitle(item: dict) -> bool:
+    return any(_contains_chinese_subtitle_text(text) for text in _shared_pool_track_texts(item, "subtitle"))
+
+
+def _shared_pool_has_special_effect_subtitle(item: dict) -> bool:
+    return any(_contains_special_effect_subtitle_text(text) for text in _shared_pool_track_texts(item, "subtitle"))
+
+
+def _shared_pool_has_bilingual_subtitle(item: dict) -> bool:
+    return any(_contains_bilingual_subtitle_text(text) for text in _shared_pool_track_texts(item, "subtitle"))
+
+
 def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
     """云资源搜索共享池卡片额外标签。中心资源库已有的纯净版/短剧/动漫等标签不能丢。"""
     tags: list[dict] = []
@@ -468,6 +571,14 @@ def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
         add("短剧", "info", False)
     if _shared_pool_flag_enabled(item, "is_animation", "animation_meta_json"):
         add("动漫", "success", False)
+    if _shared_pool_has_mandarin_audio(item):
+        add("国语", "success", False)
+    if _shared_pool_has_chinese_subtitle(item):
+        add("中字", "info", False)
+    if _shared_pool_has_special_effect_subtitle(item):
+        add("特效", "warning", False)
+    if _shared_pool_has_bilingual_subtitle(item):
+        add("双语", "info", False)
 
     # 保留中心端扩展标签；已完结/连载中由现有 _completion_label 单独展示，避免重复。
     skip = {"已完结", "完结", "已认证完结", "完结认证", "连载中", "可用"}
@@ -749,6 +860,11 @@ def _normalize_shared_pool_resource(resource):
     progress_label = f"共享池 · {item.get('progress_text')}" if item.get("progress_text") else "共享池 · 可秒传"
     remark_parts = [x for x in (item.get("status_message"), source_label, version_label, progress_label) if x]
 
+    has_mandarin_audio = _shared_pool_has_mandarin_audio(item)
+    has_chinese_subtitle = _shared_pool_has_chinese_subtitle(item)
+    has_special_effect_subtitle = _shared_pool_has_special_effect_subtitle(item)
+    has_bilingual_subtitle = _shared_pool_has_bilingual_subtitle(item)
+
     item.update({
         "source_type": "shared_pool",
         "source_name": "共享池",
@@ -769,6 +885,10 @@ def _normalize_shared_pool_resource(resource):
         "_shared_pool_version_label": version_label,
         "_shared_pool_source_count": source_count,
         "_shared_pool_source_label": source_label,
+        "has_mandarin_audio": has_mandarin_audio,
+        "has_chinese_subtitle": has_chinese_subtitle,
+        "has_special_effect_subtitle": has_special_effect_subtitle,
+        "has_bilingual_subtitle": has_bilingual_subtitle,
         "_shared_pool_tag_labels": _shared_pool_cloud_tag_labels(item),
         "_shared_pool_tags": _shared_pool_cloud_tag_labels(item),
         "_completion_label": "已完结" if item.get("is_completed_certified") or item.get("is_completed") else ("连载中" if item.get("is_ongoing_hub") else ""),
