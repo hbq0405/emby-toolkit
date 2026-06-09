@@ -322,13 +322,8 @@
           <div class="center-detail-head">
             <div>
               <div class="center-detail-title">{{ centerDisplayTitle(activeCenterDetailRow) }}</div>
-              <div class="center-detail-sub">{{ centerCardMetaText(activeCenterDetailRow) }} · {{ centerUsableResourceCount(activeCenterDetailRow) }} 个可用源</div>
+              <div class="center-detail-sub">{{ centerCardMetaText(activeCenterDetailRow) }} · 包含 {{ centerDetailVersions.length }} 个版本</div>
             </div>
-            <n-space size="small" wrap>
-              <n-tag v-for="tagItem in centerCardTags(activeCenterDetailRow)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
-                {{ tagItem.label }}
-              </n-tag>
-            </n-space>
           </div>
 
           <div class="center-version-detail-list">
@@ -340,7 +335,6 @@
                     {{ tagItem.label }}
                   </n-tag>
                 </div>
-                <div v-if="centerTrackDetailText(version)" class="center-version-tracks">{{ centerTrackDetailText(version) }}</div>
                 <div v-if="centerEpisodePreview(version)" class="center-version-episodes">{{ centerEpisodePreview(version) }}</div>
               </div>
               <div class="center-version-action">
@@ -1861,16 +1855,25 @@ const openManualShareForCenterReplenish = async (row) => {
 };
 
 const centerGroupKey = (row) => {
-  if (row?.display_group_key) return row.display_group_key;
   const type = centerRowType(row);
-  const tmdb = row.tmdb_id || row.share_tmdb_id || row.parent_series_tmdb_id || '';
-  const title = row.title || row.media_title || '';
-  const season = row.season_number || '';
-  const episode = row.episode_number || '';
   const baseType = centerTypeLabel(type);
+  
+  // 强力提取 TMDB ID，剧集优先找 parent_series_tmdb_id
+  let tmdb = '';
+  if (baseType === '电影') {
+    tmdb = row.tmdb_id || row.share_tmdb_id || '';
+  } else {
+    tmdb = row.parent_series_tmdb_id || row.series_tmdb_id || row.tmdb_id || row.share_tmdb_id || '';
+  }
+  
+  // 如果没有 TMDB ID，用清理过的纯净标题兜底
+  const title = centerBaseTitle(row) || row.title || row.media_title || '';
+  const season = Number(row.season_number) || 0;
+  const episode = Number(row.episode_number) || 0;
+
   if (baseType === '电影') return `movie:${tmdb || title}`;
-  if (baseType === '季') return `pack:${tmdb || title}:S${season || ''}`;
-  if (baseType === '单集') return `ep:${tmdb || title}:S${season || ''}:E${episode || ''}`;
+  if (baseType === '季') return `pack:${tmdb || title}:S${season}`;
+  if (baseType === '单集') return `ep:${tmdb || title}:S${season}:E${episode}`;
   return `${baseType}:${tmdb || title}:${season}:${episode}`;
 };
 
@@ -2544,7 +2547,12 @@ const centerDetailVersions = computed(() => {
 const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || Math.random());
 const centerVersionTitle = (row) => {
   const summary = centerVersionSummary(row) || {};
-  const parts = [summary.resolution, compactEffectText(summary.effect), summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : '', summary.fps ? `${summary.fps}fps` : ''].filter(v => v && v !== '-');
+  let fpsStr = '';
+  if (summary.fps) {
+    // 如果自带了 fps 字母就不再追加，防止变成 fpsfps
+    fpsStr = String(summary.fps).toLowerCase().includes('fps') ? summary.fps : `${summary.fps} fps`;
+  }
+  const parts = [summary.resolution, compactEffectText(summary.effect), summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : '', fpsStr].filter(v => v && v !== '-');
   return parts.join(' · ') || centerSeasonText(row) || '资源版本';
 };
 const centerVersionTags = (row) => {
