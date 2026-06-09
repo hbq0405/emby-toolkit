@@ -1686,6 +1686,7 @@ def _detect_clean_version_for_completed_season(
 
     口径：
     - 连载季不调用本函数；
+    - 动漫剧集不做纯净版判断，命中 TMDb 动画类型后直接跳过；
     - 自动/完结任务使用本地 media_metadata.runtime_minutes；
     - 手动共享完结季实时查询 TMDb 季详情；
     - 只生成中心端标签，消费端不再二次兜底识别。
@@ -1702,6 +1703,19 @@ def _detect_clean_version_for_completed_season(
     season = _safe_int_or_none(candidate.get('season_number'))
     if not parent or season is None:
         return {'is_clean_version': False, 'clean_version_checked': False, 'reason': 'missing_identity'}
+
+    animation_genre = _short_drama_source_has_animation_genre(candidate)
+    if animation_genre:
+        return {
+            'is_clean_version': False,
+            'clean_version_checked': False,
+            'clean_version_skipped': True,
+            'reason': 'animation_genre_skipped',
+            'parent_series_tmdb_id': parent,
+            'season_number': season,
+            'animation_genre_checked': True,
+            'genres_json_contains_animation': True,
+        }
 
     manual = _is_manual_clean_detect_source(source_provider, candidate)
     runtime_map = _load_tmdb_runtime_map_for_season(parent, season) if manual else _load_local_runtime_map_for_season(parent, season)
@@ -1757,8 +1771,7 @@ def _detect_clean_version_for_completed_season(
             'comparable_count': comparable,
         }
 
-    animation_genre = _short_drama_source_has_animation_genre(candidate)
-    short_hits = [] if animation_genre else [ep for ep in episode_rows if 0 < float(ep.get('actual_runtime_minutes') or 0) < _SHORT_DRAMA_MAX_RUNTIME_MINUTES]
+    short_hits = [ep for ep in episode_rows if 0 < float(ep.get('actual_runtime_minutes') or 0) < _SHORT_DRAMA_MAX_RUNTIME_MINUTES]
     short_required_hits = max(1, int(math.ceil(comparable * _SHORT_DRAMA_HIT_RATIO)))
     is_short_drama = bool((not animation_genre) and len(short_hits) >= short_required_hits)
     min_delta = _CLEAN_VERSION_SHORT_DRAMA_MIN_DELTA_MINUTES if is_short_drama else _CLEAN_VERSION_MIN_DELTA_MINUTES
