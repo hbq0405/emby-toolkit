@@ -140,13 +140,40 @@ class ListImporter:
     def _extract_ids_from_title_or_line(self, title_line: str) -> Tuple[Optional[str], Optional[str]]:
         imdb_id = None
         tmdb_id = None
-        imdb_match = re.search(r'(tt\d{7,8})', title_line, re.I)
+        imdb_match = re.search(r'(tt\d{7,})', title_line, re.I)
         if imdb_match:
             imdb_id = imdb_match.group(1)
         tmdb_match = re.search(r'tmdb://(\d+)', title_line, re.I)
         if tmdb_match:
             tmdb_id = tmdb_match.group(1)
         return imdb_id, tmdb_id
+
+    def _extract_year_from_text(self, text: Optional[str]) -> Optional[str]:
+        """从标题或描述中提取 19xx/20xx 年份。"""
+        if not text:
+            return None
+        match = re.search(r'\b((?:19|20)\d{2})\b', str(text))
+        return match.group(1) if match else None
+
+    def _strip_trailing_year_from_title(self, title: str) -> str:
+        """去掉标题末尾单独的年份，保留用于匹配的干净片名。"""
+        if not title:
+            return ""
+        cleaned = re.sub(r'\s*[（(]\s*(?:19|20)\d{2}\s*[)）]\s*$', '', title).strip()
+        cleaned = re.sub(r'\s+(?:19|20)\d{2}\s*$', '', cleaned).strip()
+        return cleaned
+
+    def _movie_result_year(self, result: Dict[str, Any]) -> Optional[str]:
+        date_str = result.get('release_date') or result.get('first_air_date') or ''
+        if isinstance(date_str, str) and re.match(r'^(?:19|20)\d{2}', date_str):
+            return date_str[:4]
+        return None
+
+    def _movie_result_matches_year(self, result: Dict[str, Any], year: Optional[str]) -> bool:
+        """有明确年份时必须命中同一年，避免同名电影错配。"""
+        if not year:
+            return True
+        return self._movie_result_year(result) == str(year)
     
     def _process_dynamic_date_placeholders(self, url: str) -> str:
         """
@@ -406,16 +433,16 @@ class ListImporter:
                     elif guid_elem is not None and guid_elem.text and 'douban.com' in guid_elem.text:
                         douban_link = guid_elem.text
 
-                    year = None
-                    year_match = re.search(r'\b(20\d{2})\b', description)
-                    if year_match: year = year_match.group(1)
+                    year = self._extract_year_from_text(title)
+                    if not year:
+                        year = self._extract_year_from_text(description)
 
                     imdb_id = None
                     if guid_elem is not None and guid_elem.text:
-                        match = re.search(r'tt\d{7,8}', guid_elem.text)
+                        match = re.search(r'tt\d{7,}', guid_elem.text)
                         if match: imdb_id = match.group(0)
                     if not imdb_id and link_elem is not None and link_elem.text:
-                        match = re.search(r'tt\d{7,8}', link_elem.text)
+                        match = re.search(r'tt\d{7,}', link_elem.text)
                         if match: imdb_id = match.group(0)
                     
                     if title:
@@ -471,7 +498,7 @@ class ListImporter:
                     norm_title = normalize_string(result.get('title'))
                     norm_original_title = normalize_string(result.get('original_title'))
 
-                    if norm_variation == norm_title or norm_variation == norm_original_title:
+                    if (norm_variation == norm_title or norm_variation == norm_original_title) and self._movie_result_matches_year(result, year):
                         tmdb_id = str(result.get('id'))
                         logger.info(f"  ➜ 电影标题 '{title}'{year_info} 通过【精确规范匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
                         return tmdb_id, 'Movie', None
@@ -480,13 +507,24 @@ class ListImporter:
                     norm_title = normalize_string(result.get('title'))
                     norm_original_title = normalize_string(result.get('original_title'))
 
-                    if norm_variation in norm_title or norm_variation in norm_original_title:
+                    if (norm_variation in norm_title or norm_variation in norm_original_title) and self._movie_result_matches_year(result, year):
                         tmdb_id = str(result.get('id'))
                         logger.info(f"  ➜ 电影标题 '{title}'{year_info} 通过【包含匹配】(使用'{title_variation}') 成功匹配到: {result.get('title')} (ID: {tmdb_id})")
                         return tmdb_id, 'Movie', None
 
             if first_search_results:
-                first_result = first_search_results[0]
+                first_result = None
+                if year:
+                    for candidate in first_search_results:
+                        if self._movie_result_matches_year(candidate, year):
+                            first_result = candidate
+                            break
+                    if not first_result:
+                        logger.warning(f"  ➜ 电影标题 '{title}'{year_info} 有搜索结果，但没有同年份结果，拒绝回退到首条，避免同名电影错配。")
+                        return None
+                else:
+                    first_result = first_search_results[0]
+
                 tmdb_id = str(first_result.get('id'))
                 logger.warning(f"  ➜ 电影标题 '{title}'{year_info} 所有精确匹配和包含匹配均失败。将【回退使用】最相关的搜索结果: {first_result.get('title')} (ID: {tmdb_id})")
                 return tmdb_id, 'Movie', None
@@ -686,9 +724,10 @@ class ListImporter:
         with ThreadPoolExecutor(max_workers=5) as executor:
             def find_first_match(item: Dict[str, str], types_to_check):
                 original_source_title = item.get('title', '').strip()
-                year = item.get('year')
+                year = item.get('year') or self._extract_year_from_text(original_source_title)
                 rss_imdb_id = item.get('imdb_id')
                 douban_link = item.get('douban_link')
+                douban_details = None
 
                 def create_result(tmdb_id, item_type, confirmed_season=None):
                     result = {
@@ -715,8 +754,25 @@ class ListImporter:
                             _, s_num = parse_series_title_and_season(original_source_title, api_key=self.tmdb_api_key)
                             return create_result(tmdb_id, item_type, s_num)
 
+                if douban_link:
+                    logger.info(f"  ➜ 检测到豆瓣链接，优先通过豆瓣 IMDb ID 精确匹配：{original_source_title}")
+                    douban_details = douban_api.get_details_from_douban_link(douban_link, mtype=types_to_check[0] if types_to_check else None)
+                    if douban_details:
+                        imdb_id_from_douban = douban_details.get("imdb_id")
+                        if not imdb_id_from_douban and douban_details.get("attrs", {}).get("imdb"):
+                            imdb_ids = douban_details["attrs"]["imdb"]
+                            if isinstance(imdb_ids, list) and len(imdb_ids) > 0:
+                                imdb_id_from_douban = imdb_ids[0]
+
+                        if imdb_id_from_douban:
+                            logger.info(f"  ➜ 豆瓣 IMDb ID 优先匹配：{imdb_id_from_douban}")
+                            for item_type in types_to_check:
+                                tmdb_id = self._match_by_ids(imdb_id_from_douban, None, item_type)
+                                if tmdb_id:
+                                    return create_result(tmdb_id, item_type)
+
                 cleaned_title = re.sub(r'^\s*\d+\.\s*', '', original_source_title)
-                cleaned_title = re.sub(r'\s*\(\d{4}\)$', '', cleaned_title).strip()
+                cleaned_title = self._strip_trailing_year_from_title(cleaned_title)
                 
                 for item_type in types_to_check:
                     match_result = self._match_title_to_tmdb(cleaned_title, item_type, year=year)
@@ -727,7 +783,8 @@ class ListImporter:
                 
                 if douban_link:
                     logger.info(f"  ➜ 片名+年份匹配 '{original_source_title}' 失败，启动备用方案：通过豆瓣链接获取更多信息...")
-                    douban_details = douban_api.get_details_from_douban_link(douban_link, mtype=types_to_check[0] if types_to_check else None)
+                    if douban_details is None:
+                        douban_details = douban_api.get_details_from_douban_link(douban_link, mtype=types_to_check[0] if types_to_check else None)
                     
                     if douban_details:
                         imdb_id_from_douban = douban_details.get("imdb_id")
