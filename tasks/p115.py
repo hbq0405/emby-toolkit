@@ -2283,6 +2283,45 @@ def _build_priority_input(raw_info, *, file_name='', file_size=0, original_lang=
     return info
 
 
+def _lookup_organize_record_target_cid(cursor, *, cache_row=None, pick_code='', sha1=''):
+    """从 115 整理记录反查分类目标 CID。
+
+    p115_filesystem_cache.parent_id 只是文件当前所在父目录，剧集通常是剧名/季目录，
+    不能拿来匹配洗版优先级规则。真正的分类目标目录应以
+    p115_organize_records.target_cid 为准。
+
+    MP 直出模式通常没有 p115_organize_records，且不允许为了重算去频繁调用 115 API
+    向上溯源；这种情况返回空，交给全局无目录规则兜底，或标记为未命中规则。
+    """
+    cache_row = cache_row or {}
+    pick_code = str(pick_code or cache_row.get('pick_code') or '').strip()
+    file_id = str(cache_row.get('id') or cache_row.get('fid') or '').strip()
+
+    where = []
+    params = []
+    if pick_code:
+        where.append('pick_code = %s')
+        params.append(pick_code)
+    if file_id:
+        where.append('file_id = %s')
+        params.append(file_id)
+
+    if not where:
+        return ''
+
+    cursor.execute(f"""
+        SELECT target_cid
+        FROM p115_organize_records
+        WHERE ({' OR '.join(where)})
+          AND target_cid IS NOT NULL
+          AND target_cid <> ''
+        ORDER BY processed_at DESC NULLS LAST, id DESC
+        LIMIT 1
+    """, tuple(params))
+    rec = cursor.fetchone()
+    return str(rec.get('target_cid') or '').strip() if rec else ''
+
+
 def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
     """重算单个 media_metadata 媒体项的洗版优先级，并写回 p115/cache + media_metadata。"""
     from handler.resubscribe_service import WashingService
@@ -2335,9 +2374,18 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
             or ''
         )
         file_size = int((cache_row or {}).get('size') or 0)
+        # 目标分类 CID 必须来自整理记录，而不是 p115_filesystem_cache.parent_id。
+        # parent_id 对剧集通常只是剧名/季目录，拿它匹配 washing_priority_groups.target_cids
+        # 会导致整库误判为“未配置任何有效的普通优先级规则”。
+        organize_target_cid = _lookup_organize_record_target_cid(
+            cursor,
+            cache_row=cache_row,
+            pick_code=pc,
+            sha1=sha1,
+        )
         target_cid = str(_first_non_empty(
+            organize_target_cid,
             (cache_row or {}).get('washing_target_cid'),
-            (cache_row or {}).get('parent_id'),
             row.get('washing_target_cid'),
             ''
         ) or '').strip()
@@ -2356,7 +2404,10 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                 priorities = WashingService._load_priorities(db_media_type, target_cid)
                 if not priorities:
                     level = None
-                    reason = '未配置命中的洗版优先级规则'
+                    if target_cid:
+                        reason = f'目标分类CID({target_cid})未命中洗版优先级规则'
+                    else:
+                        reason = '缺少整理目标分类CID，未命中目录限定洗版规则'
                     stats['no_priority_rules'] += 1
                 else:
                     priority_input = _build_priority_input(
@@ -2451,6 +2502,16 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
     """重算当前媒体库所有电影/分集的洗版优先级快照。"""
     from database.connection import get_db_connection
 
+    try:
+        import task_manager
+    except Exception:
+        task_manager = None
+
+    def update_progress(prog, msg):
+        if task_manager:
+            task_manager.update_status_from_thread(prog, msg)
+        logger.info(msg)
+
     _ensure_washing_priority_snapshot_columns()
 
     item_type = str(item_type or 'all').strip().lower()
@@ -2496,6 +2557,8 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                 {limit_sql}
             """, tuple(params))
             rows = cursor.fetchall() or []
+            total_rows = len(rows)
+            update_progress(1, f"  ➜ [洗版优先级重算] 开始执行，待处理 {total_rows} 个媒体项")
 
             for row in rows:
                 stats['scanned_items'] += 1
@@ -2515,15 +2578,21 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                 # 分批提交，避免大库长事务。
                 if stats['scanned_items'] % 100 == 0:
                     conn.commit()
-                    logger.info(
-                        f"  ➜ [洗版优先级重算] 进度: {stats['scanned_items']}/{len(rows)}，"
-                        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}"
+                    progress = 5 + int((stats['scanned_items'] / max(total_rows, 1)) * 90)
+                    update_progress(
+                        min(progress, 95),
+                        f"  ➜ [洗版优先级重算] 进度: {stats['scanned_items']}/{total_rows}，"
+                        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，未命中规则 {stats['no_priority_rules']}"
                     )
 
             conn.commit()
 
     stats['finished_at'] = datetime.utcnow().isoformat() + 'Z'
-    logger.info(f"  ➜ [洗版优先级重算] 完成: {stats}")
+    update_progress(
+        100,
+        f"  ➜ [洗版优先级重算] 完成：总数 {stats['scanned_items']}，"
+        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，未命中规则 {stats['no_priority_rules']}"
+    )
     return stats
 
 def submit_washing_priority_recalculate_task(item_type='all', limit=None):
