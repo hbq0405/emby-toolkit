@@ -104,7 +104,7 @@
                 >
                   <n-card class="center-media-card poster-wall-card" :bordered="false" content-style="padding: 0; position: relative;" @click="openCenterDetail(row)">
                     <div class="center-poster-wrapper poster-wall-wrapper">
-                      <img :src="centerPosterUrl(row)" class="center-poster" @error="onCenterPosterError" />
+                      <img v-bind="centerPosterImgAttrs(row)" class="center-poster" @error="onCenterPosterError" />
 
                       <div v-if="centerRibbonText(row)" :class="['center-ribbon', centerRibbonClass(row)]">
                         <span>{{ centerRibbonText(row) }}</span>
@@ -321,7 +321,7 @@
         <div v-if="activeCenterDetailRow" class="center-detail-body">
           <!-- ★ 新增：图文并茂的头部信息区 -->
           <div class="center-detail-header-new">
-            <img :src="centerPosterUrl(activeCenterDetailRow)" class="detail-poster" @error="onCenterPosterError" />
+            <img v-bind="centerPosterImgAttrs(activeCenterDetailRow, 'w300')" class="detail-poster" @error="onCenterPosterError" />
             <div class="detail-info">
               <div class="detail-title">
                 {{ centerBaseTitle(activeCenterDetailRow) }}
@@ -2460,12 +2460,28 @@ const centerPosterWallFullTitle = (row) => {
 };
 const centerPosterWallTitle = (row) => centerPosterWallFullTitle(row);
 
-// 跟影视探索保持一致：前端直接使用 TMDb 图片 CDN。
-// 之前拼成 /api/discover/tmdb/image/...，如果后端没有注册这个代理路由，海报墙会全 404。
+const centerPosterUrlCache = new Map();
+const failedCenterPosterUrls = new Set();
+
+const normalizePosterCacheUrl = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    if (parsed.origin === window.location.origin) return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return raw;
+  }
+  return raw;
+};
+
 const tmdbPosterUrl = (value, size = 'w300') => {
   const raw = String(value || '').trim();
   if (!raw) return '';
   if (raw === '/default-poster.png' || raw.startsWith('data:')) return raw;
+
+  const cacheKey = `${size}:${raw}`;
+  if (centerPosterUrlCache.has(cacheKey)) return centerPosterUrlCache.get(cacheKey);
 
   let path = raw;
   const proxyMatch = raw.match(/^\/api\/discover\/tmdb\/image\/[^/]+\/(.+)$/i);
@@ -2473,32 +2489,61 @@ const tmdbPosterUrl = (value, size = 'w300') => {
     path = proxyMatch[1] || '';
   } else if (/^https?:\/\//i.test(raw)) {
     const tmdbMatch = raw.match(/image\.tmdb\.org\/t\/p\/[^/]+\/(.+)$/i);
-    if (!tmdbMatch) return raw;
+    if (!tmdbMatch) {
+      const proxied = `/api/image_proxy?url=${encodeURIComponent(raw)}`;
+      centerPosterUrlCache.set(cacheKey, proxied);
+      return proxied;
+    }
     path = tmdbMatch[1] || '';
   }
 
   path = String(path || '').replace(/^\/+/, '');
-  return path ? `https://image.tmdb.org/t/p/${size}/${encodeURI(path)}` : '';
+  const directUrl = path ? `https://image.tmdb.org/t/p/${size}/${encodeURI(path)}` : '';
+  const proxied = directUrl ? `/api/image_proxy?url=${encodeURIComponent(directUrl)}` : '';
+  centerPosterUrlCache.set(cacheKey, proxied);
+  return proxied;
 };
 
-const centerPosterUrl = (row) => {
+const centerPosterCandidates = (row) => {
   const meta = centerTmdbMeta(row);
   const versionPosters = (Array.isArray(row?.versions) ? row.versions : [])
     .flatMap(v => [v?.poster_path, v?.poster_url, v?.poster, v?.image, v?.cover]);
-  const value = [
-    meta.poster_path,
-    meta.poster_url,
+  return [
     row?.poster_path,
     row?.poster_url,
     row?.poster,
     row?.image,
     row?.cover,
     ...versionPosters,
-  ].map(v => String(v || '').trim()).find(Boolean);
-  return tmdbPosterUrl(value, 'w300') || '/default-poster.png';
+    meta.poster_path,
+    meta.poster_url,
+  ].map(v => String(v || '').trim()).filter(Boolean);
+};
+const centerPosterUrl = (row, size = 'w185') => {
+  for (const value of centerPosterCandidates(row)) {
+    const url = tmdbPosterUrl(value, size);
+    if (url && !failedCenterPosterUrls.has(normalizePosterCacheUrl(url))) return url;
+  }
+  return '/default-poster.png';
+};
+const centerPosterImgAttrs = (row, size = 'w185') => {
+  const title = centerPosterWallFullTitle(row) || centerDisplayTitle(row) || '共享资源海报';
+  return {
+    src: centerPosterUrl(row, size),
+    alt: title,
+    title,
+    loading: 'lazy',
+    decoding: 'async',
+    referrerpolicy: 'no-referrer',
+    draggable: 'false',
+  };
 };
 const onCenterPosterError = (event) => {
-  if (event?.target) event.target.src = '/default-poster.png';
+  const target = event?.target;
+  if (!target) return;
+  const failedUrl = String(target.currentSrc || target.src || '').trim();
+  if (failedUrl && !failedUrl.endsWith('/default-poster.png')) failedCenterPosterUrls.add(normalizePosterCacheUrl(failedUrl));
+  if (!target.src.endsWith('/default-poster.png')) target.src = '/default-poster.png';
 };
 const centerPosterMark = (row) => {
   const title = String(centerDisplayTitle(row) || '').replace(/[（(]\d{4}[）)]/g, '').trim();
@@ -2732,6 +2777,7 @@ const loadShares = async () => { sharesLoading.value = true; try { const res = a
 const enrichCenterTmdbMeta = async (rows = []) => {
   const payloadItems = [];
   const seen = new Set();
+  const rowsByKey = new Map();
   const visit = (row) => {
     if (!row || typeof row !== 'object') return;
     const key = centerTmdbMetaKey(row);
@@ -2740,6 +2786,7 @@ const enrichCenterTmdbMeta = async (rows = []) => {
     const tmdbId = key.split(':')[1] || '';
     if (!tmdbId) return;
     seen.add(key);
+    rowsByKey.set(key, row);
     payloadItems.push({
       media_type: mediaType,
       tmdb_id: tmdbId,
@@ -2752,7 +2799,14 @@ const enrichCenterTmdbMeta = async (rows = []) => {
     const res = await axios.post('/api/discover/tmdb/summary-batch', { items: payloadItems });
     const byKey = res.data?.by_key || {};
     Object.entries(byKey).forEach(([key, value]) => {
-      if (value && typeof value === 'object') centerTmdbMetaMap[key] = value;
+      if (value && typeof value === 'object') {
+        const nextValue = { ...value };
+        if (centerPosterCandidates(rowsByKey.get(key)).length) {
+          delete nextValue.poster_path;
+          delete nextValue.poster_url;
+        }
+        centerTmdbMetaMap[key] = nextValue;
+      }
     });
   } catch (e) {
     // TMDb 海报只是展示增强；失败不影响中心资源库使用。
@@ -2766,7 +2820,6 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
   try {
     if (!append) {
       centerPagination.page = 1;
-      centerSources.value = [];
       centerExpandedRowKeys.value = [];
       clearCenterChildrenLoading();
       centerHasMore.value = true;
