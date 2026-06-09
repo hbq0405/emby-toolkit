@@ -736,7 +736,7 @@ def check_and_replenish_pool():
 @discover_bp.route('/tmdb/summary-batch', methods=['POST'])
 @any_login_required
 def api_tmdb_summary_batch():
-    """批量获取 TMDb 基础信息（多线程极速版 + 海报/评分/简介/类型）"""
+    """批量获取 TMDb 基础信息（多线程极速版 + 海报/评分/简介/类型 + 季简介回退）"""
     import requests
     import concurrent.futures
     data = request.json or {}
@@ -758,7 +758,7 @@ def api_tmdb_summary_batch():
             if season_number is not None and str(season_number).isdigit(): season_tuples.append((tmdb_id, int(season_number)))
             else: tv_ids.append(tmdb_id)
                 
-    # 1. 本地数据库极速查询（增加 genres）
+    # 1. 本地数据库极速查询
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -773,16 +773,31 @@ def api_tmdb_summary_batch():
                 if season_tuples:
                     conditions, args = [], []
                     for tv_id, s_num in season_tuples:
-                        conditions.append("(parent_series_tmdb_id = %s AND season_number = %s)")
+                        conditions.append("(s.parent_series_tmdb_id = %s AND s.season_number = %s)")
                         args.extend([tv_id, s_num])
                     if conditions:
-                        cur.execute(f"SELECT parent_series_tmdb_id, season_number, poster_path, overview, rating, genres FROM media_metadata WHERE item_type = 'Season' AND ({' OR '.join(conditions)})", args)
+                        # ★ 核心修改：使用 LEFT JOIN 关联 Series 表，实现 overview 和 genres 的智能回退
+                        query = f"""
+                            SELECT s.parent_series_tmdb_id, s.season_number, s.poster_path, 
+                                   COALESCE(NULLIF(s.overview, ''), p.overview) AS overview, 
+                                   s.rating, 
+                                   COALESCE(NULLIF(s.genres, ''), p.genres) AS genres
+                            FROM media_metadata s
+                            LEFT JOIN media_metadata p ON s.parent_series_tmdb_id = p.tmdb_id AND p.item_type = 'Series'
+                            WHERE s.item_type = 'Season' AND ({' OR '.join(conditions)})
+                        """
+                        cur.execute(query, args)
                         for row in cur.fetchall():
-                            by_key[f"tv:{row['parent_series_tmdb_id']}:{row['season_number']}"] = {'poster_path': row['poster_path'], 'overview': row['overview'], 'vote_average': row['rating'], 'genres': row['genres']}
+                            by_key[f"tv:{row['parent_series_tmdb_id']}:{row['season_number']}"] = {
+                                'poster_path': row['poster_path'], 
+                                'overview': row['overview'], 
+                                'vote_average': row['rating'], 
+                                'genres': row['genres']
+                            }
     except Exception as e:
         logger.error(f"批量查询本地媒体库海报失败: {e}")
 
-    # 2. TMDB API 补全（增加 genres 解析）
+    # 2. TMDB API 补全
     missing_items = [item for item in items if f"{item.get('media_type')}:{item.get('tmdb_id')}:{item.get('season_number') or ''}" not in by_key]
     proxies = getattr(config_manager, 'get_proxies_for_requests', lambda: None)()
     
@@ -792,19 +807,53 @@ def api_tmdb_summary_batch():
         season_number = item.get('season_number')
         key = f"{media_type}:{tmdb_id}:{season_number or ''}"
         try:
-            if media_type == 'movie': url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}&language=zh-CN"
+            if media_type == 'movie': 
+                url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}&language=zh-CN"
+                resp = requests.get(url, proxies=proxies, timeout=5).json()
+                if resp.get('id'):
+                    return key, {
+                        'poster_path': resp.get('poster_path'),
+                        'overview': resp.get('overview'),
+                        'vote_average': round(resp.get('vote_average', 0), 1) if resp.get('vote_average') else None,
+                        'genres': [g.get('name') for g in resp.get('genres', [])] if resp.get('genres') else []
+                    }
             elif media_type == 'tv':
-                if season_number is not None and str(season_number).isdigit(): url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_number}?api_key={api_key}&language=zh-CN"
-                else: url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}&language=zh-CN"
-            
-            resp = requests.get(url, proxies=proxies, timeout=5).json()
-            if resp.get('id') or resp.get('_id'):
-                return key, {
-                    'poster_path': resp.get('poster_path'),
-                    'overview': resp.get('overview'),
-                    'vote_average': round(resp.get('vote_average', 0), 1) if resp.get('vote_average') else None,
-                    'genres': [g.get('name') for g in resp.get('genres', [])] if resp.get('genres') else []
-                }
+                if season_number is not None and str(season_number).isdigit(): 
+                    url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_number}?api_key={api_key}&language=zh-CN"
+                    resp = requests.get(url, proxies=proxies, timeout=5).json()
+                    
+                    overview = resp.get('overview')
+                    genres = [g.get('name') for g in resp.get('genres', [])] if resp.get('genres') else []
+                    
+                    # ★ 核心修改：如果季简介或类型为空，去请求一次剧集总览获取简介和类型
+                    if not overview or not genres:
+                        try:
+                            series_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}&language=zh-CN"
+                            series_resp = requests.get(series_url, proxies=proxies, timeout=5).json()
+                            if not overview:
+                                overview = series_resp.get('overview')
+                            if not genres:
+                                genres = [g.get('name') for g in series_resp.get('genres', [])] if series_resp.get('genres') else []
+                        except Exception:
+                            pass
+
+                    if resp.get('id') or resp.get('_id'):
+                        return key, {
+                            'poster_path': resp.get('poster_path'),
+                            'overview': overview,
+                            'vote_average': round(resp.get('vote_average', 0), 1) if resp.get('vote_average') else None,
+                            'genres': genres
+                        }
+                else: 
+                    url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}&language=zh-CN"
+                    resp = requests.get(url, proxies=proxies, timeout=5).json()
+                    if resp.get('id'):
+                        return key, {
+                            'poster_path': resp.get('poster_path'),
+                            'overview': resp.get('overview'),
+                            'vote_average': round(resp.get('vote_average', 0), 1) if resp.get('vote_average') else None,
+                            'genres': [g.get('name') for g in resp.get('genres', [])] if resp.get('genres') else []
+                        }
         except Exception:
             pass
         return key, None
