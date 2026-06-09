@@ -1137,7 +1137,7 @@ def _enrich_center_rows_with_tmdb(rows: List[Dict[str, Any]]) -> List[Dict[str, 
         summary = summaries.get(_center_tmdb_key(row)) or {}
         if summary:
             row['tmdb_meta'] = summary
-            for key in ('poster_path', 'overview', 'vote_average', 'genres', 'title', 'name', 'year'):
+            for key in ('poster_path', 'overview', 'vote_average', 'genres', 'year'):
                 if summary.get(key) not in (None, '', []):
                     row[key] = summary[key]
         for child_key in ('versions', 'children', 'pack_items'):
