@@ -973,9 +973,27 @@ def _event_payload(event: Dict[str, Any]) -> Dict[str, Any]:
 def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[str, str, List[Dict[str, Any]]]:
     payload = _event_payload(event)
     source_kind = _normalize_source_kind(event.get('source_kind') or payload.get('source_kind') or '')
-    source_id = str(event.get('source_ref_id') or payload.get('source_id') or payload.get('source_ref_id') or '').strip()
+    source_id = str(
+        event.get('source_ref_id')
+        or payload.get('source_id')
+        or payload.get('source_ref_id')
+        or payload.get('hub_id')
+        or payload.get('id')
+        or ''
+    ).strip()
     if not source_kind:
-        source_kind = _normalize_source_kind(payload.get('kind') or payload.get('item_type') or payload.get('display_type') or '')
+        if payload.get('hub_id') or payload.get('is_season_hub'):
+            source_kind = 'season_hub'
+        else:
+            source_kind = _normalize_source_kind(
+                payload.get('kind') or payload.get('item_type') or payload.get('display_type') or ''
+            )
+
+    # display-list 里的 Pack 如果是公共连载季壳，通常只有 hub_id，没有 completed source_id。
+    # 这种壳不能走 completed_season_manifest，否则会拿不到 7-8 这类 children 分集。
+    if source_kind == 'completed_season' and payload.get('hub_id') and not payload.get('source_id'):
+        source_kind = 'season_hub'
+        source_id = str(payload.get('hub_id') or source_id or '').strip()
 
     # 兼容中心返回的 completed season 包：列表接口只给源摘要，真正文件清单要再取 manifest。
     # 如果 manifest 为空，不能再显示“秒传完成 0/0”，这属于 manifest 缺失/旧数据，需要重新登记该季。
@@ -1004,7 +1022,8 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
             f.setdefault('source_ref_id', source_id)
         return source_kind, source_id, files
 
-    # 公共连载季包：中心 display-list 返回 season_hub，真正可秒传文件在 pack_items/children 中。
+    # 公共连载季包：中心 display-list 返回 season_hub 壳，真正可秒传文件在 pack_items/children 中。
+    # 资源库为了快，列表页可能不带 children；订阅秒传不能只吃壳，必须懒加载 display-children。
     # 每个子项仍然是 episode 源；转存和贡献流水按 episode 上报，不把 season_hub 当作某个设备的源。
     if source_kind == 'season_hub':
         raw_files = []
@@ -1013,12 +1032,43 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
             if isinstance(value, list) and value:
                 raw_files = value
                 break
+
+        if not raw_files:
+            try:
+                child_resp = client.list_display_children(
+                    source_kind='season_hub',
+                    source_id=source_id,
+                    hub_id=str(payload.get('hub_id') or source_id or '').strip(),
+                    limit=20000,
+                ) or {}
+                containers = [child_resp]
+                data = child_resp.get('data') if isinstance(child_resp, dict) and isinstance(child_resp.get('data'), dict) else {}
+                if data:
+                    containers.append(data)
+                for box in containers:
+                    if not isinstance(box, dict):
+                        continue
+                    for key in ('pack_items', 'children', 'files', 'items'):
+                        value = box.get(key)
+                        if isinstance(value, list) and value:
+                            raw_files = value
+                            break
+                    if raw_files:
+                        break
+                logger.info(
+                    f"  ➜ [共享资源] 公共连载季包已补拉子项：hub={source_id}, children={len(raw_files or [])}"
+                )
+            except Exception as e:
+                logger.warning(f"  ➜ [共享资源] 拉取公共连载季包子项失败：hub={source_id}, err={e}")
+
         files = []
         for item in raw_files or []:
             if not isinstance(item, dict):
                 continue
             f = dict(item)
             f.setdefault('tmdb_id', payload.get('tmdb_id'))
+            f.setdefault('parent_series_tmdb_id', payload.get('parent_series_tmdb_id') or payload.get('series_tmdb_id') or payload.get('tmdb_id'))
+            f.setdefault('series_tmdb_id', payload.get('series_tmdb_id') or payload.get('parent_series_tmdb_id') or payload.get('tmdb_id'))
             f.setdefault('item_type', 'Episode')
             f.setdefault('season_number', payload.get('season_number'))
             f.setdefault('title', payload.get('title'))
@@ -1717,10 +1767,24 @@ def _consume_sources(
             # 统一订阅已经知道缺集时，必须把缺集号透传到消费层；
             # season_hub / completed_season 会在 RAW/洗版预检前按集号裁剪。
             payload['_requested_missing_episode_numbers'] = missing_episode_numbers
+        event_source_kind = payload.get('source_kind') or payload.get('kind')
+        if not event_source_kind and (payload.get('hub_id') or payload.get('is_season_hub')):
+            event_source_kind = 'season_hub'
+        if not event_source_kind:
+            event_source_kind = payload.get('item_type') or payload.get('display_type')
+        event_source_kind = _normalize_source_kind(event_source_kind)
+        if event_source_kind == 'completed_season' and payload.get('hub_id') and not payload.get('source_id'):
+            event_source_kind = 'season_hub'
+
         event = {
             'event_id': '',
-            'source_kind': payload.get('source_kind'),
-            'source_ref_id': payload.get('source_id') or payload.get('source_ref_id'),
+            'source_kind': event_source_kind,
+            'source_ref_id': (
+                payload.get('source_id')
+                or payload.get('source_ref_id')
+                or payload.get('hub_id')
+                or payload.get('id')
+            ),
             'payload_json': payload,
         }
         result = consume_device_event(event, ack=False)
