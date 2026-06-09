@@ -2584,14 +2584,13 @@ const centerVersionTags = (row) => {
     fpsStr = String(summary.fps).toLowerCase().includes('fps') ? String(summary.fps) : `${summary.fps} fps`;
   }
   centerTagPush(tags, fpsStr, 'default', 'fps');
-  
-  centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
   if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
   if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
   centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
+  centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   return tags;
 };
 const centerEpisodePreview = (row) => {
