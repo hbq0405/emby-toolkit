@@ -1,6 +1,6 @@
 # routes/discover.py
 import logging
-from flask import Blueprint, jsonify, request, g, session
+from flask import Blueprint, jsonify, request, g, session, Response
 import time
 import requests
 from extensions import any_login_required
@@ -775,12 +775,59 @@ def _tmdb_compact_summary(media_type: str, tmdb_id, detail: dict, season_number=
         'name': title,
         'year': year,
         'poster_path': poster_path,
+        'poster_url': _tmdb_image_proxy_url(poster_path, 'w342'),
         'backdrop_path': backdrop_path,
+        'backdrop_url': _tmdb_image_proxy_url(backdrop_path, 'w780'),
         'overview': detail.get('overview') or '',
         'vote_average': detail.get('vote_average'),
         'genre_ids': [g.get('id') for g in genres if isinstance(g, dict) and g.get('id') is not None],
         'genres': genres,
     }
+
+
+def _tmdb_image_proxy_url(path: str, size: str = 'w342') -> str:
+    value = str(path or '').strip()
+    if not value:
+        return ''
+    if value.startswith('http://') or value.startswith('https://'):
+        return value
+    value = value.lstrip('/')
+    safe_size = str(size or 'w342').strip() or 'w342'
+    return f"/api/discover/tmdb/image/{safe_size}/{value}"
+
+
+@discover_bp.route('/tmdb/image/<string:size>/<path:image_path>', methods=['GET'])
+@any_login_required
+def proxy_tmdb_image(size, image_path):
+    """TMDb 图片代理。
+
+    中心资源库海报墙只把浏览器请求打到本机后端，避免前端直连
+    image.tmdb.org 因网络、混合策略或跨域限制导致海报空白。
+    """
+    safe_size = str(size or 'w342').strip()
+    if safe_size not in {'w92', 'w154', 'w185', 'w300', 'w342', 'w500', 'w780', 'original'}:
+        safe_size = 'w342'
+    image_path = str(image_path or '').strip().lstrip('/\\')
+    if not image_path or '..' in image_path or image_path.startswith(('http:', 'https:')):
+        return Response(status=404)
+    url = f"https://image.tmdb.org/t/p/{safe_size}/{image_path}"
+    try:
+        kwargs = {'timeout': 15}
+        getter = getattr(config_manager, 'get_proxies_for_requests', None)
+        if callable(getter):
+            proxies = getter()
+            if proxies:
+                kwargs['proxies'] = proxies
+        resp = requests.get(url, **kwargs)
+        if resp.status_code != 200 or not resp.content:
+            return Response(status=resp.status_code if resp.status_code in {403, 404} else 502)
+        content_type = resp.headers.get('Content-Type') or 'image/jpeg'
+        out = Response(resp.content, status=200, content_type=content_type)
+        out.headers['Cache-Control'] = 'public, max-age=604800, immutable'
+        return out
+    except Exception as e:
+        logger.debug(f"TMDb 图片代理失败: size={safe_size}, path={image_path}, err={e}")
+        return Response(status=502)
 
 
 @discover_bp.route('/tmdb/summary-batch', methods=['POST'])

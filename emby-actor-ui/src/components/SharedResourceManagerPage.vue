@@ -112,7 +112,8 @@
 
                       <div class="center-card-overlay poster-wall-overlay">
                         <div class="center-card-text poster-wall-text">
-                          <div class="center-card-title poster-wall-title" :title="centerPosterWallTitle(row)">{{ centerPosterWallTitle(row) }}</div>
+                          <div class="poster-wall-title-line" :title="centerPosterWallFullTitle(row)">{{ centerPosterWallPrimaryTitle(row) }}</div>
+                          <div v-if="centerPosterWallYear(row)" class="poster-wall-year-line">{{ centerPosterWallYear(row) }}</div>
                         </div>
                       </div>
                     </div>
@@ -2392,14 +2393,47 @@ const centerDisplayTitle = (row) => {
   }
   return base;
 };
-const centerPosterWallTitle = (row) => centerDisplayTitle(row);
+const centerPosterWallPrimaryTitle = (row) => {
+  const base = centerBaseTitle(row) || '未知资源';
+  const typeLabel = centerTypeLabel(centerRowType(row));
+  const season = Number(row?.season_number || 0);
+  const episode = Number(row?.episode_number || 0);
+  if (typeLabel === '季' && season > 0 && !/第\s*\d+\s*季/.test(base)) return `${base} 第 ${season} 季`;
+  if (typeLabel === '单集') {
+    const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
+    return se ? `${base} ${se}` : base;
+  }
+  return base;
+};
+const centerPosterWallYear = (row) => centerDisplayYear(row) || '';
+const centerPosterWallFullTitle = (row) => {
+  const title = centerPosterWallPrimaryTitle(row);
+  const year = centerPosterWallYear(row);
+  return year ? `${title}（${year}）` : title;
+};
+const centerPosterWallTitle = (row) => centerPosterWallFullTitle(row);
+
+const tmdbImageProxyUrl = (value, size = 'w342') => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let path = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    const match = raw.match(/image\.tmdb\.org\/t\/p\/[^/]+\/(.+)$/i);
+    if (!match) return raw;
+    path = match[1] || '';
+  }
+  path = path.replace(/^\/+/, '');
+  if (!path) return '';
+  return `/api/discover/tmdb/image/${size}/${encodeURI(path)}`;
+};
 
 const centerPosterUrl = (row) => {
   const meta = centerTmdbMeta(row);
-  const value = String(meta.poster_path || row?.poster_url || row?.poster_path || row?.poster || row?.image || row?.cover || '').trim();
+  const value = String(meta.poster_url || meta.poster_path || row?.poster_url || row?.poster_path || row?.poster || row?.image || row?.cover || '').trim();
   if (!value) return '';
-  if (/^https?:\/\//i.test(value)) return value;
-  if (value.startsWith('/')) return `https://image.tmdb.org/t/p/w342${value}`;
+  if (value.startsWith('/api/discover/tmdb/image/')) return value;
+  if (value.startsWith('/')) return tmdbImageProxyUrl(value, 'w342');
+  if (/^https?:\/\//i.test(value)) return tmdbImageProxyUrl(value, 'w342');
   return value;
 };
 const onCenterPosterError = (event) => {
@@ -3486,11 +3520,24 @@ onUnmounted(() => {
   justify-content: flex-start;
   z-index: 1;
 }
-.poster-wall-title {
+.poster-wall-title-line {
+  max-width: 100%;
   font-size: 13px;
   line-height: 1.25;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
+  font-weight: 800;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 2px 5px rgba(0,0,0,.75);
+}
+.poster-wall-year-line {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 700;
+  color: rgba(255,255,255,.86);
+  text-shadow: 0 2px 5px rgba(0,0,0,.75);
 }
 
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
