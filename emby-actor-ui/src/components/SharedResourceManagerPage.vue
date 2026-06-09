@@ -2461,26 +2461,11 @@ const centerPosterWallFullTitle = (row) => {
 const centerPosterWallTitle = (row) => centerPosterWallFullTitle(row);
 
 const centerPosterUrlCache = new Map();
-const failedCenterPosterUrls = new Set();
 
-const normalizePosterCacheUrl = (value) => {
+const tmdbPosterUrl = (value, size = 'w300') => {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  try {
-    const parsed = new URL(raw, window.location.origin);
-    if (parsed.origin === window.location.origin) return `${parsed.pathname}${parsed.search}`;
-  } catch {
-    return raw;
-  }
-  return raw;
-};
-
-const proxiedPosterUrl = (url) => url ? `/api/image_proxy?url=${encodeURIComponent(url)}` : '';
-
-const tmdbPosterUrls = (value, size = 'w300') => {
-  const raw = String(value || '').trim();
-  if (!raw) return [];
-  if (raw === '/default-poster.png' || raw.startsWith('data:')) return [raw];
+  if (raw === '/default-poster.png' || raw.startsWith('data:')) return raw;
 
   const cacheKey = `${size}:${raw}`;
   if (centerPosterUrlCache.has(cacheKey)) return centerPosterUrlCache.get(cacheKey);
@@ -2492,20 +2477,17 @@ const tmdbPosterUrls = (value, size = 'w300') => {
   } else if (/^https?:\/\//i.test(raw)) {
     const tmdbMatch = raw.match(/image\.tmdb\.org\/t\/p\/[^/]+\/(.+)$/i);
     if (!tmdbMatch) {
-      const urls = [raw, proxiedPosterUrl(raw)].filter(Boolean);
-      centerPosterUrlCache.set(cacheKey, urls);
-      return urls;
+      centerPosterUrlCache.set(cacheKey, raw);
+      return raw;
     }
     path = tmdbMatch[1] || '';
   }
 
   path = String(path || '').replace(/^\/+/, '');
   const directUrl = path ? `https://image.tmdb.org/t/p/${size}/${encodeURI(path)}` : '';
-  const urls = [directUrl, proxiedPosterUrl(directUrl)].filter(Boolean);
-  centerPosterUrlCache.set(cacheKey, urls);
-  return urls;
+  centerPosterUrlCache.set(cacheKey, directUrl);
+  return directUrl;
 };
-const tmdbPosterUrl = (value, size = 'w300') => tmdbPosterUrls(value, size)[0] || '';
 
 const centerPosterCandidates = (row) => {
   const meta = centerTmdbMeta(row);
@@ -2523,56 +2505,29 @@ const centerPosterCandidates = (row) => {
   ].map(v => String(v || '').trim()).filter(Boolean);
 };
 const centerPosterUrl = (row, size = 'w185') => {
-  return centerPosterUrls(row, size)[0] || '/default-poster.png';
-};
-const centerPosterUrls = (row, size = 'w185') => {
-  const urls = [];
-  const seen = new Set();
-  centerPosterCandidates(row).forEach((value) => {
-    tmdbPosterUrls(value, size).forEach((url) => {
-      const normalized = normalizePosterCacheUrl(url);
-      if (!url || seen.has(normalized) || failedCenterPosterUrls.has(normalized)) return;
-      seen.add(normalized);
-      urls.push(url);
-    });
-  });
-  return urls;
+  for (const value of centerPosterCandidates(row)) {
+    const url = tmdbPosterUrl(value, size);
+    if (url) return url;
+  }
+  return '/default-poster.png';
 };
 const centerPosterImgAttrs = (row, size = 'w185', index = 0) => {
   const title = centerPosterWallFullTitle(row) || centerDisplayTitle(row) || '共享资源海报';
   const eager = Number(index || 0) < 8;
-  const urls = centerPosterUrls(row, size);
   return {
-    src: urls[0] || '/default-poster.png',
+    src: centerPosterUrl(row, size),
     alt: title,
     title,
     loading: eager ? 'eager' : 'lazy',
     decoding: 'async',
     referrerpolicy: 'no-referrer',
     fetchpriority: eager ? 'high' : 'auto',
-    'data-fallback-srcs': urls.slice(1).join('|'),
     draggable: 'false',
   };
 };
 const onCenterPosterError = (event) => {
   const target = event?.target;
   if (!target) return;
-  const failedUrl = String(target.currentSrc || target.src || '').trim();
-  const failedUrlKey = normalizePosterCacheUrl(failedUrl);
-  if (failedUrl && !failedUrl.endsWith('/default-poster.png')) failedCenterPosterUrls.add(failedUrlKey);
-  const fallbackSrcs = String(target.dataset?.fallbackSrcs || '')
-    .split('|')
-    .map(url => url.trim())
-    .filter(Boolean);
-  const candidate = fallbackSrcs.find(url => {
-    const normalized = normalizePosterCacheUrl(url);
-    return normalized !== failedUrlKey && !failedCenterPosterUrls.has(normalized);
-  });
-  if (candidate) {
-    target.dataset.fallbackSrcs = fallbackSrcs.filter(url => url !== candidate).join('|');
-    target.src = candidate;
-    return;
-  }
   if (!target.src.endsWith('/default-poster.png')) target.src = '/default-poster.png';
 };
 const centerPosterMark = (row) => {
