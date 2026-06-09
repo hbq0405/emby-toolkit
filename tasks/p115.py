@@ -2447,7 +2447,7 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
     return stats
 
 
-def task_task_recalculate_library_washing_priorities(processor=None, item_type='all', limit=None):
+def task_recalculate_library_washing_priorities(processor=None, item_type='all', limit=None):
     """重算当前媒体库所有电影/分集的洗版优先级快照。"""
     from database.connection import get_db_connection
 
