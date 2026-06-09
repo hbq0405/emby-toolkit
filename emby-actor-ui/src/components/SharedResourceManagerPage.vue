@@ -102,48 +102,17 @@
                   :key="centerTableRowKey(row)"
                   class="center-card-item"
                 >
-                  <n-card class="center-media-card" :bordered="false" content-style="padding: 0; position: relative;" @click="openCenterDetail(row)">
-                    <div class="center-poster-wrapper">
-                      <img v-if="centerPosterUrl(row)" :src="centerPosterUrl(row)" class="center-poster" @error="onCenterPosterError" />
-                      <div v-else class="center-poster-placeholder">
-                        <div class="center-poster-mark">{{ centerPosterMark(row) }}</div>
-                        <div class="center-poster-sub">共享池</div>
-                      </div>
+                  <n-card class="center-media-card poster-wall-card" :bordered="false" content-style="padding: 0; position: relative;" @click="openCenterDetail(row)">
+                    <div class="center-poster-wrapper poster-wall-wrapper">
+                      <img :src="centerPosterUrl(row) || '/default-poster.png'" class="center-poster" @error="onCenterPosterError" />
 
                       <div v-if="centerRibbonText(row)" :class="['center-ribbon', centerRibbonClass(row)]">
                         <span>{{ centerRibbonText(row) }}</span>
                       </div>
 
-                      <div class="center-resource-badge">{{ centerUsableResourceCount(row) }} 个</div>
-
-                      <div class="center-card-overlay">
-                        <div class="center-card-text">
-                          <div class="center-card-title" :title="centerDisplayTitle(row)">{{ centerDisplayTitle(row) }}</div>
-                          <div class="center-card-meta">
-                            <span>{{ centerCardMetaText(row) }}</span>
-                          </div>
-                          <div class="center-card-tags">
-                            <n-tag
-                              v-for="tagItem in centerCardTags(row)"
-                              :key="tagItem.key"
-                              size="tiny"
-                              round
-                              :type="tagItem.type || 'default'"
-                              :bordered="false"
-                            >
-                              {{ tagItem.label }}
-                            </n-tag>
-                          </div>
-                        </div>
-                        <div class="center-card-actions">
-                          <n-button
-                            size="tiny"
-                            type="primary"
-                            secondary
-                            :loading="centerCardActionLoading(row)"
-                            :disabled="centerCardActionDisabled(row)"
-                            @click.stop="importCenterSource(centerPrimaryActionRow(row), 'permanent')"
-                          >秒传</n-button>
+                      <div class="center-card-overlay poster-wall-overlay">
+                        <div class="center-card-text poster-wall-text">
+                          <div class="center-card-title poster-wall-title" :title="centerPosterWallTitle(row)">{{ centerPosterWallTitle(row) }}</div>
                         </div>
                       </div>
                     </div>
@@ -464,6 +433,7 @@ const summary = ref({ shares: {}, credit: {} });
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
+const centerTmdbMetaMap = reactive({});
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
 const centerHasMore = ref(true);
@@ -2389,8 +2359,29 @@ const centerColumns = [
 ];
 
 
+const centerTmdbMediaType = (row) => centerTypeLabel(centerRowType(row)) === '电影' ? 'movie' : 'tv';
+const centerTmdbSeasonNumber = (row) => {
+  const n = Number(row?.season_number || 0);
+  return Number.isFinite(n) && n > 0 && centerTmdbMediaType(row) === 'tv' ? n : '';
+};
+const centerTmdbMetaKey = (row) => {
+  const mediaType = centerTmdbMediaType(row);
+  const id = String(mediaType === 'movie' ? (row?.tmdb_id || row?.share_tmdb_id || '') : (row?.parent_series_tmdb_id || row?.series_tmdb_id || row?.parent_tmdb_id || row?.tmdb_id || '')).trim();
+  if (!id) return '';
+  return `${mediaType}:${id}:${centerTmdbSeasonNumber(row) || ''}`;
+};
+const centerTmdbMeta = (row) => {
+  const key = centerTmdbMetaKey(row);
+  return key ? (centerTmdbMetaMap[key] || {}) : {};
+};
+const centerStripYear = (text) => String(text || '').replace(/\s*[（(]\s*(?:19|20)\d{2}\s*[）)]\s*$/g, '').trim();
+const centerBaseTitle = (row) => {
+  const meta = centerTmdbMeta(row);
+  return centerStripYear(meta.title || meta.name || stripCenterSeasonFromTitle(row?.title || row?.standard_title || row?.media_title || row?.root_name || row?.file_name || row?.tmdb_id || '', row));
+};
+const centerDisplayYear = (row) => centerTmdbMeta(row).year || row?.release_year || '';
 const centerDisplayTitle = (row) => {
-  const base = centerTitleText(row);
+  const base = appendYear(centerBaseTitle(row), centerDisplayYear(row));
   const typeLabel = centerTypeLabel(centerRowType(row));
   const season = Number(row?.season_number || 0);
   const episode = Number(row?.episode_number || 0);
@@ -2401,16 +2392,18 @@ const centerDisplayTitle = (row) => {
   }
   return base;
 };
+const centerPosterWallTitle = (row) => centerDisplayTitle(row);
 
 const centerPosterUrl = (row) => {
-  const value = String(row?.poster_url || row?.poster_path || row?.poster || row?.image || row?.cover || '').trim();
+  const meta = centerTmdbMeta(row);
+  const value = String(meta.poster_path || row?.poster_url || row?.poster_path || row?.poster || row?.image || row?.cover || '').trim();
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value;
   if (value.startsWith('/')) return `https://image.tmdb.org/t/p/w342${value}`;
   return value;
 };
 const onCenterPosterError = (event) => {
-  if (event?.target) event.target.style.display = 'none';
+  if (event?.target) event.target.src = '/default-poster.png';
 };
 const centerPosterMark = (row) => {
   const title = String(centerDisplayTitle(row) || '').replace(/[（(]\d{4}[）)]/g, '').trim();
@@ -2420,7 +2413,6 @@ const centerRibbonText = (row) => {
   if (isCenterReplenishRow(row)) return '待补充';
   if (isCenterCompletedCertified(row)) return '已完结';
   if (centerIsOngoingHub(row)) return '连载中';
-  if (row?.is_mine) return '我的源';
   return '';
 };
 const centerRibbonClass = (row) => {
@@ -2620,6 +2612,38 @@ const saveSharedConfig = async () => {
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
 
+
+const enrichCenterTmdbMeta = async (rows = []) => {
+  const payloadItems = [];
+  const seen = new Set();
+  const visit = (row) => {
+    if (!row || typeof row !== 'object') return;
+    const key = centerTmdbMetaKey(row);
+    if (!key || centerTmdbMetaMap[key] || seen.has(key)) return;
+    const mediaType = centerTmdbMediaType(row);
+    const tmdbId = key.split(':')[1] || '';
+    if (!tmdbId) return;
+    seen.add(key);
+    payloadItems.push({
+      media_type: mediaType,
+      tmdb_id: tmdbId,
+      season_number: centerTmdbSeasonNumber(row) || undefined,
+    });
+  };
+  (rows || []).forEach(visit);
+  if (!payloadItems.length) return;
+  try {
+    const res = await axios.post('/api/discover/tmdb/summary-batch', { items: payloadItems });
+    const byKey = res.data?.by_key || {};
+    Object.entries(byKey).forEach(([key, value]) => {
+      if (value && typeof value === 'object') centerTmdbMetaMap[key] = value;
+    });
+  } catch (e) {
+    // TMDb 海报只是展示增强；失败不影响中心资源库使用。
+    console.debug('加载中心资源库 TMDb 海报失败', e);
+  }
+};
+
 const loadCenterSources = async (forceRefresh = false, append = false) => {
   if (append) centerAppendLoading.value = true;
   else centerLoading.value = true;
@@ -2647,6 +2671,7 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
     const total = Number(centerPagination.itemCount || 0);
     centerHasMore.value = Boolean(items.length) && (total ? centerSources.value.length < total : items.length >= centerPagination.pageSize);
     await nextTick();
+    enrichCenterTmdbMeta(groupedCenterSources.value || items);
     setupCenterInfiniteObserver();
   } catch (e) {
     message.error(e.response?.data?.message || '加载中心资源库失败');
@@ -3430,6 +3455,44 @@ onUnmounted(() => {
 .selected-title { font-weight: 700; margin-bottom: 6px; }
 .selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
 .share-validation-alert { margin-top: 10px; }
+
+
+/* 中心资源库海报墙：卡面只保留海报、片名年份季号和状态缎带，详情点开再看 */
+.center-card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
+  gap: 18px;
+  padding: 10px 0 20px;
+}
+.poster-wall-card {
+  border-radius: 12px !important;
+  background: rgba(9, 16, 42, .78) !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
+}
+.poster-wall-wrapper {
+  border-radius: 12px;
+  background: #0b1230 url('/default-poster.png') center / cover no-repeat;
+}
+.poster-wall-wrapper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, .86) 0%, rgba(0, 0, 0, .44) 34%, rgba(0, 0, 0, .04) 70%);
+  pointer-events: none;
+}
+.poster-wall-overlay {
+  min-height: 34%;
+  padding: 54px 8px 9px;
+  background: linear-gradient(to top, rgba(0,0,0,.94) 0%, rgba(0,0,0,.58) 54%, rgba(0,0,0,0) 100%);
+  justify-content: flex-start;
+  z-index: 1;
+}
+.poster-wall-title {
+  font-size: 13px;
+  line-height: 1.25;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
 
 .share-request-grid {
@@ -3853,10 +3916,50 @@ onUnmounted(() => {
 }
 .center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
 @media (max-width: 768px) {
-  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px; }
+  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
   .center-detail-head,
   .center-version-detail-card { flex-direction: column; }
   .center-version-action { align-items: flex-start; }
+}
+
+
+/* 海报墙最终覆盖：保持影视探索式密集海报墙 */
+.center-card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
+  gap: 18px;
+  padding: 10px 0 20px;
+}
+.poster-wall-card {
+  border-radius: 12px !important;
+  background: rgba(9, 16, 42, .78) !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
+}
+.poster-wall-wrapper {
+  border-radius: 12px;
+  background: #0b1230 url('/default-poster.png') center / cover no-repeat;
+}
+.poster-wall-wrapper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, .86) 0%, rgba(0, 0, 0, .44) 34%, rgba(0, 0, 0, .04) 70%);
+  pointer-events: none;
+}
+.poster-wall-overlay {
+  min-height: 34%;
+  padding: 54px 8px 9px;
+  background: linear-gradient(to top, rgba(0,0,0,.94) 0%, rgba(0,0,0,.58) 54%, rgba(0,0,0,0) 100%);
+  justify-content: flex-start;
+  z-index: 1;
+}
+.poster-wall-title {
+  font-size: 13px;
+  line-height: 1.25;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+@media (max-width: 768px) {
+  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
 }
 
 </style>
