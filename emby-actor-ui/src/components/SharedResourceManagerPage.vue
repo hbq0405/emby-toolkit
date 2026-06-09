@@ -446,7 +446,6 @@ const summary = ref({ shares: {}, credit: {} });
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
-const centerTmdbMetaMap = reactive({});
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
 const centerHasMore = ref(true);
@@ -2385,21 +2384,9 @@ const centerColumns = [
   }) },
 ];
 
-
-const centerTmdbMediaType = (row) => centerTypeLabel(centerRowType(row)) === '电影' ? 'movie' : 'tv';
-const centerTmdbSeasonNumber = (row) => {
-  const n = Number(row?.season_number || 0);
-  return Number.isFinite(n) && n > 0 && centerTmdbMediaType(row) === 'tv' ? n : '';
-};
-const centerTmdbMetaKey = (row) => {
-  const mediaType = centerTmdbMediaType(row);
-  const id = String(mediaType === 'movie' ? (row?.tmdb_id || row?.share_tmdb_id || '') : (row?.parent_series_tmdb_id || row?.series_tmdb_id || row?.parent_tmdb_id || row?.tmdb_id || '')).trim();
-  if (!id) return '';
-  return `${mediaType}:${id}:${centerTmdbSeasonNumber(row) || ''}`;
-};
 const centerTmdbMeta = (row) => {
-  const key = centerTmdbMetaKey(row);
-  return key ? (centerTmdbMetaMap[key] || {}) : {};
+  if (!row || typeof row !== 'object') return {};
+  return row.tmdb_meta || row;
 };
 const centerStripYear = (text) => String(text || '').replace(/\s*[（(]\s*(?:19|20)\d{2}\s*[）)]\s*$/g, '').trim();
 const centerBaseTitle = (row) => {
@@ -2757,48 +2744,6 @@ const saveSharedConfig = async () => {
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
-
-
-const enrichCenterTmdbMeta = async (rows = []) => {
-  const payloadItems = [];
-  const seen = new Set();
-  const rowsByKey = new Map();
-  const visit = (row) => {
-    if (!row || typeof row !== 'object') return;
-    const key = centerTmdbMetaKey(row);
-    if (!key || centerTmdbMetaMap[key] || seen.has(key)) return;
-    const mediaType = centerTmdbMediaType(row);
-    const tmdbId = key.split(':')[1] || '';
-    if (!tmdbId) return;
-    seen.add(key);
-    rowsByKey.set(key, row);
-    payloadItems.push({
-      media_type: mediaType,
-      tmdb_id: tmdbId,
-      season_number: centerTmdbSeasonNumber(row) || undefined,
-    });
-  };
-  (rows || []).forEach(visit);
-  if (!payloadItems.length) return;
-  try {
-    const res = await axios.post('/api/discover/tmdb/summary-batch', { items: payloadItems });
-    const byKey = res.data?.by_key || {};
-    Object.entries(byKey).forEach(([key, value]) => {
-      if (value && typeof value === 'object') {
-        const nextValue = { ...value };
-        if (centerPosterCandidates(rowsByKey.get(key)).length) {
-          delete nextValue.poster_path;
-          delete nextValue.poster_url;
-        }
-        centerTmdbMetaMap[key] = nextValue;
-      }
-    });
-  } catch (e) {
-    // TMDb 海报只是展示增强；失败不影响中心资源库使用。
-    console.debug('加载中心资源库 TMDb 海报失败', e);
-  }
-};
-
 const loadCenterSources = async (forceRefresh = false, append = false) => {
   if (append) centerAppendLoading.value = true;
   else centerLoading.value = true;
@@ -2824,8 +2769,6 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
     centerPagination.itemCount = Number(res.data?.total || 0);
     const total = Number(centerPagination.itemCount || 0);
     centerHasMore.value = Boolean(items.length) && (total ? centerSources.value.length < total : items.length >= centerPagination.pageSize);
-    await nextTick();
-    await enrichCenterTmdbMeta(groupedCenterSources.value || items);
     setupCenterInfiniteObserver();
   } catch (e) {
     message.error(e.response?.data?.message || '加载中心资源库失败');
