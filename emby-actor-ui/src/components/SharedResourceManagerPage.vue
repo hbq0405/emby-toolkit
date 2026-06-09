@@ -2565,8 +2565,8 @@ const centerVersionTags = (row) => {
   // ★ 恢复进度显示 (从被删掉的顶部卡片移植过来)
   const progress = centerProgressText(row);
   if (progress) {
-    // 如果是连载中且只有数字没有斜杠，显示得更直观一点
-    const progressLabel = centerIsOngoingHub(row) && !String(progress).includes('/') 
+    // 去掉了那个多余的斜杠判断，只要是连载中，就直接拼上“更新至”
+    const progressLabel = centerIsOngoingHub(row) 
       ? `更新至 ${progress} 集` 
       : progress;
     centerTagPush(tags, progressLabel, 'info', 'progress');
