@@ -2565,6 +2565,7 @@ const centerDetailModalTitle = computed(() => {
   }
   return title;
 });
+const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || Math.random());
 // ★ 修改 1：按热度 (success_count) 降序排序
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
