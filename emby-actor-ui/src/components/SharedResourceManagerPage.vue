@@ -319,17 +319,9 @@
     <n-modal v-model:show="showCenterDetailModal" preset="card" :title="centerDetailModalTitle" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
       <n-spin :show="centerDetailLoading">
         <div v-if="activeCenterDetailRow" class="center-detail-body">
-          <div class="center-detail-head">
-            <div>
-              <div class="center-detail-title">{{ centerDisplayTitle(activeCenterDetailRow) }}</div>
-              <div class="center-detail-sub">{{ centerCardMetaText(activeCenterDetailRow) }} · 包含 {{ centerDetailVersions.length }} 个版本</div>
-            </div>
-          </div>
-
           <div class="center-version-detail-list">
             <div v-for="version in centerDetailVersions" :key="centerVersionKey(version)" class="center-version-detail-card">
               <div class="center-version-main">
-                <div class="center-version-title">{{ centerVersionTitle(version) }}</div>
                 <div class="center-version-tags">
                   <n-tag v-for="tagItem in centerVersionTags(version)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
                     {{ tagItem.label }}
@@ -2538,7 +2530,18 @@ const centerCardTags = (row) => {
   return tags.slice(0, 9);
 };
 
-const centerDetailModalTitle = computed(() => activeCenterDetailRow.value ? centerDisplayTitle(activeCenterDetailRow.value) : '中心资源详情');
+const centerDetailModalTitle = computed(() => {
+  if (!activeCenterDetailRow.value) return '中心资源详情';
+  const title = centerDisplayTitle(activeCenterDetailRow.value);
+  const versions = Array.isArray(activeCenterDetailRow.value.versions) && activeCenterDetailRow.value.versions.length ? activeCenterDetailRow.value.versions : [activeCenterDetailRow.value];
+  const validVersions = versions.filter(v => v && !centerIsLazyPlaceholder(v));
+  
+  // 如果有多个版本，直接追加到标题后面
+  if (validVersions.length > 1) {
+    return `${title} · 包含 ${validVersions.length} 个版本`;
+  }
+  return title;
+});
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
   const versions = Array.isArray(row.versions) && row.versions.length ? row.versions : [row];
@@ -2563,7 +2566,14 @@ const centerVersionTags = (row) => {
   centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
   centerTagPush(tags, codec, 'default', 'codec');
-  centerTagPush(tags, summary.fps ? `${summary.fps} fps` : '', 'default', 'fps');
+  
+  // ★ 修复标签里的 fps 叠词 Bug
+  let fpsStr = '';
+  if (summary.fps) {
+    fpsStr = String(summary.fps).toLowerCase().includes('fps') ? String(summary.fps) : `${summary.fps} fps`;
+  }
+  centerTagPush(tags, fpsStr, 'default', 'fps');
+  
   centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
