@@ -2343,6 +2343,14 @@ class P115MediaAnalyzerMixin:
             if cached_text:
                 raw_json = json.loads(cached_text) if isinstance(cached_text, str) else cached_text
                 data_source = "本地缓存(DB)"
+                if file_node:
+                    try:
+                        cache_mgr = _get_p115_cache_manager()
+                        preid = cache_mgr.ensure_file_preid(file_node, sha1=sha1)
+                        if preid and isinstance(file_node, dict):
+                            file_node['preid'] = preid
+                    except Exception as e_preid:
+                        logger.debug(f"  ➜ [媒体信息] 命中缓存后补齐 preid 失败: {sha1[:8]} -> {e_preid}")
                 if not silent_log:
                     logger.debug(f"  ➜ [媒体信息] 命中本地 DB 缓存: {sha1[:8]}")
         except Exception as e:
@@ -2356,7 +2364,13 @@ class P115MediaAnalyzerMixin:
 
             if raw_json:
                 data_source = "ffprobe解析"
-                _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json, raw_ffprobe)
+                cache_mgr = _get_p115_cache_manager()
+                cache_mgr.save_mediainfo_cache(
+                    sha1,
+                    raw_json,
+                    raw_ffprobe,
+                    file_info=file_node if isinstance(file_node, dict) else None,
+                )
 
         if not raw_json:
             return {}

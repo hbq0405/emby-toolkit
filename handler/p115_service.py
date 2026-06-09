@@ -3607,7 +3607,7 @@ class P115CacheManager:
         return preid
 
     @staticmethod
-    def save_mediainfo_cache(sha1, mediainfo_json, raw_ffprobe_json=None):
+    def save_mediainfo_cache(sha1, mediainfo_json, raw_ffprobe_json=None, file_info=None, *, fid=None, pick_code=None, file_name=None):
         """写入本地 p115_mediainfo_cache，结构保持 Emby MediaSourceInfo 标准格式"""
         if not sha1 or not mediainfo_json:
             return False
@@ -3638,7 +3638,15 @@ class P115CacheManager:
             # 整理/MP直出提取媒体信息时顺手补齐 preid：
             # 只读取前 128KB，写入 p115_filesystem_cache，供后续 Rapid v2 登记/秒传直接复用。
             try:
-                P115CacheManager.ensure_file_preid({'sha1': sha1})
+                preid = P115CacheManager.ensure_file_preid(
+                    file_info if isinstance(file_info, dict) else {'sha1': sha1},
+                    sha1=sha1,
+                    fid=fid,
+                    pick_code=pick_code,
+                    file_name=file_name,
+                )
+                if preid and isinstance(file_info, dict):
+                    file_info['preid'] = preid
             except Exception as e_preid:
                 logger.debug(f"  ➜ [媒体信息缓存] 顺手计算 preid 失败: sha1={sha1[:12]}..., err={e_preid}")
 
@@ -7036,7 +7044,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                     P115CacheManager.save_file_cache(
                                         fid, batch_target_cid, new_filename, 
                                         sha1=file_sha1, pick_code=pick_code, 
-                                        local_path=file_local_path, size=file_size 
+                                        local_path=file_local_path, size=file_size,
+                                        preid=file_item.get('preid')
                                     )
                                     # 负载均衡分享资产记录钩子：
                                     # 对影巢/TG 等外部分享导入后再整理的资源，只有这里拿到的
