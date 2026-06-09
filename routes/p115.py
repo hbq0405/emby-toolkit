@@ -630,6 +630,38 @@ def handle_washing_priority_groups():
         except Exception as e:
             return jsonify({"success": False, "message": str(e)}), 500
 
+
+# ======================================================================
+# ★★★ 洗版优先级一键重算 API ★★★
+# ======================================================================
+@p115_bp.route('/washing_priority_recalculate', methods=['POST'])
+@admin_required
+def trigger_washing_priority_recalculate():
+    """触发任务层：重算媒体库所有资源的洗版优先级快照。"""
+    payload = request.json or {}
+    item_type = payload.get('item_type') or 'all'
+    limit = payload.get('limit')
+    background = payload.get('background', True)
+
+    try:
+        from tasks.p115 import (
+            task_recalculate_library_washing_priorities,
+            submit_washing_priority_recalculate_task,
+        )
+
+        if background is False or str(background).strip().lower() in ('0', 'false', 'no'):
+            result = task_recalculate_library_washing_priorities(
+                item_type=item_type,
+                limit=limit,
+            )
+            return jsonify({"success": True, "message": "洗版优先级重算完成", "data": result})
+
+        submit_washing_priority_recalculate_task(item_type=item_type, limit=limit)
+        return jsonify({"success": True, "message": "洗版优先级重算任务已在后台启动"})
+    except Exception as e:
+        logger.error(f"  ➜ [洗版优先级重算] 启动失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
 @p115_bp.route('/sorting_rules', methods=['GET', 'POST'])
 @admin_required
 def handle_sorting_rules():

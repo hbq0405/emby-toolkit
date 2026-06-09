@@ -207,9 +207,14 @@
     
     <!-- 底部操作栏 -->
     <template #action>
-      <n-space justify="end">
-        <n-button @click="showModal = false">取消</n-button>
-        <n-button type="primary" :loading="loading" @click="saveGroups">保存配置</n-button>
+      <n-space justify="space-between" style="width: 100%;">
+        <n-button secondary type="warning" :loading="recalcLoading" @click="confirmRecalculate">
+          一键重算媒体库优先级
+        </n-button>
+        <n-space>
+          <n-button @click="showModal = false">取消</n-button>
+          <n-button type="primary" :loading="loading" @click="saveGroups">保存配置</n-button>
+        </n-space>
       </n-space>
     </template>
   </n-modal>
@@ -218,7 +223,7 @@
 <script setup>
 import { ref, computed } from 'vue';
 import axios from 'axios';
-import { c, useMessage } from 'naive-ui';
+import { useDialog, useMessage } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
   Add as AddIcon, 
@@ -230,8 +235,10 @@ import {
 } from '@vicons/ionicons5';
 
 const message = useMessage();
+const dialog = useDialog();
 const showModal = ref(false);
 const loading = ref(false);
+const recalcLoading = ref(false);
 
 const groups = ref([]);
 const activeGroupId = ref(null);
@@ -350,12 +357,57 @@ const saveGroups = async () => {
 
     await axios.post('/api/p115/washing_priority_groups', payload);
     message.success('保存成功');
-    showModal.value = false; // 保存成功后关闭弹窗
+    dialog.warning({
+      title: '建议重算媒体库优先级',
+      content: '洗版优先级规则已经保存。若规则有调整，旧媒体项记录的优先级可能已经过期，建议立即重算。',
+      positiveText: '立即重算',
+      negativeText: '稍后',
+      onPositiveClick: async () => {
+        await triggerRecalculate();
+        showModal.value = false;
+      },
+      onNegativeClick: () => {
+        showModal.value = false;
+      }
+    });
   } catch (e) {
     message.error('保存失败');
   } finally {
     loading.value = false;
   }
+};
+
+
+const triggerRecalculate = async () => {
+  try {
+    recalcLoading.value = true;
+    const res = await axios.post('/api/p115/washing_priority_recalculate', {
+      item_type: 'all',
+      background: true
+    });
+    if (res.data?.success) {
+      message.success(res.data.message || '洗版优先级重算任务已启动');
+    } else {
+      message.error(res.data?.message || '启动重算任务失败');
+      throw new Error(res.data?.message || '启动重算任务失败');
+    }
+  } catch (e) {
+    const msg = e.response?.data?.message || e.message || '启动重算任务失败';
+    message.error(msg);
+    throw e;
+  } finally {
+    recalcLoading.value = false;
+  }
+};
+
+const confirmRecalculate = () => {
+  dialog.warning({
+    title: '重算媒体库洗版优先级',
+    content: '将扫描当前已入库的电影和分集，按当前已保存的洗版优先级规则重新计算 washing_level，并写回 115 文件缓存与媒体元数据。大库会在后台执行。确认开始？',
+    positiveText: '开始重算',
+    negativeText: '取消',
+    onPositiveClick: triggerRecalculate
+  });
 };
 
 const switchGroup = (id) => {
