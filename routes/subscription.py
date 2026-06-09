@@ -857,8 +857,9 @@ def _normalize_shared_pool_resource(resource):
     version_label = f"版本 {version_index}/{version_count}" if version_index and version_count > 1 else ""
     source_count = _safe_int(item.get("_shared_pool_source_count") or item.get("source_count") or item.get("shared_source_count"), default=0)
     source_label = f"共享源 {source_count}" if source_count > 1 else ""
-    progress_label = f"共享池 · {item.get('progress_text')}" if item.get("progress_text") else "共享池 · 可秒传"
-    remark_parts = [x for x in (item.get("status_message"), source_label, version_label, progress_label) if x]
+    # 云搜索卡片已经用标签展示资源数、画质、字幕等信息；备注只保留真正的状态提示。
+    # 不再把“共享秒传 / 版本 x/y / 共享池 · 可秒传”塞进标签或描述，避免和按钮/标签重复。
+    remark_parts = [x for x in (item.get("status_message"),) if x]
 
     has_mandarin_audio = _shared_pool_has_mandarin_audio(item)
     has_chinese_subtitle = _shared_pool_has_chinese_subtitle(item)
@@ -878,8 +879,8 @@ def _normalize_shared_pool_resource(resource):
         "share_size": _first_cloud_text(item.get("share_size"), _format_bytes_for_cloud(item.get("size") or item.get("total_size"))),
         "video_resolution": _first_cloud_text(summary.get("resolution"), summary.get("resolution_display")),
         "quality": _first_cloud_text(summary.get("video_display"), summary.get("codec"), summary.get("video_codec")),
-        "source": _first_cloud_text(summary.get("effect"), summary.get("effect_key"), "共享秒传"),
-        "source_detail": _first_cloud_text(summary.get("video_display"), summary.get("formatted_by")),
+        "source": _first_cloud_text(summary.get("effect"), summary.get("effect_key")),
+        "source_detail": "",
         "remark": " · ".join(str(x) for x in remark_parts if str(x).strip()),
         "_season_match_label": item.get("progress_text") or "",
         "_shared_pool_version_label": version_label,

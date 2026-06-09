@@ -106,9 +106,6 @@
                     {{ res._shared_pool_source_label }}
                   </n-tag>
 
-                  <n-tag size="small" type="default" :bordered="true" v-if="res._shared_pool_version_label">
-                    {{ res._shared_pool_version_label }}
-                  </n-tag>
 
                   <n-tag size="small" type="success" :bordered="false" v-if="res._completion_label">
                     {{ res._completion_label }}
@@ -125,11 +122,11 @@
                   </n-tag>
                 </n-space>
 
-                <div v-if="formatQuality(res)" style="font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 4px;">
+                <div v-if="formatQuality(res) && !isSharedPool(res)" style="font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 4px;">
                   📦 {{ formatQuality(res) }}
                 </div>
 
-                <div v-if="res.remark" style="font-size: 12px; color: #777; line-height: 1.5; word-break: break-all;">
+                <div v-if="res.remark && !isSharedPool(res)" style="font-size: 12px; color: #777; line-height: 1.5; word-break: break-all;">
                   📝 {{ res.remark }}
                 </div>
 
@@ -398,9 +395,13 @@ const formatResolution = (resource) => {
 
 const formatSource = (resource) => {
   const values = resource?.source;
-  if (Array.isArray(values)) return values.filter(Boolean).join(', ');
-  if (typeof values === 'string' && values !== 'channel') return values;
-  return '';
+  const normalize = (value) => {
+    const text = String(value || '').trim();
+    if (!text || text === 'channel' || text === '共享秒传' || text === '可秒传') return '';
+    return text;
+  };
+  if (Array.isArray(values)) return values.map(normalize).filter(Boolean).join(', ');
+  return normalize(values);
 };
 
 
