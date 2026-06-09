@@ -1945,6 +1945,11 @@ const groupCenterSources = (items, orderBy = 'latest') => {
     return children.length ? children : packItems;
   };
   const packManifestKey = (row) => {
+    // 中心端 v7 会下发“集号 + SHA1 清单”的物理版本 key。优先使用它，
+    // 避免旧 manifest_hash 因文件名/目录名不同，把完全相同 SHA1 的季包拆成多版本。
+    const physicalKey = String(row?.physical_version_key || row?.manifest_sha1_hash || row?.sha1_manifest_hash || row?.pack_manifest_sha1_hash || '').trim();
+    if (physicalKey) return physicalKey.startsWith('completed_sha1:') || physicalKey.startsWith('pack:') ? physicalKey : `completed_sha1:${physicalKey}`;
+
     const parts = [];
     for (const child of childRowsForSignature(row)) {
       const sha1 = normSha1(child?.sha1);
@@ -1954,7 +1959,7 @@ const groupCenterSources = (items, orderBy = 'latest') => {
       const epKey = Number.isFinite(epNum) && epNum > 0 ? String(epNum).padStart(4, '0') : String(epRaw || '').trim();
       parts.push(`${epKey}:${sha1}`);
     }
-    if (parts.length) return parts.sort().join('|');
+    if (parts.length) return [...new Set(parts)].sort().join('|');
     const manifestHash = String(row?.manifest_hash || '').trim();
     return manifestHash ? `manifest:${manifestHash}` : '';
   };
