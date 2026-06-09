@@ -463,12 +463,18 @@ class WashingService:
         tmdb_id: str,
         season_num: Optional[int] = None,
         episode_num: Optional[int] = None,
+        current_sha1: Optional[str] = None,
     ) -> List[dict]:
         """
-        从 media_metadata.file_sha1_json -> p115_mediainfo_cache.mediainfo_json
-        读取库内现有版本的原始媒体信息。
+        读取同一媒体身份下已有版本的原始媒体信息。
+
+        来源：
+        1. 已入库媒体项：media_metadata.file_sha1_json -> p115_mediainfo_cache.mediainfo_json；
+        2. 未入库但本机 115 文件仍存在的候选：p115_mediainfo_cache.raw_ffprobe_json 顶层 _etk。
         """
         rows = []
+        seen_sha1s = set()
+        current_sha1 = str(current_sha1 or "").strip().upper()
 
         try:
             with get_db_connection() as conn:
@@ -518,10 +524,64 @@ class WashingService:
                     """
 
                     cursor.execute(sql, params)
-                    rows = cursor.fetchall() or []
+                    library_rows = cursor.fetchall() or []
+                    for row in library_rows:
+                        row_sha1 = str(row.get("sha1") or "").strip().upper()
+                        if current_sha1 and row_sha1 == current_sha1:
+                            continue
+                        if row_sha1:
+                            seen_sha1s.add(row_sha1)
+                        rows.append(row)
+
+                    etk_tmdb_expr = "COALESCE(pmc.raw_ffprobe_json->'_etk'->>'tmdb_id', pmc.raw_ffprobe_json->'_etk'->>'tmdbid', pmc.raw_ffprobe_json->'_etk'->>'tmdb')"
+                    etk_type_expr = "LOWER(COALESCE(pmc.raw_ffprobe_json->'_etk'->>'type', pmc.raw_ffprobe_json->'_etk'->>'media_type', pmc.raw_ffprobe_json->'_etk'->>'item_type', ''))"
+                    etk_season_expr = "COALESCE(pmc.raw_ffprobe_json->'_etk'->>'season_number', pmc.raw_ffprobe_json->'_etk'->>'season', pmc.raw_ffprobe_json->'_etk'->>'s')"
+                    etk_episode_expr = "COALESCE(pmc.raw_ffprobe_json->'_etk'->>'episode_number', pmc.raw_ffprobe_json->'_etk'->>'episode', pmc.raw_ffprobe_json->'_etk'->>'e')"
+
+                    etk_where = [
+                        "pmc.mediainfo_json IS NOT NULL",
+                        "pmc.raw_ffprobe_json IS NOT NULL",
+                        "pmc.raw_ffprobe_json ? '_etk'",
+                        "NULLIF(pfc.sha1, '') IS NOT NULL",
+                        f"{etk_tmdb_expr} = %s",
+                    ]
+                    etk_params = [str(tmdb_id)]
+
+                    if current_sha1:
+                        etk_where.append("UPPER(pmc.sha1) <> %s")
+                        etk_params.append(current_sha1)
+
+                    if db_media_type == "Movie":
+                        etk_where.append(f"{etk_type_expr} IN ('movie', 'movies', 'film')")
+                    else:
+                        etk_where.append(f"{etk_type_expr} IN ('tv', 'series', 'season', 'episode')")
+                        if season_num is not None:
+                            etk_where.append(f"(CASE WHEN {etk_season_expr} ~ '^\\d+$' THEN {etk_season_expr}::int END) = %s")
+                            etk_params.append(int(season_num))
+                        if episode_num is not None:
+                            etk_where.append(f"(CASE WHEN {etk_episode_expr} ~ '^\\d+$' THEN {etk_episode_expr}::int END) = %s")
+                            etk_params.append(int(episode_num))
+
+                    etk_sql = f"""
+                        SELECT DISTINCT pmc.sha1, pmc.mediainfo_json
+                        FROM p115_mediainfo_cache pmc
+                        JOIN p115_filesystem_cache pfc
+                          ON UPPER(pfc.sha1) = UPPER(pmc.sha1)
+                        WHERE {" AND ".join(etk_where)}
+                    """
+                    cursor.execute(etk_sql, tuple(etk_params))
+                    for row in cursor.fetchall() or []:
+                        row_sha1 = str(row.get("sha1") or "").strip().upper()
+                        if current_sha1 and row_sha1 == current_sha1:
+                            continue
+                        if row_sha1 and row_sha1 in seen_sha1s:
+                            continue
+                        if row_sha1:
+                            seen_sha1s.add(row_sha1)
+                        rows.append(row)
 
         except Exception as e:
-            logger.warning(f"  ➜ 从 p115_mediainfo_cache 获取库内原始视频流失败: {e}")
+            logger.warning(f"  ➜ 从 p115_mediainfo_cache 获取同媒体原始视频流失败: {e}")
 
         raw_infos = []
         for row in rows:
@@ -619,6 +679,7 @@ class WashingService:
             tmdb_id=tmdb_id,
             season_num=season_num,
             episode_num=episode_num,
+            current_sha1=sha1,
         )
 
         # 4. 没有旧版
