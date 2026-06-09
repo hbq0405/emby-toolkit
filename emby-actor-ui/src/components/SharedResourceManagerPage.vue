@@ -2612,7 +2612,30 @@ const centerVersionTags = (row) => {
   centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   return tags;
 };
-
+const centerEpisodePreview = (row) => {
+  const children = [...(Array.isArray(row?.children) ? row.children : []), ...(!Array.isArray(row?.children) || !row.children.length ? (Array.isArray(row?.pack_items) ? row.pack_items : []) : [])]
+    .filter(x => x && !centerIsLazyPlaceholder(x));
+  if (!children.length) return '';
+  const nums = children.map(x => Number(x?.episode_number || 0)).filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  if (!nums.length) return `包含 ${children.length} 个文件`;
+  const shown = nums.slice(0, 18).map(n => `E${String(n).padStart(2, '0')}`).join('、');
+  return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
+};
+const openCenterDetail = async (row) => {
+  if (!row) return;
+  const key = centerTableRowKey(row);
+  activeCenterDetailRow.value = row;
+  showCenterDetailModal.value = true;
+  if (!centerNeedsLoadChildren(row)) return;
+  centerDetailLoading.value = true;
+  try {
+    await loadCenterSourceChildren(row);
+    await nextTick();
+    activeCenterDetailRow.value = findCenterGroupByKey(groupedCenterSources.value || [], key) || row;
+  } finally {
+    centerDetailLoading.value = false;
+  }
+};
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => withLedgerTooltip(row, fmtDate(row.created_at)) },
   { title: '事件', key: 'event_type', width: 190, render: row => withLedgerTooltip(row, row.event_label || ledgerEventLabel(row.event_type)) },
