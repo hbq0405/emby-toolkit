@@ -86,28 +86,80 @@
 “秒传”会把资源秒传到你的 115 网盘。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
-              <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadCenterSources">
+              <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="resetCenterSources()">
                 <template #prefix><n-icon :component="SearchIcon" /></template>
               </n-input>
               <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
               <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
               <n-select v-model:value="centerFilters.order_by" :options="centerOrderOptions" style="width: 130px" />
-              <n-button type="primary" :loading="centerLoading" @click="loadCenterSources">查询中心</n-button>
+              <n-button type="primary" :loading="centerLoading" @click="resetCenterSources()">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
-            <n-data-table
-              remote
-              :loading="centerLoading"
-              :columns="centerColumns"
-              :data="groupedCenterSources"
-              :pagination="centerPagination"
-              :row-key="centerTableRowKey"
-              :expanded-row-keys="centerExpandedRowKeys"
-              :scroll-x="1680"
-              @update:expanded-row-keys="handleCenterExpandedRowKeys"
-              @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
-              @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
-            />
+            <n-spin :show="centerLoading && !centerAppendLoading">
+              <div v-if="groupedCenterSources.length" class="center-card-grid">
+                <div
+                  v-for="row in groupedCenterSources"
+                  :key="centerTableRowKey(row)"
+                  class="center-card-item"
+                >
+                  <n-card class="center-media-card" :bordered="false" content-style="padding: 0; position: relative;" @click="openCenterDetail(row)">
+                    <div class="center-poster-wrapper">
+                      <img v-if="centerPosterUrl(row)" :src="centerPosterUrl(row)" class="center-poster" @error="onCenterPosterError" />
+                      <div v-else class="center-poster-placeholder">
+                        <div class="center-poster-mark">{{ centerPosterMark(row) }}</div>
+                        <div class="center-poster-sub">共享池</div>
+                      </div>
+
+                      <div v-if="centerRibbonText(row)" :class="['center-ribbon', centerRibbonClass(row)]">
+                        <span>{{ centerRibbonText(row) }}</span>
+                      </div>
+
+                      <div class="center-resource-badge">{{ centerUsableResourceCount(row) }} 个</div>
+
+                      <div class="center-card-overlay">
+                        <div class="center-card-text">
+                          <div class="center-card-title" :title="centerDisplayTitle(row)">{{ centerDisplayTitle(row) }}</div>
+                          <div class="center-card-meta">
+                            <span>{{ centerCardMetaText(row) }}</span>
+                          </div>
+                          <div class="center-card-tags">
+                            <n-tag
+                              v-for="tagItem in centerCardTags(row)"
+                              :key="tagItem.key"
+                              size="tiny"
+                              round
+                              :type="tagItem.type || 'default'"
+                              :bordered="false"
+                            >
+                              {{ tagItem.label }}
+                            </n-tag>
+                          </div>
+                        </div>
+                        <div class="center-card-actions">
+                          <n-button
+                            size="tiny"
+                            type="primary"
+                            secondary
+                            :loading="centerCardActionLoading(row)"
+                            :disabled="centerCardActionDisabled(row)"
+                            @click.stop="importCenterSource(centerPrimaryActionRow(row), 'permanent')"
+                          >秒传</n-button>
+                        </div>
+                      </div>
+                    </div>
+                  </n-card>
+                </div>
+              </div>
+              <div v-else class="center-empty-card">
+                <n-text depth="3">暂无中心资源。可以换个关键词或状态筛选。</n-text>
+              </div>
+
+              <div ref="centerInfiniteSentinel" class="center-infinite-sentinel">
+                <n-spin v-if="centerAppendLoading" size="small" />
+                <n-text v-else-if="centerHasMore" depth="3">继续下滑加载更多</n-text>
+                <n-text v-else-if="groupedCenterSources.length" depth="3">已加载全部 {{ centerPagination.itemCount || groupedCenterSources.length }} 个资源</n-text>
+              </div>
+            </n-spin>
           </n-tab-pane>
 
           <n-tab-pane name="requests" tab="求共享">
@@ -294,6 +346,48 @@
       </template>
     </n-modal>
 
+    <n-modal v-model:show="showCenterDetailModal" preset="card" :title="centerDetailModalTitle" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
+      <n-spin :show="centerDetailLoading">
+        <div v-if="activeCenterDetailRow" class="center-detail-body">
+          <div class="center-detail-head">
+            <div>
+              <div class="center-detail-title">{{ centerDisplayTitle(activeCenterDetailRow) }}</div>
+              <div class="center-detail-sub">{{ centerCardMetaText(activeCenterDetailRow) }} · {{ centerUsableResourceCount(activeCenterDetailRow) }} 个可用源</div>
+            </div>
+            <n-space size="small" wrap>
+              <n-tag v-for="tagItem in centerCardTags(activeCenterDetailRow)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
+                {{ tagItem.label }}
+              </n-tag>
+            </n-space>
+          </div>
+
+          <div class="center-version-detail-list">
+            <div v-for="version in centerDetailVersions" :key="centerVersionKey(version)" class="center-version-detail-card">
+              <div class="center-version-main">
+                <div class="center-version-title">{{ centerVersionTitle(version) }}</div>
+                <div class="center-version-tags">
+                  <n-tag v-for="tagItem in centerVersionTags(version)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
+                    {{ tagItem.label }}
+                  </n-tag>
+                </div>
+                <div v-if="centerTrackDetailText(version)" class="center-version-tracks">{{ centerTrackDetailText(version) }}</div>
+                <div v-if="centerEpisodePreview(version)" class="center-version-episodes">{{ centerEpisodePreview(version) }}</div>
+              </div>
+              <div class="center-version-action">
+                <n-button
+                  size="small"
+                  type="primary"
+                  :loading="importingMap[version.source_id] === 'permanent'"
+                  :disabled="isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
+                  @click="importCenterSource(version, 'permanent')"
+                >秒传</n-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </n-spin>
+    </n-modal>
+
     <ShareRequestCreateModal
       v-model:show="showShareRequestModal"
       @created="handleShareRequestCreated"
@@ -302,7 +396,7 @@
 </template>
 
 <script setup>
-import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import axios from 'axios';
 import {
   NAlert, NButton, NCard, NCheckbox, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
@@ -372,6 +466,12 @@ const ledgerItems = ref([]);
 const centerSources = ref([]);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
+const centerHasMore = ref(true);
+const centerAppendLoading = ref(false);
+const centerInfiniteSentinel = ref(null);
+const showCenterDetailModal = ref(false);
+const activeCenterDetailRow = ref(null);
+const centerDetailLoading = ref(false);
 const shareRequests = ref([]);
 const shareRequestSearchKeyword = ref('');
 const shareRequestSearchItems = ref([]);
@@ -1705,7 +1805,14 @@ const executeImport = async (row, mode) => {
     message.warning('该资源处于待补充状态，不能秒传');
     return;
   }
-  const sourcePayload = buildCenterImportSourcePayload(row);
+  let importRow = row;
+  const originalKey = centerTableRowKey(row);
+  if (centerNeedsLoadChildren(row)) {
+    await loadCenterSourceChildren(row);
+    await nextTick();
+    importRow = findCenterGroupByKey(groupedCenterSources.value || [], originalKey) || row;
+  }
+  const sourcePayload = buildCenterImportSourcePayload(importRow);
   if (!sourcePayload.source_kind || !sourcePayload.source_id) {
     message.error('中心源缺少 source_kind/source_id，刷新中心资源库后重试。');
     return;
@@ -2281,6 +2388,176 @@ const centerColumns = [
   }) },
 ];
 
+
+const centerDisplayTitle = (row) => {
+  const base = centerTitleText(row);
+  const typeLabel = centerTypeLabel(centerRowType(row));
+  const season = Number(row?.season_number || 0);
+  const episode = Number(row?.episode_number || 0);
+  if (typeLabel === '季' && season > 0 && !/第\s*\d+\s*季/.test(base)) return `${base} 第 ${season} 季`;
+  if (typeLabel === '单集') {
+    const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
+    return se ? `${base} ${se}` : base;
+  }
+  return base;
+};
+
+const centerPosterUrl = (row) => {
+  const value = String(row?.poster_url || row?.poster_path || row?.poster || row?.image || row?.cover || '').trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith('/')) return `https://image.tmdb.org/t/p/w342${value}`;
+  return value;
+};
+const onCenterPosterError = (event) => {
+  if (event?.target) event.target.style.display = 'none';
+};
+const centerPosterMark = (row) => {
+  const title = String(centerDisplayTitle(row) || '').replace(/[（(]\d{4}[）)]/g, '').trim();
+  return title.slice(0, 2) || '共享';
+};
+const centerRibbonText = (row) => {
+  if (isCenterReplenishRow(row)) return '待补充';
+  if (isCenterCompletedCertified(row)) return '已完结';
+  if (centerIsOngoingHub(row)) return '连载中';
+  if (row?.is_mine) return '我的源';
+  return '';
+};
+const centerRibbonClass = (row) => {
+  if (isCenterReplenishRow(row)) return 'center-ribbon-warning';
+  if (isCenterCompletedCertified(row)) return 'center-ribbon-green';
+  if (centerIsOngoingHub(row)) return 'center-ribbon-blue';
+  return 'center-ribbon-dark';
+};
+const centerCardMetaText = (row) => {
+  const typeLabel = centerTypeLabel(centerRowType(row));
+  const parts = [typeLabel];
+  const season = Number(row?.season_number || 0);
+  const episode = Number(row?.episode_number || 0);
+  if (typeLabel === '季' && season > 0) parts.push(`S${String(season).padStart(2, '0')}`);
+  if (typeLabel === '单集' && (season || episode)) parts.push(`${season ? `S${String(season).padStart(2, '0')}` : ''}${episode ? `E${String(episode).padStart(2, '0')}` : ''}`);
+  const tmdb = tmdbIdForRow(row);
+  if (tmdb) parts.push(`TMDb ${tmdb}`);
+  return parts.join(' · ');
+};
+const centerTagPush = (arr, label, type = 'default', key = '') => {
+  const text = String(label || '').trim();
+  if (!text || text === '-') return;
+  if (arr.some(x => x.label === text)) return;
+  arr.push({ key: key || text, label: text, type });
+};
+const centerTrackTextForTags = (items) => trackListToArray(items).map(item => String(trackRawText(item) || '').trim()).filter(Boolean).join(' ');
+const centerTrackFeatureTags = (row) => {
+  const tags = [];
+  const audioText = centerTrackTextForTags(versionAudioTracks(row));
+  const subText = centerTrackTextForTags(versionSubtitleTracks(row));
+  if (/国语|普通话|普通話/.test(audioText)) centerTagPush(tags, '国语', 'success', 'audio-mandarin');
+  if (/中文|简中|繁中|简体|繁体|中英/.test(subText)) centerTagPush(tags, '中字', 'info', 'sub-zh');
+  if (/特效/.test(subText)) centerTagPush(tags, '特效', 'warning', 'sub-effect');
+  if (/双语|雙語/.test(subText)) centerTagPush(tags, '双语', 'info', 'sub-bilingual');
+  return tags;
+};
+const centerPrimaryVersion = (row) => {
+  const versions = Array.isArray(row?.versions) && row.versions.length ? row.versions : [row];
+  return versions.find(v => !centerIsLazyPlaceholder(v)) || row;
+};
+const centerPrimaryActionRow = (row) => {
+  const versions = Array.isArray(row?.versions) && row.versions.length ? row.versions : [row];
+  return versions.find(v => !isCenterReplenishRow(v) && centerRapidSourceId(v)) || null;
+};
+const centerPrimaryActionKey = (row) => {
+  const action = centerPrimaryActionRow(row);
+  return action ? centerRapidSourceId(action) : '';
+};
+const centerCardActionLoading = (row) => {
+  const key = centerPrimaryActionKey(row);
+  return Boolean(key && importingMap[key]);
+};
+const centerCardActionDisabled = (row) => !centerPrimaryActionRow(row) || centerCardActionLoading(row);
+const centerCardTags = (row) => {
+  const primary = centerPrimaryVersion(row) || row;
+  const summary = centerVersionSummary(primary) || {};
+  const tags = [];
+  centerTagPush(tags, '115秒传', 'success', 'rapid');
+  const progress = centerProgressText(row);
+  if (progress) centerTagPush(tags, progress, 'info', 'progress');
+  if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
+  if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
+  if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
+  if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
+  if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
+  if (!hideCenterPackParams(primary)) {
+    centerTagPush(tags, formatCenterSize(primary), 'default', 'size');
+    centerTagPush(tags, summary.resolution, 'success', 'resolution');
+    centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
+    centerTrackFeatureTags(primary).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
+  }
+  return tags.slice(0, 9);
+};
+
+const centerDetailModalTitle = computed(() => activeCenterDetailRow.value ? centerDisplayTitle(activeCenterDetailRow.value) : '中心资源详情');
+const centerDetailVersions = computed(() => {
+  const row = activeCenterDetailRow.value || {};
+  const versions = Array.isArray(row.versions) && row.versions.length ? row.versions : [row];
+  return versions.filter(v => v && !centerIsLazyPlaceholder(v));
+});
+const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || Math.random());
+const centerVersionTitle = (row) => {
+  const summary = centerVersionSummary(row) || {};
+  const parts = [summary.resolution, compactEffectText(summary.effect), summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : '', summary.fps ? `${summary.fps}fps` : ''].filter(v => v && v !== '-');
+  return parts.join(' · ') || centerSeasonText(row) || '资源版本';
+};
+const centerVersionTags = (row) => {
+  const summary = centerVersionSummary(row) || {};
+  const tags = [];
+  centerTagPush(tags, formatCenterSize(row), 'default', 'size');
+  centerTagPush(tags, summary.resolution, 'success', 'resolution');
+  centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
+  const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
+  centerTagPush(tags, codec, 'default', 'codec');
+  centerTagPush(tags, summary.fps ? `${summary.fps} fps` : '', 'default', 'fps');
+  centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
+  if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
+  if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
+  if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
+  if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
+  if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
+  centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
+  return tags;
+};
+const centerTrackDetailText = (row) => {
+  const audio = compactTrackText(versionAudioTracks(row));
+  const sub = compactTrackText(versionSubtitleTracks(row));
+  const parts = [];
+  if (audio && audio !== '-') parts.push(`音轨 ${audio}`);
+  if (sub && sub !== '-') parts.push(`字幕 ${sub}`);
+  return parts.join(' · ');
+};
+const centerEpisodePreview = (row) => {
+  const children = [...(Array.isArray(row?.children) ? row.children : []), ...(!Array.isArray(row?.children) || !row.children.length ? (Array.isArray(row?.pack_items) ? row.pack_items : []) : [])]
+    .filter(x => x && !centerIsLazyPlaceholder(x));
+  if (!children.length) return '';
+  const nums = children.map(x => Number(x?.episode_number || 0)).filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  if (!nums.length) return `包含 ${children.length} 个文件`;
+  const shown = nums.slice(0, 18).map(n => `E${String(n).padStart(2, '0')}`).join('、');
+  return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
+};
+const openCenterDetail = async (row) => {
+  if (!row) return;
+  const key = centerTableRowKey(row);
+  activeCenterDetailRow.value = row;
+  showCenterDetailModal.value = true;
+  if (!centerNeedsLoadChildren(row)) return;
+  centerDetailLoading.value = true;
+  try {
+    await loadCenterSourceChildren(row);
+    await nextTick();
+    activeCenterDetailRow.value = findCenterGroupByKey(groupedCenterSources.value || [], key) || row;
+  } finally {
+    centerDetailLoading.value = false;
+  }
+};
+
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => withLedgerTooltip(row, fmtDate(row.created_at)) },
   { title: '事件', key: 'event_type', width: 190, render: row => withLedgerTooltip(row, row.event_label || ledgerEventLabel(row.event_type)) },
@@ -2343,9 +2620,17 @@ const saveSharedConfig = async () => {
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
 
-const loadCenterSources = async (forceRefresh = false) => {
-  centerLoading.value = true;
+const loadCenterSources = async (forceRefresh = false, append = false) => {
+  if (append) centerAppendLoading.value = true;
+  else centerLoading.value = true;
   try {
+    if (!append) {
+      centerPagination.page = 1;
+      centerSources.value = [];
+      centerExpandedRowKeys.value = [];
+      clearCenterChildrenLoading();
+      centerHasMore.value = true;
+    }
     const params = {
       keyword: centerFilters.keyword,
       item_type: centerFilters.item_type === 'all' ? '' : centerFilters.item_type,
@@ -2356,15 +2641,31 @@ const loadCenterSources = async (forceRefresh = false) => {
     };
     if (forceRefresh) params.force_refresh = 1;
     const res = await axios.get('/api/shared/resources/center/sources', { params });
-    centerExpandedRowKeys.value = [];
-    clearCenterChildrenLoading();
-    centerSources.value = res.data?.items || [];
+    const items = res.data?.items || [];
+    centerSources.value = append ? [...(centerSources.value || []), ...items] : items;
     centerPagination.itemCount = Number(res.data?.total || 0);
+    const total = Number(centerPagination.itemCount || 0);
+    centerHasMore.value = Boolean(items.length) && (total ? centerSources.value.length < total : items.length >= centerPagination.pageSize);
+    await nextTick();
+    setupCenterInfiniteObserver();
   } catch (e) {
     message.error(e.response?.data?.message || '加载中心资源库失败');
+    if (append) centerPagination.page = Math.max(1, centerPagination.page - 1);
   } finally {
     centerLoading.value = false;
+    centerAppendLoading.value = false;
   }
+};
+
+const resetCenterSources = async (forceRefresh = false) => {
+  centerPagination.page = 1;
+  await loadCenterSources(forceRefresh, false);
+};
+
+const loadMoreCenterSources = async () => {
+  if (activeTab.value !== 'center' || centerLoading.value || centerAppendLoading.value || !centerHasMore.value) return;
+  centerPagination.page += 1;
+  await loadCenterSources(false, true);
 };
 
 
@@ -2689,12 +2990,38 @@ const triggerSharedMaintenance = async () => {
 const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献点流水失败'); } finally { ledgerLoading.value = false; } };
 const loadAll = async (forceRefresh = false) => {
   const tasks = [loadSummary(), loadLedger()];
-  if (activeTab.value === 'center') tasks.push(loadCenterSources(forceRefresh));
+  if (activeTab.value === 'center') tasks.push(resetCenterSources(forceRefresh));
   else if (activeTab.value === 'requests') tasks.push(loadShareRequests());
   else tasks.push(loadShares());
   await Promise.allSettled(tasks);
 };
-const handleTabChange = (name) => { if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'requests') loadShareRequests(); if (name === 'ledger') loadLedger(); };
+const handleTabChange = async (name) => {
+  if (name === 'shares') loadShares();
+  if (name === 'center') {
+    await resetCenterSources();
+    await nextTick();
+    setupCenterInfiniteObserver();
+  }
+  if (name === 'requests') loadShareRequests();
+  if (name === 'ledger') loadLedger();
+};
+
+let centerInfiniteObserver = null;
+const disconnectCenterInfiniteObserver = () => {
+  if (centerInfiniteObserver) {
+    centerInfiniteObserver.disconnect();
+    centerInfiniteObserver = null;
+  }
+};
+const setupCenterInfiniteObserver = () => {
+  disconnectCenterInfiniteObserver();
+  const target = centerInfiniteSentinel.value;
+  if (!target) return;
+  centerInfiniteObserver = new IntersectionObserver((entries) => {
+    if (entries[0]?.isIntersecting) loadMoreCenterSources();
+  }, { root: null, rootMargin: '560px 0px', threshold: 0.01 });
+  centerInfiniteObserver.observe(target);
+};
 
 const registerCenterDevice = async () => {
   const doRegister = async () => {
@@ -3009,8 +3336,16 @@ watch(
   () => scheduleShareRequestQuote(),
 );
 
-onMounted(() => { checkMobile(); window.addEventListener('resize', checkMobile); loadAll(); });
-onUnmounted(() => window.removeEventListener('resize', checkMobile));
+onMounted(() => {
+  checkMobile();
+  window.addEventListener('resize', checkMobile);
+  loadAll();
+  nextTick(setupCenterInfiniteObserver);
+});
+onUnmounted(() => {
+  window.removeEventListener('resize', checkMobile);
+  disconnectCenterInfiniteObserver();
+});
 </script>
 
 <style scoped>
@@ -3323,6 +3658,205 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .center-flag-tag {
   transform: scale(.92);
   transform-origin: left center;
+}
+
+
+/* 中心资源库：海报卡片 + 无限滚动 */
+.center-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 16px;
+  padding: 8px 2px 18px;
+}
+.center-card-item { min-width: 0; }
+.center-media-card {
+  cursor: pointer;
+  border-radius: 12px;
+  overflow: hidden;
+  height: 100%;
+  background: rgba(12, 18, 42, .66) !important;
+  border: 1px solid rgba(148, 177, 255, .14) !important;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+.center-media-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(91, 140, 255, .45) !important;
+  box-shadow: 0 14px 28px rgba(0,0,0,.28);
+  z-index: 3;
+}
+.center-poster-wrapper {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  background: radial-gradient(circle at 20% 18%, rgba(75, 184, 255, .22), transparent 35%), linear-gradient(145deg, rgba(23, 43, 92, .92), rgba(18, 18, 52, .96));
+}
+.center-poster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform .28s ease;
+}
+.center-media-card:hover .center-poster { transform: scale(1.045); }
+.center-poster-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255,255,255,.86);
+  text-shadow: 0 2px 6px rgba(0,0,0,.35);
+}
+.center-poster-mark { font-size: 28px; font-weight: 800; letter-spacing: .08em; }
+.center-poster-sub { font-size: 12px; opacity: .65; }
+.center-card-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  min-height: 46%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 56px 8px 8px;
+  background: linear-gradient(to top, rgba(0,0,0,.94) 0%, rgba(0,0,0,.68) 56%, rgba(0,0,0,0) 100%);
+  pointer-events: none;
+}
+.center-card-text { min-width: 0; flex: 1; }
+.center-card-title {
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1.25;
+  text-shadow: 0 2px 5px rgba(0,0,0,.78);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.center-card-meta {
+  margin-top: 3px;
+  color: rgba(255,255,255,.78);
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 2px 5px rgba(0,0,0,.75);
+}
+.center-card-tags,
+.center-version-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.center-card-tags :deep(.n-tag),
+.center-version-tags :deep(.n-tag) {
+  max-width: 92px;
+}
+.center-card-tags :deep(.n-tag__content),
+.center-version-tags :deep(.n-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.center-card-actions {
+  flex: 0 0 auto;
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-end;
+}
+.center-resource-badge {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #7ef0d2;
+  font-size: 11px;
+  font-weight: 800;
+  background: rgba(0, 0, 0, .62);
+  border: 1px solid rgba(126, 240, 210, .34);
+  z-index: 2;
+}
+.center-ribbon {
+  position: absolute;
+  left: -31px;
+  top: 10px;
+  width: 106px;
+  height: 22px;
+  transform: rotate(-45deg);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  z-index: 2;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+}
+.center-ribbon-green { background: linear-gradient(135deg, #22c55e, #16a34a); }
+.center-ribbon-blue { background: linear-gradient(135deg, #38bdf8, #2563eb); }
+.center-ribbon-warning { background: linear-gradient(135deg, #f59e0b, #d97706); }
+.center-ribbon-dark { background: linear-gradient(135deg, #64748b, #334155); }
+.center-empty-card {
+  text-align: center;
+  padding: 42px 12px;
+  border-radius: 14px;
+  background: rgba(128,128,128,.055);
+}
+.center-infinite-sentinel {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 4px 0 2px;
+}
+.center-detail-body { display: flex; flex-direction: column; gap: 14px; }
+.center-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(128,128,128,.075);
+  border: 1px solid rgba(148, 177, 255, .14);
+}
+.center-detail-title { font-size: 18px; font-weight: 800; line-height: 1.35; }
+.center-detail-sub { margin-top: 4px; font-size: 12px; opacity: .68; }
+.center-version-detail-list { display: flex; flex-direction: column; gap: 10px; }
+.center-version-detail-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(12, 18, 42, .48);
+  border: 1px solid rgba(148, 177, 255, .14);
+}
+.center-version-main { min-width: 0; flex: 1; }
+.center-version-title { font-weight: 800; line-height: 1.35; }
+.center-version-tracks,
+.center-version-episodes {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--n-text-color-3, rgba(128,128,128,.78));
+  line-height: 1.55;
+  word-break: break-all;
+}
+.center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
+@media (max-width: 768px) {
+  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px; }
+  .center-detail-head,
+  .center-version-detail-card { flex-direction: column; }
+  .center-version-action { align-items: flex-start; }
 }
 
 </style>
