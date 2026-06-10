@@ -2303,6 +2303,18 @@ def _infer_target_cid_from_local_path(cache_row=None, local_path=''):
     return str(target.get('cid') or '').strip(), str(target.get('category_path') or '').strip()
 
 
+def _has_normal_washing_priorities(priorities):
+    """判断优先级列表里是否真的包含普通优先级规则。
+
+    WashingService._load_priorities 会合并 media_type='All' 的全局规则。
+    如果当前 target_cid 没命中分类规则，但存在全局排除规则，priorities 也不会为空。
+    这种情况下仍应视作“未命中普通规则”，继续尝试 local_path 反推分类 CID。
+    """
+    if not isinstance(priorities, list):
+        return False
+    return any(isinstance(rule, dict) and not bool(rule.get('is_exclude', False)) for rule in priorities)
+
+
 def _lookup_organize_record_target_cid(cursor, *, cache_row=None, pick_code='', sha1=''):
     """从 115 整理记录反查分类目标 CID。
 
@@ -2427,9 +2439,13 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                 # target_cid 没有命中目录限定规则时，用本地 STRM 相对路径现场反推分类 CID。
                 # 这解决 MP 直出/旧整理记录把 target_cid 写成剧名目录或季目录的问题，
                 # 全程只查本地 p115_sorting_rules + p115_filesystem_cache.local_path，不打 115 API。
-                if not priorities and inferred_target_cid and inferred_target_cid != target_cid:
+                # 注意：_load_priorities 会合并 media_type='All' 的全局规则。
+                # 如果 target_cid 错了，但存在全局排除规则，priorities 仍然非空；
+                # 此时 get_level 会返回“未配置任何有效的普通优先级规则”。
+                # 所以这里不能只判断 not priorities，必须判断是否有普通优先级规则。
+                if (not _has_normal_washing_priorities(priorities)) and inferred_target_cid and inferred_target_cid != target_cid:
                     fallback_priorities = WashingService._load_priorities(db_media_type, inferred_target_cid)
-                    if fallback_priorities:
+                    if _has_normal_washing_priorities(fallback_priorities):
                         old_target_cid = target_cid
                         target_cid = inferred_target_cid
                         priorities = fallback_priorities
@@ -2438,12 +2454,12 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                             f"{old_target_cid or '-'} -> {target_cid} ({inferred_category_path or '-'}) | {file_name}"
                         )
 
-                if not priorities:
+                if not _has_normal_washing_priorities(priorities):
                     level = None
-                    if target_cid:
-                        reason = f'目标分类CID({target_cid})未命中洗版优先级规则'
-                    elif inferred_target_cid:
-                        reason = f'local_path 推导分类CID({inferred_target_cid})后仍未命中洗版优先级规则'
+                    if inferred_target_cid and target_cid != inferred_target_cid:
+                        reason = f'原目标分类CID({target_cid or "-"})只命中全局/排除规则，local_path 推导分类CID({inferred_target_cid})后仍未命中普通优先级规则'
+                    elif target_cid:
+                        reason = f'目标分类CID({target_cid})未命中普通洗版优先级规则'
                     else:
                         reason = '缺少整理目标分类CID，且 local_path 未命中分类规则'
                     stats['no_priority_rules'] += 1
