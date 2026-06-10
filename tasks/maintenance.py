@@ -33,7 +33,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'actors_json', 'directors_json', 'production_companies_json', 'networks_json', 'countries_json', 
             'keywords_json', 'last_episode_to_air_json',
             'watchlist_next_episode_json', 'watchlist_missing_info_json', 'asset_details_json',
-            'overview_embedding'
+            'overview_embedding', 'washing_snapshot_json'
         },
         'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json', 'last_scanned_tmdb_ids_json'},
         'resubscribe_rules': {
@@ -43,6 +43,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         },
         'user_templates': {'emby_policy_json', 'emby_configuration_json'},
         'p115_mediainfo_cache': {'mediainfo_json', 'raw_ffprobe_json'},
+        'p115_filesystem_cache': {'washing_snapshot_json'},
         'washing_priority_groups': {'target_cids', 'priorities'},
         # 共享资源相关表：这些表大量使用 raw_json 保存接口回包/任务上下文，
         # 需要显式按 JSONB 处理，否则导入 PostgreSQL 时会把 dict/list 当普通字符串插入失败。
