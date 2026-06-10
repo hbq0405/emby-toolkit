@@ -320,8 +320,8 @@
                     </template>
                     <template #header-extra>
                       <n-space align="center" :size="12">
-                        <n-button size="small" secondary type="success" @click="check115Status" :loading="loading115Info">
-                          检查连通性
+                        <n-button size="small" secondary type="success" @click="check115Status(true)" :loading="loading115Info">
+                          下载测速
                         </n-button>
                       </n-space>
                     </template>
@@ -337,6 +337,25 @@
                         <div style="font-size: 12px; color: var(--n-text-color-3); margin-top: 4px;">
                           剩余空间: {{ p115Info.user_info.rt_space_info?.all_remain?.size_format || '未知' }}
                         </div>
+                      </div>
+                    </div>
+
+                    <div v-if="p115Info && p115Info.speed_test" style="margin-bottom: 16px; padding: 12px; background: var(--n-action-color); border-radius: 8px;">
+                      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                        <div style="font-weight: 700; font-size: 14px;">
+                          下载测速：{{ p115Info.speed_test.speed_text || `${p115Info.speed_test.mb_per_second || 0} MB/s` }}
+                        </div>
+                        <n-tag size="small" type="info" :bordered="false">
+                          {{ p115Info.speed_test.backend || '直链' }}
+                        </n-tag>
+                      </div>
+                      <div style="font-size: 12px; color: var(--n-text-color-3); margin-top: 6px; line-height: 1.6;">
+                        样本：{{ p115Info.speed_test.sample?.title || p115Info.speed_test.sample?.file_name || '随机媒体库资源' }}
+                        <span v-if="p115Info.speed_test.sample?.season_number"> S{{ String(p115Info.speed_test.sample.season_number).padStart(2, '0') }}</span>
+                        <span v-if="p115Info.speed_test.sample?.episode_number">E{{ String(p115Info.speed_test.sample.episode_number).padStart(2, '0') }}</span>
+                        <br />
+                        下载：{{ p115Info.speed_test.downloaded_human || formatSpeedTestBytes(p115Info.speed_test.downloaded_bytes) }}，耗时 {{ p115Info.speed_test.elapsed_seconds || 0 }}s
+                        <span v-if="p115Info.speed_test.first_byte_ms">，首包 {{ p115Info.speed_test.first_byte_ms }}ms</span>
                       </div>
                     </div>
 
@@ -3106,21 +3125,38 @@ const regexTestResult = computed(() => {
   return { type: 'warning', text: '未命中任何规则，提取失败。请检查正则是否包含 () 捕获组。' };
 });
 
-// 检查 115 状态
-const check115Status = async () => {
+const formatSpeedTestBytes = (value) => {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let n = bytes;
+  let idx = 0;
+  while (n >= 1024 && idx < units.length - 1) {
+    n /= 1024;
+    idx += 1;
+  }
+  return idx === 0 ? `${Math.round(n)} ${units[idx]}` : `${n.toFixed(2)} ${units[idx]}`;
+};
+
+// 检查 115 状态；手动点击按钮时改为真实下载测速
+const check115Status = async (speedTest = false) => {
     loading115Info.value = true;
     try {
-        // 纯粹查状态，不再触发 handleSaveConfig，彻底切断前端对后端的污染
-        const res = await axios.get('/api/p115/status');
+        const endpoint = speedTest ? '/api/p115/speedtest' : '/api/p115/status';
+        const res = await axios.get(endpoint);
         if (res.data && res.data.data) {
-            p115Info.value = res.data.data;
-            message.success('115 状态刷新成功！');
+            p115Info.value = speedTest ? { ...(p115Info.value || {}), ...res.data.data } : res.data.data;
+            if (speedTest && res.data.data.speed_test) {
+              message.success(`115 下载测速完成：${res.data.data.speed_test.speed_text}`);
+            } else {
+              message.success('115 状态刷新成功！');
+            }
         } else {
             p115Info.value = null;
         }
     } catch (e) { 
         p115Info.value = null; 
-        message.error('状态获取失败: ' + (e.response?.data?.message || e.message));
+        message.error((speedTest ? '测速失败: ' : '状态获取失败: ') + (e.response?.data?.message || e.response?.data?.data?.msg || e.message));
     } finally { 
         loading115Info.value = false; 
     }

@@ -7,6 +7,8 @@ import base64
 import os
 import re
 import time
+import random
+from urllib.parse import urlparse
 import requests
 from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app
 from extensions import admin_required
@@ -410,6 +412,243 @@ class RateLimiter:
                 return True
             return False
 
+
+
+def _p115_jsonish_to_obj(value, default=None):
+    """宽松解析 JSON/JSONB 字段。"""
+    if default is None:
+        default = []
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return default
+        try:
+            return json.loads(text)
+        except Exception:
+            return default
+    return default
+
+
+def _p115_human_bytes(value):
+    try:
+        size = float(value or 0)
+    except Exception:
+        size = 0.0
+    if size <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(size)} {units[idx]}"
+    return f"{size:.2f} {units[idx]}"
+
+
+def _p115_asset_file_name(asset_details, index=0):
+    assets = _p115_jsonish_to_obj(asset_details, [])
+    if isinstance(assets, dict):
+        assets = [assets]
+    if not isinstance(assets, list):
+        return ""
+
+    candidates = []
+    if 0 <= index < len(assets):
+        candidates.append(assets[index])
+    candidates.extend(assets)
+
+    for asset in candidates:
+        if not isinstance(asset, dict):
+            continue
+        name = (
+            asset.get('file_name') or asset.get('FileName') or
+            asset.get('name') or asset.get('Name')
+        )
+        if name:
+            return str(name)
+        asset_path = asset.get('path') or asset.get('Path') or asset.get('file_path') or asset.get('FilePath')
+        if asset_path:
+            return os.path.basename(str(asset_path).replace('\\', '/'))
+    return ""
+
+
+def _p115_pick_speedtest_sample_from_library():
+    """从本地媒体库随机挑一个带 115 pick_code 的库内视频。"""
+    from database.connection import get_db_connection
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # 优先使用 media_metadata：这才是“媒体库资源”。
+            cursor.execute("""
+                SELECT tmdb_id, item_type, title, parent_series_tmdb_id,
+                       season_number, episode_number, file_pickcode_json,
+                       file_sha1_json, asset_details_json, date_added
+                FROM media_metadata
+                WHERE in_library = TRUE
+                  AND item_type IN ('Movie', 'Episode')
+                  AND file_pickcode_json IS NOT NULL
+                  AND jsonb_typeof(file_pickcode_json) = 'array'
+                  AND jsonb_array_length(file_pickcode_json) > 0
+                ORDER BY RANDOM()
+                LIMIT 20
+            """)
+            rows = cursor.fetchall() or []
+
+            for row in rows:
+                pickcodes = _p115_jsonish_to_obj(row.get('file_pickcode_json'), [])
+                sha1s = _p115_jsonish_to_obj(row.get('file_sha1_json'), [])
+                if not isinstance(pickcodes, list) or not pickcodes:
+                    continue
+
+                valid_indexes = [i for i, pc in enumerate(pickcodes) if str(pc or '').strip()]
+                if not valid_indexes:
+                    continue
+                index = random.choice(valid_indexes)
+                pick_code = str(pickcodes[index] or '').strip()
+                sha1 = str(sha1s[index] or '').strip().upper() if index < len(sha1s) else ''
+                file_name = _p115_asset_file_name(row.get('asset_details_json'), index)
+                cache_row = None
+
+                if pick_code or sha1:
+                    clauses = []
+                    params = []
+                    if pick_code:
+                        clauses.append('pick_code = %s')
+                        params.append(pick_code)
+                    if sha1:
+                        clauses.append('UPPER(sha1) = %s')
+                        params.append(sha1)
+                    if clauses:
+                        cursor.execute(f"""
+                            SELECT id, name, pick_code, sha1, size, local_path
+                            FROM p115_filesystem_cache
+                            WHERE {' OR '.join(clauses)}
+                            ORDER BY updated_at DESC NULLS LAST
+                            LIMIT 1
+                        """, tuple(params))
+                        cache_row = cursor.fetchone()
+
+                cache_row = dict(cache_row or {})
+                file_name = file_name or cache_row.get('name') or row.get('title') or pick_code
+                return {
+                    'pick_code': pick_code or str(cache_row.get('pick_code') or '').strip(),
+                    'sha1': sha1 or str(cache_row.get('sha1') or '').strip().upper(),
+                    'file_name': file_name,
+                    'size': int(cache_row.get('size') or 0),
+                    'local_path': cache_row.get('local_path') or '',
+                    'tmdb_id': row.get('tmdb_id'),
+                    'item_type': row.get('item_type'),
+                    'title': row.get('title') or '',
+                    'parent_series_tmdb_id': row.get('parent_series_tmdb_id') or '',
+                    'season_number': row.get('season_number'),
+                    'episode_number': row.get('episode_number'),
+                }
+
+            # 兜底：如果 media_metadata 还没写 pickcode，就从 115 文件缓存里随机找一个视频文件。
+            cursor.execute("""
+                SELECT id, name, pick_code, sha1, size, local_path
+                FROM p115_filesystem_cache
+                WHERE pick_code IS NOT NULL AND pick_code <> ''
+                  AND lower(split_part(name, '.', array_length(string_to_array(name, '.'), 1)))
+                      IN ('mp4','mkv','avi','ts','iso','rmvb','wmv','mov','m2ts','flv','mpg')
+                ORDER BY RANDOM()
+                LIMIT 1
+            """)
+            cache_row = cursor.fetchone()
+            if cache_row:
+                cache_row = dict(cache_row)
+                return {
+                    'pick_code': str(cache_row.get('pick_code') or '').strip(),
+                    'sha1': str(cache_row.get('sha1') or '').strip().upper(),
+                    'file_name': cache_row.get('name') or cache_row.get('pick_code') or '',
+                    'size': int(cache_row.get('size') or 0),
+                    'local_path': cache_row.get('local_path') or '',
+                    'tmdb_id': '',
+                    'item_type': '',
+                    'title': cache_row.get('name') or '',
+                    'season_number': None,
+                    'episode_number': None,
+                }
+    return None
+
+
+def _p115_resolve_download_url_for_speedtest(client, pick_code, user_agent):
+    """按当前 115 API 优先级提取直链，失败自动切到另一套接口。"""
+    api_priority = get_115_api_priority('openapi')
+    use_openapi = (api_priority != 'cookie')
+    last_error = ''
+
+    for _ in range(4):
+        backend = 'OpenAPI' if use_openapi else 'Cookie'
+        try:
+            if use_openapi:
+                real_url = client.openapi_downurl(pick_code, user_agent=user_agent)
+            else:
+                real_url = client.download_url(pick_code, user_agent=user_agent)
+            if real_url:
+                return str(real_url), backend, last_error
+        except Exception as e:
+            last_error = f"{backend}: {e}"
+            logger.warning(f"  ➜ [115测速] {backend} 提取直链异常: {e}")
+        use_openapi = not use_openapi
+        time.sleep(0.3)
+
+    return '', '', last_error or '无法提取下载直链'
+
+
+def _p115_download_speedtest(real_url, *, user_agent, max_bytes=32 * 1024 * 1024, max_seconds=12):
+    """对真实 115 直链做小流量下载测速。只读前 max_bytes，避免把整片拖下来。"""
+    max_bytes = max(1 * 1024 * 1024, min(int(max_bytes or 0), 128 * 1024 * 1024))
+    max_seconds = max(3, min(int(max_seconds or 0), 30))
+    headers = {
+        'User-Agent': user_agent,
+        'Accept': '*/*',
+        'Connection': 'close',
+        'Range': f'bytes=0-{max_bytes - 1}',
+    }
+
+    downloaded = 0
+    first_byte_ms = None
+    start = time.monotonic()
+    status_code = None
+    content_length = None
+
+    with requests.get(real_url, headers=headers, stream=True, timeout=(8, max_seconds + 5), allow_redirects=True) as resp:
+        status_code = resp.status_code
+        content_length = resp.headers.get('Content-Length')
+        if status_code >= 400:
+            raise RuntimeError(f"下载测速请求失败，HTTP {status_code}")
+
+        for chunk in resp.iter_content(chunk_size=256 * 1024):
+            if not chunk:
+                continue
+            now = time.monotonic()
+            if first_byte_ms is None:
+                first_byte_ms = int((now - start) * 1000)
+            downloaded += len(chunk)
+            if downloaded >= max_bytes or (now - start) >= max_seconds:
+                break
+
+    elapsed = max(time.monotonic() - start, 0.001)
+    mb_per_second = downloaded / 1024 / 1024 / elapsed
+    return {
+        'downloaded_bytes': downloaded,
+        'downloaded_human': _p115_human_bytes(downloaded),
+        'elapsed_seconds': round(elapsed, 2),
+        'first_byte_ms': first_byte_ms,
+        'mb_per_second': round(mb_per_second, 2),
+        'mbps': round(mb_per_second * 8, 2),
+        'speed_text': f"{mb_per_second:.2f} MB/s",
+        'status_code': status_code,
+        'content_length': content_length,
+        'range_bytes': max_bytes,
+    }
+
 @p115_bp.route('/status', methods=['GET'])
 @admin_required
 def get_115_status():
@@ -500,6 +739,85 @@ def get_115_status():
         return jsonify({"status": "success", "data": result})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@p115_bp.route('/speedtest', methods=['GET'])
+@admin_required
+def speedtest_115_download():
+    """随机从媒体库选一个 115 资源，提取真实直链后进行小流量下载测速。"""
+    try:
+        from handler.p115_service import get_115_tokens, get_115_app_label
+
+        token, _, cookie, app_type = get_115_tokens()
+        app_type = str(app_type or 'web').strip().lower()
+        sample = _p115_pick_speedtest_sample_from_library()
+        if not sample or not sample.get('pick_code'):
+            return jsonify({
+                'status': 'error',
+                'message': '媒体库中没有可用于测速的 115 pick_code 资源，请先完成媒体库同步或整理。'
+            }), 400
+
+        client = P115Service.get_client()
+        if not client:
+            return jsonify({'status': 'error', 'message': '115 客户端未初始化，请检查 Token/Cookie 配置'}), 500
+
+        user_agent = (
+            request.headers.get('User-Agent')
+            or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        )
+        # 用浏览器 UA 申请直链并下载，避免 UA 不一致导致 115 防盗链 403。
+        browser_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        real_url, backend, last_error = _p115_resolve_download_url_for_speedtest(client, sample.get('pick_code'), browser_ua)
+        if not real_url:
+            return jsonify({'status': 'error', 'message': f'提取 115 下载直链失败：{last_error}'}), 500
+
+        max_mb = request.args.get('max_mb') or 32
+        max_seconds = request.args.get('seconds') or 12
+        try:
+            max_bytes = int(float(max_mb) * 1024 * 1024)
+        except Exception:
+            max_bytes = 32 * 1024 * 1024
+        try:
+            max_seconds = int(float(max_seconds))
+        except Exception:
+            max_seconds = 12
+
+        speed = _p115_download_speedtest(real_url, user_agent=browser_ua, max_bytes=max_bytes, max_seconds=max_seconds)
+        host = ''
+        try:
+            host = urlparse(real_url).netloc
+        except Exception:
+            host = ''
+
+        public_sample = dict(sample)
+        if public_sample.get('pick_code'):
+            pc = str(public_sample.get('pick_code'))
+            public_sample['pick_code_masked'] = pc[:4] + '****' + pc[-4:] if len(pc) > 8 else '****'
+        public_sample.pop('pick_code', None)
+
+        speed.update({
+            'ok': True,
+            'backend': backend or '直链',
+            'sample': public_sample,
+            'host': host,
+            'tested_at': datetime.now().isoformat(timespec='seconds'),
+        })
+
+        result = {
+            'has_token': bool((token or '').strip()),
+            'has_cookie': bool((cookie or '').strip()),
+            'cookie_app_type': app_type if cookie else None,
+            'cookie_app_label': get_115_app_label(app_type) if cookie else None,
+            'cookie_valid': None,
+            'valid': True,
+            'msg': f"测速完成：{speed.get('speed_text')}",
+            'user_info': None,
+            'speed_test': speed,
+        }
+        return jsonify({'status': 'success', 'data': result})
+    except Exception as e:
+        logger.error(f"  ➜ [115测速] 执行失败: {e}", exc_info=True)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @p115_bp.route('/dirs', methods=['GET'])
 @admin_required
