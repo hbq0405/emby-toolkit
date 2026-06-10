@@ -6704,7 +6704,70 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
             from handler.resubscribe_service import WashingService
             original_lang = (self.raw_metadata or {}).get('lang_code')
-            
+
+            # 批内洗版防多版本：同一电影 / 同一集在同一批待整理里出现多个视频时，
+            # 不能让第一个 ACCEPT 直接占坑，也不能让某个 REJECT/SKIP 株连后续视频版本。
+            # 这里记录当前批次已选中的最优视频候选；后续候选如果更优，就淘汰前一个。
+            batch_washing_best = {}
+
+            def _batch_video_key(_s_num, _e_num):
+                if self.media_type == 'movie':
+                    return ('movie', str(self.tmdb_id or ''))
+                if self.media_type == 'tv' and _s_num is not None and _e_num is not None:
+                    return ('tv', str(self.tmdb_id or ''), int(_s_num), int(_e_num))
+                return None
+
+            def _safe_washing_level(_item, _new_name, _file_size, _s_num, _e_num, _has_ext_sub):
+                try:
+                    eval_res = WashingService.evaluate_file_priority(
+                        sha1=_item.get('sha1') or _item.get('sha'),
+                        file_name=_new_name,
+                        file_size=_file_size,
+                        target_cid=target_cid,
+                        media_type=self.media_type,
+                        original_lang=original_lang,
+                        has_external_subtitle=_has_ext_sub,
+                    ) or {}
+                    level = eval_res.get('level')
+                    try:
+                        level = int(level) if level is not None else None
+                    except Exception:
+                        level = None
+                    return level, str(eval_res.get('reason') or '')
+                except Exception as e:
+                    logger.debug(f"  ➜ [批内洗版对比] 计算候选优先级失败: {_new_name} -> {e}")
+                    return None, ''
+
+            def _candidate_rank(_level, _file_size):
+                # level 越小越好；同级时优先体积更大的候选，避免同级多版本同时入库。
+                try:
+                    lvl = int(_level)
+                except Exception:
+                    lvl = 999999
+                if lvl <= 0:
+                    lvl = 999999
+                try:
+                    size_val = int(_file_size or 0)
+                except Exception:
+                    size_val = 0
+                return (lvl, -size_val)
+
+            def _drop_previous_batch_candidate(prev, current_name, reason_text):
+                prev_item = prev.get('item')
+                prev_name = prev.get('name') or (prev_item or {}).get('_new_filename') or '未知文件'
+                try:
+                    if prev_item in valid_items:
+                        valid_items.remove(prev_item)
+                except Exception:
+                    pass
+                prev_fid = (prev_item or {}).get('fid') or (prev_item or {}).get('file_id')
+                if prev_fid:
+                    unrecognized_fids.append(prev_fid)
+                logger.info(
+                    f"  ➜ [批内洗版淘汰] {prev_name} -> 同批候选 {current_name} 更优/同级更大，"
+                    f"淘汰旧候选；{reason_text}"
+                )
+
             for item in items:
                 new_name = item['_new_filename']
                 s_num = item.get('_season_num')
@@ -6713,9 +6776,17 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 is_vid = ext in known_video_exts
                 file_size = _parse_115_size(item.get('fs') or item.get('size'))
                 
-                # 检查带头大哥是否已经挂了
-                if (s_num, e_num) in rejected_episodes:
-                    logger.info(f"  ➜ [关联跳过] 视频已被拦截/跳过，同步忽略字幕: {new_name}")
+                # 只允许“剧集侧车文件”跟随已失败的视频跳过。
+                # 电影没有季集号，不能用 (None, None) 株连后续电影视频版本；
+                # 同一集的另一个视频版本也必须继续参与批内洗版对比。
+                if (
+                    (not is_vid)
+                    and self.media_type == 'tv'
+                    and s_num is not None
+                    and e_num is not None
+                    and (s_num, e_num) in rejected_episodes
+                ):
+                    logger.info(f"  ➜ [关联跳过] 关联视频已被拦截/跳过，同步忽略字幕/侧车文件: {new_name}")
                     unrecognized_fids.append(item.get('fid') or item.get('file_id'))
                     continue
 
@@ -6763,26 +6834,80 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             'fid': item.get('fid') or item.get('file_id'), 'name': item.get('fn') or item.get('file_name'), 
                             'reason': reason, 'pc': item.get('pc') or item.get('pick_code'), 'season_num': s_num
                         })
-                        # ★ 记入黑名单，株连九族
-                        rejected_episodes.add((s_num, e_num))
+                        # 只记录剧集侧车黑名单；电影和同集其它视频版本继续参与批内对比。
+                        if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                            rejected_episodes.add((s_num, e_num))
                         continue
                     elif action == 'SKIP':
                         logger.info(f"  ➜ [洗版跳过] {new_name} -> {reason}")
                         unrecognized_fids.append(item.get('fid') or item.get('file_id'))
-                        # ★ 记入黑名单，株连九族
-                        rejected_episodes.add((s_num, e_num))
-                        continue
-                    elif action == 'REPLACE':
-                        logger.info(f"  ➜ [洗版替换] {new_name} -> {reason}")
+                        # 只记录剧集侧车黑名单；电影和同集其它视频版本继续参与批内对比。
                         if self.media_type == 'tv' and s_num is not None and e_num is not None:
-                            fids_to_delete.update(existing_tv_eps.get((s_num, e_num), []))
+                            rejected_episodes.add((s_num, e_num))
+                        continue
+                    elif action in ('REPLACE', 'ACCEPT'):
+                        batch_key = _batch_video_key(s_num, e_num)
+                        level, level_reason = _safe_washing_level(item, new_name, file_size, s_num, e_num, has_ext_sub)
+                        rank = _candidate_rank(level, file_size)
+
+                        if batch_key:
+                            prev = batch_washing_best.get(batch_key)
+                            if prev:
+                                prev_rank = prev.get('rank', (999999, 0))
+                                if rank < prev_rank:
+                                    _drop_previous_batch_candidate(
+                                        prev,
+                                        new_name,
+                                        f"当前优先级={level if level is not None else '未知'}，"
+                                        f"旧候选优先级={prev.get('level') if prev.get('level') is not None else '未知'}"
+                                    )
+                                    batch_washing_best[batch_key] = {
+                                        'item': item,
+                                        'name': new_name,
+                                        'level': level,
+                                        'rank': rank,
+                                        'action': action,
+                                    }
+                                else:
+                                    logger.info(
+                                        f"  ➜ [批内洗版跳过] {new_name} -> 同批已有更优/同级候选 "
+                                        f"{prev.get('name')}；当前优先级={level if level is not None else '未知'}，"
+                                        f"保留优先级={prev.get('level') if prev.get('level') is not None else '未知'}"
+                                    )
+                                    unrecognized_fids.append(item.get('fid') or item.get('file_id'))
+                                    if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                                        # 如果该集已有保留候选，不再让失败标记株连字幕。
+                                        rejected_episodes.discard((s_num, e_num))
+                                    continue
+                            else:
+                                batch_washing_best[batch_key] = {
+                                    'item': item,
+                                    'name': new_name,
+                                    'level': level,
+                                    'rank': rank,
+                                    'action': action,
+                                }
+
+                        if action == 'REPLACE':
+                            logger.info(
+                                f"  ➜ [洗版替换] {new_name} -> {reason}"
+                                f"；批内优先级={level if level is not None else '未知'}"
+                            )
+                            if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                                fids_to_delete.update(existing_tv_eps.get((s_num, e_num), []))
+                                rejected_episodes.discard((s_num, e_num))
+                            else:
+                                fids_to_delete.update(existing_movie_vids)
+                            valid_items.append(item)
                         else:
-                            fids_to_delete.update(existing_movie_vids)
-                        valid_items.append(item)
-                    elif action == 'ACCEPT':
-                        logger.info(f"  ➜ [洗版入库] {new_name} -> {reason}")
-                        if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
-                        valid_items.append(item)
+                            logger.info(
+                                f"  ➜ [洗版入库] {new_name} -> {reason}"
+                                f"；批内优先级={level if level is not None else '未知'}"
+                            )
+                            if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
+                            if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                                rejected_episodes.discard((s_num, e_num))
+                            valid_items.append(item)
                 else:
                     # 非视频文件，或非替换模式
                     is_conflict = False
