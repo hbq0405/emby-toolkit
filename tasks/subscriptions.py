@@ -3,6 +3,7 @@
 import time
 import re
 import json
+import inspect
 from datetime import datetime, timedelta
 import logging
 from typing import Any, List, Dict
@@ -31,17 +32,62 @@ try:
         try_consume_shared_resource,
         try_consume_preprobed_shared_resource,
         batch_probe_shared_resources,
-        report_shared_gap,
     )
 except Exception:
     try_consume_shared_resource = None
     try_consume_preprobed_shared_resource = None
     batch_probe_shared_resources = None
-    report_shared_gap = None
 
 
 
 logger = logging.getLogger(__name__)
+
+
+def _try_consume_shared_resource_no_gap(func, **kwargs):
+    """调用共享中心即时消费，但禁止客户端登记普通缺口。
+
+    现在中心端已经“有效资源入池即广播”，客户端不再需要在未命中时
+    写 wanted_gaps / wanted_gap_devices。旧版 shared_subscription_service
+    如果没有提供禁用缺口登记的开关，就直接跳过即时兜底查询，避免
+    try_consume_shared_resource 在 miss 分支偷偷 report_shared_gap。
+    """
+    if not callable(func):
+        return {}
+
+    gap_switches = {
+        'report_gap': False,
+        'enable_gap_report': False,
+        'auto_report_gap': False,
+        'register_gap': False,
+        'skip_report_gap': True,
+        'disable_gap_report': True,
+    }
+
+    try:
+        sig = inspect.signature(func)
+        params = sig.parameters
+        has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        supported_switches = {k: v for k, v in gap_switches.items() if has_var_kwargs or k in params}
+    except Exception:
+        supported_switches = {}
+
+    if not supported_switches:
+        logger.debug(
+            '  ➜ [共享秒传] 当前 shared_subscription_service 不支持禁用缺口登记，'
+            '已跳过即时共享查询，等待中心入池广播事件。'
+        )
+        return {
+            'enabled': True,
+            'success': False,
+            'skipped': True,
+            'reason': 'gap_registration_removed',
+            'message': '客户端普通缺口登记已移除，等待中心广播候选。',
+        }
+
+    call_kwargs = dict(kwargs)
+    call_kwargs.update(supported_switches)
+    return func(**call_kwargs)
+
 
 EFFECT_KEYWORD_MAP = {
     "杜比视界": ["dolby vision", "dovi"],
@@ -1694,7 +1740,7 @@ def task_auto_subscribe(processor):
 
             # 统一订阅任务不再处理 Episode 队列项。
             # 单集只作为 Season.missing_episode_numbers 参与本地精确过滤；
-            # 真正登记中心缺口、查询中心资源、影巢/频道/MP 兜底，全部以 Season 为粒度。
+            # 共享中心已经改为入池广播，不再登记客户端缺口；统一订阅只按 Season 粒度查询/消费已有资源。
             if item_type == 'Episode':
                 logger.warning(
                     f"  ➜ [队列保护] 《{title}》仍以 Episode 进入统一订阅队列，已跳过；"
@@ -1805,7 +1851,8 @@ def task_auto_subscribe(processor):
                             missing_episode_numbers=missing_episode_numbers,
                         )
                     elif try_consume_shared_resource:
-                        shared_result = try_consume_shared_resource(
+                        shared_result = _try_consume_shared_resource_no_gap(
+                            try_consume_shared_resource,
                             item=item,
                             title=title,
                             tmdb_id=tmdb_id,
@@ -1825,11 +1872,11 @@ def task_auto_subscribe(processor):
                             f"  ➜ [共享秒传] 《{title}》命中中心 Rapid 资源池，"
                             f"处理方式: {shared_result.get('mode') or 'rapid'}, 数量: {shared_result.get('count', 0)}"
                         )
-                    elif shared_result.get('enabled') and shared_result.get('reported_gap'):
-                        if item_type == 'Season':
-                            logger.info(f"  ➜ [共享秒传] 《{title}》S{int(season_number or 0):02d} 中心未命中，已登记 Rapid 季缺口，继续原有订阅链路。")
-                        else:
-                            logger.info(f"  ➜ [共享秒传] 《{title}》中心未命中，已登记 Rapid 缺口，继续原有订阅链路。")
+                    elif shared_result.get('enabled') and shared_result.get('skipped') and shared_result.get('reason') == 'gap_registration_removed':
+                        logger.debug(
+                            f"  ➜ [共享秒传] 《{title}》未执行缺口登记；"
+                            "共享池候选由中心入池广播推送。"
+                        )
                 except Exception as e:
                     logger.error(f"  ➜ [共享资源] 处理《{title}》时异常，自动降级原有订阅链路: {e}", exc_info=True)
 

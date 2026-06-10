@@ -2271,18 +2271,62 @@ def _build_gap_query(item: Dict[str, Any], title: str = '', tmdb_id=None, item_t
 
 
 def report_shared_gap(item: Dict[str, Any], title: str = '', tmdb_id=None, item_type: str = '', parent_tmdb_id=None, season_number=None, year='') -> bool:
-    if not shared_center_enabled():
-        return False
-    client = SharedCenterClient()
-    if not client.ready:
-        logger.warning('  ➜ [共享资源] 已启用但中心地址/token 未配置，跳过缺口登记。')
-        return False
+    """普通缺口登记已废弃。
+
+    Rapid v2 现在由中心端“有效资源入池广播”驱动消费端补缺/洗版，
+    客户端不再向中心写 wanted_gaps / wanted_gap_devices。保留函数只为兼容
+    旧导入，避免其他模块 import 失败。
+    """
+    logger.debug(
+        "  ➜ [共享资源] 普通缺口登记已废弃，跳过 report_shared_gap："
+        f"title={title or (item or {}).get('title') or '-'}, "
+        f"tmdb={tmdb_id or (item or {}).get('tmdb_id') or '-'}, item_type={item_type or (item or {}).get('item_type') or '-'}"
+    )
+    return False
+
+
+def _probe_subscriptions_batch_no_gap(client: SharedCenterClient, queries: List[Dict[str, Any]], limit_per_item: int = 200) -> Dict[str, Any]:
+    """只查询共享池候选，不登记缺口。
+
+    新中心端已取消普通缺口登记；这里额外向兼容实现传递禁用标记。
+    如果旧客户端封装不支持这些关键字，则退回旧签名，但本函数自身绝不再调用
+    report_gaps。
+    """
+    safe_queries = []
+    for q in queries or []:
+        if not isinstance(q, dict):
+            continue
+        item = dict(q)
+        item['_disable_gap_report'] = True
+        item['disable_gap_report'] = True
+        item['report_gap'] = False
+        item['register_gap'] = False
+        safe_queries.append(item)
+
     try:
-        client.report_gaps([_build_gap_query(item, title, tmdb_id, item_type, parent_tmdb_id, season_number, year)])
-        return True
-    except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 登记缺口失败: {e}")
-        return False
+        return client.probe_subscriptions_batch(
+            safe_queries,
+            limit_per_item=limit_per_item,
+            report_gap=False,
+            disable_gap_report=True,
+            register_gap=False,
+        )
+    except TypeError:
+        try:
+            return client.probe_subscriptions_batch(
+                safe_queries,
+                limit_per_item=limit_per_item,
+                report_gap=False,
+            )
+        except TypeError:
+            try:
+                return client.probe_subscriptions_batch(
+                    safe_queries,
+                    limit_per_item=limit_per_item,
+                    disable_gap_report=True,
+                )
+            except TypeError:
+                return client.probe_subscriptions_batch(safe_queries, limit_per_item=limit_per_item)
 
 
 def _normalize_probe_item_for_center(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -2322,7 +2366,7 @@ def batch_probe_shared_resources(items: List[Dict[str, Any]], limit_per_item: in
     queries = [q for q in queries if q.get('tmdb_id') and q.get('item_type')]
     if not queries:
         return {'supported': True, 'items': [], 'hit_count': 0, 'gap_count': 0, 'by_key': {}}
-    resp = client.probe_subscriptions_batch(queries, limit_per_item=limit_per_item)
+    resp = _probe_subscriptions_batch_no_gap(client, queries, limit_per_item=limit_per_item)
     # subscriptions.py 期待 by_key；这里按 Rapid v2 规范键补一个映射。
     by_key = {}
     for row in resp.get('items') or resp.get('results') or []:
@@ -2360,14 +2404,7 @@ def _flatten_sources_from_probe(resp_or_row: Dict[str, Any]) -> List[Dict[str, A
 
 
 def _reported_gap_from_probe(resp_or_row: Dict[str, Any]) -> bool:
-    data = resp_or_row or {}
-    if data.get('reported_gap') or data.get('gap') or data.get('status') in ('gap_registered', 'reported_gap'):
-        return True
-    if int(data.get('gap_count') or 0) > 0:
-        return True
-    for item in data.get('items') or data.get('results') or []:
-        if item.get('reported_gap') or item.get('gap') or item.get('status') in ('gap_registered', 'reported_gap'):
-            return True
+    """普通缺口登记已废弃，探测结果里的 gap 字段统一忽略。"""
     return False
 
 
@@ -2379,7 +2416,7 @@ def _consume_sources(
     consume_context: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     if not sources:
-        return {'enabled': True, 'success': False, 'reported_gap': bool(report_gap), 'mode': 'rapid', 'count': 0}
+        return {'enabled': True, 'success': False, 'reported_gap': False, 'mode': 'rapid', 'count': 0}
     ok = 0
     errors = []
     skipped = []
@@ -2435,7 +2472,7 @@ def _consume_sources(
     return {
         'enabled': True,
         'success': ok > 0,
-        'reported_gap': bool(report_gap),
+        'reported_gap': False,
         'mode': 'rapid',
         'action_type': '共享资源秒传',
         'count': ok,
@@ -2452,12 +2489,11 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str = '', tmdb_id=N
     query = _build_gap_query(item or {}, title, tmdb_id, item_type, parent_tmdb_id, season_number, year)
     client = SharedCenterClient()
     try:
-        resp = client.probe_subscriptions_batch([query], limit_per_item=50)
+        resp = _probe_subscriptions_batch_no_gap(client, [query], limit_per_item=50)
         sources = _flatten_sources_from_probe(resp)
-        reported_gap = _reported_gap_from_probe(resp)
-        result = _consume_sources(
+        return _consume_sources(
             sources,
-            report_gap=reported_gap,
+            report_gap=False,
             missing_episode_numbers=missing_episode_numbers,
             consume_context={
                 'title': title,
@@ -2468,14 +2504,6 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str = '', tmdb_id=N
                 'year': year,
             },
         )
-        if not result.get('success') and not reported_gap:
-            # list 没命中时，保险登记缺口，等待中心事件监听异步处理。
-            try:
-                client.report_gaps([query])
-                result['reported_gap'] = True
-            except Exception:
-                pass
-        return result
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 秒传中心资源失败: {e}")
         return {'enabled': True, 'success': False, 'reported_gap': False, 'message': str(e)}
@@ -2483,17 +2511,15 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str = '', tmdb_id=N
 
 def try_consume_preprobed_shared_resource(probe_row: Dict[str, Any] = None, item: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
     sources = _flatten_sources_from_probe(probe_row or {})
-    reported_gap = _reported_gap_from_probe(probe_row or {})
     if sources:
         return _consume_sources(
             sources,
-            report_gap=reported_gap,
+            report_gap=False,
             missing_episode_numbers=kwargs.get('missing_episode_numbers'),
             consume_context=kwargs,
         )
-    if reported_gap:
-        return {'enabled': True, 'success': False, 'reported_gap': True, 'mode': 'rapid', 'count': 0}
-    return try_consume_shared_resource(item or {}, **kwargs)
+    # 未命中时不再登记缺口，等待中心端入池广播事件。
+    return {'enabled': True, 'success': False, 'reported_gap': False, 'mode': 'rapid', 'count': 0}
 
 
 

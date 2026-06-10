@@ -3372,7 +3372,7 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
     """维护任务：为连载/追更季补登记新入库但尚未共享的分集。
 
     只看本地 media_metadata + shared_rapid_sources 的差异，不触发季级一致性校验。
-    每个缺口按 Episode 粒度登记到中心公共 season_hub。
+    每个新入库分集按 Episode 粒度登记到中心公共 season_hub。
     """
     candidates = shared_share_db.list_unregistered_airing_episode_candidates(limit=limit)
     if not candidates:
@@ -3542,7 +3542,6 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
         parts.append(f"贡献值={snapshot.get('credit', 0)}")
         parts.append(f"资源={snapshot.get('shared_sources', 0)}")
         parts.append(f"RAW={snapshot.get('raw_ffprobe', 0)}")
-        parts.append(f"缺口={snapshot.get('wanted_gaps', 0)}")
         parts.append(f"设备={snapshot.get('remote_devices', 0)}")
     reregister = result.get('non_effective_reregister') if isinstance(result.get('non_effective_reregister'), dict) else {}
     if reregister:
