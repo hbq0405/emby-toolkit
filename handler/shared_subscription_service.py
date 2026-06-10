@@ -1778,7 +1778,7 @@ def _filter_files_before_transfer(
 
         if files and not kept and skipped['self_source'] and len(skipped['self_source']) == len(files):
             reason = 'all_self_source'
-            message = '中心返回的是本机共享源，已跳过，避免秒传自己的资源。'
+            message = '你已有该资源，已跳过秒传。'
         else:
             reason = ''
             message = 'keep_both 模式：已跳过缺集/已入库过滤，命中订阅直接秒传。'
@@ -1864,7 +1864,7 @@ def _filter_files_before_transfer(
     if files and not kept:
         if skipped['self_source'] and len(skipped['self_source']) == len(files):
             reason = 'all_self_source'
-            message = '中心返回的是本机共享源，已跳过，避免秒传自己的资源。'
+            message = '你已有该资源，已跳过秒传。'
         elif skipped['not_requested_episode'] and len(skipped['not_requested_episode']) == len(files):
             reason = 'no_requested_episode'
             message = f"中心当前资源不包含本机缺失集 {sorted(missing_set)}，已跳过。"
