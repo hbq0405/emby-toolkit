@@ -810,6 +810,36 @@ def _center_clean_version_flagged(source_kind: str, payload: Dict[str, Any], fil
     return {'blocked': False}
 
 
+
+def _current_organize_conflict_mode(default: str = 'skip') -> str:
+    """读取 115 整理覆盖模式，并统一成 skip/replace/keep_both。"""
+    try:
+        rename_config = settings_db.get_setting('p115_rename_config') or {}
+        if isinstance(rename_config, str):
+            try:
+                rename_config = json.loads(rename_config)
+            except Exception:
+                rename_config = {}
+        mode = str((rename_config or {}).get('conflict_mode') or default or '').strip().lower()
+    except Exception:
+        mode = str(default or '').strip().lower()
+
+    aliases = {
+        'overwrite': 'replace',
+        '洗版': 'replace',
+        '替换': 'replace',
+        'skip_existing': 'skip',
+        '跳过': 'skip',
+        'keep': 'keep_both',
+        'both': 'keep_both',
+        'keepboth': 'keep_both',
+        '保留两者': 'keep_both',
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in ('skip', 'replace', 'keep_both'):
+        return str(default or 'skip').strip().lower() or 'skip'
+    return mode
+
 def _preflight_context(source_kind: str, source_id: str, payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
     first = next((f for f in (files or []) if isinstance(f, dict)), {}) or {}
     return {
@@ -873,8 +903,7 @@ def _prepare_files_before_rapid_transfer(
         f"失败 {len(cache_errors)}"
     )
 
-    rename_config = settings_db.get_setting('p115_rename_config') or {}
-    conflict_mode = str(rename_config.get('conflict_mode') or '').strip().lower()
+    conflict_mode = _current_organize_conflict_mode(default='skip')
     if conflict_mode != 'replace':
         logger.info(
             f"  ➜ [共享资源] 秒传前预检结束：当前覆盖模式为 {conflict_mode or '未配置'}，"
@@ -1486,15 +1515,19 @@ def _filter_files_before_transfer(
     files: List[Dict[str, Any]],
     requested_missing_episode_numbers: List[int] = None,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """在 RAW/洗版预检前做业务级过滤。
+    """在 RAW/洗版预检前做业务级过滤，严格服从整理覆盖模式。
 
-    - 统一订阅传入缺集号时，只允许中心返回的目标集进入秒传；
-    - 中心事件推送没有缺集上下文时，实时查询本地库，已入库集直接 ACK 跳过；
-    - 本机登记的中心源直接跳过，避免秒传自己的共享资源形成回旋镖。
+    - keep_both：只排除本机源；不做缺集过滤、不做已入库过滤，命中订阅就秒传；
+    - replace：电影/单集交给洗版预检比较；完结季保留整包进入洗版，不能被缺集列表裁成单集；
+    - skip：只要本地已存在同电影/同集，就拒绝该项入库。
     """
     payload = payload if isinstance(payload, dict) else {}
     files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
     missing_set = set(_normalize_episode_numbers(requested_missing_episode_numbers))
+    conflict_mode = _current_organize_conflict_mode(default='skip')
+    normalized_source_kind = _normalize_source_kind(source_kind)
+    is_completed_pack_source = normalized_source_kind == 'completed_season'
+
     kept: List[Dict[str, Any]] = []
     skipped = {
         'self_source': [],
@@ -1505,6 +1538,48 @@ def _filter_files_before_transfer(
     context = _preflight_context(source_kind, source_id, payload, files)
     source_label = f"{source_kind or '-'}:{source_id or '-'}"
 
+    # keep_both 是显式多版本模式：订阅命中后只兜底排除本机源，其他一律交给秒传。
+    if conflict_mode == 'keep_both':
+        for f in files:
+            file_name = f.get('file_name') or f.get('name') or f.get('sha1') or ''
+            if _file_is_own_center_source(f, payload, client):
+                skipped['self_source'].append(file_name)
+                continue
+            kept.append(f)
+
+        total_skipped = sum(len(v) for v in skipped.values())
+        if total_skipped:
+            logger.info(
+                f"  ➜ [共享资源] 秒传前匹配过滤：source={source_label}, conflict_mode=keep_both，"
+                f"输入 {len(files)}，保留 {len(kept)}，仅跳过本机源 {len(skipped['self_source'])}。"
+            )
+        else:
+            logger.info(
+                f"  ➜ [共享资源] keep_both 模式：source={source_label}，"
+                f"跳过缺集/已入库过滤，直接保留 {len(kept)}/{len(files)} 个中心文件。"
+            )
+
+        if files and not kept and skipped['self_source'] and len(skipped['self_source']) == len(files):
+            reason = 'all_self_source'
+            message = '中心返回的是本机共享源，已跳过，避免秒传自己的资源。'
+        else:
+            reason = ''
+            message = 'keep_both 模式：已跳过缺集/已入库过滤，命中订阅直接秒传。'
+
+        return kept, {
+            'checked': True,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'input_count': len(files),
+            'kept_count': len(kept),
+            'skipped_count': total_skipped,
+            'requested_missing_episode_numbers': sorted(missing_set),
+            'conflict_mode': conflict_mode,
+            'skipped': {k: v[:20] for k, v in skipped.items() if v},
+            'reason': reason,
+            'message': message,
+        }
+
     for f in files:
         file_name = f.get('file_name') or f.get('name') or f.get('sha1') or ''
         if _file_is_own_center_source(f, payload, client):
@@ -1512,31 +1587,42 @@ def _filter_files_before_transfer(
             continue
 
         item_type = str(f.get('item_type') or context.get('item_type') or payload.get('item_type') or '').strip()
-        file_kind = str(f.get('source_kind') or source_kind or '').strip()
+        file_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
         is_movie = file_kind == 'movie' or item_type == 'Movie'
         is_episode_like = file_kind in ('episode', 'season_hub', 'completed_season') or item_type in ('Episode', 'Season')
 
         if is_movie:
             movie_tmdb = f.get('tmdb_id') or payload.get('tmdb_id') or context.get('tmdb_id')
-            if _local_movie_in_library(movie_tmdb):
+            if conflict_mode == 'skip' and _local_movie_in_library(movie_tmdb):
                 skipped['already_in_library'].append(file_name)
                 continue
+            # replace 模式不在这里拦截已入库电影，交给洗版预检决定 ACCEPT/REPLACE/SKIP/REJECT。
             kept.append(f)
             continue
 
         if is_episode_like:
             s_num, e_num = _guess_se_from_source(f, context)
             parent_tmdb = _source_parent_series_tmdb_id(f, context)
-            if e_num is not None and missing_set and int(e_num) not in missing_set:
-                skipped['not_requested_episode'].append(f"E{int(e_num):02d} {file_name}".strip())
-                continue
-            # 没有统一订阅缺集列表时，中心事件/手动秒传都用本地库实时兜底，避免重复秒传已入库集。
-            if e_num is not None and _local_episode_in_library(parent_tmdb, s_num, e_num):
-                skipped['already_in_library'].append(f"E{int(e_num):02d} {file_name}".strip())
-                continue
-            if e_num is None and missing_set:
-                skipped['unknown_identity'].append(file_name)
-                continue
+
+            # replace + 完结季收藏包必须整包进入洗版预检，不能按缺集列表裁成单集。
+            if not (conflict_mode == 'replace' and is_completed_pack_source):
+                if e_num is not None and missing_set and int(e_num) not in missing_set:
+                    skipped['not_requested_episode'].append(f"E{int(e_num):02d} {file_name}".strip())
+                    continue
+                if e_num is None and missing_set:
+                    skipped['unknown_identity'].append(file_name)
+                    continue
+
+            if conflict_mode == 'skip':
+                if e_num is None:
+                    # skip 模式必须能确定集身份；否则无法证明“同集不存在”，宁可拒绝。
+                    skipped['unknown_identity'].append(file_name)
+                    continue
+                if _local_episode_in_library(parent_tmdb, s_num, e_num):
+                    skipped['already_in_library'].append(f"E{int(e_num):02d} {file_name}".strip())
+                    continue
+
+            # replace 模式不因本地已有同集拦截，交给洗版预检；skip 模式已在上面处理。
             kept.append(f)
             continue
 
@@ -1545,11 +1631,18 @@ def _filter_files_before_transfer(
     total_skipped = sum(len(v) for v in skipped.values())
     if total_skipped:
         logger.info(
-            f"  ➜ [共享资源] 秒传前匹配过滤：source={source_label}, "
+            f"  ➜ [共享资源] 秒传前匹配过滤：source={source_label}, conflict_mode={conflict_mode}, "
             f"输入 {len(files)}，保留 {len(kept)}，跳过 {total_skipped} "
             f"(非缺失集 {len(skipped['not_requested_episode'])}, 已入库 {len(skipped['already_in_library'])}, "
             f"本机源 {len(skipped['self_source'])}, 身份不明 {len(skipped['unknown_identity'])})"
         )
+
+    if conflict_mode == 'replace' and is_completed_pack_source and files:
+        logger.info(
+            f"  ➜ [共享资源] replace 模式完结季整包洗版：source={source_label}，"
+            f"保留 {len(kept)}/{len(files)} 个文件进入整季洗版预检，缺集过滤已禁用。"
+        )
+
     reason = ''
     if files and not kept:
         if skipped['self_source'] and len(skipped['self_source']) == len(files):
@@ -1560,12 +1653,21 @@ def _filter_files_before_transfer(
             message = f"中心当前资源不包含本机缺失集 {sorted(missing_set)}，已跳过。"
         elif skipped['already_in_library'] and len(skipped['already_in_library']) == len(files):
             reason = 'all_already_in_library'
-            message = '中心返回的集本机均已入库，已跳过重复秒传。'
+            if conflict_mode == 'skip':
+                message = '本地已存在同电影/同集，conflict_mode=skip，已拒绝重复入库。'
+            else:
+                message = '中心返回的集本机均已入库，已跳过重复秒传。'
         else:
             reason = 'all_filtered'
             message = '中心返回的资源经缺集/已入库/本机源过滤后无可秒传文件。'
     else:
-        message = '秒传前匹配过滤完成'
+        if conflict_mode == 'replace':
+            message = 'replace 模式：已保留候选进入洗版预检。'
+        elif conflict_mode == 'skip':
+            message = 'skip 模式：已拒绝本地存在的同电影/同集，保留可入库候选。'
+        else:
+            message = '秒传前匹配过滤完成'
+
     return kept, {
         'checked': True,
         'source_kind': source_kind,
@@ -1574,11 +1676,11 @@ def _filter_files_before_transfer(
         'kept_count': len(kept),
         'skipped_count': total_skipped,
         'requested_missing_episode_numbers': sorted(missing_set),
+        'conflict_mode': conflict_mode,
         'skipped': {k: v[:20] for k, v in skipped.items() if v},
         'reason': reason,
         'message': message,
     }
-
 
 def _handle_pro_quota_auth_event(client: SharedCenterClient, event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
     event_id = str((event or {}).get('event_id') or '')
