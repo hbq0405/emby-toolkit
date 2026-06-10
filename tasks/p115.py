@@ -25,6 +25,7 @@ from handler.p115_service import (
     _parse_115_size,
     _identify_media_enhanced,
     _transfer_context_to_recognition_hints,
+    resolve_p115_sorting_target_by_local_path,
 )
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.tg_media_candidate import candidate_to_recognition_hints, lookup_candidate_hint_for_name
@@ -2283,6 +2284,25 @@ def _build_priority_input(raw_info, *, file_name='', file_size=0, original_lang=
     return info
 
 
+def _infer_target_cid_from_local_path(cache_row=None, local_path=''):
+    """用 p115_filesystem_cache.local_path 反推分类目录 CID。
+
+    这是 MP 直出/旧数据的零 API 兜底：不向 115 向上溯源，
+    只根据本地 STRM 相对路径匹配 p115_sorting_rules.category_path。
+    """
+    cache_row = cache_row or {}
+    path = local_path or cache_row.get('local_path') or ''
+    try:
+        target = resolve_p115_sorting_target_by_local_path(path)
+    except Exception as e:
+        logger.debug(f"  ➜ [洗版优先级重算] 通过 local_path 推导分类 CID 失败: {path} -> {e}")
+        return '', ''
+
+    if not target:
+        return '', ''
+    return str(target.get('cid') or '').strip(), str(target.get('category_path') or '').strip()
+
+
 def _lookup_organize_record_target_cid(cursor, *, cache_row=None, pick_code='', sha1=''):
     """从 115 整理记录反查分类目标 CID。
 
@@ -2389,6 +2409,7 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
             row.get('washing_target_cid'),
             ''
         ) or '').strip()
+        inferred_target_cid, inferred_category_path = _infer_target_cid_from_local_path(cache_row)
         identity = _make_washing_identity(row, file_name=file_name)
 
         level = None
@@ -2402,12 +2423,29 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
         else:
             try:
                 priorities = WashingService._load_priorities(db_media_type, target_cid)
+
+                # target_cid 没有命中目录限定规则时，用本地 STRM 相对路径现场反推分类 CID。
+                # 这解决 MP 直出/旧整理记录把 target_cid 写成剧名目录或季目录的问题，
+                # 全程只查本地 p115_sorting_rules + p115_filesystem_cache.local_path，不打 115 API。
+                if not priorities and inferred_target_cid and inferred_target_cid != target_cid:
+                    fallback_priorities = WashingService._load_priorities(db_media_type, inferred_target_cid)
+                    if fallback_priorities:
+                        old_target_cid = target_cid
+                        target_cid = inferred_target_cid
+                        priorities = fallback_priorities
+                        logger.debug(
+                            f"  ➜ [洗版优先级重算] local_path 推导分类 CID 生效: "
+                            f"{old_target_cid or '-'} -> {target_cid} ({inferred_category_path or '-'}) | {file_name}"
+                        )
+
                 if not priorities:
                     level = None
                     if target_cid:
                         reason = f'目标分类CID({target_cid})未命中洗版优先级规则'
+                    elif inferred_target_cid:
+                        reason = f'local_path 推导分类CID({inferred_target_cid})后仍未命中洗版优先级规则'
                     else:
-                        reason = '缺少整理目标分类CID，未命中目录限定洗版规则'
+                        reason = '缺少整理目标分类CID，且 local_path 未命中分类规则'
                     stats['no_priority_rules'] += 1
                 else:
                     priority_input = _build_priority_input(
@@ -2418,6 +2456,8 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                     )
                     norm = WashingService._normalize_info(priority_input)
                     level, reason = WashingService.get_level(norm, priorities)
+                    if inferred_target_cid and target_cid == inferred_target_cid and inferred_category_path:
+                        reason = f"{reason}（分类路径: {inferred_category_path}）"
                     stats['evaluated_versions'] += 1
             except Exception as e:
                 level = 0
