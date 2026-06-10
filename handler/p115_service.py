@@ -3526,6 +3526,22 @@ class P115CacheManager:
             logger.debug(f"  ➜ [115缓存] 确认 preid 字段失败: {e}")
 
     @staticmethod
+    def _ensure_washing_columns():
+        """兼容旧库：确保 p115_filesystem_cache 有洗版优先级中转字段。"""
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_level INTEGER")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_level_reason TEXT")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_target_cid TEXT")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_media_type TEXT")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_identity_json JSONB NOT NULL DEFAULT '{}'::jsonb")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_evaluated_at TIMESTAMP WITH TIME ZONE")
+                    conn.commit()
+        except Exception as e:
+            logger.debug(f"  ➜ [115缓存] 确认洗版优先级字段失败: {e}")
+
+    @staticmethod
     def _extract_preid_range_bytes(pick_code, start=0, end=131071):
         """只读取文件前 128KB，用于计算 115 upload/init 的 preid。"""
         pick_code = str(pick_code or '').strip()
