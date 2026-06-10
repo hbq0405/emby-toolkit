@@ -1553,7 +1553,7 @@ def _local_movie_washing_snapshot(tmdb_id: Any) -> Dict[str, Any]:
                                 ELSE 2
                              END,
                              washing_level ASC NULLS LAST,
-                             updated_at DESC NULLS LAST
+                             last_updated_at DESC NULLS LAST
                     LIMIT 1
                     """,
                     (tmdb,),
@@ -1592,7 +1592,7 @@ def _local_episode_washing_snapshot(parent_series_tmdb_id: Any, season_number: A
                                 ELSE 2
                              END,
                              washing_level ASC NULLS LAST,
-                             updated_at DESC NULLS LAST
+                             last_updated_at DESC NULLS LAST
                     LIMIT 1
                     """,
                     (parent, season, episode),
