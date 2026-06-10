@@ -883,7 +883,7 @@ def _prepare_files_before_rapid_transfer(
         )
         if not files:
             message = inventory_gate.get('message') or '本地库存已是洗版优先级 1，跳过共享秒传。'
-            logger.info(
+            logger.debug(
                 f"  ➜ [共享资源] 秒传前预检提前结束：source={source_label}, "
                 f"reason={inventory_gate.get('reason') or '-'}，耗时 {time.time() - preflight_started_at:.1f}s"
             )
