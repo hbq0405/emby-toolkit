@@ -6,7 +6,6 @@ import re
 import socket
 import threading
 import uuid
-import concurrent.futures
 from typing import Any, Dict, List
 
 import requests
@@ -1002,151 +1001,6 @@ def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
             row['lazy_children_kind'] = 'season_hub' if kind == 'season_hub' else 'completed_season'
     return row
 
-
-def _center_tmdb_media_type(row: Dict[str, Any]) -> str:
-    item_type = str(row.get('item_type') or row.get('display_type') or '').strip().lower()
-    source_kind = str(row.get('source_kind') or '').strip().lower()
-    if item_type == 'movie' or source_kind in {'movie', 'movie_file', 'movie_folder'}:
-        return 'movie'
-    return 'tv'
-
-
-def _center_tmdb_id(row: Dict[str, Any], media_type: str) -> str:
-    if media_type == 'movie':
-        return str(row.get('tmdb_id') or row.get('share_tmdb_id') or '').strip()
-    return str(row.get('parent_series_tmdb_id') or row.get('series_tmdb_id') or row.get('parent_tmdb_id') or row.get('tmdb_id') or '').strip()
-
-
-def _center_tmdb_season_number(row: Dict[str, Any], media_type: str) -> str:
-    if media_type != 'tv':
-        return ''
-    try:
-        number = int(row.get('season_number') or 0)
-    except (TypeError, ValueError):
-        number = 0
-    return str(number) if number > 0 else ''
-
-
-def _center_tmdb_key(row: Dict[str, Any]) -> str:
-    media_type = _center_tmdb_media_type(row)
-    tmdb_id = _center_tmdb_id(row, media_type)
-    if not tmdb_id:
-        return ''
-    return f"{media_type}:{tmdb_id}:{_center_tmdb_season_number(row, media_type)}"
-
-
-def _tmdb_summary_from_response(data: Dict[str, Any], fallback: Dict[str, Any] = None) -> Dict[str, Any]:
-    if not isinstance(data, dict):
-        return {}
-    fallback = fallback if isinstance(fallback, dict) else {}
-    genres = data.get('genres')
-    if not genres and fallback:
-        genres = fallback.get('genres')
-    if isinstance(genres, list):
-        genres = [g.get('name') if isinstance(g, dict) else g for g in genres]
-        genres = [g for g in genres if g]
-    vote_average = data.get('vote_average')
-    try:
-        vote_average = round(float(vote_average), 1) if vote_average is not None else None
-    except (TypeError, ValueError):
-        vote_average = None
-    year = ''
-    date_text = str(data.get('release_date') or data.get('first_air_date') or data.get('air_date') or '').strip()
-    if len(date_text) >= 4 and date_text[:4].isdigit():
-        year = date_text[:4]
-    return {
-        'poster_path': data.get('poster_path') or fallback.get('poster_path') or '',
-        'overview': data.get('overview') or fallback.get('overview') or '',
-        'vote_average': vote_average,
-        'genres': genres or [],
-        'title': data.get('title') or data.get('name') or fallback.get('title') or fallback.get('name') or '',
-        'name': data.get('name') or data.get('title') or fallback.get('name') or fallback.get('title') or '',
-        'year': year or fallback.get('year') or '',
-    }
-
-
-def _fetch_center_tmdb_summary(row: Dict[str, Any], api_key: str) -> tuple:
-    key = _center_tmdb_key(row)
-    if not key or not api_key:
-        return key, {}
-    media_type, tmdb_id, season_number = key.split(':', 2)
-    params = {'api_key': api_key, 'language': 'zh-CN'}
-    proxies = config_manager.get_proxies_for_requests()
-    base_url = tmdb_handler.get_tmdb_api_base_url()
-    try:
-        if media_type == 'movie':
-            resp = tmdb_handler.tmdb_session.get(f"{base_url}/movie/{tmdb_id}", params=params, timeout=15, proxies=proxies)
-            resp.raise_for_status()
-            return key, _tmdb_summary_from_response(resp.json())
-        if season_number:
-            series_summary = {}
-            try:
-                series_resp = tmdb_handler.tmdb_session.get(f"{base_url}/tv/{tmdb_id}", params=params, timeout=15, proxies=proxies)
-                series_resp.raise_for_status()
-                series_summary = _tmdb_summary_from_response(series_resp.json())
-            except Exception:
-                series_summary = {}
-            resp = tmdb_handler.tmdb_session.get(f"{base_url}/tv/{tmdb_id}/season/{season_number}", params=params, timeout=15, proxies=proxies)
-            resp.raise_for_status()
-            summary = _tmdb_summary_from_response(resp.json(), fallback=series_summary)
-            if series_summary.get('title') or series_summary.get('name'):
-                summary['title'] = series_summary.get('title') or series_summary.get('name') or ''
-                summary['name'] = series_summary.get('name') or series_summary.get('title') or ''
-            return key, summary
-        resp = tmdb_handler.tmdb_session.get(f"{base_url}/tv/{tmdb_id}", params=params, timeout=15, proxies=proxies)
-        resp.raise_for_status()
-        return key, _tmdb_summary_from_response(resp.json())
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 拉取 TMDb 摘要失败 key={key}: {e}")
-        return key, {}
-
-
-def _enrich_center_rows_with_tmdb(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-    if not api_key:
-        return rows
-    targets = {}
-
-    def collect(row: Dict[str, Any]):
-        if not isinstance(row, dict):
-            return
-        key = _center_tmdb_key(row)
-        if key and key not in targets:
-            targets[key] = row
-        for child_key in ('versions', 'children', 'pack_items'):
-            for child in row.get(child_key) or []:
-                if isinstance(child, dict):
-                    collect(child)
-
-    for row in rows or []:
-        collect(row)
-    if not targets:
-        return rows
-
-    summaries = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(targets))) as executor:
-        futures = [executor.submit(_fetch_center_tmdb_summary, row, api_key) for row in targets.values()]
-        for future in concurrent.futures.as_completed(futures):
-            key, summary = future.result()
-            if key and summary:
-                summaries[key] = summary
-
-    def apply_summary(row: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(row, dict):
-            return row
-        summary = summaries.get(_center_tmdb_key(row)) or {}
-        if summary:
-            row['tmdb_meta'] = summary
-            for key in ('poster_path', 'overview', 'vote_average', 'genres', 'year'):
-                if summary.get(key) not in (None, '', []):
-                    row[key] = summary[key]
-        for child_key in ('versions', 'children', 'pack_items'):
-            if isinstance(row.get(child_key), list):
-                row[child_key] = [apply_summary(child) for child in row[child_key] if isinstance(child, dict)]
-        return row
-
-    return [apply_summary(row) for row in rows]
-
 @shared_resource_bp.route('/center/sources', methods=['GET'])
 @admin_required
 def api_center_sources():
@@ -1212,11 +1066,11 @@ def api_center_sources():
             row = _apply_local_season_meta(row)
             return row
 
-        resp['items'] = _enrich_center_rows_with_tmdb([
+        resp['items'] = [
             _strip_center_display_children(_decorate_center_row(row))
             for row in (resp.get('items') or [])
             if isinstance(row, dict)
-        ])
+        ]
         return jsonify({'success': True, **resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
