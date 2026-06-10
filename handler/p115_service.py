@@ -7282,17 +7282,149 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         return True
     
+    def _cleanup_mp_passthrough_replaced_local_files(self, *, new_sha1, season_num=None, episode_num=None, local_root=None):
+        """MP 直出洗版替换：只清理本地 STRM/附属文件和本地缓存，不删除 115 源文件。"""
+        new_sha1 = str(new_sha1 or '').strip().upper()
+        if not local_root or not os.path.exists(local_root):
+            return 0
+
+        old_rows = []
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    base_sql = """
+                        SELECT DISTINCT pfc.id, pfc.local_path, pfc.sha1
+                        FROM media_metadata mm
+                        JOIN LATERAL jsonb_array_elements_text(
+                            CASE
+                                WHEN mm.file_sha1_json IS NOT NULL
+                                     AND jsonb_typeof(mm.file_sha1_json) = 'array'
+                                THEN mm.file_sha1_json
+                                ELSE '[]'::jsonb
+                            END
+                        ) AS sha(sha1) ON TRUE
+                        JOIN p115_filesystem_cache pfc
+                          ON UPPER(pfc.sha1) = UPPER(sha.sha1)
+                        WHERE {where_sql}
+                          AND (%s = '' OR UPPER(sha.sha1) <> %s)
+                    """
+
+                    if self.media_type == 'tv' and season_num is not None and episode_num is not None:
+                        where_sql = """
+                            mm.item_type = 'Episode'
+                            AND mm.parent_series_tmdb_id = %s
+                            AND mm.season_number = %s
+                            AND mm.episode_number = %s
+                        """
+                        params = (str(self.tmdb_id), int(season_num), int(episode_num), new_sha1, new_sha1)
+                    elif self.media_type == 'movie':
+                        where_sql = """
+                            mm.item_type = 'Movie'
+                            AND mm.tmdb_id = %s
+                        """
+                        params = (str(self.tmdb_id), new_sha1, new_sha1)
+                    else:
+                        return 0
+
+                    cursor.execute(base_sql.format(where_sql=where_sql), params)
+                    old_rows = [dict(r) for r in (cursor.fetchall() or [])]
+        except Exception as e:
+            logger.debug(f"  ➜ [MP直出洗版] 查询旧版本本地记录失败: {e}")
+            return 0
+
+        if not old_rows:
+            return 0
+
+        old_fids = []
+        old_dirs_to_check = set()
+        removed = 0
+        protected_dirs = {os.path.abspath(local_root)}
+        for rule in self.rules:
+            cat_path = rule.get('category_path') or rule.get('dir_name')
+            if cat_path:
+                protected_dirs.add(os.path.abspath(os.path.join(local_root, str(cat_path).lstrip('\\/'))))
+        protected_dirs.add(os.path.abspath(os.path.join(local_root, '未识别')))
+
+        for row in old_rows:
+            fid = str(row.get('id') or '').strip()
+            if fid:
+                old_fids.append(fid)
+
+            rel_path = str(row.get('local_path') or '').strip().replace('\\', '/').lstrip('/')
+            if not rel_path:
+                continue
+
+            old_video_abs = os.path.join(local_root, rel_path)
+            base_abs = os.path.splitext(old_video_abs)[0]
+            old_dir = os.path.dirname(old_video_abs)
+            old_base_name = os.path.basename(base_abs)
+
+            # MP 直出本地库里主要是 STRM 和附属文件；不要删除 115 源文件本体。
+            for path in (base_abs + '.strm', base_abs + '-mediainfo.json'):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                        removed += 1
+                        logger.debug(f"  ➜ [MP直出洗版] 删除旧本地文件: {path}")
+                except Exception:
+                    pass
+
+            if os.path.exists(old_dir):
+                old_dirs_to_check.add(old_dir)
+                for name in os.listdir(old_dir):
+                    ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+                    if name.startswith(old_base_name) and ext in {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'jpeg', 'png', 'bif'}:
+                        try:
+                            os.remove(os.path.join(old_dir, name))
+                            removed += 1
+                        except Exception:
+                            pass
+
+        if old_dirs_to_check:
+            try:
+                import shutil
+                for old_dir in list(old_dirs_to_check):
+                    curr_dir = old_dir
+                    while curr_dir and os.path.abspath(curr_dir) not in protected_dirs:
+                        if not os.path.exists(curr_dir):
+                            break
+                        has_media = False
+                        for root_dir, _, files in os.walk(curr_dir):
+                            for f in files:
+                                ext = f.rsplit('.', 1)[-1].lower() if '.' in f else ''
+                                if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}:
+                                    has_media = True
+                                    break
+                            if has_media:
+                                break
+                        if has_media:
+                            break
+                        shutil.rmtree(curr_dir)
+                        logger.info(f"  ➜ [MP直出洗版] 本地旧目录已无媒体文件，已删除: {curr_dir}")
+                        curr_dir = os.path.dirname(curr_dir)
+            except Exception as e:
+                logger.debug(f"  ➜ [MP直出洗版] 清理旧空目录失败: {e}")
+
+        if old_fids:
+            P115CacheManager.delete_files(old_fids)
+            P115RecordManager.delete_records(old_fids)
+
+        if removed or old_fids:
+            logger.info(f"  ➜ [MP直出洗版] 已清理旧版本本地索引: 文件 {removed} 个，缓存记录 {len(old_fids)} 条")
+        return len(old_fids)
+
     def execute_mp_passthrough(self, file_nodes):
         """
-        MP直出模式 (终极优化版)：
-        完全信任 115 现有的目录结构和文件名 (直接从 Webhook 传来的 115_path 提取)。
-        跳过整理、归类、移动、重命名。
-        直接在本地 1:1 映射生成 STRM 和 -mediainfo.json。
+        MP直出模式：
+        完全信任 115 现有目录结构和文件名，直接按 Webhook 传来的 115_path 生成 STRM。
+        但只要 conflict_mode=replace，就必须先接入洗版规则评估；不再绕过洗版模块。
         """
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = (config.get(constants.CONFIG_OPTION_ETK_SERVER_URL) or "").rstrip("/")
         media_root_name = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME) or "").strip("/")
+        conflict_mode = str((self.rename_config or {}).get('conflict_mode', 'replace') or 'replace').strip().lower()
+        original_lang = (self.raw_metadata or {}).get('lang_code')
 
         if not local_root or not etk_url:
             logger.warning("  ➜ [MP直出] 未配置本地 STRM 根目录或 ETK 地址，跳过。")
@@ -7303,12 +7435,55 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
         sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
 
-        for file_item in file_nodes:
+        def _mp_parent_rel_path(full_115_path):
+            if not full_115_path:
+                return ""
+            path_parts = [p for p in str(full_115_path).replace('\\', '/').split('/') if p]
+            start_idx = 0
+            if media_root_name and media_root_name in path_parts:
+                start_idx = path_parts.index(media_root_name) + 1
+            elif len(path_parts) > 1:
+                start_idx = 1
+            if len(path_parts) > start_idx:
+                return "/".join(path_parts[start_idx:-1])
+            return ""
+
+        def _mp_category_label(target):
+            rule = (target or {}).get('rule') if isinstance(target, dict) else {}
+            return str(
+                (target or {}).get('category_path')
+                or (rule or {}).get('category_path')
+                or (rule or {}).get('dir_name')
+                or (rule or {}).get('name')
+                or '未识别'
+            ).strip() or '未识别'
+
+        def _has_related_external_subtitle(video_name, video_parent_rel):
+            for candidate in file_nodes or []:
+                sub_name = candidate.get('fn') or candidate.get('file_name') or ''
+                sub_ext = sub_name.rsplit('.', 1)[-1].lower() if '.' in sub_name else ''
+                if sub_ext not in sub_exts:
+                    continue
+                sub_parent_rel = _mp_parent_rel_path(candidate.get('115_path'))
+                if _p115_normalize_rule_path(sub_parent_rel) != _p115_normalize_rule_path(video_parent_rel):
+                    continue
+                if _is_related_sidecar_name(video_name, sub_name):
+                    return True
+            return False
+
+        # 视频先跑，字幕后跑；如果视频被洗版规则拦截，关联字幕也跳过。
+        def _mp_item_sort_key(item):
+            name = item.get('fn') or item.get('file_name') or ''
+            ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+            return 0 if ext in known_video_exts else 1
+
+        blocked_sidecars = []
+
+        for file_item in sorted(list(file_nodes or []), key=_mp_item_sort_key):
             original_name = file_item.get("fn") or file_item.get("file_name") or ""
             if "." not in original_name:
                 continue
 
-            # ★ 修复：使用 [-1] 提取后缀，防止文件名中包含多个点导致报错
             ext = original_name.rsplit(".", 1)[-1].lower()
             fid = file_item.get("fid") or file_item.get("file_id")
             parent_id = file_item.get("pid") or file_item.get("parent_id")
@@ -7318,54 +7493,46 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
             is_video = ext in known_video_exts
             is_sub = ext in sub_exts
-            
             if not is_video and not is_sub:
                 continue
 
-            # ==========================================================
-            # ★ 核心优化：直接从 Webhook 传来的 115_path 提取相对路径，0 API 消耗！
-            # 彻底砍掉画蛇添足的 Season 拼接逻辑，完全 1:1 映射 115 物理路径
-            # ==========================================================
-            parent_rel_path = ""
-            if full_115_path:
-                path_parts = [p for p in full_115_path.split('/') if p]
-                
-                start_idx = 0
-                if media_root_name and media_root_name in path_parts:
-                    # 如果配置了根目录名称，从根目录的下一级开始截取
-                    start_idx = path_parts.index(media_root_name) + 1
-                elif len(path_parts) > 1:
-                    # 兜底：如果没有配置，默认剥离第一层目录 (如 /影视待整理/)
-                    start_idx = 1
-                    
-                if len(path_parts) > start_idx:
-                    # 剥离根目录，并去掉最后的文件名，剩下的就是纯净的相对目录！
-                    # 例如：['影视待整理', '虾路相逢', 'Season 01', 'S01E01.mkv'] -> '虾路相逢/Season 01'
-                    parent_rel_path = "/".join(path_parts[start_idx:-1])
-            else:
+            parent_rel_path = _mp_parent_rel_path(full_115_path)
+            if not parent_rel_path and not full_115_path:
                 logger.warning(f"  ➜ [MP直出] 缺少 115_path 参数，无法映射目录结构: {original_name}")
                 continue
 
-            # 根据本地相对路径反推真实分类目录 CID。
-            # MP 直出不移动文件，parent_id 只是文件真实父目录/季目录，不能作为洗版规则 target_cid。
-            # 这里用 p115_sorting_rules.category_path 做前缀匹配，0 API 消耗。
             inferred_sorting_target = resolve_p115_sorting_target_by_local_path(parent_rel_path or original_name, local_root=local_root)
             inferred_target_cid = str((inferred_sorting_target or {}).get('cid') or '').strip()
             inferred_category_path = str((inferred_sorting_target or {}).get('category_path') or '').strip()
+            category_label = _mp_category_label(inferred_sorting_target)
 
             if inferred_target_cid:
                 logger.debug(
                     f"  ➜ [MP直出] 已通过路径匹配分类目录: {parent_rel_path or original_name} "
-                    f"-> CID={inferred_target_cid} ({inferred_category_path or '-'})"
+                    f"-> CID={inferred_target_cid} ({category_label})"
                 )
             else:
-                logger.debug(f"  ➜ [MP直出] 未能通过路径匹配分类目录，暂沿用父目录CID: {parent_rel_path or original_name}")
+                logger.warning(f"  ➜ [MP直出] 未能通过路径匹配分类目录，target_cid 留空: {parent_rel_path or original_name}")
 
-            # 确定本地落盘目录
+            if is_sub:
+                blocked = False
+                for video_parent, video_name in blocked_sidecars:
+                    if _p115_normalize_rule_path(video_parent) == _p115_normalize_rule_path(parent_rel_path) and _is_related_sidecar_name(video_name, original_name):
+                        blocked = True
+                        break
+                if blocked:
+                    logger.info(f"  ➜ [MP直出洗版] 关联视频已被拦截/跳过，同步忽略字幕: {original_name}")
+                    continue
+
             local_dir = os.path.join(local_root, parent_rel_path) if parent_rel_path else local_root
             os.makedirs(local_dir, exist_ok=True)
 
-            # 补齐 SHA1 (仅视频需要，用于缓存 mediainfo)
+            try:
+                file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
+            except Exception:
+                file_size = 0
+
+            # 补齐 SHA1。洗版监管必须依赖 SHA1 + p115_mediainfo_cache。
             if is_video and not sha1 and fid:
                 try:
                     info_res = self.client.fs_get_info(fid)
@@ -7377,54 +7544,124 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 except Exception:
                     pass
 
+            # conflict_mode=replace 时，MP 直出必须走洗版规则；缺分类 CID 不允许逍遥法外。
+            if is_video and conflict_mode == 'replace':
+                from handler.resubscribe_service import WashingService
+
+                if sha1:
+                    try:
+                        self._fetch_and_parse_mediainfo(
+                            str(sha1).upper(),
+                            guessed_info={'filename': original_name, '_file_size': file_size, '_original_lang': original_lang},
+                            file_node=file_item,
+                            silent_log=True,
+                        )
+                    except Exception as e:
+                        logger.debug(f"  ➜ [MP直出洗版] 预取媒体信息失败: {original_name} -> {e}")
+
+                if not inferred_target_cid:
+                    action, reason = 'REJECT', 'MP直出未能从本地路径推导真实分类目录CID，无法接入洗版优先级规则'
+                else:
+                    has_ext_sub = _has_related_external_subtitle(original_name, parent_rel_path)
+                    action, reason = WashingService.decide_washing_action(
+                        sha1=sha1,
+                        file_name=original_name,
+                        file_size=file_size,
+                        target_cid=inferred_target_cid,
+                        media_type=self.media_type,
+                        tmdb_id=self.tmdb_id,
+                        season_num=file_item.get('_forced_season'),
+                        episode_num=file_item.get('_forced_episode'),
+                        original_lang=original_lang,
+                        is_active_washing=False,
+                        has_external_subtitle=has_ext_sub,
+                    )
+
+                if action == 'REJECT':
+                    logger.warning(f"  ➜ [MP直出洗版拦截] {original_name} -> {reason}")
+                    blocked_sidecars.append((parent_rel_path, original_name))
+                    if fid:
+                        P115RecordManager.add_or_update_record(
+                            file_id=fid,
+                            pick_code=pick_code,
+                            original_name=original_name,
+                            status='failed',
+                            tmdb_id=self.tmdb_id,
+                            media_type=self.media_type,
+                            target_cid=inferred_target_cid or None,
+                            category_name=category_label,
+                            renamed_name=None,
+                            season_number=file_item.get('_forced_season'),
+                            fail_reason=reason,
+                        )
+                    continue
+
+                if action == 'SKIP':
+                    logger.info(f"  ➜ [MP直出洗版跳过] {original_name} -> {reason}")
+                    blocked_sidecars.append((parent_rel_path, original_name))
+                    if fid:
+                        P115RecordManager.add_or_update_record(
+                            file_id=fid,
+                            pick_code=pick_code,
+                            original_name=original_name,
+                            status='skipped',
+                            tmdb_id=self.tmdb_id,
+                            media_type=self.media_type,
+                            target_cid=inferred_target_cid or None,
+                            category_name=category_label,
+                            renamed_name=None,
+                            season_number=file_item.get('_forced_season'),
+                            fail_reason=reason,
+                        )
+                    continue
+
+                if action == 'REPLACE':
+                    logger.info(f"  ➜ [MP直出洗版替换] {original_name} -> {reason}")
+                    self._cleanup_mp_passthrough_replaced_local_files(
+                        new_sha1=sha1,
+                        season_num=file_item.get('_forced_season'),
+                        episode_num=file_item.get('_forced_episode'),
+                        local_root=local_root,
+                    )
+                else:
+                    logger.info(f"  ➜ [MP直出洗版入库] {original_name} -> {reason}")
+
             # 1. 处理视频 (STRM + Mediainfo)
             if is_video and pick_code:
-                # 生成 STRM
                 strm_filename = os.path.splitext(original_name)[0] + ".strm"
                 strm_filepath = os.path.join(local_dir, strm_filename)
 
                 if not etk_url.startswith("http"):
-                    # 挂载模式
                     mount_path = os.path.join(etk_url, parent_rel_path, original_name).replace("\\", "/")
                     strm_content = mount_path
                 else:
-                    # API 模式
                     strm_content = f"{etk_url}/api/p115/play/{pick_code}/{original_name}"
 
                 with open(strm_filepath, "w", encoding="utf-8") as f:
                     f.write(strm_content)
                 logger.info(f"  ➜ [MP直出] STRM 已生成 -> {strm_filename}")
 
-                # ★★★ 主动推送给实时监控队列，防止底层文件系统事件丢失 ★★★
                 try:
                     from monitor_service import enqueue_file_actively
                     enqueue_file_actively(strm_filepath)
-                except Exception: 
+                except Exception:
                     pass
 
-                # 生成 Mediainfo
+                # 生成 Mediainfo。洗版已提前预取过缓存；这里只负责落 sidecar。
                 if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
                     try:
                         mediainfo_text = None
                         if sha1:
                             mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
 
-                        if not mediainfo_text:
-                            emby_obj, raw_ffprobe = self._probe_mediainfo_with_ffprobe(file_item, sha1=sha1, silent_log=False) or (None, None)
-                            if emby_obj:
-                                probe_sha1 = sha1 or file_item.get('sha1') or file_item.get('sha')
-                                if probe_sha1:
-                                    probe_sha1 = str(probe_sha1).upper()
-                                    P115CacheManager.save_mediainfo_cache(probe_sha1, emby_obj, raw_ffprobe)
-                                    try:
-                                        cached_preid = P115CacheManager.ensure_file_preid(file_item, sha1=probe_sha1, fid=fid, pick_code=pick_code, file_name=original_name)
-                                        if cached_preid:
-                                            file_item['preid'] = cached_preid
-                                    except Exception as e_preid:
-                                        logger.debug(f"  ➜ [MP直出] 媒体信息提取后计算 preid 失败: {original_name} -> {e_preid}")
-                                    sha1 = probe_sha1
-                                    file_item['sha1'] = probe_sha1
-                                mediainfo_text = json.dumps(emby_obj, ensure_ascii=False, indent=2)
+                        if not mediainfo_text and sha1:
+                            self._fetch_and_parse_mediainfo(
+                                str(sha1).upper(),
+                                guessed_info={'filename': original_name, '_file_size': file_size, '_original_lang': original_lang},
+                                file_node=file_item,
+                                silent_log=False,
+                            )
+                            mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
 
                         if mediainfo_text:
                             mediainfo_filename = os.path.splitext(original_name)[0] + "-mediainfo.json"
@@ -7454,11 +7691,6 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     logger.error(f"  ➜ [MP直出] 下载字幕失败: {e}")
 
             # 3. 写入数据库缓存 (保持 Emby 扫库和后续删除的闭环)
-            try:
-                file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
-            except Exception:
-                file_size = 0
-
             file_local_path = os.path.join(parent_rel_path, original_name).replace("\\", "/") if parent_rel_path else original_name
 
             if fid and pick_code:
@@ -7480,9 +7712,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     status="success",
                     tmdb_id=self.tmdb_id,
                     media_type=self.media_type,
-                    # MP直出的真实分类目录来自本地路径匹配；失败时才退回父目录，避免旧逻辑断链。
-                    target_cid=inferred_target_cid or parent_id,
-                    category_name=(f"MP直出/{inferred_category_path}" if inferred_category_path else "MP直出"),
+                    target_cid=inferred_target_cid or None,
+                    category_name=category_label,
                     renamed_name=original_name,
                     season_number=file_item.get('_forced_season')
                 )
