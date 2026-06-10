@@ -6704,6 +6704,101 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
             from handler.resubscribe_service import WashingService
             original_lang = (self.raw_metadata or {}).get('lang_code')
+
+            # 同一批待整理里可能同时出现同一电影/同一集的多个视频版本。
+            # decide_washing_action() 只能和“已入库旧版”比较；批内第一个候选尚未入库，
+            # 后续候选不会自然触发“旧版对比”，因此这里额外做一次批内 PK，防止多版本同时入库。
+            batch_washing_best = {}
+
+            def _batch_washing_identity_key(_item, _is_video):
+                if not _is_video:
+                    return None
+                if self.media_type == 'movie':
+                    return ('movie', str(self.tmdb_id))
+                _s = _item.get('_season_num')
+                _e = _item.get('_episode_num')
+                if _s is None or _e is None:
+                    return None
+                try:
+                    return ('episode', int(_s), int(_e))
+                except Exception:
+                    return ('episode', str(_s), str(_e))
+
+            def _batch_washing_level_from_reason(_reason):
+                text = str(_reason or '')
+                m = re.search(r'优先级\s*([0-9]+)', text)
+                if m:
+                    try:
+                        return int(m.group(1))
+                    except Exception:
+                        pass
+                # 手动重组/特权替换可能没有优先级文本；这种情况下不按规则等级压制，
+                # 只在同批候选之间用体积做兜底。
+                return 9999
+
+            def _batch_washing_score(_level, _file_size):
+                try:
+                    size_int = int(_file_size or 0)
+                except Exception:
+                    size_int = 0
+                # level 越小越好；同级体积越大越优。
+                return (int(_level or 9999), -size_int)
+
+            def _register_batch_washing_candidate(_item, _new_name, _action, _reason, _file_size):
+                key = _batch_washing_identity_key(_item, True)
+                if key is None:
+                    return True
+
+                level = _batch_washing_level_from_reason(_reason)
+                score = _batch_washing_score(level, _file_size)
+                current = batch_washing_best.get(key)
+
+                if not current:
+                    batch_washing_best[key] = {
+                        'item': _item,
+                        'name': _new_name,
+                        'level': level,
+                        'score': score,
+                        'action': _action,
+                        'reason': _reason,
+                    }
+                    return True
+
+                old_item = current.get('item')
+                old_name = current.get('name')
+                old_level = current.get('level')
+                old_score = current.get('score')
+
+                if score < old_score:
+                    try:
+                        valid_items.remove(old_item)
+                    except ValueError:
+                        pass
+                    old_fid = old_item.get('fid') or old_item.get('file_id') if isinstance(old_item, dict) else None
+                    if old_fid:
+                        unrecognized_fids.append(old_fid)
+                    batch_washing_best[key] = {
+                        'item': _item,
+                        'name': _new_name,
+                        'level': level,
+                        'score': score,
+                        'action': _action,
+                        'reason': _reason,
+                    }
+                    logger.info(
+                        f"  ➜ [批内洗版淘汰] {old_name} -> 同批候选 {_new_name} 更优/同级更大，"
+                        f"old_level={old_level}, new_level={level}"
+                    )
+                    return True
+
+                fid = _item.get('fid') or _item.get('file_id')
+                if fid:
+                    unrecognized_fids.append(fid)
+                logger.info(
+                    f"  ➜ [批内洗版跳过] {_new_name} -> 同批已有更优/同级候选 {old_name}，"
+                    f"old_level={old_level}, new_level={level}"
+                )
+                return False
             
             for item in items:
                 new_name = item['_new_filename']
@@ -6713,9 +6808,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 is_vid = ext in known_video_exts
                 file_size = _parse_115_size(item.get('fs') or item.get('size'))
                 
-                # 检查带头大哥是否已经挂了
-                if (s_num, e_num) in rejected_episodes:
-                    logger.info(f"  ➜ [关联跳过] 视频已被拦截/跳过，同步忽略字幕: {new_name}")
+                # 检查带头大哥是否已经挂了。仅剧集允许按 S/E 株连字幕/关联文件；
+                # 电影的 s_num/e_num 都是 None，不能把 (None, None) 放进黑名单，
+                # 否则一个电影版本失败会误杀后续所有电影视频。
+                if (
+                    self.media_type == 'tv'
+                    and s_num is not None
+                    and e_num is not None
+                    and (s_num, e_num) in rejected_episodes
+                ):
+                    logger.info(f"  ➜ [关联跳过] 同集视频已被拦截/跳过，同步忽略关联文件: {new_name}")
                     unrecognized_fids.append(item.get('fid') or item.get('file_id'))
                     continue
 
@@ -6763,17 +6865,21 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             'fid': item.get('fid') or item.get('file_id'), 'name': item.get('fn') or item.get('file_name'), 
                             'reason': reason, 'pc': item.get('pc') or item.get('pick_code'), 'season_num': s_num
                         })
-                        # ★ 记入黑名单，株连九族
-                        rejected_episodes.add((s_num, e_num))
+                        # 剧集才按 S/E 记黑名单，电影不能写入 (None, None)。
+                        if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                            rejected_episodes.add((s_num, e_num))
                         continue
                     elif action == 'SKIP':
                         logger.info(f"  ➜ [洗版跳过] {new_name} -> {reason}")
                         unrecognized_fids.append(item.get('fid') or item.get('file_id'))
-                        # ★ 记入黑名单，株连九族
-                        rejected_episodes.add((s_num, e_num))
+                        # 剧集才按 S/E 记黑名单，电影不能写入 (None, None)。
+                        if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                            rejected_episodes.add((s_num, e_num))
                         continue
                     elif action == 'REPLACE':
                         logger.info(f"  ➜ [洗版替换] {new_name} -> {reason}")
+                        if not _register_batch_washing_candidate(item, new_name, action, reason, file_size):
+                            continue
                         if self.media_type == 'tv' and s_num is not None and e_num is not None:
                             fids_to_delete.update(existing_tv_eps.get((s_num, e_num), []))
                         else:
@@ -6781,6 +6887,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         valid_items.append(item)
                     elif action == 'ACCEPT':
                         logger.info(f"  ➜ [洗版入库] {new_name} -> {reason}")
+                        if not _register_batch_washing_candidate(item, new_name, action, reason, file_size):
+                            continue
                         if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
                         valid_items.append(item)
                 else:
