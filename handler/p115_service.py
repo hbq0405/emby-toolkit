@@ -3166,8 +3166,7 @@ class P115CacheManager:
     @staticmethod
     def save_file_cache(
         fid, parent_id, name, sha1=None, pick_code=None, local_path=None, size=0, preid=None,
-        washing_level=None, washing_level_reason=None, washing_target_cid=None,
-        washing_media_type=None, washing_identity_json=None,
+        washing_level=None, washing_snapshot_json=None,
     ):
         """专门将文件(fc=1)的 SHA1、PC码、本地相对路径、大小、preid 和洗版快照存入本地数据库缓存"""
         if not fid or not parent_id or not name: return
@@ -3181,11 +3180,7 @@ class P115CacheManager:
                         washing_level = int(washing_level) if washing_level not in (None, '', [], {}) else None
                     except Exception:
                         washing_level = None
-                    washing_reason = str(washing_level_reason or '').strip() or None
-                    washing_target = str(washing_target_cid or '').strip() or None
-                    washing_media = str(washing_media_type or '').strip() or None
-                    washing_identity = washing_identity_json if isinstance(washing_identity_json, dict) else {}
-                    washing_touched = any(v is not None for v in (washing_level, washing_reason, washing_target, washing_media)) or bool(washing_identity)
+                    washing_snapshot_json = washing_snapshot_json if isinstance(washing_snapshot_json, dict) else {}
                     if not preid:
                         cursor.execute(
                             """
@@ -3210,42 +3205,24 @@ class P115CacheManager:
                     cursor.execute("""
                         INSERT INTO p115_filesystem_cache (
                             id, parent_id, name, sha1, pick_code, local_path, size, preid,
-                            washing_level, washing_level_reason, washing_target_cid, washing_media_type,
-                            washing_identity_json, washing_evaluated_at
+                            washing_level, washing_snapshot_json
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (parent_id, name)
                         DO UPDATE SET
-                            sha1 = CASE
-                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.sha1
-                                ELSE COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1)
-                            END,
-                            pick_code = CASE
-                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.pick_code
-                                ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code)
-                            END,
+                            sha1 = CASE WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.sha1 ELSE COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1) END,
+                            pick_code = CASE WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.pick_code ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code) END,
                             local_path = COALESCE(EXCLUDED.local_path, p115_filesystem_cache.local_path),
-                            size = CASE
-                                WHEN EXCLUDED.size > 0 THEN EXCLUDED.size
-                                ELSE p115_filesystem_cache.size
-                            END,
-                            preid = CASE
-                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid)
-                                ELSE COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid)
-                            END,
-                            washing_level = CASE WHEN EXCLUDED.washing_evaluated_at IS NOT NULL THEN EXCLUDED.washing_level ELSE p115_filesystem_cache.washing_level END,
-                            washing_level_reason = CASE WHEN EXCLUDED.washing_evaluated_at IS NOT NULL THEN EXCLUDED.washing_level_reason ELSE p115_filesystem_cache.washing_level_reason END,
-                            washing_target_cid = CASE WHEN EXCLUDED.washing_evaluated_at IS NOT NULL THEN EXCLUDED.washing_target_cid ELSE p115_filesystem_cache.washing_target_cid END,
-                            washing_media_type = CASE WHEN EXCLUDED.washing_evaluated_at IS NOT NULL THEN EXCLUDED.washing_media_type ELSE p115_filesystem_cache.washing_media_type END,
-                            washing_identity_json = CASE WHEN EXCLUDED.washing_evaluated_at IS NOT NULL THEN EXCLUDED.washing_identity_json ELSE p115_filesystem_cache.washing_identity_json END,
-                            washing_evaluated_at = COALESCE(EXCLUDED.washing_evaluated_at, p115_filesystem_cache.washing_evaluated_at),
+                            size = CASE WHEN EXCLUDED.size > 0 THEN EXCLUDED.size ELSE p115_filesystem_cache.size END,
+                            preid = CASE WHEN p115_filesystem_cache.id != EXCLUDED.id THEN COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid) ELSE COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid) END,
+                            washing_level = CASE WHEN EXCLUDED.washing_snapshot_json IS NOT NULL THEN EXCLUDED.washing_level ELSE p115_filesystem_cache.washing_level END,
+                            washing_snapshot_json = COALESCE(EXCLUDED.washing_snapshot_json, p115_filesystem_cache.washing_snapshot_json),
                             id = EXCLUDED.id,
                             updated_at = NOW()
                     """, (
                         str(fid), str(parent_id), str(name), sha1, pick_code, local_path, size, preid or None,
-                        washing_level, washing_reason, washing_target, washing_media,
-                        Json(washing_identity, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)),
-                        bool(washing_touched),
+                        washing_level, 
+                        Json(washing_snapshot_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)) if washing_snapshot_json else None
                     ))
                     conn.commit()
         except Exception as e:
@@ -3271,7 +3248,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_level_reason, washing_target_cid, washing_media_type, washing_identity_json, washing_evaluated_at
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE id = %s
                         LIMIT 1
@@ -3290,7 +3267,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_level_reason, washing_target_cid, washing_media_type, washing_identity_json, washing_evaluated_at
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE pick_code = %s
                         LIMIT 1
@@ -3309,7 +3286,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_level_reason, washing_target_cid, washing_media_type, washing_identity_json, washing_evaluated_at
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE UPPER(sha1) = UPPER(%s)
                         ORDER BY updated_at DESC NULLS LAST
@@ -3335,7 +3312,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_level_reason, washing_target_cid, washing_media_type, washing_identity_json, washing_evaluated_at
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE local_path = %s
                         LIMIT 1
@@ -3347,7 +3324,7 @@ class P115CacheManager:
                     # 挂载/路径前缀不一致时的兜底：只允许“完整路径段后缀”匹配，避免单文件名误命中。
                     if '/' in normalized:
                         cursor.execute("""
-                            SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_level_reason, washing_target_cid, washing_media_type, washing_identity_json, washing_evaluated_at
+                            SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
                             FROM p115_filesystem_cache
                             WHERE local_path IS NOT NULL
                               AND %s LIKE '%%/' || local_path
@@ -3562,11 +3539,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_level INTEGER")
-                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_level_reason TEXT")
-                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_target_cid TEXT")
-                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_media_type TEXT")
-                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_identity_json JSONB NOT NULL DEFAULT '{}'::jsonb")
-                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_evaluated_at TIMESTAMP WITH TIME ZONE")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_snapshot_json JSONB DEFAULT '{}'::jsonb")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_washing_level ON p115_filesystem_cache (washing_level) WHERE washing_level IS NOT NULL")
                     conn.commit()
         except Exception as e:
@@ -6830,12 +6803,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             'season_number': _item.get('_season_num'),
                             'episode_number': _item.get('_episode_num'),
                         })
+                    from datetime import datetime, timezone
                     return {
                         'washing_level': int(level),
-                        'washing_level_reason': level_reason or f'优先级 {level}',
-                        'washing_target_cid': str(target_cid or ''),
-                        'washing_media_type': 'movie' if self.media_type == 'movie' else 'series',
-                        'washing_identity_json': identity,
+                        'washing_snapshot_json': {
+                            'reason': level_reason or f'优先级 {level}',
+                            'target_cid': str(target_cid or ''),
+                            'media_type': 'movie' if self.media_type == 'movie' else 'series',
+                            'identity': identity,
+                            'evaluated_at': datetime.now(timezone.utc).isoformat()
+                        }
                     }
                 except Exception as e:
                     logger.debug(f"  ➜ [洗版快照] 计算失败: {_new_name} -> {e}")

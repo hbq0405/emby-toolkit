@@ -1717,10 +1717,8 @@ class MediaProcessor:
             try:
                 cursor.execute(
                     f"""
-                    SELECT id, name, sha1, pick_code, size,
-                           washing_level, washing_level_reason,
-                           washing_target_cid, washing_media_type,
-                           washing_identity_json, washing_evaluated_at
+                    SSELECT id, name, sha1, pick_code, size,
+                        washing_level, washing_snapshot_json
                     FROM p115_filesystem_cache
                     WHERE ({' OR '.join(clauses)})
                       AND washing_level IS NOT NULL
@@ -1749,14 +1747,11 @@ class MediaProcessor:
                 except Exception:
                     level = None
 
-                identity = row.get('washing_identity_json') or {}
-                if isinstance(identity, str):
-                    try:
-                        identity = json.loads(identity)
-                    except Exception:
-                        identity = {}
+                snapshot = row.get('washing_snapshot_json') or {}
+                if isinstance(snapshot, str):
+                    try: snapshot = json.loads(snapshot)
+                    except: snapshot = {}
 
-                evaluated_at = row.get('washing_evaluated_at')
                 versions.append({
                     'sha1': sha1,
                     'pick_code': pc,
@@ -1764,11 +1759,11 @@ class MediaProcessor:
                     'file_name': row.get('name') or '',
                     'size': row.get('size') or 0,
                     'level': level,
-                    'reason': row.get('washing_level_reason') or '',
-                    'target_cid': row.get('washing_target_cid') or '',
-                    'media_type': row.get('washing_media_type') or '',
-                    'identity': identity if isinstance(identity, dict) else {},
-                    'evaluated_at': evaluated_at.isoformat() if evaluated_at else None,
+                    'reason': snapshot.get('reason') or '',
+                    'target_cid': snapshot.get('target_cid') or '',
+                    'media_type': snapshot.get('media_type') or '',
+                    'identity': snapshot.get('identity') or {},
+                    'evaluated_at': snapshot.get('evaluated_at'),
                 })
 
             best = min(versions, key=_washing_best_sort_key) if versions else None
@@ -1776,21 +1771,20 @@ class MediaProcessor:
 
         def _apply_washing_snapshot(record, sha1_list, pickcode_list):
             versions, best = _load_washing_snapshot_from_p115_cache(sha1_list, pickcode_list)
-            record['washing_version_json'] = json.dumps(versions, ensure_ascii=False)
+            snapshot_data = {'versions': versions}
             if best:
                 record['washing_level'] = best.get('level')
-                record['washing_level_reason'] = best.get('reason')
-                record['washing_sha1'] = best.get('sha1')
-                record['washing_target_cid'] = best.get('target_cid')
-                record['washing_media_type'] = best.get('media_type')
-                record['washing_evaluated_at'] = best.get('evaluated_at')
+                snapshot_data.update({
+                    'reason': best.get('reason'),
+                    'sha1': best.get('sha1'),
+                    'target_cid': best.get('target_cid'),
+                    'media_type': best.get('media_type'),
+                    'evaluated_at': best.get('evaluated_at')
+                })
             else:
                 record['washing_level'] = None
-                record['washing_level_reason'] = None
-                record['washing_sha1'] = None
-                record['washing_target_cid'] = None
-                record['washing_media_type'] = None
-                record['washing_evaluated_at'] = None
+
+            record['washing_snapshot_json'] = json.dumps(snapshot_data, ensure_ascii=False)
 
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
@@ -2539,9 +2533,7 @@ class MediaProcessor:
                 "networks_json", "countries_json", "keywords_json", "ignore_reason", "asset_details_json",
                 "runtime_minutes", "overview_embedding", "total_episodes", "watchlist_tmdb_status",
                 "imdb_id", "tagline",
-                "washing_level", "washing_level_reason", "washing_sha1",
-                "washing_target_cid", "washing_media_type", "washing_version_json",
-                "washing_evaluated_at"
+                "washing_level", "washing_snapshot_json"
             ]
             data_for_batch = []
             for record in records_to_upsert:

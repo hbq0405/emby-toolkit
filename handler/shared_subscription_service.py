@@ -1542,7 +1542,7 @@ def _local_movie_washing_snapshot(tmdb_id: Any) -> Dict[str, Any]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT tmdb_id, title, washing_level, washing_level_reason, washing_target_cid, washing_evaluated_at
+                    SELECT tmdb_id, title, washing_level, washing_snapshot_json
                     FROM media_metadata
                     WHERE item_type='Movie'
                       AND tmdb_id=%s
@@ -1579,7 +1579,7 @@ def _local_episode_washing_snapshot(parent_series_tmdb_id: Any, season_number: A
                 cur.execute(
                     """
                     SELECT parent_series_tmdb_id, season_number, episode_number, title,
-                           washing_level, washing_level_reason, washing_target_cid, washing_evaluated_at
+                        washing_level, washing_snapshot_json
                     FROM media_metadata
                     WHERE item_type='Episode'
                       AND parent_series_tmdb_id=%s

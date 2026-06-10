@@ -2098,21 +2098,12 @@ def _ensure_washing_priority_snapshot_columns():
             cursor.execute("""
                 ALTER TABLE p115_filesystem_cache
                 ADD COLUMN IF NOT EXISTS washing_level INTEGER,
-                ADD COLUMN IF NOT EXISTS washing_level_reason TEXT,
-                ADD COLUMN IF NOT EXISTS washing_target_cid TEXT,
-                ADD COLUMN IF NOT EXISTS washing_media_type TEXT,
-                ADD COLUMN IF NOT EXISTS washing_identity_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                ADD COLUMN IF NOT EXISTS washing_evaluated_at TIMESTAMP WITH TIME ZONE;
+                ADD COLUMN IF NOT EXISTS washing_snapshot_json JSONB DEFAULT '{}'::jsonb;
             """)
             cursor.execute("""
                 ALTER TABLE media_metadata
                 ADD COLUMN IF NOT EXISTS washing_level INTEGER,
-                ADD COLUMN IF NOT EXISTS washing_level_reason TEXT,
-                ADD COLUMN IF NOT EXISTS washing_sha1 TEXT,
-                ADD COLUMN IF NOT EXISTS washing_target_cid TEXT,
-                ADD COLUMN IF NOT EXISTS washing_media_type TEXT,
-                ADD COLUMN IF NOT EXISTS washing_version_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-                ADD COLUMN IF NOT EXISTS washing_evaluated_at TIMESTAMP WITH TIME ZONE;
+                ADD COLUMN IF NOT EXISTS washing_snapshot_json JSONB DEFAULT '{}'::jsonb;
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mm_washing_level
@@ -2227,14 +2218,13 @@ def _lookup_p115_cache_row(cursor, sha1='', pick_code=''):
     if not clauses:
         return None
 
-    # 有 pick_code 时优先精确 PC 命中；否则按更新时间取最新文件实例。
     order_sql = 'updated_at DESC NULLS LAST'
     if pick_code:
         order_sql = 'CASE WHEN pick_code = %s THEN 0 ELSE 1 END, updated_at DESC NULLS LAST'
 
     cursor.execute(f"""
         SELECT id, parent_id, name, sha1, pick_code, local_path, size,
-               washing_target_cid, washing_media_type, washing_identity_json
+               washing_level, washing_snapshot_json
         FROM p115_filesystem_cache
         WHERE {' OR '.join(clauses)}
         ORDER BY {order_sql}
@@ -2464,18 +2454,18 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
     }
 
     if count <= 0:
+        snapshot_data = {
+            'reason': '缺少 SHA1/PC，无法重算洗版优先级',
+            'media_type': media_type,
+            'evaluated_at': evaluated_at
+        }
         cursor.execute("""
             UPDATE media_metadata
             SET washing_level = NULL,
-                washing_level_reason = %s,
-                washing_sha1 = NULL,
-                washing_target_cid = NULL,
-                washing_media_type = %s,
-                washing_version_json = '[]'::jsonb,
-                washing_evaluated_at = NOW(),
+                washing_snapshot_json = %s::jsonb,
                 last_updated_at = NOW()
             WHERE tmdb_id = %s AND item_type = %s
-        """, ('缺少 SHA1/PC，无法重算洗版优先级', media_type, row.get('tmdb_id'), row.get('item_type')))
+        """, (json.dumps(snapshot_data, ensure_ascii=False), row.get('tmdb_id'), row.get('item_type')))
         stats['missing_identity'] += 1
         return stats
 
@@ -2483,9 +2473,15 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
         sha1 = sha1s[idx].upper() if idx < len(sha1s) else ''
         pc = pickcodes[idx] if idx < len(pickcodes) else ''
         cache_row = _lookup_p115_cache_row(cursor, sha1=sha1, pick_code=pc)
+        
+        cache_snapshot = {}
         if cache_row:
             sha1 = sha1 or str(cache_row.get('sha1') or '').strip().upper()
             pc = pc or str(cache_row.get('pick_code') or '').strip()
+            cache_snapshot = cache_row.get('washing_snapshot_json') or {}
+            if isinstance(cache_snapshot, str):
+                try: cache_snapshot = json.loads(cache_snapshot)
+                except: cache_snapshot = {}
 
         file_name = (
             (cache_row or {}).get('name')
@@ -2493,21 +2489,26 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
             or ''
         )
         file_size = int((cache_row or {}).get('size') or 0)
-        # 目标分类 CID 必须来自整理记录，而不是 p115_filesystem_cache.parent_id。
-        # parent_id 对剧集通常只是剧名/季目录，拿它匹配 washing_priority_groups.target_cids
-        # 会导致整库误判为“未配置任何有效的普通优先级规则”。
+        
         organize_target_cid = _lookup_organize_record_target_cid(
             cursor,
             cache_row=cache_row,
             pick_code=pc,
             sha1=sha1,
         )
+        
+        row_snapshot = row.get('washing_snapshot_json') or {}
+        if isinstance(row_snapshot, str):
+            try: row_snapshot = json.loads(row_snapshot)
+            except: row_snapshot = {}
+
         target_cid = str(_first_non_empty(
             organize_target_cid,
-            (cache_row or {}).get('washing_target_cid'),
-            row.get('washing_target_cid'),
+            cache_snapshot.get('target_cid'),
+            row_snapshot.get('target_cid'),
             ''
         ) or '').strip()
+        
         inferred_target_cid, inferred_category_path = _infer_target_cid_from_local_path(cache_row)
         identity = _make_washing_identity(row, file_name=file_name)
 
@@ -2523,13 +2524,6 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
             try:
                 priorities = WashingService._load_priorities(db_media_type, target_cid)
 
-                # target_cid 没有命中目录限定规则时，用本地 STRM 相对路径现场反推分类 CID。
-                # 这解决 MP 直出/旧整理记录把 target_cid 写成剧名目录或季目录的问题，
-                # 全程只查本地 p115_sorting_rules + p115_filesystem_cache.local_path，不打 115 API。
-                # 注意：_load_priorities 会合并 media_type='All' 的全局规则。
-                # 如果 target_cid 错了，但存在全局排除规则，priorities 仍然非空；
-                # 此时 get_level 会返回“未配置任何有效的普通优先级规则”。
-                # 所以这里不能只判断 not priorities，必须判断是否有普通优先级规则。
                 if (not _has_normal_washing_priorities(priorities)) and inferred_target_cid and inferred_target_cid != target_cid:
                     fallback_priorities = WashingService._load_priorities(db_media_type, inferred_target_cid)
                     if _has_normal_washing_priorities(fallback_priorities):
@@ -2599,22 +2593,22 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
         versions.append(version)
 
         if cache_row and cache_row.get('id'):
+            new_cache_snapshot = {
+                'reason': reason,
+                'target_cid': target_cid or None,
+                'media_type': media_type,
+                'identity': identity,
+                'evaluated_at': evaluated_at
+            }
             cursor.execute("""
                 UPDATE p115_filesystem_cache
                 SET washing_level = %s,
-                    washing_level_reason = %s,
-                    washing_target_cid = %s,
-                    washing_media_type = %s,
-                    washing_identity_json = %s::jsonb,
-                    washing_evaluated_at = NOW(),
+                    washing_snapshot_json = %s::jsonb,
                     updated_at = NOW()
                 WHERE id = %s
             """, (
                 level,
-                reason,
-                target_cid or None,
-                media_type,
-                json.dumps(identity, ensure_ascii=False),
+                json.dumps(new_cache_snapshot, ensure_ascii=False),
                 cache_row.get('id'),
             ))
 
@@ -2628,28 +2622,25 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
 
     best = sorted(versions, key=_best_sort_key)[0] if versions else {}
     best_level = best.get('level') if best else None
-    best_reason = best.get('reason') if best else '无有效版本'
-    best_sha1 = best.get('sha1') if best else None
-    best_target_cid = best.get('target_cid') if best else None
+    
+    new_mm_snapshot = {
+        'versions': versions,
+        'reason': best.get('reason') if best else '无有效版本',
+        'sha1': best.get('sha1') if best else None,
+        'target_cid': best.get('target_cid') if best else None,
+        'media_type': media_type,
+        'evaluated_at': evaluated_at
+    }
 
     cursor.execute("""
         UPDATE media_metadata
         SET washing_level = %s,
-            washing_level_reason = %s,
-            washing_sha1 = %s,
-            washing_target_cid = %s,
-            washing_media_type = %s,
-            washing_version_json = %s::jsonb,
-            washing_evaluated_at = NOW(),
+            washing_snapshot_json = %s::jsonb,
             last_updated_at = NOW()
         WHERE tmdb_id = %s AND item_type = %s
     """, (
         best_level,
-        best_reason,
-        best_sha1,
-        best_target_cid,
-        media_type,
-        json.dumps(versions, ensure_ascii=False),
+        json.dumps(new_mm_snapshot, ensure_ascii=False),
         row.get('tmdb_id'),
         row.get('item_type'),
     ))
@@ -2667,19 +2658,13 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
         task_manager = None
 
     def _yield_frontend_log_polling():
-        """让 gevent/前端日志轮询有机会实时取到进度。
-
-        这个重算任务基本是 DB 读取 + Python 循环，和整理/同步任务不同，
-        中间没有多少 115 网络 I/O，自然让不出执行权。
-        不主动 yield 的话，控制台日志会持续刷，但 Web 实时日志接口
-        可能要等任务结束后才一次性返回。
-        """
+        """让 gevent/前端日志轮询有机会实时取到进度。"""
         try:
             from gevent import sleep as gevent_sleep
-            gevent_sleep(0)
+            gevent_sleep(0.01) # ★ 核心修复：强制让出 10ms，保证前端 WebSocket/轮询能拿到数据
         except Exception:
             try:
-                time.sleep(0)
+                time.sleep(0.01)
             except Exception:
                 pass
 
@@ -2745,7 +2730,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
             cursor.execute(f"""
                 SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number, episode_number,
                        title, original_language, file_sha1_json, file_pickcode_json,
-                       asset_details_json, washing_target_cid
+                       asset_details_json, washing_snapshot_json
                 FROM media_metadata
                 WHERE in_library = TRUE
                   AND item_type = ANY(%s)
@@ -2771,12 +2756,8 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                         exc_info=True,
                     )
 
-                # 分批提交，避免大库长事务。
-                # 每 20 条主动 yield 一次，避免 Web 实时日志/任务状态轮询被长循环饿死；
-                # 每 100 条再正式提交并打印一条可见进度。
-                if stats['scanned_items'] % 20 == 0:
-                    # 顶部任务条是轮询“当前任务状态”，不是读取日志列表。
-                    # 因此这里每 20 条刷新一次任务状态，但不写日志，避免实时日志刷屏。
+                # ★ 核心修复：加快前端刷新频率 (每 10 条刷新状态，每 50 条打印日志并提交)
+                if stats['scanned_items'] % 10 == 0:
                     progress = 5 + int((stats['scanned_items'] / max(total_rows, 1)) * 90)
                     status_msg = (
                         f"  ➜ [洗版优先级重算] 进度: {stats['scanned_items']}/{total_rows}，"
@@ -2785,7 +2766,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                     )
                     update_task_status(min(progress, 95), status_msg)
 
-                if stats['scanned_items'] % 100 == 0:
+                if stats['scanned_items'] % 50 == 0:
                     conn.commit()
                     progress = 5 + int((stats['scanned_items'] / max(total_rows, 1)) * 90)
                     update_progress(

@@ -244,12 +244,7 @@ def init_db():
 
                         -- 洗版优先级快照（主动洗版门禁用）
                         washing_level INTEGER,
-                        washing_level_reason TEXT,
-                        washing_sha1 TEXT,
-                        washing_target_cid TEXT,
-                        washing_media_type TEXT,
-                        washing_version_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        washing_evaluated_at TIMESTAMP WITH TIME ZONE,
+                        washing_snapshot_json JSONB DEFAULT '{}'::jsonb,
 
                         -- 内部管理字段
                         last_synced_at TIMESTAMP WITH TIME ZONE,
@@ -463,11 +458,7 @@ def init_db():
                         preid TEXT,               -- 文件前 128KB SHA1，用于 115 秒传 upload/init
                         size BIGINT DEFAULT 0,
                         washing_level INTEGER,
-                        washing_level_reason TEXT,
-                        washing_target_cid TEXT,
-                        washing_media_type TEXT,
-                        washing_identity_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        washing_evaluated_at TIMESTAMP WITH TIME ZONE,
+                        washing_snapshot_json JSONB DEFAULT '{}'::jsonb,
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), -- 最后同步时间
                         
                         -- 复合唯一约束：同一个父目录下不能有同名文件 (用于快速查找)
@@ -640,11 +631,7 @@ def init_db():
                             "preid": "TEXT",
                             "size": "BIGINT DEFAULT 0",
                             "washing_level": "INTEGER",
-                            "washing_level_reason": "TEXT",
-                            "washing_target_cid": "TEXT",
-                            "washing_media_type": "TEXT",
-                            "washing_identity_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
-                            "washing_evaluated_at": "TIMESTAMP WITH TIME ZONE"
+                            "washing_snapshot_json": "JSONB DEFAULT '{}'::jsonb"
                         },
                         'p115_mediainfo_cache': {
                             "raw_ffprobe_json": "JSONB"
@@ -664,12 +651,7 @@ def init_db():
                             "imdb_id": "TEXT",
                             "tagline": "TEXT",
                             "washing_level": "INTEGER",
-                            "washing_level_reason": "TEXT",
-                            "washing_sha1": "TEXT",
-                            "washing_target_cid": "TEXT",
-                            "washing_media_type": "TEXT",
-                            "washing_version_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
-                            "washing_evaluated_at": "TIMESTAMP WITH TIME ZONE"
+                            "washing_snapshot_json": "JSONB DEFAULT '{}'::jsonb"
                         },
                         'resubscribe_rules': {
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
