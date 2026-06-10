@@ -871,7 +871,7 @@ def _prepare_files_before_rapid_transfer(
     files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
     source_label = f"{source_kind or '-'}:{source_id or '-'}"
     preflight_started_at = time.time()
-    logger.info(f"  ➜ [共享资源] 秒传前预检开始：source={source_label}, files={len(files)}")
+    logger.debug(f"  ➜ [共享资源] 秒传前预检开始：source={source_label}, files={len(files)}")
 
     conflict_mode = _current_organize_conflict_mode(default='skip')
     if conflict_mode == 'replace':
@@ -1705,8 +1705,8 @@ def _replace_mode_short_circuit_best_inventory(
         }
 
     if best_skips:
-        logger.info(
-            f"  ➜ [共享资源] replace 库存优先级短路：source={source_label}，"
+        logger.debug(
+            f"  ➜ [共享资源] 洗版优先级对比：source={source_label}，"
             f"本地已是优先级1，跳过 {len(best_skips)} 个，保留 {len(kept)} 个进入预检。"
         )
 
