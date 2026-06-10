@@ -2172,9 +2172,8 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'aborted_season_package': True,
         }
 
-    # 到这里才说明成功文件会留在网盘里；此时再登记本机 holder，避免季包失败清理后留下假 holder。
-    for report_kind, report_id, report_file in success_sources:
-        _register_local_rapid_holder(client, source_kind=report_kind, source_id=report_id, file_info=report_file or {})
+    # 秒传成功只代表文件落入待整理临时目录，不代表已经进入媒体库。
+    # holder 必须等后续整理/入库后由自动共享重新登记，不能在这里提前登记假 holder。
 
     if ok_count:
         report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
