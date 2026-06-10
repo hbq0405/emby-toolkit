@@ -2354,6 +2354,92 @@ def _lookup_organize_record_target_cid(cursor, *, cache_row=None, pick_code='', 
     return str(rec.get('target_cid') or '').strip() if rec else ''
 
 
+def _backfill_organize_record_target_cid(cursor, *, cache_row=None, row=None, target_cid='', category_name=''):
+    """把 local_path 推导出的真实分类 CID 回填到 p115_organize_records。
+
+    一键重算已经通过 p115_filesystem_cache.local_path 零 API 推导出了分类根目录 CID，
+    顺手写回整理记录后，下次重算就能优先从 p115_organize_records.target_cid
+    直接命中，不必每次都再跑路径前缀匹配。
+    """
+    cache_row = cache_row or {}
+    row = row or {}
+    target_cid = str(target_cid or '').strip()
+    if not target_cid:
+        return False
+
+    file_id = str(cache_row.get('id') or cache_row.get('fid') or '').strip()
+    pick_code = str(cache_row.get('pick_code') or '').strip()
+    if not file_id and not pick_code:
+        return False
+
+    category_name = str(category_name or '').strip()
+    original_name = str(cache_row.get('name') or row.get('title') or file_id or pick_code).strip()
+    renamed_name = str(cache_row.get('name') or original_name).strip()
+    tmdb_id = str(row.get('tmdb_id') or '').strip() or None
+    item_type = str(row.get('item_type') or '').strip()
+    media_type = 'movie' if item_type == 'Movie' else 'tv'
+    season_number = row.get('season_number')
+
+    where = []
+    params = [target_cid, category_name or None, tmdb_id, media_type, season_number]
+    if pick_code:
+        where.append('pick_code = %s')
+        params.append(pick_code)
+    if file_id:
+        where.append('file_id = %s')
+        params.append(file_id)
+
+    if where:
+        cursor.execute(f"""
+            UPDATE p115_organize_records
+            SET target_cid = %s,
+                category_name = COALESCE(NULLIF(category_name, ''), %s),
+                tmdb_id = COALESCE(tmdb_id, %s),
+                media_type = COALESCE(media_type, %s),
+                season_number = COALESCE(season_number, %s)
+            WHERE {' OR '.join(where)}
+            RETURNING id
+        """, tuple(params))
+        if cursor.fetchone():
+            return True
+
+    if not file_id:
+        return False
+
+    try:
+        cursor.execute("""
+            INSERT INTO p115_organize_records
+                (file_id, pick_code, original_name, status, tmdb_id, media_type,
+                 target_cid, category_name, renamed_name, processed_at, season_number)
+            VALUES (%s, %s, %s, 'success', %s, %s, %s, %s, %s, NOW(), %s)
+            ON CONFLICT (file_id)
+            DO UPDATE SET
+                target_cid = EXCLUDED.target_cid,
+                category_name = COALESCE(NULLIF(p115_organize_records.category_name, ''), EXCLUDED.category_name),
+                tmdb_id = COALESCE(p115_organize_records.tmdb_id, EXCLUDED.tmdb_id),
+                media_type = COALESCE(p115_organize_records.media_type, EXCLUDED.media_type),
+                season_number = COALESCE(p115_organize_records.season_number, EXCLUDED.season_number)
+            RETURNING id
+        """, (
+            file_id,
+            pick_code or None,
+            original_name,
+            tmdb_id,
+            media_type,
+            target_cid,
+            category_name or None,
+            renamed_name or None,
+            season_number,
+        ))
+        return bool(cursor.fetchone())
+    except Exception as e:
+        logger.debug(
+            f"  ➜ [洗版优先级重算] 回填 p115_organize_records.target_cid 失败: "
+            f"file_id={file_id}, pc={(pick_code or '-')[:8]}, target={target_cid}, err={e}"
+        )
+        return False
+
+
 def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
     """重算单个 media_metadata 媒体项的洗版优先级，并写回 p115/cache + media_metadata。"""
     from handler.resubscribe_service import WashingService
@@ -2374,6 +2460,7 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
         'missing_raw': 0,
         'missing_identity': 0,
         'no_priority_rules': 0,
+        'backfilled_target_cid': 0,
     }
 
     if count <= 0:
@@ -2479,6 +2566,22 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                 level = 0
                 reason = f'重算异常: {e}'
                 logger.warning(f"  ➜ [洗版优先级重算] 版本评分失败 sha1={sha1[:12]}...: {e}", exc_info=True)
+
+        if inferred_target_cid and target_cid == inferred_target_cid and organize_target_cid != inferred_target_cid:
+            try:
+                if _backfill_organize_record_target_cid(
+                    cursor,
+                    cache_row=cache_row,
+                    row=row,
+                    target_cid=inferred_target_cid,
+                    category_name=inferred_category_path,
+                ):
+                    stats['backfilled_target_cid'] += 1
+            except Exception as e:
+                logger.debug(
+                    f"  ➜ [洗版优先级重算] 回填整理记录 target_cid 异常: "
+                    f"sha1={sha1[:12]}..., target={inferred_target_cid}, err={e}"
+                )
 
         version = {
             'fid': str((cache_row or {}).get('id') or ''),
@@ -2614,6 +2717,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
         'missing_raw': 0,
         'missing_identity': 0,
         'no_priority_rules': 0,
+        'backfilled_target_cid': 0,
         'errors': 0,
         'started_at': datetime.utcnow().isoformat() + 'Z',
         'finished_at': None,
@@ -2650,7 +2754,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                 stats['scanned_items'] += 1
                 try:
                     item_stats = _evaluate_washing_level_for_row(cursor, dict(row))
-                    for key in ('evaluated_versions', 'missing_raw', 'missing_identity', 'no_priority_rules'):
+                    for key in ('evaluated_versions', 'missing_raw', 'missing_identity', 'no_priority_rules', 'backfilled_target_cid'):
                         stats[key] += int(item_stats.get(key) or 0)
                     stats['updated_items'] += 1
                 except Exception as e:
@@ -2673,7 +2777,8 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                     update_progress(
                         min(progress, 95),
                         f"  ➜ [洗版优先级重算] 进度: {stats['scanned_items']}/{total_rows}，"
-                        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，未命中规则 {stats['no_priority_rules']}"
+                        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，"
+                        f"未命中规则 {stats['no_priority_rules']}，回填CID {stats['backfilled_target_cid']}"
                     )
 
             conn.commit()
@@ -2682,7 +2787,8 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
     update_progress(
         100,
         f"  ➜ [洗版优先级重算] 完成：总数 {stats['scanned_items']}，"
-        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，未命中规则 {stats['no_priority_rules']}"
+        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，"
+        f"未命中规则 {stats['no_priority_rules']}，回填CID {stats['backfilled_target_cid']}"
     )
     return stats
 

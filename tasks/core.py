@@ -328,7 +328,7 @@ def get_task_registry(context: str = 'all'):
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', False),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', False),
         'share-all-library': (share_all_library, "一键登记媒体库", 'media', False),
-        'recalculate_library_washing_priorities': (task_recalculate_library_washing_priorities, "重新计算洗版优先级", 'media', True),
+        'recalculate_library_washing_priorities': (task_recalculate_library_washing_priorities, "重新计算洗版优先级", 'media', False),
     }
 
     if context == 'chain':
