@@ -2547,10 +2547,40 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
     except Exception:
         task_manager = None
 
+    def _yield_frontend_log_polling():
+        """让 gevent/前端日志轮询有机会实时取到进度。
+
+        这个重算任务基本是 DB 读取 + Python 循环，和整理/同步任务不同，
+        中间没有多少 115 网络 I/O，自然让不出执行权。
+        不主动 yield 的话，控制台日志会持续刷，但 Web 实时日志接口
+        可能要等任务结束后才一次性返回。
+        """
+        try:
+            from gevent import sleep as gevent_sleep
+            gevent_sleep(0)
+        except Exception:
+            try:
+                time.sleep(0)
+            except Exception:
+                pass
+
+    def _flush_log_handlers():
+        try:
+            root_logger = logging.getLogger()
+            for handler in list(getattr(root_logger, 'handlers', []) or []):
+                try:
+                    handler.flush()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def update_progress(prog, msg):
         if task_manager:
             task_manager.update_status_from_thread(prog, msg)
         logger.info(msg)
+        _flush_log_handlers()
+        _yield_frontend_log_polling()
 
     _ensure_washing_priority_snapshot_columns()
 
@@ -2616,6 +2646,11 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                     )
 
                 # 分批提交，避免大库长事务。
+                # 每 20 条主动 yield 一次，避免 Web 实时日志/任务状态轮询被长循环饿死；
+                # 每 100 条再正式提交并打印一条可见进度。
+                if stats['scanned_items'] % 20 == 0:
+                    _yield_frontend_log_polling()
+
                 if stats['scanned_items'] % 100 == 0:
                     conn.commit()
                     progress = 5 + int((stats['scanned_items'] / max(total_rows, 1)) * 90)
