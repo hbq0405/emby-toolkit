@@ -2430,6 +2430,45 @@ def _backfill_organize_record_target_cid(cursor, *, cache_row=None, row=None, ta
         return False
 
 
+def _resolve_media_original_language(cursor, row):
+    """解析媒体原始语种；分集自身为空时回退父剧条目的 original_language。
+
+    media_metadata 里 Episode 行通常没有 original_language，真实值在父级
+    Series 行上。一键重算洗版优先级时，如果这里拿不到 zh/ja/ko 等
+    原语种，后续“原产国豁免音轨/字幕规则”就无法生效。
+    """
+    original_lang = str((row or {}).get('original_language') or '').strip()
+    if original_lang:
+        return original_lang
+
+    item_type = str((row or {}).get('item_type') or '').strip()
+    if item_type != 'Episode':
+        return ''
+
+    parent_tmdb_id = str((row or {}).get('parent_series_tmdb_id') or '').strip()
+    if not parent_tmdb_id:
+        return ''
+
+    try:
+        cursor.execute("""
+            SELECT original_language
+            FROM media_metadata
+            WHERE item_type = 'Series'
+              AND tmdb_id = %s
+              AND NULLIF(original_language, '') IS NOT NULL
+            ORDER BY in_library DESC, last_updated_at DESC NULLS LAST
+            LIMIT 1
+        """, (parent_tmdb_id,))
+        parent = cursor.fetchone()
+        return str((parent or {}).get('original_language') or '').strip() if parent else ''
+    except Exception as e:
+        logger.debug(
+            f"  ➜ [洗版优先级重算] 查询父剧原语种失败: "
+            f"parent_tmdb={parent_tmdb_id}, err={e}"
+        )
+        return ''
+
+
 def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
     """重算单个 media_metadata 媒体项的洗版优先级，并写回 p115/cache + media_metadata。"""
     from handler.resubscribe_service import WashingService
@@ -2441,7 +2480,7 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
     item_type = str(row.get('item_type') or '').strip()
     db_media_type = 'Movie' if item_type == 'Movie' else 'Series'
     media_type = 'movie' if item_type == 'Movie' else 'series'
-    original_lang = str(row.get('original_language') or '').strip()
+    original_lang = _resolve_media_original_language(cursor, row)
 
     versions = []
     stats = {
@@ -2728,13 +2767,25 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                     limit_sql = ''
 
             cursor.execute(f"""
-                SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number, episode_number,
-                       title, original_language, file_sha1_json, file_pickcode_json,
-                       asset_details_json, washing_snapshot_json
-                FROM media_metadata
-                WHERE in_library = TRUE
-                  AND item_type = ANY(%s)
-                ORDER BY item_type ASC, COALESCE(title, '') ASC, tmdb_id ASC
+                SELECT mm.tmdb_id, mm.item_type, mm.parent_series_tmdb_id, mm.season_number, mm.episode_number,
+                       mm.title,
+                       COALESCE(NULLIF(mm.original_language, ''), NULLIF(parent.original_language, '')) AS original_language,
+                       mm.file_sha1_json, mm.file_pickcode_json,
+                       mm.asset_details_json, mm.washing_snapshot_json
+                FROM media_metadata mm
+                LEFT JOIN LATERAL (
+                    SELECT p.original_language
+                    FROM media_metadata p
+                    WHERE mm.item_type = 'Episode'
+                      AND p.item_type = 'Series'
+                      AND p.tmdb_id = mm.parent_series_tmdb_id
+                      AND NULLIF(p.original_language, '') IS NOT NULL
+                    ORDER BY p.in_library DESC, p.last_updated_at DESC NULLS LAST
+                    LIMIT 1
+                ) parent ON TRUE
+                WHERE mm.in_library = TRUE
+                  AND mm.item_type = ANY(%s)
+                ORDER BY mm.item_type ASC, COALESCE(mm.title, '') ASC, mm.tmdb_id ASC
                 {limit_sql}
             """, tuple(params))
             rows = cursor.fetchall() or []
