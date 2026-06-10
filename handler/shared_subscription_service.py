@@ -610,8 +610,19 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     status = str(wait_resp.get('status') or (wait_resp.get('job') or {}).get('status') or '')
     sign_val = str(wait_resp.get('sign_val') or (wait_resp.get('job') or {}).get('sign_val') or '').strip().upper()
     if status != 'done' or not _norm_sha1(sign_val):
-        logger.warning(f"  ➜ [负载均衡签名] sign_job 未完成：job_id={job_id}, status={status}, resp={str(wait_resp)[:500]}")
-        return {'ok': False, 'response': first_resp, 'sign_job': wait_resp, 'message': f'sign_job 未完成: {status}'}
+        job_obj = (wait_resp.get('job') or {}) if isinstance(wait_resp, dict) else {}
+        job_message = str(job_obj.get('message') or wait_resp.get('message') or '') if isinstance(wait_resp, dict) else ''
+        no_retry = status in ('failed', 'expired') or any(
+            x in job_message for x in ('所有 holder', '无可用 holder', 'no rapid sign holder available', 'holder 未领取签名任务')
+        )
+        logger.warning(f"  ➜ [负载均衡签名] sign_job 未完成：job_id={job_id}, status={status}, no_retry={no_retry}, resp={str(wait_resp)[:500]}")
+        return {
+            'ok': False,
+            'response': first_resp,
+            'sign_job': wait_resp,
+            'message': job_message or f'sign_job 未完成: {status}',
+            'no_retry': bool(no_retry),
+        }
 
     signed_meta = dict(rapid_meta or {})
     signed_meta['sign_key'] = sign_req.get('sign_key')
@@ -1242,9 +1253,29 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
             )
             if retry.get('ok'):
                 return retry
-            resp = retry.get('response') or resp
+            return {
+                'ok': False,
+                'response': retry.get('response') or resp,
+                'sha1': sha1,
+                'file_name': file_name,
+                'target_cid': target_cid,
+                'sign_job': retry.get('sign_job'),
+                'message': retry.get('message') or '中心 holder 签名未完成',
+                'no_retry': bool(retry.get('no_retry')),
+            }
         except Exception as e:
+            err_text = str(e)
+            no_retry = 'no rapid sign holder available' in err_text or '无可用 holder' in err_text
             logger.warning(f"  ➜ [负载均衡签名] 中心 holder 签名闭环失败：{e}")
+            return {
+                'ok': False,
+                'response': resp,
+                'sha1': sha1,
+                'file_name': file_name,
+                'target_cid': target_cid,
+                'message': err_text,
+                'no_retry': bool(no_retry),
+            }
 
     return {'ok': False, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
 
@@ -2103,6 +2134,12 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                     result['attempt'] = attempt
                     return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
                 last_error = {'file': file_label, 'response': result.get('response'), 'result': result, 'attempt': attempt}
+                if result.get('no_retry'):
+                    logger.warning(
+                        f"  ➜ [共享资源] 中心已判定无可用 holder，本文件不再重复创建 sign_job：{file_label}，"
+                        f"reason={result.get('message') or '-'}"
+                    )
+                    break
             except Exception as e:
                 last_error = {'file': file_label, 'error': str(e), 'attempt': attempt}
         return {'ok': False, 'file': f, 'error': last_error or {'file': file_label, 'error': 'unknown'}}
