@@ -1717,12 +1717,12 @@ class MediaProcessor:
             try:
                 cursor.execute(
                     f"""
-                    SSELECT id, name, sha1, pick_code, size,
-                        washing_level, washing_snapshot_json
+                    SELECT id, name, sha1, pick_code, size,
+                           washing_level, washing_snapshot_json
                     FROM p115_filesystem_cache
                     WHERE ({' OR '.join(clauses)})
                       AND washing_level IS NOT NULL
-                    ORDER BY washing_evaluated_at DESC NULLS LAST, updated_at DESC NULLS LAST
+                    ORDER BY updated_at DESC NULLS LAST
                     """,
                     tuple(params)
                 )
