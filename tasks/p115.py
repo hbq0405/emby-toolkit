@@ -2694,9 +2694,15 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
         except Exception:
             pass
 
-    def update_progress(prog, msg):
+    def update_task_status(prog, msg):
+        """只刷新顶部任务状态，不写实时日志，避免日志刷屏。"""
         if task_manager:
             task_manager.update_status_from_thread(prog, msg)
+        _yield_frontend_log_polling()
+
+    def update_progress(prog, msg):
+        """刷新顶部任务状态 + 写入实时日志。"""
+        update_task_status(prog, msg)
         logger.info(msg)
         _flush_log_handlers()
         _yield_frontend_log_polling()
@@ -2769,7 +2775,15 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                 # 每 20 条主动 yield 一次，避免 Web 实时日志/任务状态轮询被长循环饿死；
                 # 每 100 条再正式提交并打印一条可见进度。
                 if stats['scanned_items'] % 20 == 0:
-                    _yield_frontend_log_polling()
+                    # 顶部任务条是轮询“当前任务状态”，不是读取日志列表。
+                    # 因此这里每 20 条刷新一次任务状态，但不写日志，避免实时日志刷屏。
+                    progress = 5 + int((stats['scanned_items'] / max(total_rows, 1)) * 90)
+                    status_msg = (
+                        f"  ➜ [洗版优先级重算] 进度: {stats['scanned_items']}/{total_rows}，"
+                        f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，"
+                        f"未命中规则 {stats['no_priority_rules']}，回填CID {stats['backfilled_target_cid']}"
+                    )
+                    update_task_status(min(progress, 95), status_msg)
 
                 if stats['scanned_items'] % 100 == 0:
                     conn.commit()
