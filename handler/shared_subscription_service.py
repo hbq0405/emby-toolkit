@@ -1685,7 +1685,7 @@ def _replace_mode_short_circuit_best_inventory(
     if normalized_source_kind == 'completed_season' and completed_video_checks:
         # 完结季不能单集洗。只有整季所有视频都已在库内达到优先级 1，才整包短路。
         if all(x.get('known') and x.get('best') for x in completed_video_checks):
-            message = f"本地完结季库存所有分集均已是洗版优先级 1，跳过整季秒传：{payload.get('title') or source_id}"
+            message = f"本地完结季库存所有分集均已是最佳版本，跳过整季秒传：{payload.get('title') or source_id}"
             logger.info(f"  ➜ [共享资源] {message}")
             return [], {
                 'checked': True,
@@ -1699,7 +1699,7 @@ def _replace_mode_short_circuit_best_inventory(
         return files, {
             'checked': True,
             'short_circuit': False,
-            'message': '完结季未达到整包库存优先级 1，继续整季洗版预检。',
+            'message': '完结季未达到最佳版本，继续整季洗版预检。',
             'best_count': sum(1 for x in completed_video_checks if x.get('best')),
             'kept_count': len(files),
         }
@@ -1707,11 +1707,11 @@ def _replace_mode_short_circuit_best_inventory(
     if best_skips:
         logger.debug(
             f"  ➜ [共享资源] 洗版优先级对比：source={source_label}，"
-            f"本地已是优先级1，跳过 {len(best_skips)} 个，保留 {len(kept)} 个进入预检。"
+            f"本地已是最佳版本，跳过 {len(best_skips)} 个，保留 {len(kept)} 个进入预检。"
         )
 
     reason = 'inventory_best_level_1' if files and not kept and best_skips else ''
-    message = '本地库存已是洗版优先级 1，跳过共享秒传。' if reason else 'replace 库存优先级检查完成。'
+    message = '本地已是最佳版本，跳过共享秒传。' if reason else 'replace 库存优先级检查完成。'
     return kept, {
         'checked': True,
         'short_circuit': bool(reason),
