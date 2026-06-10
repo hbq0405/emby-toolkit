@@ -873,6 +873,31 @@ def _prepare_files_before_rapid_transfer(
     preflight_started_at = time.time()
     logger.info(f"  ➜ [共享资源] 秒传前预检开始：source={source_label}, files={len(files)}")
 
+    conflict_mode = _current_organize_conflict_mode(default='skip')
+    if conflict_mode == 'replace':
+        files, inventory_gate = _replace_mode_short_circuit_best_inventory(
+            source_kind=source_kind,
+            source_id=source_id,
+            payload=payload,
+            files=files,
+        )
+        if not files:
+            message = inventory_gate.get('message') or '本地库存已是洗版优先级 1，跳过共享秒传。'
+            logger.info(
+                f"  ➜ [共享资源] 秒传前预检提前结束：source={source_label}, "
+                f"reason={inventory_gate.get('reason') or '-'}，耗时 {time.time() - preflight_started_at:.1f}s"
+            )
+            return [], {
+                'raw_cached_count': 0,
+                'raw_cache_errors': [],
+                'washing_checked': False,
+                'washing_rejected': False,
+                'inventory_best_short_circuit': True,
+                'errors': [message],
+                'message': message,
+                'inventory_gate': inventory_gate,
+            }
+
     raw_started_at = time.time()
     logger.info(f"  ➜ [共享资源] 秒传前预检：开始拉取中心 RAW，source={source_label}, files={len(files)}")
     raw_map = _load_center_raw_map(client, files)
@@ -903,7 +928,6 @@ def _prepare_files_before_rapid_transfer(
         f"失败 {len(cache_errors)}"
     )
 
-    conflict_mode = _current_organize_conflict_mode(default='skip')
     if conflict_mode != 'replace':
         logger.info(
             f"  ➜ [共享资源] 秒传前预检结束：当前覆盖模式为 {conflict_mode or '未配置'}，"
@@ -1504,6 +1528,199 @@ def _local_episode_in_library(parent_series_tmdb_id: Any, season_number: Any, ep
             f"S{season}E{episode}, err={e}"
         )
         return False
+
+
+
+def _local_movie_washing_snapshot(tmdb_id: Any) -> Dict[str, Any]:
+    """读取本地电影入库洗版快照；只用于 replace 秒传前短路。"""
+    tmdb = str(tmdb_id or '').strip()
+    if not tmdb:
+        return {}
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT tmdb_id, title, washing_level, washing_level_reason, washing_target_cid, washing_evaluated_at
+                    FROM media_metadata
+                    WHERE item_type='Movie'
+                      AND tmdb_id=%s
+                      AND COALESCE(in_library, FALSE)=TRUE
+                    ORDER BY CASE
+                                WHEN washing_level = 1 THEN 0
+                                WHEN washing_level IS NOT NULL AND washing_level > 0 THEN 1
+                                ELSE 2
+                             END,
+                             washing_level ASC NULLS LAST,
+                             updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (tmdb,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询本地电影洗版快照失败: tmdb={tmdb}, err={e}")
+        return {}
+
+
+def _local_episode_washing_snapshot(parent_series_tmdb_id: Any, season_number: Any, episode_number: Any) -> Dict[str, Any]:
+    """读取本地分集入库洗版快照；只用于 replace 秒传前短路。"""
+    parent = str(parent_series_tmdb_id or '').strip()
+    season = _safe_int_or_none(season_number)
+    episode = _safe_int_or_none(episode_number)
+    if not parent or season is None or episode is None:
+        return {}
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT parent_series_tmdb_id, season_number, episode_number, title,
+                           washing_level, washing_level_reason, washing_target_cid, washing_evaluated_at
+                    FROM media_metadata
+                    WHERE item_type='Episode'
+                      AND parent_series_tmdb_id=%s
+                      AND season_number=%s
+                      AND episode_number=%s
+                      AND COALESCE(in_library, FALSE)=TRUE
+                    ORDER BY CASE
+                                WHEN washing_level = 1 THEN 0
+                                WHEN washing_level IS NOT NULL AND washing_level > 0 THEN 1
+                                ELSE 2
+                             END,
+                             washing_level ASC NULLS LAST,
+                             updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (parent, season, episode),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.debug(
+            f"  ➜ [共享资源] 查询本地分集洗版快照失败: tmdb={parent}, "
+            f"S{season}E{episode}, err={e}"
+        )
+        return {}
+
+
+def _is_inventory_best_washing_level(snapshot: Dict[str, Any]) -> bool:
+    try:
+        return int((snapshot or {}).get('washing_level')) == 1
+    except Exception:
+        return False
+
+
+def _replace_mode_short_circuit_best_inventory(
+    *,
+    source_kind: str,
+    source_id: str,
+    payload: Dict[str, Any],
+    files: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """replace 模式下，RAW/洗版预检前先看库存优先级。
+
+    本地已经是优先级 1 的电影/单集没有必要再拉中心 RAW、算目标目录、调用规则。
+    完结季必须整季洗版：只有整包所有视频对应的本地集都已是优先级 1，才整包短路；
+    只要有一集不是 1，就保留整包进入后续预检。
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
+    normalized_source_kind = _normalize_source_kind(source_kind)
+    context = _preflight_context(source_kind, source_id, payload, files)
+    source_label = f"{source_kind or '-'}:{source_id or '-'}"
+
+    best_skips = []
+    kept = []
+    completed_video_checks = []
+
+    for f in files:
+        file_name = f.get('file_name') or f.get('name') or f.get('sha1') or ''
+        ext = os.path.splitext(str(file_name or ''))[1].lower()
+        is_video = (not ext) or ext in VIDEO_EXTS
+        if not is_video:
+            kept.append(f)
+            continue
+
+        item_type = str(f.get('item_type') or context.get('item_type') or payload.get('item_type') or '').strip()
+        file_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
+        is_movie = file_kind == 'movie' or item_type == 'Movie'
+        is_episode_like = file_kind in ('episode', 'season_hub', 'completed_season') or item_type in ('Episode', 'Season')
+
+        if is_movie:
+            movie_tmdb = f.get('tmdb_id') or payload.get('tmdb_id') or context.get('tmdb_id')
+            snap = _local_movie_washing_snapshot(movie_tmdb)
+            if _is_inventory_best_washing_level(snap):
+                best_skips.append(file_name)
+                continue
+            kept.append(f)
+            continue
+
+        if is_episode_like:
+            s_num, e_num = _guess_se_from_source(f, context)
+            parent_tmdb = _source_parent_series_tmdb_id(f, context)
+            snap = _local_episode_washing_snapshot(parent_tmdb, s_num, e_num)
+            is_best = _is_inventory_best_washing_level(snap)
+            if normalized_source_kind == 'completed_season':
+                completed_video_checks.append({
+                    'file': f,
+                    'file_name': file_name,
+                    'known': bool(parent_tmdb and s_num is not None and e_num is not None),
+                    'best': is_best,
+                    'snapshot': snap,
+                })
+                kept.append(f)
+                continue
+            if is_best:
+                best_skips.append(f"S{s_num if s_num is not None else '-'}E{e_num if e_num is not None else '-'} {file_name}".strip())
+                continue
+            kept.append(f)
+            continue
+
+        kept.append(f)
+
+    if normalized_source_kind == 'completed_season' and completed_video_checks:
+        # 完结季不能单集洗。只有整季所有视频都已在库内达到优先级 1，才整包短路。
+        if all(x.get('known') and x.get('best') for x in completed_video_checks):
+            message = f"本地完结季库存所有分集均已是洗版优先级 1，跳过整季秒传：{payload.get('title') or source_id}"
+            logger.info(f"  ➜ [共享资源] {message}")
+            return [], {
+                'checked': True,
+                'short_circuit': True,
+                'reason': 'completed_pack_inventory_best_level_1',
+                'message': message,
+                'best_count': len(completed_video_checks),
+                'kept_count': 0,
+                'skipped': {'inventory_best_level_1': [x.get('file_name') for x in completed_video_checks[:20]]},
+            }
+        return files, {
+            'checked': True,
+            'short_circuit': False,
+            'message': '完结季未达到整包库存优先级 1，继续整季洗版预检。',
+            'best_count': sum(1 for x in completed_video_checks if x.get('best')),
+            'kept_count': len(files),
+        }
+
+    if best_skips:
+        logger.info(
+            f"  ➜ [共享资源] replace 库存优先级短路：source={source_label}，"
+            f"本地已是优先级1，跳过 {len(best_skips)} 个，保留 {len(kept)} 个进入预检。"
+        )
+
+    reason = 'inventory_best_level_1' if files and not kept and best_skips else ''
+    message = '本地库存已是洗版优先级 1，跳过共享秒传。' if reason else 'replace 库存优先级检查完成。'
+    return kept, {
+        'checked': True,
+        'short_circuit': bool(reason),
+        'reason': reason,
+        'message': message,
+        'best_count': len(best_skips),
+        'kept_count': len(kept),
+        'skipped': {'inventory_best_level_1': best_skips[:20]} if best_skips else {},
+    }
 
 
 def _filter_files_before_transfer(
