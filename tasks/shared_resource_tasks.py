@@ -2892,18 +2892,14 @@ def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> D
                 exc_info=True,
             )
             try:
-                err_text = str(e)
-                stale_holder = any(token in err_text for token in (
-                    '本机不是可签名 holder', '未找到 sha1', '对应 pick_code', 'pick_code'
+                err_text = str(e)[:1000]
+                stale_holder = any(x in err_text for x in (
+                    '本机不是可签名 holder', '未找到 sha1', '未找到 pick_code', '对应 pick_code'
                 ))
                 submit = client.submit_rapid_sign_job(job_id, {
                     'status': 'failed',
-                    'message': err_text[:1000],
-                    'result_meta_json': {
-                        'stale_holder': bool(stale_holder),
-                        'reason': 'local_pick_code_missing' if stale_holder else 'holder_sign_failed',
-                        'file_name': file_name,
-                    },
+                    'message': err_text,
+                    'result_meta_json': {'stale_holder': stale_holder, 'file_name': file_name},
                 })
             except Exception as submit_err:
                 submit = {'ok': False, 'error': str(submit_err)}

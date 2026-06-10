@@ -2172,9 +2172,8 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'aborted_season_package': True,
         }
 
-    # 秒传成功只代表文件落入待整理临时目录，不代表已经进入媒体库。
-    # holder 必须等后续整理/入库后由自动共享重新登记，不能在这里提前登记假 holder。
-
+    # 不在“秒传成功”阶段登记 holder。文件只是落入待整理目录，尚未完成整理入库；
+    # 只有 webhook 入库后触发自动共享登记，才代表本机真正具备可签名能力。
     if ok_count:
         report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for report_kind, report_id, report_file in success_sources:
