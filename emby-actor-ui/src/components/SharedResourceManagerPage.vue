@@ -2792,20 +2792,24 @@ const loadCenterSourceDetail = async (row) => {
 
 const openCenterDetail = async (row) => {
   if (!row) return;
-  // 先用列表里的基础数据撑起模态框，实现秒开
-  activeCenterDetailRow.value = { ...row };
+  const key = centerTableRowKey(row);
+  activeCenterDetailRow.value = row;
   showCenterDetailModal.value = true;
   centerDetailLoading.value = true;
-
+  let detailPayload = null;
   try {
-    // 请求详情元数据（海报、简介、演员表、版本壳子）
-    const detailPayload = await loadCenterSourceDetail(row);
-    if (detailPayload) {
-      // 拿到数据后，合并并重新赋值给 value，触发 Vue 深度响应式更新
-      activeCenterDetailRow.value = mergeCenterDetailPayload(activeCenterDetailRow.value, detailPayload);
+    try {
+      detailPayload = await loadCenterSourceDetail(row);
+      activeCenterDetailRow.value = mergeCenterDetailPayload(row, detailPayload);
+    } catch (e) {
+      console.warn('[共享资源] 加载中心详情失败，退回列表壳/懒加载子项:', e);
     }
-  } catch (e) {
-    console.warn('[共享资源] 加载中心详情失败:', e);
+    if (centerNeedsLoadChildren(row)) {
+      await loadCenterSourceChildren(row);
+      await nextTick();
+      const latest = findCenterGroupByKey(groupedCenterSources.value || [], key) || activeCenterDetailRow.value || row;
+      activeCenterDetailRow.value = mergeCenterDetailPayload(latest, detailPayload || {});
+    }
   } finally {
     centerDetailLoading.value = false;
   }
