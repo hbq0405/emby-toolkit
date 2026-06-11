@@ -2548,31 +2548,20 @@ const centerPosterWallTitle = (row) => centerPosterWallFullTitle(row);
 
 const centerPosterUrlCache = new Map();
 
-const tmdbPosterUrl = (value, size = 'w300') => {
+const tmdbPosterUrl = (value, size = 'w500') => {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  if (raw === '/default-poster.png' || raw.startsWith('data:')) return raw;
 
-  const cacheKey = `${size}:${raw}`;
-  if (centerPosterUrlCache.has(cacheKey)) return centerPosterUrlCache.get(cacheKey);
-
-  let path = raw;
-  const proxyMatch = raw.match(/^\/api\/discover\/tmdb\/image\/[^/]+\/(.+)$/i);
-  if (proxyMatch) {
-    path = proxyMatch[1] || '';
-  } else if (/^https?:\/\//i.test(raw)) {
-    const tmdbMatch = raw.match(/image\.tmdb\.org\/t\/p\/[^/]+\/(.+)$/i);
-    if (!tmdbMatch) {
-      centerPosterUrlCache.set(cacheKey, raw);
-      return raw;
-    }
-    path = tmdbMatch[1] || '';
+  // 已经是完整 URL
+  if (/^https?:\/\//i.test(raw)) {
+    return `/api/image_proxy?url=${encodeURIComponent(raw)}`;
   }
 
-  path = String(path || '').replace(/^\/+/, '');
-  const directUrl = path ? `/api/discover/tmdb/image/${size}/${encodeURI(path)}` : '';
-  centerPosterUrlCache.set(cacheKey, directUrl);
-  return directUrl;
+  // TMDb path: /abc.jpg
+  const path = raw.startsWith('/') ? raw : `/${raw}`;
+  const tmdbUrl = `https://image.tmdb.org/t/p/${size}${path}`;
+
+  return `/api/image_proxy?url=${encodeURIComponent(tmdbUrl)}`;
 };
 
 const centerPosterCandidates = (row) => {
@@ -2609,9 +2598,17 @@ const centerBackdropCandidates = (row) => {
 };
 
 const centerBackdropUrl = (row, size = 'w500') => {
-  for (const value of centerBackdropCandidates(row)) {
+  const meta = centerTmdbMeta(row);
+  const candidates = [
+    row?.backdrop_path,
+    row?.backdrop_url,
+    meta?.backdrop_path,
+    meta?.backdrop_url,
+  ].map(v => String(v || '').trim()).filter(Boolean);
+
+  for (const value of candidates) {
     const url = tmdbPosterUrl(value, size);
-    if (url && !url.endsWith('/default-poster.png')) return url;
+    if (url) return url;
   }
   return '';
 };
