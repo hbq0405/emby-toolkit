@@ -2369,11 +2369,19 @@ def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
     return {'people_json': people, 'credits_json': credits}
 
 
-def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    item_type = str((candidate or {}).get('item_type') or '').strip()
-    tmdb_id = str((candidate or {}).get('tmdb_id') or '').strip()
-    series_id = str((candidate or {}).get('parent_series_tmdb_id') or (candidate or {}).get('series_tmdb_id') or tmdb_id).strip()
-    season_no = _safe_int_or_none((candidate or {}).get('season_number'))
+def _local_display_meta_rows_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """读取展示元数据源行。剧集拆成 Season 行和 Series 行。
+
+    口径：
+    - Movie：电影行。
+    - Season/Episode：海报/简介优先 Season 行，Series 行兜底；类型/评分/演职员只取 Series 行。
+    """
+    candidate = candidate if isinstance(candidate, dict) else {}
+    item_type = str(candidate.get('item_type') or '').strip()
+    tmdb_id = str(candidate.get('tmdb_id') or '').strip()
+    series_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or tmdb_id).strip()
+    season_no = _safe_int_or_none(candidate.get('season_number'))
+    out = {'movie': {}, 'season': {}, 'series': {}}
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -2388,7 +2396,10 @@ def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str
                         (tmdb_id,),
                     )
                     row = cur.fetchone()
-                    return dict(row) if row else {}
+                    if row:
+                        out['movie'] = dict(row)
+                    return out
+
                 if item_type in ('Season', 'Episode') and series_id:
                     if season_no is not None:
                         cur.execute(
@@ -2405,7 +2416,7 @@ def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str
                         )
                         row = cur.fetchone()
                         if row:
-                            return dict(row)
+                            out['season'] = dict(row)
                     cur.execute(
                         """
                         SELECT * FROM media_metadata
@@ -2416,46 +2427,67 @@ def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str
                         (series_id,),
                     )
                     row = cur.fetchone()
-                    return dict(row) if row else {}
+                    if row:
+                        out['series'] = dict(row)
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 查询本地展示元数据失败: {e}")
-    return {}
+    return out
+
+
+def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    rows = _local_display_meta_rows_for_candidate(candidate)
+    item_type = str((candidate or {}).get('item_type') or '').strip()
+    if item_type == 'Movie':
+        return rows.get('movie') or {}
+    return rows.get('season') or rows.get('series') or {}
 
 
 def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     candidate = candidate if isinstance(candidate, dict) else {}
     item_type = str(candidate.get('item_type') or '').strip()
+    rows = _local_display_meta_rows_for_candidate(candidate)
+
     if item_type == 'Movie':
         media_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
         display_type = 'Movie'
         season_no = None
+        row = rows.get('movie') or {}
+        series_row = {}
+        season_row = {}
     else:
         media_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
         display_type = 'Season'
         season_no = _safe_int_or_none(candidate.get('season_number'))
+        season_row = rows.get('season') or {}
+        series_row = rows.get('series') or {}
+        row = season_row or series_row
     if not media_tmdb_id:
         return {}
 
-    row = _local_display_meta_row_for_candidate(candidate)
-    genres = _safe_json_list(row.get('genres_json')) if row else []
+    # 季展示字段：Season 优先，Series 兜底；整剧字段：Series 专属。
+    visual_row = row
+    show_row = series_row if display_type == 'Season' else row
+    genres = _safe_json_list(show_row.get('genres_json')) if show_row else []
     display_meta = {
         'tmdb_id': media_tmdb_id,
         'item_type': display_type,
         'season_number': season_no,
-        'title': _first_display_text(row.get('title') if row else '', candidate.get('title')),
-        'original_title': _first_display_text(row.get('original_title') if row else '', candidate.get('original_title')),
-        'overview': _first_display_text(row.get('overview') if row else '', candidate.get('overview')),
-        'poster_path': _first_display_text(row.get('poster_path') if row else '', candidate.get('poster_path')),
-        'backdrop_path': _first_display_text(row.get('backdrop_path') if row else '', candidate.get('backdrop_path')),
-        'release_year': _safe_int_or_none(row.get('release_year') if row else None) or _safe_int_or_none(candidate.get('release_year')),
-        'release_date': str((row or {}).get('release_date') or '') or None,
-        'rating': (row or {}).get('rating'),
+        'title': _first_display_text(visual_row.get('title') if visual_row else '', series_row.get('title') if series_row else '', candidate.get('title')),
+        'original_title': _first_display_text(visual_row.get('original_title') if visual_row else '', series_row.get('original_title') if series_row else '', candidate.get('original_title')),
+        'overview': _first_display_text(season_row.get('overview') if season_row else '', series_row.get('overview') if series_row else '', candidate.get('overview')),
+        'poster_path': _first_display_text(season_row.get('poster_path') if season_row else '', series_row.get('poster_path') if series_row else '', candidate.get('poster_path')),
+        'backdrop_path': _first_display_text(season_row.get('backdrop_path') if season_row else '', series_row.get('backdrop_path') if series_row else '', candidate.get('backdrop_path')),
+        'release_year': _safe_int_or_none((visual_row or {}).get('release_year')) or _safe_int_or_none((series_row or {}).get('release_year')) or _safe_int_or_none(candidate.get('release_year')),
+        'release_date': str((visual_row or {}).get('release_date') or (series_row or {}).get('release_date') or '') or None,
+        # 类型、评分、语言只从电影/剧条目取；Season 行不参与这些字段。
+        'rating': (show_row or {}).get('rating'),
         'genres_json': genres[:12],
-        'original_language': _first_display_text((row or {}).get('original_language'), candidate.get('original_language')),
+        'original_language': _first_display_text((show_row or {}).get('original_language'), candidate.get('original_language')),
     }
     display_meta = {k: v for k, v in display_meta.items() if v not in (None, '', [], {})}
     bundle = {'display_meta_json': display_meta}
-    bundle.update(_build_display_credits_bundle(row) if row else {'people_json': [], 'credits_json': []})
+    credit_row = show_row if display_type in ('Movie', 'Season') else row
+    bundle.update(_build_display_credits_bundle(credit_row) if credit_row else {'people_json': [], 'credits_json': []})
     return bundle
 
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid') -> Dict[str, Any]:
