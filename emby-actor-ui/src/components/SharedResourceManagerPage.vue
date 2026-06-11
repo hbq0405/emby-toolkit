@@ -4158,10 +4158,16 @@ onUnmounted(() => {
   overflow: hidden;
   border-radius: 18px;
   padding: 18px 20px 16px;
-  color: var(--n-text-color);
-  background: color-mix(in srgb, var(--n-color) 98%, var(--n-text-color) 2%);
+  color: var(--n-text-color-2);
+  background: color-mix(in srgb, var(--n-color) 96%, var(--n-text-color) 4%);
   border: 1px solid var(--n-border-color);
-  box-shadow: 0 14px 34px color-mix(in srgb, var(--n-text-color) 10%, transparent);
+}
+
+.center-detail-header-new,
+.center-version-detail-list,
+.center-detail-body :deep(.n-divider) {
+  position: relative;
+  z-index: 1;
 }
 
 .center-detail-body :deep(.n-divider) {
@@ -4186,9 +4192,9 @@ onUnmounted(() => {
   gap: 12px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: color-mix(in srgb, var(--n-color) 94%, var(--n-text-color) 3%);
-  border: 1px solid color-mix(in srgb, var(--n-border-color) 88%, transparent);
-  box-shadow: 0 8px 22px color-mix(in srgb, var(--n-text-color) 7%, transparent);
+  background: rgba(128,128,128,.055);
+  border: 1px solid var(--n-border-color);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--n-text-color) 6%, transparent);
 }
 .center-version-main { min-width: 0; flex: 1; }
 .center-version-title { font-weight: 800; line-height: 1.35; }
@@ -4275,13 +4281,11 @@ onUnmounted(() => {
   font-weight: 800;
   line-height: 1.2;
   color: var(--n-primary-color);
-  text-shadow: none;
 }
 .detail-year {
   font-size: 18px;
   font-weight: normal;
-  color: var(--n-text-color-2);
-  opacity: .86;
+  color: var(--n-text-color-3);
   margin-left: 6px;
 }
 .detail-meta {
@@ -4290,18 +4294,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
 }
 .detail-rating {
-  color: var(--n-warning-color, #f0a020);
-  font-weight: bold;
-  background: color-mix(in srgb, var(--n-warning-color, #f0a020) 18%, transparent);
+  color: var(--n-text-color-2);
+  font-weight: 700;
+  background: rgba(128,128,128,.10);
   padding: 2px 8px;
   border-radius: 12px;
 }
 .detail-overview {
   font-size: 13px;
-  line-height: 1.65;
+  line-height: 1.6;
   color: var(--n-text-color-2);
   display: -webkit-box;
   -webkit-line-clamp: 5;
@@ -4311,9 +4314,9 @@ onUnmounted(() => {
   text-align: justify;
 }
 .detail-credits {
-  color: var(--n-text-color);
-  background: color-mix(in srgb, var(--n-color) 94%, var(--n-text-color) 3%);
-  border: 1px solid color-mix(in srgb, var(--n-border-color) 88%, transparent);
+  color: var(--n-text-color-2);
+  background: rgba(128,128,128,.055);
+  border: 1px solid var(--n-border-color);
   border-radius: 12px;
   padding: 8px 10px;
 }
@@ -4330,8 +4333,8 @@ onUnmounted(() => {
   max-width: 210px;
   padding: 4px 7px 4px 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--n-color) 96%, var(--n-text-color) 2%);
-  border: 1px solid color-mix(in srgb, var(--n-border-color) 88%, transparent);
+  background: rgba(128,128,128,.06);
+  border: 1px solid var(--n-border-color);
 }
 .detail-person-avatar {
   width: 34px;
@@ -4348,7 +4351,7 @@ onUnmounted(() => {
 .detail-person-name {
   font-size: 12px;
   font-weight: 700;
-  color: var(--n-text-color);
+  color: var(--n-text-color-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
