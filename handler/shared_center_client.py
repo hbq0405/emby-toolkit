@@ -1,6 +1,8 @@
 # handler/shared_center_client.py
 # ETK 共享资源中心客户端（Rapid v2）：中心只保存资源索引/manifest，不保存 CK、不创建 115 分享。
+import base64
 import hashlib
+import json
 import logging
 import urllib.parse
 from datetime import datetime, timezone
@@ -230,6 +232,53 @@ def _dedupe_gap_items_for_center(items: List[Dict[str, Any]]) -> List[Dict[str, 
     return out
 
 
+
+
+def _encode_raw_ffprobe_zstd_b64(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """把 RAW JSON 压成 zstd+base64 作为上传传输格式。
+
+    中心端仍会解压、sanitize、校验 summary_json 后再落盘；这里仅减少
+    HTTP 请求体体积。zstandard 不可用或压缩失败时返回空 dict，调用方
+    自动回退旧的 raw_ffprobe_json 直传。
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    try:
+        import zstandard as zstd
+        raw_bytes = json.dumps(raw, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
+        compressed = zstd.ZstdCompressor(level=3).compress(raw_bytes)
+        return {
+            'encoding': 'zstd_base64',
+            'raw_zstd_b64': base64.b64encode(compressed).decode('ascii'),
+            'raw_bytes': len(raw_bytes),
+            'compressed_bytes': len(compressed),
+        }
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] RAW zstd 压缩失败，回退 JSON 直传: {e}")
+        return {}
+
+
+def _raw_upload_payload_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
+    encoded = _encode_raw_ffprobe_zstd_b64(raw)
+    if encoded:
+        return encoded
+    return {'raw_ffprobe_json': raw or {}}
+
+
+def _raw_upload_legacy_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
+    return {'raw_ffprobe_json': raw or {}}
+
+
+def _raw_upload_used_compression(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get('raw_zstd_b64') or payload.get('raw_zstd_base64') or payload.get('raw_compressed_b64'):
+        return True
+    for item in payload.get('items') or []:
+        if isinstance(item, dict) and (item.get('raw_zstd_b64') or item.get('raw_zstd_base64') or item.get('raw_compressed_b64')):
+            return True
+    return False
+
 class SharedCenterClient:
     def __init__(self):
         cfg = _shared_cfg()
@@ -432,13 +481,32 @@ class SharedCenterClient:
         return {'supported': True, 'items': results, 'hit_count': hit_count, 'gap_count': gap_count}
 
     def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size: int | None = None, summary_json: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        payload = {'sha1': sha1, 'size': size, 'raw_ffprobe_json': raw_ffprobe_json or {}}
+        raw = raw_ffprobe_json or {}
+        payload = {'sha1': sha1, 'size': size}
+        payload.update(_raw_upload_payload_fields(raw))
         if isinstance(summary_json, dict) and summary_json:
             payload['summary_json'] = summary_json
-        return self._post('/api/v1/rawffprobe/upload', payload, timeout=35)
+
+        # 兼容未升级中心端：压缩上传失败时自动回退旧 JSON 直传。
+        try:
+            return self._post('/api/v1/rawffprobe/upload', payload, timeout=35)
+        except RuntimeError:
+            if not _raw_upload_used_compression(payload):
+                raise
+            legacy_payload = {'sha1': sha1, 'size': size}
+            legacy_payload.update(_raw_upload_legacy_fields(raw))
+            if isinstance(summary_json, dict) and summary_json:
+                legacy_payload['summary_json'] = summary_json
+            logger.warning('  ➜ [共享资源] RAW 压缩上传失败，已回退 JSON 直传：%s...', str(sha1 or '')[:12])
+            return self._post('/api/v1/rawffprobe/upload', legacy_payload, timeout=60)
 
     def upload_raw_ffprobe_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload_items = []
+        legacy_items = []
+        raw_bytes_total = 0
+        compressed_bytes_total = 0
+        compressed_count = 0
+
         for item in items or []:
             if not isinstance(item, dict):
                 continue
@@ -446,14 +514,47 @@ class SharedCenterClient:
             raw = item.get('raw_ffprobe_json') or item.get('raw') or {}
             if not sha1 or not isinstance(raw, dict):
                 continue
-            entry = {'sha1': sha1, 'size': item.get('size'), 'raw_ffprobe_json': raw}
+
+            common = {'sha1': sha1, 'size': item.get('size')}
+            entry = dict(common)
+            entry.update(_raw_upload_payload_fields(raw))
+            legacy_entry = dict(common)
+            legacy_entry.update(_raw_upload_legacy_fields(raw))
+
             summary = item.get('summary_json') or item.get('summary') or {}
             if isinstance(summary, dict) and summary:
                 entry['summary_json'] = summary
+                legacy_entry['summary_json'] = summary
+
+            if entry.get('raw_zstd_b64'):
+                compressed_count += 1
+                raw_bytes_total += int(entry.get('raw_bytes') or 0)
+                compressed_bytes_total += int(entry.get('compressed_bytes') or 0)
+
             payload_items.append(entry)
+            legacy_items.append(legacy_entry)
+
         if not payload_items:
             return {'ok': True, 'items': [], 'errors': [], 'count': 0}
-        return self._post('/api/v1/rawffprobe/upload-batch', {'items': payload_items}, timeout=max(60, min(300, 20 + len(payload_items) * 4)))
+
+        payload = {'items': payload_items}
+        timeout = max(60, min(300, 20 + len(payload_items) * 4))
+        if compressed_count and raw_bytes_total and compressed_bytes_total:
+            ratio = compressed_bytes_total / max(raw_bytes_total, 1)
+            logger.info(
+                f"  ➜ [共享资源] RAW 批量压缩上传准备完成："
+                f"zstd={compressed_count}/{len(payload_items)}, "
+                f"{raw_bytes_total / 1024 / 1024:.1f}MB -> {compressed_bytes_total / 1024 / 1024:.1f}MB, "
+                f"ratio={ratio:.2%}"
+            )
+
+        try:
+            return self._post('/api/v1/rawffprobe/upload-batch', payload, timeout=timeout)
+        except RuntimeError:
+            if not _raw_upload_used_compression(payload):
+                raise
+            logger.warning('  ➜ [共享资源] RAW 批量压缩上传失败，已回退 JSON 直传。')
+            return self._post('/api/v1/rawffprobe/upload-batch', {'items': legacy_items}, timeout=max(timeout, 120))
 
     def raw_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
         return self._post('/api/v1/rawffprobe/batch', {'sha1_list': list(sha1_list or [])}, timeout=25)
@@ -548,6 +649,12 @@ class SharedCenterClient:
         return self._post(f"/api/v1/share-requests/{urllib.parse.quote(str(group_id or '').strip())}/cancel", payload or {}, timeout=20)
     
     def get_raw_ffprobe_batch(self, sha1_list, return_compressed=True):
+        """批量拉取中心 RAW。
+
+        v2 默认请求中心直接返回 zstd 压缩对象（base64），客户端本地解压，
+        避免中心端把 RAW 全部解压并序列化成巨型 JSON。电影/单集/季包都走
+        同一个接口：files=1 时就是单文件批量，files=N 时分片批量。
+        """
         sha1s = []
         seen = set()
         for value in sha1_list or []:
