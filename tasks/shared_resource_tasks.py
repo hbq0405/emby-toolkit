@@ -2443,51 +2443,110 @@ def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str
 
 
 def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """登记时上传“公共媒体壳”元数据，而不是把海报/简介绑在某个资源 source 上。
+
+    口径：
+    - Movie：创建/补充 Movie 壳，演职员挂 Movie 壳。
+    - Season/Episode：同时创建/补充 Series 壳和 Season 壳；
+      Season 壳只放季专属海报/简介，Series 壳放类型/评分/演职员。
+    - 中心端负责按“缺失才补、中文优先”合并，不让某个客户端拥有壳的所有权。
+    """
     candidate = candidate if isinstance(candidate, dict) else {}
     item_type = str(candidate.get('item_type') or '').strip()
     rows = _local_display_meta_rows_for_candidate(candidate)
 
+    def compact(meta: Dict[str, Any]) -> Dict[str, Any]:
+        out = {}
+        for k, v in (meta or {}).items():
+            if v in (None, '', [], {}):
+                continue
+            out[k] = v
+        return out
+
+    def meta_from_row(*, tmdb_id: str, item_type: str, season_number=None, row: Dict[str, Any] = None,
+                      fallback_title: str = '', fallback_year=None, include_series_fields: bool = True) -> Dict[str, Any]:
+        row = row if isinstance(row, dict) else {}
+        genres = _safe_json_list(row.get('genres_json')) if row and include_series_fields else []
+        meta = {
+            'tmdb_id': str(tmdb_id or '').strip(),
+            'item_type': item_type,
+            'season_number': season_number,
+            'title': _first_display_text(row.get('title'), fallback_title),
+            'original_title': _first_display_text(row.get('original_title'), candidate.get('original_title')),
+            'overview': _first_display_text(row.get('overview')),  # Season 不拿 Series 简介，由中心详情合并兜底。
+            'poster_path': _first_display_text(row.get('poster_path')),
+            'backdrop_path': _first_display_text(row.get('backdrop_path')),
+            'release_year': _safe_int_or_none(row.get('release_year')) or _safe_int_or_none(fallback_year),
+            'release_date': str(row.get('release_date') or '') or None,
+        }
+        if include_series_fields:
+            meta.update({
+                'rating': row.get('rating'),
+                'genres_json': genres[:12],
+                'original_language': _first_display_text(row.get('original_language'), candidate.get('original_language')),
+            })
+        return compact(meta)
+
     if item_type == 'Movie':
         media_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
-        display_type = 'Movie'
-        season_no = None
-        row = rows.get('movie') or {}
-        series_row = {}
-        season_row = {}
-    else:
-        media_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
-        display_type = 'Season'
-        season_no = _safe_int_or_none(candidate.get('season_number'))
-        season_row = rows.get('season') or {}
-        series_row = rows.get('series') or {}
-        row = season_row or series_row
-    if not media_tmdb_id:
+        if not media_tmdb_id:
+            return {}
+        movie_row = rows.get('movie') or {}
+        movie_meta = meta_from_row(
+            tmdb_id=media_tmdb_id,
+            item_type='Movie',
+            season_number=None,
+            row=movie_row,
+            fallback_title=candidate.get('title'),
+            fallback_year=candidate.get('release_year'),
+            include_series_fields=True,
+        )
+        bundle = {
+            'display_meta_json': movie_meta,
+            'display_meta_items_json': [movie_meta] if movie_meta else [],
+        }
+        bundle.update(_build_display_credits_bundle(movie_row) if movie_row else {'people_json': [], 'credits_json': []})
+        return bundle
+
+    series_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    season_no = _safe_int_or_none(candidate.get('season_number'))
+    if not series_id:
         return {}
 
-    # 季展示字段：Season 优先，Series 兜底；整剧字段：Series 专属。
-    visual_row = row
-    show_row = series_row if display_type == 'Season' else row
-    genres = _safe_json_list(show_row.get('genres_json')) if show_row else []
-    display_meta = {
-        'tmdb_id': media_tmdb_id,
-        'item_type': display_type,
-        'season_number': season_no,
-        'title': _first_display_text(visual_row.get('title') if visual_row else '', series_row.get('title') if series_row else '', candidate.get('title')),
-        'original_title': _first_display_text(visual_row.get('original_title') if visual_row else '', series_row.get('original_title') if series_row else '', candidate.get('original_title')),
-        'overview': _first_display_text(season_row.get('overview') if season_row else '', series_row.get('overview') if series_row else '', candidate.get('overview')),
-        'poster_path': _first_display_text(season_row.get('poster_path') if season_row else '', series_row.get('poster_path') if series_row else '', candidate.get('poster_path')),
-        'backdrop_path': _first_display_text(season_row.get('backdrop_path') if season_row else '', series_row.get('backdrop_path') if series_row else '', candidate.get('backdrop_path')),
-        'release_year': _safe_int_or_none((visual_row or {}).get('release_year')) or _safe_int_or_none((series_row or {}).get('release_year')) or _safe_int_or_none(candidate.get('release_year')),
-        'release_date': str((visual_row or {}).get('release_date') or (series_row or {}).get('release_date') or '') or None,
-        # 类型、评分、语言只从电影/剧条目取；Season 行不参与这些字段。
-        'rating': (show_row or {}).get('rating'),
-        'genres_json': genres[:12],
-        'original_language': _first_display_text((show_row or {}).get('original_language'), candidate.get('original_language')),
+    season_row = rows.get('season') or {}
+    series_row = rows.get('series') or {}
+    series_meta = meta_from_row(
+        tmdb_id=series_id,
+        item_type='Series',
+        season_number=None,
+        row=series_row,
+        fallback_title=candidate.get('title'),
+        fallback_year=candidate.get('release_year'),
+        include_series_fields=True,
+    ) if (series_row or series_id) else {}
+    season_meta = meta_from_row(
+        tmdb_id=series_id,
+        item_type='Season',
+        season_number=season_no,
+        row=season_row,
+        fallback_title=(season_row or {}).get('title') or candidate.get('title'),
+        fallback_year=(season_row or {}).get('release_year') or candidate.get('release_year'),
+        include_series_fields=False,
+    ) if season_no is not None else {}
+
+    items = []
+    if series_meta:
+        items.append(series_meta)
+    if season_meta:
+        items.append(season_meta)
+    # 兼容旧中心：display_meta_json 仍然给 Season 壳；新中心优先吃 display_meta_items_json。
+    legacy_meta = season_meta or series_meta
+    bundle = {
+        'display_meta_json': legacy_meta,
+        'display_meta_items_json': items,
     }
-    display_meta = {k: v for k, v in display_meta.items() if v not in (None, '', [], {})}
-    bundle = {'display_meta_json': display_meta}
-    credit_row = show_row if display_type in ('Movie', 'Season') else row
-    bundle.update(_build_display_credits_bundle(credit_row) if credit_row else {'people_json': [], 'credits_json': []})
+    # 演职员只从 Series 条目取；没有 Series 行就不上传，避免 Season/分集演员污染整剧壳。
+    bundle.update(_build_display_credits_bundle(series_row) if series_row else {'people_json': [], 'credits_json': []})
     return bundle
 
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid') -> Dict[str, Any]:
