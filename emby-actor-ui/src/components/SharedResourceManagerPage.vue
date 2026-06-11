@@ -321,7 +321,6 @@
         <div
             v-if="activeCenterDetailRow"
             class="center-detail-body"
-            :style="centerDetailBodyStyle(activeCenterDetailRow)"
           >
           <!-- ★ 新增：图文并茂的头部信息区 -->
           <div class="center-detail-header-new">
@@ -2586,50 +2585,6 @@ const centerPosterUrl = (row, size = 'w185') => {
   }
   return '/default-poster.png';
 };
-const centerBackdropCandidates = (row) => {
-  const meta = centerTmdbMeta(row);
-  const versions = Array.isArray(row?.versions) ? row.versions : [];
-  const resources = Array.isArray(row?.resources) ? row.resources : [];
-  const children = Array.isArray(row?.children) ? row.children : [];
-  const packItems = Array.isArray(row?.pack_items) ? row.pack_items : [];
-  const nestedBackdrops = [...versions, ...resources, ...children, ...packItems]
-    .flatMap(v => [
-      v?.backdrop_path,
-      v?.backdrop_url,
-      v?.backdrop,
-      v?.tmdb_meta?.backdrop_path,
-      v?.tmdb_meta?.backdrop_url,
-      v?.media_meta?.backdrop_path,
-      v?.media_meta?.backdrop_url,
-    ]);
-  return [
-    row?.backdrop_path,
-    row?.backdrop_url,
-    row?.backdrop,
-    meta.backdrop_path,
-    meta.backdrop_url,
-    ...nestedBackdrops,
-  ].map(v => String(v || '').trim()).filter(Boolean);
-};
-
-const centerBackdropUrl = (row, size = 'w500') => {
-  for (const value of centerBackdropCandidates(row)) {
-    const url = tmdbPosterUrl(value, size);
-    if (url) return url;
-  }
-  // 极少数中心壳只有 poster 没有 backdrop；用海报兜底做虚化背景，避免详情页空白。
-  for (const value of centerPosterCandidates(row)) {
-    const url = tmdbPosterUrl(value, size);
-    if (url && !url.endsWith('/default-poster.png')) return url;
-  }
-  return '';
-};
-
-const centerDetailBodyStyle = (row) => {
-  // 详情页背景只在打开弹窗时加载一张中等尺寸 backdrop；走 /api/image_proxy，避免直连 TMDb。
-  const url = centerBackdropUrl(row, 'w780');
-  return url ? { '--center-detail-backdrop': `url("${url.replace(/"/g, '%22')}")` } : {};
-};
 const centerPosterImgAttrs = (row, size = 'w185', index = 0) => {
   const title = centerPosterWallFullTitle(row) || centerDisplayTitle(row) || '共享资源海报';
   const eager = Number(index || 0) < 8;
@@ -4196,9 +4151,7 @@ onUnmounted(() => {
   margin: 4px 0 2px;
 }
 .center-detail-body {
-  --center-detail-backdrop: none;
   position: relative;
-  isolation: isolate;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -4206,51 +4159,13 @@ onUnmounted(() => {
   border-radius: 18px;
   padding: 18px 20px 16px;
   color: var(--n-text-color);
-  background: color-mix(in srgb, var(--n-color) 96%, var(--n-text-color) 4%);
-  border: 1px solid color-mix(in srgb, var(--n-border-color) 86%, transparent);
-  box-shadow: 0 18px 46px color-mix(in srgb, var(--n-text-color) 12%, transparent);
-}
-
-.center-detail-body::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: var(--center-detail-backdrop);
-  background-size: cover;
-  background-position: center 28%;
-  filter: blur(2px) saturate(1.06);
-  transform: scale(1.025);
-  opacity: .36;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.center-detail-body::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(90deg,
-      color-mix(in srgb, var(--n-color) 90%, transparent) 0%,
-      color-mix(in srgb, var(--n-color) 75%, transparent) 42%,
-      color-mix(in srgb, var(--n-color) 62%, transparent) 100%),
-    linear-gradient(to bottom,
-      color-mix(in srgb, var(--n-color) 28%, transparent) 0%,
-      color-mix(in srgb, var(--n-color) 70%, transparent) 72%,
-      color-mix(in srgb, var(--n-color) 92%, transparent) 100%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.center-detail-header-new,
-.center-version-detail-list,
-.center-detail-body :deep(.n-divider) {
-  position: relative;
-  z-index: 1;
+  background: color-mix(in srgb, var(--n-color) 98%, var(--n-text-color) 2%);
+  border: 1px solid var(--n-border-color);
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--n-text-color) 10%, transparent);
 }
 
 .center-detail-body :deep(.n-divider) {
-  border-color: color-mix(in srgb, var(--n-border-color) 82%, transparent) !important;
+  border-color: var(--n-border-color) !important;
 }
 .center-detail-head {
   display: flex;
@@ -4271,10 +4186,9 @@ onUnmounted(() => {
   gap: 12px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: color-mix(in srgb, var(--n-color) 86%, transparent);
-  border: 1px solid color-mix(in srgb, var(--n-border-color) 84%, transparent);
+  background: color-mix(in srgb, var(--n-color) 94%, var(--n-text-color) 3%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 88%, transparent);
   box-shadow: 0 8px 22px color-mix(in srgb, var(--n-text-color) 7%, transparent);
-  backdrop-filter: blur(12px) saturate(1.04);
 }
 .center-version-main { min-width: 0; flex: 1; }
 .center-version-title { font-weight: 800; line-height: 1.35; }
@@ -4398,11 +4312,10 @@ onUnmounted(() => {
 }
 .detail-credits {
   color: var(--n-text-color);
-  background: color-mix(in srgb, var(--n-color) 78%, transparent);
-  border: 1px solid color-mix(in srgb, var(--n-border-color) 84%, transparent);
+  background: color-mix(in srgb, var(--n-color) 94%, var(--n-text-color) 3%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 88%, transparent);
   border-radius: 12px;
   padding: 8px 10px;
-  backdrop-filter: blur(12px) saturate(1.04);
 }
 .detail-people-row {
   display: flex;
@@ -4417,8 +4330,8 @@ onUnmounted(() => {
   max-width: 210px;
   padding: 4px 7px 4px 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--n-color) 82%, transparent);
-  border: 1px solid color-mix(in srgb, var(--n-border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--n-color) 96%, var(--n-text-color) 2%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 88%, transparent);
 }
 .detail-person-avatar {
   width: 34px;
