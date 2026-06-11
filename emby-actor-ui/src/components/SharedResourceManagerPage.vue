@@ -367,7 +367,7 @@
                     {{ tagItem.label }}
                   </n-tag>
                 </div>
-                <div v-if="centerEpisodePreview(version)" class="center-version-episodes">{{ centerEpisodePreview(version) }}</div>
+                <!-- 详情页不展开/展示包内单集；发起秒传时再按需拉取 children。 -->
               </div>
               <div class="center-version-action">
                 <n-button
@@ -1804,9 +1804,16 @@ const executeImport = async (row, mode) => {
   let importRow = row;
   const originalKey = centerTableRowKey(row);
   if (centerNeedsLoadChildren(row)) {
-    await loadCenterSourceChildren(row);
+    const loadedChildren = await loadCenterSourceChildren(row);
     await nextTick();
-    importRow = findCenterGroupByKey(groupedCenterSources.value || [], originalKey) || row;
+    const latest = findCenterGroupByKey(groupedCenterSources.value || [], originalKey);
+    importRow = latest || (loadedChildren ? {
+      ...row,
+      children: loadedChildren.children || [],
+      pack_items: loadedChildren.pack_items || loadedChildren.children || [],
+      children_loaded: true,
+      _center_children_loaded: true,
+    } : row);
   }
   const sourcePayload = buildCenterImportSourcePayload(importRow);
   if (!sourcePayload.source_kind || !sourcePayload.source_id) {
@@ -2718,11 +2725,10 @@ const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
   const pick = (key) => Array.isArray(row[key]) ? row[key].filter(Boolean) : [];
   // 详情页资源列表只展示“电影源 / 季包源”这一层。
-  // resources / versions 是源版本；children / pack_items 是季包包内单集，仅在没有源版本时兜底。
+  // children / pack_items 是包内单集，详情页不兜底展示；秒传时再懒加载。
   let versions = pick('resources');
   if (!versions.length) versions = pick('versions');
   if (!versions.length) versions = pick('items');
-  if (!versions.length) versions = [...pick('children'), ...pick('pack_items')];
   if (!versions.length) versions = [row];
   const seen = new Set();
   return versions
@@ -2774,15 +2780,7 @@ const centerVersionTags = (row) => {
   centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   return tags;
 };
-const centerEpisodePreview = (row) => {
-  const children = [...(Array.isArray(row?.children) ? row.children : []), ...(!Array.isArray(row?.children) || !row.children.length ? (Array.isArray(row?.pack_items) ? row.pack_items : []) : [])]
-    .filter(x => x && !centerIsLazyPlaceholder(x));
-  if (!children.length) return '';
-  const nums = children.map(x => Number(x?.episode_number || 0)).filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
-  if (!nums.length) return `包含 ${children.length} 个文件`;
-  const shown = nums.slice(0, 18).map(n => `E${String(n).padStart(2, '0')}`).join('、');
-  return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
-};
+const centerEpisodePreview = () => '';
 const mergeCenterDetailPayload = (base, payload) => {
   const row = { ...(base || {}) };
   const data = payload?.data && typeof payload.data === 'object' ? payload.data : (payload || {});
@@ -2798,9 +2796,12 @@ const mergeCenterDetailPayload = (base, payload) => {
   }
   if (!merged.actors && Array.isArray(data.actors)) merged.actors = data.actors;
   if (!merged.directors && Array.isArray(data.directors)) merged.directors = data.directors;
-  for (const key of ['resources', 'versions', 'children', 'pack_items']) {
+  for (const key of ['resources', 'versions', 'items']) {
     if (Array.isArray(data[key]) && data[key].length) merged[key] = data[key];
   }
+  // 详情页不接收包内单集，避免旧中心/旧缓存把 children/pack_items 带回弹窗。
+  delete merged.children;
+  delete merged.pack_items;
   return merged;
 };
 
@@ -2811,7 +2812,8 @@ const centerDetailParams = (row) => ({
   tmdb_id: row?.tmdb_id || '',
   item_type: centerRowType(row) || row?.item_type || '',
   season_number: row?.season_number ?? '',
-  limit: 500,
+  // 详情页只取展示元数据 + 版本壳；包内集列表在秒传确认后再请求。
+  limit: 120,
 });
 
 const loadCenterSourceDetail = async (row) => {
@@ -2822,23 +2824,15 @@ const loadCenterSourceDetail = async (row) => {
 
 const openCenterDetail = async (row) => {
   if (!row) return;
-  const key = centerTableRowKey(row);
   activeCenterDetailRow.value = row;
   showCenterDetailModal.value = true;
   centerDetailLoading.value = true;
-  let detailPayload = null;
   try {
     try {
-      detailPayload = await loadCenterSourceDetail(row);
+      const detailPayload = await loadCenterSourceDetail(row);
       activeCenterDetailRow.value = mergeCenterDetailPayload(row, detailPayload);
     } catch (e) {
-      console.warn('[共享资源] 加载中心详情失败，退回列表壳/懒加载子项:', e);
-    }
-    if (centerNeedsLoadChildren(row)) {
-      await loadCenterSourceChildren(row);
-      await nextTick();
-      const latest = findCenterGroupByKey(groupedCenterSources.value || [], key) || activeCenterDetailRow.value || row;
-      activeCenterDetailRow.value = mergeCenterDetailPayload(latest, detailPayload || {});
+      console.warn('[共享资源] 加载中心详情失败，退回列表壳:', e);
     }
   } finally {
     centerDetailLoading.value = false;
@@ -3014,9 +3008,11 @@ const applyCenterLoadedChildren = (target, children, packItems) => {
 };
 
 const loadCenterSourceChildren = async (row) => {
-  if (!centerNeedsLoadChildren(row)) return;
+  const existingChildren = Array.isArray(row?.children) ? row.children.filter(x => x && !centerIsLazyPlaceholder(x)) : [];
+  const existingPackItems = Array.isArray(row?.pack_items) ? row.pack_items.filter(x => x && !centerIsLazyPlaceholder(x)) : [];
+  if (!centerNeedsLoadChildren(row)) return { children: existingChildren, pack_items: existingPackItems };
   const key = centerTableRowKey(row);
-  if (!key || centerChildrenLoading[key]) return;
+  if (!key || centerChildrenLoading[key]) return { children: existingChildren, pack_items: existingPackItems };
   centerChildrenLoading[key] = true;
   try {
     const sourceKind = String(row?.source_kind || row?.lazy_children_kind || '').toLowerCase();
@@ -3033,8 +3029,10 @@ const loadCenterSourceChildren = async (row) => {
     const children = res.data?.children || res.data?.items || [];
     const packItems = res.data?.pack_items || children;
     applyCenterLoadedChildren(row, children, packItems);
+    return { children, pack_items: packItems };
   } catch (e) {
     message.error(e.response?.data?.message || '加载季包集明细失败');
+    return { children: existingChildren, pack_items: existingPackItems };
   } finally {
     delete centerChildrenLoading[key];
   }
