@@ -2386,10 +2386,24 @@ def _display_title_is_season_only(value: Any) -> bool:
     return False
 
 
+def _strip_display_season_suffix(value: Any) -> str:
+    """Series 壳标题只能是剧名；客户端即使只拿到“剧名 第 X 季”也先剥掉季号。"""
+    text = _first_display_text(value)
+    if not text:
+        return ''
+    for pattern in (
+        r'\s*(?:[-·—–_]+\s*)?S\d{1,3}\s*$',
+        r'\s*(?:[-·—–_]+\s*)?Season\s*\d{1,3}\s*$',
+        r'\s*(?:[-·—–_]+\s*)?第\s*\d{1,3}\s*季\s*$',
+    ):
+        text = re.sub(pattern, '', text, flags=re.I).strip()
+    return '' if _display_title_is_season_only(text) else text
+
+
 def _safe_series_title(*values: Any) -> str:
     for value in values:
-        text = _first_display_text(value)
-        if text and not _display_title_is_season_only(text):
+        text = _strip_display_season_suffix(value)
+        if text:
             return text
     return ''
 

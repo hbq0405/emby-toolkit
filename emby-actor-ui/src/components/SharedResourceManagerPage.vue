@@ -2404,7 +2404,9 @@ const centerTmdbMeta = (row) => {
 };
 const centerStripYear = (text) => String(text || '').replace(/\s*[（(]\s*(?:19|20)\d{2}\s*[）)]\s*$/g, '').trim();
 const centerBaseTitle = (row) => {
-  return centerStripYear(stripCenterSeasonFromTitle(row?.title || row?.standard_title || row?.media_title || row?.root_name || row?.file_name || row?.tmdb_id || '', row));
+  const meta = centerTmdbMeta(row);
+  const rawTitle = row?.display_title || meta.display_title || row?.series_title || meta.series_title || row?.title || row?.standard_title || row?.media_title || row?.root_name || row?.file_name || row?.tmdb_id || '';
+  return centerStripYear(stripCenterSeasonFromTitle(rawTitle, row));
 };
 const centerDisplayYear = (row) => centerTmdbMeta(row).year || row?.release_year || '';
 const centerDisplayTitle = (row) => {
