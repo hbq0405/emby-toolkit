@@ -4088,14 +4088,22 @@ onUnmounted(() => {
   gap: 4px;
   margin-top: 6px;
 }
-.center-card-tags :deep(.n-tag),
-.center-version-tags :deep(.n-tag) {
+.center-card-tags :deep(.n-tag) {
   max-width: 92px;
 }
-.center-card-tags :deep(.n-tag__content),
-.center-version-tags :deep(.n-tag__content) {
+
+.center-version-tags :deep(.n-tag) {
+  max-width: none;
+}
+.center-card-tags :deep(.n-tag__content) {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.center-version-tags :deep(.n-tag__content) {
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 .center-card-actions {
