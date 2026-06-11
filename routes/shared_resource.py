@@ -1238,13 +1238,25 @@ def api_center_source_detail():
             limit=int(request.args.get('limit') or 200),
         )
 
+        def _is_pack_detail_row(row):
+            row = row if isinstance(row, dict) else {}
+            kind = str(row.get('source_kind') or row.get('lazy_children_kind') or '').strip().lower()
+            typ = str(row.get('display_type') or row.get('item_type') or '').strip().lower()
+            return bool(kind in {'season_hub', 'completed_season'} or typ in {'pack', 'season', 'series'})
+
         def _decorate_detail_row(row):
             if not isinstance(row, dict):
                 return {}
             row = dict(row)
-            for key in ('versions', 'children', 'pack_items', 'resources'):
-                if isinstance(row.get(key), list):
-                    row[key] = [_decorate_detail_row(x) for x in row.get(key) if isinstance(x, dict)]
+            # 详情页资源列表只展示“电影源/季包源”这一层。
+            # children / pack_items 是季包包内单集，避免详情弹窗把整季几十集全部铺出来。
+            if _is_pack_detail_row(row):
+                row.pop('children', None)
+                row.pop('pack_items', None)
+            else:
+                for key in ('versions', 'children', 'pack_items', 'resources'):
+                    if isinstance(row.get(key), list):
+                        row[key] = [_decorate_detail_row(x) for x in row.get(key) if isinstance(x, dict)]
             if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
                 row['version_summary'] = {}
                 row.setdefault('summary_json', {})
@@ -1256,9 +1268,12 @@ def api_center_source_detail():
             row = _apply_local_season_meta(row)
             return row
 
-        for key in ('resources', 'versions', 'items', 'children', 'pack_items'):
+        for key in ('resources', 'versions', 'items'):
             if isinstance(resp.get(key), list):
                 resp[key] = [_decorate_detail_row(x) for x in resp.get(key) if isinstance(x, dict)]
+        # 顶层 children / pack_items 不再给详情弹窗使用；展开集详情另走 children 接口。
+        resp['children'] = []
+        resp['pack_items'] = []
         return jsonify({'success': True, 'data': resp, **resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'data': {}, 'resources': [], 'versions': [], 'children': []}), 500

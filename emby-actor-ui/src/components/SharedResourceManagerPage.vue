@@ -339,8 +339,19 @@
               <div class="detail-overview">
                 {{ centerTmdbMeta(activeCenterDetailRow).overview || activeCenterDetailRow.overview || '暂无简介' }}
               </div>
-              <div v-if="centerDetailCreditsText(activeCenterDetailRow)" class="detail-credits">
-                {{ centerDetailCreditsText(activeCenterDetailRow) }}
+              <div v-if="centerDetailPeople(activeCenterDetailRow).length" class="detail-credits detail-people-row">
+                <div
+                  v-for="person in centerDetailPeople(activeCenterDetailRow)"
+                  :key="centerPersonKey(person)"
+                  class="detail-person-card"
+                  :title="centerPersonTooltip(person)"
+                >
+                  <img v-bind="centerProfileImgAttrs(person)" class="detail-person-avatar" @error="onCenterProfileError" />
+                  <div class="detail-person-info">
+                    <div class="detail-person-name">{{ centerPersonName(person) }}</div>
+                    <div class="detail-person-role">{{ centerPersonRoleText(person) }}</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2432,25 +2443,72 @@ const centerDisplayGenres = (row) => {
 
 const centerPeopleList = (value) => Array.isArray(value) ? value.filter(x => x && typeof x === 'object') : [];
 const centerPersonName = (p) => String(p?.name || p?.primary_name || p?.original_name || '').trim();
+const centerPersonCharacter = (p) => String(p?.character || p?.character_name || '').trim();
 const centerDetailCreditsText = (row) => {
   if (!row || typeof row !== 'object') return '';
-  const meta = centerTmdbMeta(row);
-  const directors = centerPeopleList(row.directors || meta.directors);
-  const actors = centerPeopleList(row.actors || meta.actors);
+  const actors = centerDetailPeople(row).filter(p => p._credit_role !== 'director');
+  const directors = centerDetailPeople(row).filter(p => p._credit_role === 'director');
   const parts = [];
-  if (directors.length) {
-    const names = directors.map(centerPersonName).filter(Boolean).slice(0, 1).join('、');
-    if (names) parts.push(`导演：${names}`);
-  }
   if (actors.length) {
     const text = actors.slice(0, 6).map(p => {
       const name = centerPersonName(p);
-      const character = String(p?.character || p?.character_name || '').trim();
+      const character = centerPersonCharacter(p);
       return name ? (character ? `${name} 饰 ${character}` : name) : '';
     }).filter(Boolean).join('；');
     if (text) parts.push(`主演：${text}`);
   }
+  if (directors.length) {
+    const names = directors.map(centerPersonName).filter(Boolean).slice(0, 1).join('、');
+    if (names) parts.push(`导演：${names}`);
+  }
   return parts.join('  ·  ');
+};
+const centerDetailPeople = (row) => {
+  if (!row || typeof row !== 'object') return [];
+  const meta = centerTmdbMeta(row);
+  const actors = centerPeopleList(row.actors || meta.actors)
+    .slice(0, 6)
+    .map(p => ({ ...p, _credit_role: 'actor' }))
+    .filter(centerPersonName);
+  const directors = centerPeopleList(row.directors || meta.directors)
+    .slice(0, 1)
+    .map(p => ({ ...p, _credit_role: 'director' }))
+    .filter(centerPersonName);
+  // 展示顺序：主演在前，导演最后。
+  return [...actors, ...directors];
+};
+const centerPersonRoleText = (p) => {
+  if (!p) return '';
+  if (p._credit_role === 'director' || String(p.credit_type || '').toLowerCase() === 'director') return '导演';
+  const character = centerPersonCharacter(p);
+  return character ? `饰 ${character}` : '主演';
+};
+const centerPersonKey = (p) => `${p?._credit_role || p?.credit_type || 'person'}:${p?.tmdb_person_id || p?.id || centerPersonName(p)}:${centerPersonCharacter(p)}`;
+const centerPersonTooltip = (p) => {
+  const name = centerPersonName(p);
+  const role = centerPersonRoleText(p);
+  return [name, role].filter(Boolean).join(' · ');
+};
+const centerProfileFallbackSvg = 'data:image/svg+xml;utf8,' + encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#263866"/><stop offset="1" stop-color="#111827"/></linearGradient></defs>
+  <rect width="96" height="96" rx="18" fill="url(#g)"/>
+  <circle cx="48" cy="35" r="16" fill="#94a3b8" opacity=".72"/>
+  <path d="M20 82c4-18 16-28 28-28s24 10 28 28" fill="#94a3b8" opacity=".72"/>
+</svg>`);
+const centerProfileUrl = (p, size = 'w185') => tmdbPosterUrl(p?.profile_path || p?.profile_url || p?.avatar || '', size) || centerProfileFallbackSvg;
+const centerProfileImgAttrs = (p) => ({
+  src: centerProfileUrl(p, 'w185'),
+  alt: centerPersonName(p) || '人物头像',
+  title: centerPersonTooltip(p),
+  loading: 'lazy',
+  decoding: 'async',
+  referrerpolicy: 'no-referrer',
+  draggable: 'false',
+});
+const onCenterProfileError = (event) => {
+  const target = event?.target;
+  if (target && target.src !== centerProfileFallbackSvg) target.src = centerProfileFallbackSvg;
 };
 
 const centerPosterWallPrimaryTitle = (row) => {
@@ -2641,12 +2699,14 @@ const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version
 // ★ 修改 1：按热度 (success_count) 降序排序
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
-  const buckets = [];
-  for (const key of ['resources', 'versions', 'children', 'pack_items']) {
-    const value = row[key];
-    if (Array.isArray(value) && value.length) buckets.push(...value);
-  }
-  const versions = buckets.length ? buckets : [row];
+  const pick = (key) => Array.isArray(row[key]) ? row[key].filter(Boolean) : [];
+  // 详情页资源列表只展示“电影源 / 季包源”这一层。
+  // resources / versions 是源版本；children / pack_items 是季包包内单集，仅在没有源版本时兜底。
+  let versions = pick('resources');
+  if (!versions.length) versions = pick('versions');
+  if (!versions.length) versions = pick('items');
+  if (!versions.length) versions = [...pick('children'), ...pick('pack_items')];
+  if (!versions.length) versions = [row];
   const seen = new Set();
   return versions
     .filter(v => v && !centerIsLazyPlaceholder(v))
@@ -4219,12 +4279,54 @@ onUnmounted(() => {
   text-align: justify;
 }
 .detail-credits {
-  font-size: 12px;
-  line-height: 1.5;
   color: rgba(255, 255, 255, 0.78);
   background: rgba(255, 255, 255, 0.06);
   border-radius: 10px;
-  padding: 6px 10px;
+  padding: 8px 10px;
+}
+.detail-people-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.detail-person-card {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 120px;
+  max-width: 210px;
+  padding: 4px 7px 4px 4px;
+  border-radius: 999px;
+  background: rgba(8, 14, 35, .42);
+  border: 1px solid rgba(148, 177, 255, .12);
+}
+.detail-person-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255,255,255,.08);
+  flex: 0 0 auto;
+}
+.detail-person-info {
+  min-width: 0;
+  line-height: 1.2;
+}
+.detail-person-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255,255,255,.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detail-person-role {
+  margin-top: 2px;
+  font-size: 11px;
+  color: rgba(255,255,255,.58);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 </style>
