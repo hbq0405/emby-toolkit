@@ -316,15 +316,15 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showCenterDetailModal" preset="card" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
+    <n-modal v-model:show="showCenterDetailModal" preset="card" style="width: 1040px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
       <n-spin :show="centerDetailLoading">
         <div v-if="activeCenterDetailRow" class="center-detail-body">
           <!-- ★ 新增：图文并茂的头部信息区 -->
           <div class="center-detail-header-new">
-            <img v-bind="centerPosterImgAttrs(activeCenterDetailRow, 'w300')" class="detail-poster" @error="onCenterPosterError" />
+            <img v-bind="centerPosterImgAttrs(activeCenterDetailRow, 'w500')" class="detail-poster" @error="onCenterPosterError" />
             <div class="detail-info">
               <div class="detail-title">
-                {{ centerBaseTitle(activeCenterDetailRow) }}
+                {{ centerPosterWallPrimaryTitle(activeCenterDetailRow) }}
                 <span class="detail-year" v-if="centerDisplayYear(activeCenterDetailRow)">({{ centerDisplayYear(activeCenterDetailRow) }})</span>
               </div>
               <div class="detail-meta">
@@ -4233,16 +4233,17 @@ onUnmounted(() => {
 /* 弹窗头部图文排版 */
 .center-detail-header-new {
   display: flex;
-  gap: 20px;
+  gap: 24px;
   margin-bottom: 4px;
 }
+
 .detail-poster {
-  width: 130px;
-  height: 195px;
-  border-radius: 8px;
+  width: 160px;
+  height: 240px;
+  border-radius: 10px;
   object-fit: cover;
-  box-shadow: 0 6px 16px rgba(0,0,0,0.3);
-  flex-shrink: 0;
+  box-shadow: 0 8px 22px rgba(0,0,0,0.36);
+  flex: 0 0 160px;
   background-color: #1a1a1a;
 }
 .detail-info {
