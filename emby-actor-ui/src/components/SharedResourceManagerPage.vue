@@ -2153,29 +2153,35 @@ const groupCenterSources = (items, orderBy = 'latest') => {
     }
   }
 
-  for (const group of processedGroups) {
-    if (orderBy === 'popular') {
-      group.versions.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
-      group.sort_val = Math.max(...group.versions.map(v => v.success_count || 0));
-    } else if (orderBy === 'size') {
-      group.versions.sort((a, b) => (b.size || b.total_size || 0) - (a.size || a.total_size || 0));
-      group.sort_val = Math.max(...group.versions.map(v => v.size || v.total_size || 0));
-    } else if (orderBy === 'name') {
-      group.versions.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-      group.sort_val = group.title || '';
-    } else {
-      group.versions.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
-      group.sort_val = centerCreatedTime(group.versions[0]);
+  // ★ 新增判断：如果后端已经分好组并排好序（带有 versions 数组），前端绝对不能再重新跨页排序
+  // 否则会导致不同页的数据因为前端 sort_val 计算差异而互相穿插、乱跳。
+  const isBackendGrouped = (items || []).some(item => Array.isArray(item?.versions));
+  
+  if (!isBackendGrouped) {
+    for (const group of processedGroups) {
+      if (orderBy === 'popular') {
+        group.versions.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
+        group.sort_val = Math.max(...group.versions.map(v => v.success_count || 0));
+      } else if (orderBy === 'size') {
+        group.versions.sort((a, b) => (b.size || b.total_size || 0) - (a.size || a.total_size || 0));
+        group.sort_val = Math.max(...group.versions.map(v => v.size || v.total_size || 0));
+      } else if (orderBy === 'name') {
+        group.versions.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+        group.sort_val = group.title || '';
+      } else {
+        group.versions.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
+        group.sort_val = centerCreatedTime(group.versions[0]);
+      }
+      group.created_at = group.versions[0]?.created_at || group.created_at;
+      group.updated_at = group.versions[0]?.updated_at || group.updated_at;
     }
-    group.created_at = group.versions[0]?.created_at || group.created_at;
-    group.updated_at = group.versions[0]?.updated_at || group.updated_at;
-  }
 
-  processedGroups.sort((a, b) => {
-    if (orderBy === 'popular' || orderBy === 'size') return b.sort_val - a.sort_val;
-    if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
-    return b.sort_val - a.sort_val;
-  });
+    processedGroups.sort((a, b) => {
+      if (orderBy === 'popular' || orderBy === 'size') return b.sort_val - a.sort_val;
+      if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
+      return b.sort_val - a.sort_val;
+    });
+  }
 
   for (const group of processedGroups) {
     if (centerNeedsLoadChildren(group) && (!Array.isArray(group.children) || !group.children.length)) {
