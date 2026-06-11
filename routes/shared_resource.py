@@ -9,7 +9,7 @@ import uuid
 from typing import Any, Dict, List
 
 import requests
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 
 import constants
 import config_manager
@@ -22,6 +22,33 @@ import tasks.shared_resource_tasks as shared_tasks
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
 logger = logging.getLogger(__name__)
+
+
+@shared_resource_bp.route('/tmdb/image/<size>/<path:image_path>', methods=['GET'])
+@admin_required
+def api_shared_tmdb_image_proxy(size: str, image_path: str):
+    """中心资源库海报墙图片代理。
+
+    小工具补齐到中心的是 TMDb 原始 poster_path/backdrop_path。前端不要直连
+    image.tmdb.org，统一走本机后端代理，避免海报墙大量图片因客户端网络环境
+    不稳定而显示破图。
+    """
+    size = str(size or 'w185').strip()
+    if size not in {'w92', 'w154', 'w185', 'w300', 'w342', 'w500', 'w780', 'original'}:
+        size = 'w185'
+    image_path = str(image_path or '').strip().lstrip('/').replace('..', '')
+    if not image_path:
+        return Response(status=404)
+    try:
+        url = f"https://image.tmdb.org/t/p/{size}/{image_path}"
+        r = requests.get(url, timeout=30, headers={'User-Agent': 'ETK-Center-ImageProxy/1.0'})
+        if r.status_code >= 400:
+            return Response(status=r.status_code)
+        resp = Response(r.content, status=200, content_type=r.headers.get('Content-Type') or 'image/jpeg')
+        resp.headers['Cache-Control'] = 'public, max-age=86400'
+        return resp
+    except Exception:
+        return Response(status=502)
 
 
 def _boolish(value, default=False):

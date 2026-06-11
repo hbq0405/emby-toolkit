@@ -2461,7 +2461,7 @@ const tmdbPosterUrl = (value, size = 'w300') => {
   if (centerPosterUrlCache.has(cacheKey)) return centerPosterUrlCache.get(cacheKey);
 
   let path = raw;
-  const proxyMatch = raw.match(/^\/api\/discover\/tmdb\/image\/[^/]+\/(.+)$/i);
+  const proxyMatch = raw.match(/^\/api\/(?:discover\/tmdb\/image|shared\/resources\/tmdb\/image)\/[^/]+\/(.+)$/i);
   if (proxyMatch) {
     path = proxyMatch[1] || '';
   } else if (/^https?:\/\//i.test(raw)) {
@@ -2474,9 +2474,9 @@ const tmdbPosterUrl = (value, size = 'w300') => {
   }
 
   path = String(path || '').replace(/^\/+/, '');
-  const directUrl = path ? `https://image.tmdb.org/t/p/${size}/${encodeURI(path)}` : '';
-  centerPosterUrlCache.set(cacheKey, directUrl);
-  return directUrl;
+  const proxyUrl = path ? `/api/shared/resources/tmdb/image/${size}/${encodeURI(path)}` : '';
+  centerPosterUrlCache.set(cacheKey, proxyUrl);
+  return proxyUrl;
 };
 
 const centerPosterCandidates = (row) => {
@@ -2618,7 +2618,10 @@ const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version
 // ★ 修改 1：按热度 (success_count) 降序排序
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
-  const versions = Array.isArray(row.versions) && row.versions.length ? row.versions : [row];
+  let versions = Array.isArray(row.versions) && row.versions.length ? row.versions : [];
+  if (!versions.length && Array.isArray(row.pack_items) && row.pack_items.length) versions = row.pack_items;
+  if (!versions.length && Array.isArray(row.children) && row.children.length) versions = row.children;
+  if (!versions.length) versions = [row];
   return versions
     .filter(v => v && !centerIsLazyPlaceholder(v))
     .sort((a, b) => (b.success_count || 0) - (a.success_count || 0)); 
@@ -2704,7 +2707,7 @@ const loadCenterSourceDetailMeta = async (row) => {
     source_id: primary?.source_id || primary?.source_ref_id || row?.source_id || row?.source_ref_id || row?.hub_id || '',
   };
   const res = await axios.get('/api/shared/resources/center/sources/detail', { params });
-  const detail = res.data || {};
+  const detail = res.data?.data || res.data || {};
   mergeCenterDetailMeta(row, detail);
   return detail;
 };
