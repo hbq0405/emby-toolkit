@@ -18,6 +18,15 @@ DEFAULT_IMAGE_NAME_TAG = 'hbq0405/emby-toolkit:latest'
 DEFAULT_UPDATE_STRATEGY = 'docker_helper'
 DEFAULT_HELPER_IMAGE = 'hbq0405/emby-toolkit:latest'
 UPDATE_STATUS_FILE = 'system_update_result.json'
+
+
+def _normalize_version_tag(value):
+    text = _clean_version_text(value)
+    if not text:
+        return None
+    if text.lower().startswith('v'):
+        return f"v{text[1:]}"
+    return f"v{text}"
 DOCKER_HELPER_LABELS = {
     'com.embytoolkit.role': 'system-update-helper',
     'com.embytoolkit.target-container': DEFAULT_CONTAINER_NAME,
@@ -529,7 +538,7 @@ def resolve_update_strategy(config_source=None):
 
 
 def get_system_update_version_info():
-    current_version = _clean_version_text(getattr(constants, 'APP_VERSION', None), '0.0.0')
+    current_version = _normalize_version_tag(getattr(constants, 'APP_VERSION', None)) or 'v0.0.0'
     target_version = None
 
     try:
@@ -541,7 +550,7 @@ def get_system_update_version_info():
             proxies=config_manager.get_proxies_for_requests(),
         ) or []
         if releases:
-            target_version = _clean_version_text(releases[0].get('version'))
+            target_version = _normalize_version_tag((releases[0] or {}).get('version'))
     except Exception as e:
         logger.debug(f"获取最新版本信息失败，将继续执行更新检查: {e}")
 
