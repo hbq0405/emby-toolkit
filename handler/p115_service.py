@@ -7087,6 +7087,25 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 self.client.fs_delete(list(fids_to_delete))
                 P115CacheManager.delete_files(list(fids_to_delete))
                 P115RecordManager.delete_records(list(fids_to_delete))
+
+                # === 通知 Emby 立即扫描旧路径，清理被删除的旧版本条目 ===
+                if old_strm_paths_for_emby:
+                    emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+                    emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+                    if emby_url and emby_api_key:
+                        try:
+                            from handler import emby
+                            logger.info(
+                                f"  ➜ [版本控制] 已删除旧版本，通知 Emby 极速扫描 {len(old_strm_paths_for_emby)} 个旧 STRM 路径..."
+                            )
+                            emby.notify_emby_file_changes(
+                                old_strm_paths_for_emby,
+                                emby_url,
+                                emby_api_key,
+                                update_type="Deleted",
+                            )
+                        except Exception as e:
+                            logger.warning(f"  ➜ [版本控制] 通知 Emby 扫描旧版本路径失败: {e}")
                 
             # -----------------------------------------------------------
             # ★ 3. 执行移动新文件
