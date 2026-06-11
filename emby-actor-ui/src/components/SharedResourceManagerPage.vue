@@ -367,7 +367,6 @@
                     {{ tagItem.label }}
                   </n-tag>
                 </div>
-                <div v-if="centerEpisodePreview(version)" class="center-version-episodes">{{ centerEpisodePreview(version) }}</div>
               </div>
               <div class="center-version-action">
                 <n-button
@@ -2774,35 +2773,6 @@ const centerVersionTags = (row) => {
   centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   return tags;
 };
-const centerEpisodePreview = (row) => {
-  const children = [...(Array.isArray(row?.children) ? row.children : []), ...(!Array.isArray(row?.children) || !row.children.length ? (Array.isArray(row?.pack_items) ? row.pack_items : []) : [])]
-    .filter(x => x && !centerIsLazyPlaceholder(x));
-  if (!children.length) return '';
-  const nums = children.map(x => Number(x?.episode_number || 0)).filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
-  if (!nums.length) return `包含 ${children.length} 个文件`;
-  const shown = nums.slice(0, 18).map(n => `E${String(n).padStart(2, '0')}`).join('、');
-  return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
-};
-const mergeCenterDetailPayload = (base, payload) => {
-  const row = { ...(base || {}) };
-  const data = payload?.data && typeof payload.data === 'object' ? payload.data : (payload || {});
-  const meta = data.media_meta || data.tmdb_meta || data.meta || {};
-  const oldMeta = centerTmdbMeta(row) || {};
-  const merged = {
-    ...row,
-    ...Object.fromEntries(Object.entries(data).filter(([k]) => !['data'].includes(k))),
-    tmdb_meta: { ...oldMeta, ...meta },
-  };
-  for (const field of ['poster_path', 'backdrop_path', 'overview', 'title', 'release_year']) {
-    if (!merged[field] && meta[field]) merged[field] = meta[field];
-  }
-  if (!merged.actors && Array.isArray(data.actors)) merged.actors = data.actors;
-  if (!merged.directors && Array.isArray(data.directors)) merged.directors = data.directors;
-  for (const key of ['resources', 'versions', 'children', 'pack_items']) {
-    if (Array.isArray(data[key]) && data[key].length) merged[key] = data[key];
-  }
-  return merged;
-};
 
 const centerDetailParams = (row) => ({
   source_kind: row?.source_kind || row?.lazy_children_kind || '',
@@ -2822,24 +2792,18 @@ const loadCenterSourceDetail = async (row) => {
 
 const openCenterDetail = async (row) => {
   if (!row) return;
-  const key = centerTableRowKey(row);
   activeCenterDetailRow.value = row;
   showCenterDetailModal.value = true;
   centerDetailLoading.value = true;
-  let detailPayload = null;
+
   try {
-    try {
-      detailPayload = await loadCenterSourceDetail(row);
+    // 现在只需要请求详情元数据（海报、简介、版本壳子），完全不请求子集
+    const detailPayload = await loadCenterSourceDetail(row);
+    if (detailPayload) {
       activeCenterDetailRow.value = mergeCenterDetailPayload(row, detailPayload);
-    } catch (e) {
-      console.warn('[共享资源] 加载中心详情失败，退回列表壳/懒加载子项:', e);
     }
-    if (centerNeedsLoadChildren(row)) {
-      await loadCenterSourceChildren(row);
-      await nextTick();
-      const latest = findCenterGroupByKey(groupedCenterSources.value || [], key) || activeCenterDetailRow.value || row;
-      activeCenterDetailRow.value = mergeCenterDetailPayload(latest, detailPayload || {});
-    }
+  } catch (e) {
+    console.warn('[共享资源] 加载中心详情失败:', e);
   } finally {
     centerDetailLoading.value = false;
   }
