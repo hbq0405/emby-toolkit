@@ -92,7 +92,7 @@
               <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
               <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
               <n-select v-model:value="centerFilters.order_by" :options="centerOrderOptions" style="width: 130px" />
-              <n-button type="primary" :loading="centerLoading" @click="resetCenterSources(true)">查询中心</n-button>
+              <n-button type="primary" :loading="centerLoading" @click="resetCenterSources()">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
             <n-spin :show="centerLoading && !centerAppendLoading">
@@ -320,7 +320,6 @@
       <n-spin :show="centerDetailLoading">
         <div v-if="activeCenterDetailRow" class="center-detail-body">
           <!-- ★ 新增：图文并茂的头部信息区 -->
-          <div class="center-detail-backdrop" :style="centerDetailBackdropStyle(activeCenterDetailRow)"></div>
           <div class="center-detail-header-new">
             <img v-bind="centerPosterImgAttrs(activeCenterDetailRow, 'w300')" class="detail-poster" @error="onCenterPosterError" />
             <div class="detail-info">
@@ -329,7 +328,7 @@
                 <span class="detail-year" v-if="centerDisplayYear(activeCenterDetailRow)">({{ centerDisplayYear(activeCenterDetailRow) }})</span>
               </div>
               <div class="detail-meta">
-                {{ centerCardMetaText(activeCenterDetailRow) }} · 资源 {{ centerDetailVersions.length }} 个
+                {{ centerCardMetaText(activeCenterDetailRow) }} · 包含 {{ centerDetailVersions.length }} 个版本
                 <span v-if="centerDisplayGenres(activeCenterDetailRow)" class="detail-genres">
                   · {{ centerDisplayGenres(activeCenterDetailRow) }}
                 </span>
@@ -338,7 +337,7 @@
                 </span>
               </div>
               <div class="detail-overview">
-                {{ centerTmdbMeta(activeCenterDetailRow).overview || '暂无简介' }}
+                {{ centerTmdbMeta(activeCenterDetailRow).overview || activeCenterDetailRow.overview || '暂无简介' }}
               </div>
               <div v-if="centerDetailCreditsText(activeCenterDetailRow)" class="detail-credits">
                 {{ centerDetailCreditsText(activeCenterDetailRow) }}
@@ -348,12 +347,10 @@
           
           <n-divider style="margin: 4px 0 12px 0;" />
 
-          <!-- 资源列表 -->
+          <!-- 版本列表 -->
           <div class="center-version-detail-list">
-            <n-empty v-if="!centerDetailVersions.length" description="暂无可展示资源，请刷新中心资源库或检查详情接口返回" class="center-version-empty" />
             <div v-for="version in centerDetailVersions" :key="centerVersionKey(version)" class="center-version-detail-card">
               <div class="center-version-main">
-                <div class="center-version-title" :title="centerDetailResourceTitle(version)">{{ centerDetailResourceTitle(version) }}</div>
                 <div class="center-version-tags">
                   <n-tag v-for="tagItem in centerVersionTags(version)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
                     {{ tagItem.label }}
@@ -388,7 +385,7 @@ import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } f
 import axios from 'axios';
 import {
   NAlert, NButton, NCard, NCheckbox, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputGroup, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch, NEmpty,
+  NInputGroup, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
   NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
 import {
@@ -2392,13 +2389,7 @@ const centerColumns = [
 
 const centerTmdbMeta = (row) => {
   if (!row || typeof row !== 'object') return {};
-  const meta = { ...(row.media_meta || {}), ...(row.tmdb_meta || {}) };
-  for (const key of ['title', 'release_year', 'poster_path', 'backdrop_path', 'overview', 'genres_json', 'genres', 'rating']) {
-    if ((meta[key] === undefined || meta[key] === null || meta[key] === '') && row[key] !== undefined && row[key] !== null && row[key] !== '') meta[key] = row[key];
-  }
-  if (!meta.year && (meta.release_year || row.release_year)) meta.year = meta.release_year || row.release_year;
-  if (!meta.vote_average && (meta.rating || row.rating)) meta.vote_average = meta.rating || row.rating;
-  return meta;
+  return row.tmdb_meta || row;
 };
 const centerStripYear = (text) => String(text || '').replace(/\s*[（(]\s*(?:19|20)\d{2}\s*[）)]\s*$/g, '').trim();
 const centerBaseTitle = (row) => {
@@ -2419,17 +2410,49 @@ const centerDisplayTitle = (row) => {
 };
 const centerDisplayGenres = (row) => {
   const meta = centerTmdbMeta(row);
-  let genres = meta.genres || meta.genres_json || row?.genres_json || [];
+  let genres = meta.genres;
   if (!genres) return '';
+  
+  // 兼容本地数据库存的字符串格式 (如 "科幻,冒险")
   if (typeof genres === 'string') {
-    try { genres = JSON.parse(genres); } catch (e) { genres = genres.split(/[,，、/]/); }
+    try {
+      genres = JSON.parse(genres);
+    } catch (e) {
+      genres = genres.split(/[,，、/]/);
+    }
   }
+  
+  // 提取并截取前 3 个
   if (Array.isArray(genres)) {
-    const names = genres.map(g => typeof g === 'object' ? (g.name || g.zh_name || g.en_name || g.title) : g).filter(Boolean);
+    const names = genres.map(g => typeof g === 'object' ? g.name : g).filter(Boolean);
     return names.slice(0, 3).join(' / ');
   }
   return '';
 };
+
+const centerPeopleList = (value) => Array.isArray(value) ? value.filter(x => x && typeof x === 'object') : [];
+const centerPersonName = (p) => String(p?.name || p?.primary_name || p?.original_name || '').trim();
+const centerDetailCreditsText = (row) => {
+  if (!row || typeof row !== 'object') return '';
+  const meta = centerTmdbMeta(row);
+  const directors = centerPeopleList(row.directors || meta.directors);
+  const actors = centerPeopleList(row.actors || meta.actors);
+  const parts = [];
+  if (directors.length) {
+    const names = directors.map(centerPersonName).filter(Boolean).slice(0, 1).join('、');
+    if (names) parts.push(`导演：${names}`);
+  }
+  if (actors.length) {
+    const text = actors.slice(0, 6).map(p => {
+      const name = centerPersonName(p);
+      const character = String(p?.character || p?.character_name || '').trim();
+      return name ? (character ? `${name} 饰 ${character}` : name) : '';
+    }).filter(Boolean).join('；');
+    if (text) parts.push(`主演：${text}`);
+  }
+  return parts.join('  ·  ');
+};
+
 const centerPosterWallPrimaryTitle = (row) => {
   const base = centerBaseTitle(row) || '未知资源';
   const typeLabel = centerTypeLabel(centerRowType(row));
@@ -2461,7 +2484,7 @@ const tmdbPosterUrl = (value, size = 'w300') => {
   if (centerPosterUrlCache.has(cacheKey)) return centerPosterUrlCache.get(cacheKey);
 
   let path = raw;
-  const proxyMatch = raw.match(/^\/api\/(?:discover\/tmdb\/image|shared\/resources\/tmdb\/image)\/[^/]+\/(.+)$/i);
+  const proxyMatch = raw.match(/^\/api\/discover\/tmdb\/image\/[^/]+\/(.+)$/i);
   if (proxyMatch) {
     path = proxyMatch[1] || '';
   } else if (/^https?:\/\//i.test(raw)) {
@@ -2602,28 +2625,6 @@ const centerCardTags = (row) => {
   return tags.slice(0, 9);
 };
 
-
-const centerDetailBackdropUrl = (row) => {
-  const meta = centerTmdbMeta(row);
-  return tmdbPosterUrl(meta.backdrop_path || row?.backdrop_path || meta.poster_path || row?.poster_path, 'w780');
-};
-const centerDetailBackdropStyle = (row) => {
-  const url = centerDetailBackdropUrl(row);
-  return url && url !== '/default-poster.png' ? { backgroundImage: `url(${url})` } : {};
-};
-const centerDetailCreditsText = (row) => {
-  const meta = centerTmdbMeta(row);
-  const directors = Array.isArray(meta.directors) ? meta.directors : (Array.isArray(row?.directors) ? row.directors : []);
-  const actors = Array.isArray(meta.actors) ? meta.actors : (Array.isArray(row?.actors) ? row.actors : []);
-  const directorText = directors.map(x => x?.name || x?.primary_name || x?.original_name).filter(Boolean).slice(0, 1).join('、');
-  const actorText = actors.map(x => {
-    const name = x?.name || x?.primary_name || x?.original_name || '';
-    const character = x?.character || x?.character_name || '';
-    return name ? (character ? `${name} 饰 ${character}` : name) : '';
-  }).filter(Boolean).slice(0, 6).join(' ｜ ');
-  return [directorText ? `导演：${directorText}` : '', actorText ? `主演：${actorText}` : ''].filter(Boolean).join('  ·  ');
-};
-
 const centerDetailModalTitle = computed(() => {
   if (!activeCenterDetailRow.value) return '中心资源详情';
   const title = centerDisplayTitle(activeCenterDetailRow.value);
@@ -2638,24 +2639,23 @@ const centerDetailModalTitle = computed(() => {
 });
 const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || Math.random());
 // ★ 修改 1：按热度 (success_count) 降序排序
-
-const centerDetailResourceTitle = (row) => {
-  const title = row?.file_name || row?.title || row?.source_id || row?.sha1 || '共享资源';
-  const season = Number(row?.season_number || 0);
-  const episode = Number(row?.episode_number || 0);
-  const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
-  return se && !String(title).includes(se) ? `${title} · ${se}` : String(title);
-};
-
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
-  let versions = Array.isArray(row.detail_resources) && row.detail_resources.length ? row.detail_resources : [];
-  if (!versions.length && Array.isArray(row.versions) && row.versions.length) versions = row.versions;
-  if (!versions.length && Array.isArray(row.pack_items) && row.pack_items.length) versions = row.pack_items;
-  if (!versions.length && Array.isArray(row.children) && row.children.length) versions = row.children;
-  if (!versions.length && row.source_id) versions = [row];
+  const buckets = [];
+  for (const key of ['resources', 'versions', 'children', 'pack_items']) {
+    const value = row[key];
+    if (Array.isArray(value) && value.length) buckets.push(...value);
+  }
+  const versions = buckets.length ? buckets : [row];
+  const seen = new Set();
   return versions
     .filter(v => v && !centerIsLazyPlaceholder(v))
+    .filter(v => {
+      const key = String(v?.source_id || v?.source_ref_id || v?.hub_id || v?.sha1 || v?.manifest_hash || v?.file_name || JSON.stringify(v).slice(0, 80));
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .sort((a, b) => (b.success_count || 0) - (a.success_count || 0)); 
 });
 
@@ -2706,66 +2706,41 @@ const centerEpisodePreview = (row) => {
   const shown = nums.slice(0, 18).map(n => `E${String(n).padStart(2, '0')}`).join('、');
   return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
 };
-
-const unwrapCenterPayload = (payload) => {
-  if (!payload || typeof payload !== 'object') return {};
-  return (payload.data && typeof payload.data === 'object') ? payload.data : payload;
-};
-const normalizeCenterResourceRows = (values) => (Array.isArray(values) ? values : [])
-  .filter(v => v && typeof v === 'object' && !centerIsLazyPlaceholder(v));
-const mergeCenterDetailMeta = (row, rawDetail = {}) => {
-  if (!row || !rawDetail) return row;
-  const detail = unwrapCenterPayload(rawDetail);
-  const meta = detail.tmdb_meta || detail.media_meta || {};
-  const actors = Array.isArray(detail.actors) ? detail.actors : [];
-  const directors = Array.isArray(detail.directors) ? detail.directors : [];
-  const mergedMeta = {
-    ...(row.tmdb_meta || {}),
-    ...(row.media_meta || {}),
-    ...meta,
-    actors: actors.length ? actors : ((row.tmdb_meta || {}).actors || row.actors || []),
-    directors: directors.length ? directors : ((row.tmdb_meta || {}).directors || row.directors || []),
+const mergeCenterDetailPayload = (base, payload) => {
+  const row = { ...(base || {}) };
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : (payload || {});
+  const meta = data.media_meta || data.tmdb_meta || data.meta || {};
+  const oldMeta = centerTmdbMeta(row) || {};
+  const merged = {
+    ...row,
+    ...Object.fromEntries(Object.entries(data).filter(([k]) => !['data'].includes(k))),
+    tmdb_meta: { ...oldMeta, ...meta },
   };
-  row.tmdb_meta = mergedMeta;
-  row.media_meta = mergedMeta;
-  row.actors = mergedMeta.actors || [];
-  row.directors = mergedMeta.directors || [];
-  row.poster_path = row.poster_path || mergedMeta.poster_path;
-  row.backdrop_path = row.backdrop_path || mergedMeta.backdrop_path;
-  row.overview = row.overview || mergedMeta.overview;
-  row.release_year = row.release_year || mergedMeta.release_year || mergedMeta.year;
-  const resources = normalizeCenterResourceRows(detail.resources || detail.versions || detail.items);
-  const children = normalizeCenterResourceRows(detail.children);
-  const packItems = normalizeCenterResourceRows(detail.pack_items);
-  if (resources.length) {
-    row.versions = resources;
-    row.detail_resources = resources;
+  for (const field of ['poster_path', 'backdrop_path', 'overview', 'title', 'release_year']) {
+    if (!merged[field] && meta[field]) merged[field] = meta[field];
   }
-  if (children.length || packItems.length) {
-    row.children = children.length ? children : packItems;
-    row.pack_items = packItems.length ? packItems : children;
-    row.children_loaded = true;
-    row._center_children_loaded = true;
-    row.has_children = true;
+  if (!merged.actors && Array.isArray(data.actors)) merged.actors = data.actors;
+  if (!merged.directors && Array.isArray(data.directors)) merged.directors = data.directors;
+  for (const key of ['resources', 'versions', 'children', 'pack_items']) {
+    if (Array.isArray(data[key]) && data[key].length) merged[key] = data[key];
   }
-  return row;
+  return merged;
 };
 
-const loadCenterSourceDetailMeta = async (row) => {
-  if (!row) return null;
-  const primary = centerPrimaryVersion(row) || row;
-  const sourceKind = String(primary?.source_kind || row?.source_kind || row?.lazy_children_kind || '').toLowerCase();
-  const params = {
-    tmdb_id: tmdbIdForRow(row),
-    item_type: centerRowType(row) === 'Movie' ? 'Movie' : 'Season',
-    season_number: row?.season_number || '',
-    source_kind: sourceKind,
-    source_id: primary?.source_id || primary?.source_ref_id || row?.source_id || row?.source_ref_id || row?.hub_id || '',
-  };
-  const res = await axios.get('/api/shared/resources/center/sources/detail', { params });
-  const detail = unwrapCenterPayload(res.data || {});
-  mergeCenterDetailMeta(row, detail);
-  return detail;
+const centerDetailParams = (row) => ({
+  source_kind: row?.source_kind || row?.lazy_children_kind || '',
+  source_id: row?.source_id || row?.source_ref_id || '',
+  hub_id: row?.hub_id || '',
+  tmdb_id: row?.tmdb_id || '',
+  item_type: centerRowType(row) || row?.item_type || '',
+  season_number: row?.season_number ?? '',
+  limit: 500,
+});
+
+const loadCenterSourceDetail = async (row) => {
+  const res = await axios.get('/api/shared/resources/center/sources/detail', { params: centerDetailParams(row) });
+  if (res.data?.success === false) throw new Error(res.data?.message || '加载详情失败');
+  return res.data?.data || res.data || {};
 };
 
 const openCenterDetail = async (row) => {
@@ -2774,17 +2749,19 @@ const openCenterDetail = async (row) => {
   activeCenterDetailRow.value = row;
   showCenterDetailModal.value = true;
   centerDetailLoading.value = true;
+  let detailPayload = null;
   try {
-    const tasks = [loadCenterSourceDetailMeta(row)];
-    if (centerNeedsLoadChildren(row)) tasks.push(loadCenterSourceChildren(row));
-    await Promise.allSettled(tasks);
-    await nextTick();
-    const latest = findCenterGroupByKey(groupedCenterSources.value || [], key);
-    if (latest && latest !== row) {
-      mergeCenterDetailMeta(latest, { tmdb_meta: row.tmdb_meta || row.media_meta || {}, actors: row.actors || [], directors: row.directors || [], resources: row.detail_resources || row.versions || [], children: row.children || [], pack_items: row.pack_items || [] });
-      activeCenterDetailRow.value = latest;
-    } else {
-      activeCenterDetailRow.value = row;
+    try {
+      detailPayload = await loadCenterSourceDetail(row);
+      activeCenterDetailRow.value = mergeCenterDetailPayload(row, detailPayload);
+    } catch (e) {
+      console.warn('[共享资源] 加载中心详情失败，退回列表壳/懒加载子项:', e);
+    }
+    if (centerNeedsLoadChildren(row)) {
+      await loadCenterSourceChildren(row);
+      await nextTick();
+      const latest = findCenterGroupByKey(groupedCenterSources.value || [], key) || activeCenterDetailRow.value || row;
+      activeCenterDetailRow.value = mergeCenterDetailPayload(latest, detailPayload || {});
     }
   } finally {
     centerDetailLoading.value = false;
@@ -2976,16 +2953,9 @@ const loadCenterSourceChildren = async (row) => {
       limit: 5000,
     };
     const res = await axios.get('/api/shared/resources/center/sources/children', { params });
-    const payload = unwrapCenterPayload(res.data || {});
-    const children = payload.children || payload.items || [];
-    const packItems = payload.pack_items || children;
+    const children = res.data?.children || res.data?.items || [];
+    const packItems = res.data?.pack_items || children;
     applyCenterLoadedChildren(row, children, packItems);
-    row.children = children;
-    row.pack_items = packItems;
-    row.children_loaded = true;
-    row._center_children_loaded = true;
-    row.has_children = Array.isArray(children) && children.length > 0;
-    return { children, packItems, payload };
   } catch (e) {
     message.error(e.response?.data?.message || '加载季包集明细失败');
   } finally {
@@ -4123,7 +4093,6 @@ onUnmounted(() => {
 .center-detail-title { font-size: 18px; font-weight: 800; line-height: 1.35; }
 .center-detail-sub { margin-top: 4px; font-size: 12px; opacity: .68; }
 .center-version-detail-list { display: flex; flex-direction: column; gap: 10px; }
-.center-version-empty { padding: 20px 0; }
 .center-version-detail-card {
   display: flex;
   justify-content: space-between;
@@ -4190,45 +4159,6 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
 }
-
-.center-detail-body {
-  position: relative;
-  overflow: hidden;
-  border-radius: 12px;
-}
-.center-detail-backdrop {
-  position: absolute;
-  inset: -24px -24px auto -24px;
-  height: 260px;
-  background-position: center;
-  background-size: cover;
-  filter: blur(18px);
-  opacity: .30;
-  transform: scale(1.08);
-  pointer-events: none;
-}
-.center-detail-backdrop::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(to bottom, rgba(0,0,0,.30), rgba(0,0,0,.92));
-}
-.center-detail-header-new,
-.center-version-detail-list {
-  position: relative;
-  z-index: 1;
-}
-.detail-credits {
-  font-size: 12px;
-  line-height: 1.6;
-  color: rgba(255,255,255,.72);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
 /* 弹窗头部图文排版 */
 .center-detail-header-new {
   display: flex;
@@ -4288,4 +4218,13 @@ onUnmounted(() => {
   overflow: hidden;
   text-align: justify;
 }
+.detail-credits {
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 6px 10px;
+}
+
 </style>
