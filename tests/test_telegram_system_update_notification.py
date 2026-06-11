@@ -279,6 +279,17 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
         self.assertEqual(resolved["container_name"], "etk-prod")
         self.assertEqual(resolved["docker_image_name"], "hbq0405/emby-toolkit:v10.2.4")
 
+    def test_get_system_update_version_info_normalizes_version(self):
+        fake_release = {
+            "version": "v10.2.4",
+        }
+
+        with mock.patch.object(system_update.github, "get_github_releases", return_value=[fake_release]):
+            info = system_update.get_system_update_version_info()
+
+        self.assertEqual(info["current_version"], "v10.2.3")
+        self.assertEqual(info["target_version"], "v10.2.4")
+
     def test_system_update_tg_notification_uses_real_result_and_versions(self):
         def fake_update_task(processor):
             return {
@@ -289,7 +300,10 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
                 "target_version": "v10.2.4",
             }
 
-        with mock.patch.object(system_update, "get_system_update_version_info", return_value={"current_version": "10.2.3", "target_version": "v10.2.4"}):
+        with mock.patch.object(system_update, "get_system_update_version_info", return_value={
+            "current_version": "v10.2.3",
+            "target_version": "v10.2.4",
+        }):
             with mock.patch.object(system_update, "resolve_update_target", return_value={"container_name": "etk-prod", "docker_image_name": "hbq0405/emby-toolkit:v10.2.4"}):
                 with mock.patch.object(system_update, "resolve_update_strategy", return_value={"strategy": "docker_helper", "helper_image": "hbq0405/emby-toolkit:latest"}):
                     with mock.patch.object(telegram, "send_telegram_message") as send_mock:
@@ -308,7 +322,7 @@ class TelegramSystemUpdateNotificationTests(unittest.TestCase):
         finish_message = send_mock.call_args_list[1].args[1]
         normalized_start = start_message.replace("\\", "")
         normalized_finish = finish_message.replace("\\", "")
-        self.assertIn("当前版本: `10.2.3`", normalized_start)
+        self.assertIn("当前版本: `v10.2.3`", normalized_start)
         self.assertIn("目标版本: `v10.2.4`", normalized_start)
         self.assertIn("目标容器: `etk-prod`", normalized_start)
         self.assertIn("目标镜像: `hbq0405/emby-toolkit:v10.2.4`", normalized_start)
