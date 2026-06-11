@@ -2792,15 +2792,17 @@ const loadCenterSourceDetail = async (row) => {
 
 const openCenterDetail = async (row) => {
   if (!row) return;
-  activeCenterDetailRow.value = row;
+  // 先用列表里的基础数据撑起模态框，实现秒开
+  activeCenterDetailRow.value = { ...row };
   showCenterDetailModal.value = true;
   centerDetailLoading.value = true;
 
   try {
-    // 现在只需要请求详情元数据（海报、简介、版本壳子），完全不请求子集
+    // 请求详情元数据（海报、简介、演员表、版本壳子）
     const detailPayload = await loadCenterSourceDetail(row);
     if (detailPayload) {
-      activeCenterDetailRow.value = mergeCenterDetailPayload(row, detailPayload);
+      // 拿到数据后，合并并重新赋值给 value，触发 Vue 深度响应式更新
+      activeCenterDetailRow.value = mergeCenterDetailPayload(activeCenterDetailRow.value, detailPayload);
     }
   } catch (e) {
     console.warn('[共享资源] 加载中心详情失败:', e);
