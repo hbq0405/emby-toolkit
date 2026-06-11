@@ -2792,24 +2792,21 @@ const loadCenterSourceDetail = async (row) => {
 
 const openCenterDetail = async (row) => {
   if (!row) return;
-  const key = centerTableRowKey(row);
+  
+  // 直接引用外层的完美数据，保持完整的响应式绑定
   activeCenterDetailRow.value = row;
   showCenterDetailModal.value = true;
   centerDetailLoading.value = true;
-  let detailPayload = null;
+
   try {
-    try {
-      detailPayload = await loadCenterSourceDetail(row);
-      activeCenterDetailRow.value = mergeCenterDetailPayload(row, detailPayload);
-    } catch (e) {
-      console.warn('[共享资源] 加载中心详情失败，退回列表壳/懒加载子项:', e);
+    // 仅请求演员表、简介等附加元数据
+    const detailPayload = await loadCenterSourceDetail(row);
+    if (detailPayload) {
+      // 将获取到的演员、简介等信息，安全地合并到当前响应式对象上，触发界面瞬间重绘
+      Object.assign(activeCenterDetailRow.value, mergeCenterDetailPayload(activeCenterDetailRow.value, detailPayload));
     }
-    if (centerNeedsLoadChildren(row)) {
-      await loadCenterSourceChildren(row);
-      await nextTick();
-      const latest = findCenterGroupByKey(groupedCenterSources.value || [], key) || activeCenterDetailRow.value || row;
-      activeCenterDetailRow.value = mergeCenterDetailPayload(latest, detailPayload || {});
-    }
+  } catch (e) {
+    console.warn('[共享资源] 加载中心详情附加信息失败:', e);
   } finally {
     centerDetailLoading.value = false;
   }
