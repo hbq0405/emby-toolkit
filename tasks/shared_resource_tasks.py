@@ -2069,13 +2069,20 @@ def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider
 
 
 def _title_looks_invalid_for_center(title: Any, tmdb_id: str = '') -> bool:
-    """中心公共标题防污染：空值、纯数字、等于 TMDb ID 都视为无效。"""
+    """中心公共标题防污染：空值、纯数字、裸季名、等于 TMDb ID 都视为无效。"""
     text = str(title or '').strip()
     if not text:
         return True
     if text.lower() in {'none', 'null', 'undefined', 'nan'}:
         return True
     if re.fullmatch(r'\d+', text):
+        return True
+    compact = re.sub(r'\s+', '', text)
+    if re.fullmatch(r'第\d{1,3}季', compact):
+        return True
+    if re.fullmatch(r'(?:S|SEASON)\d{1,3}', compact, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r'季\d{1,3}', compact):
         return True
     tmdb_id = str(tmdb_id or '').strip()
     if tmdb_id and text == tmdb_id:
@@ -2090,6 +2097,10 @@ def _strip_season_suffix_from_title(title: str) -> str:
     text = re.sub(r'\s*[-·]\s*S\d{1,3}\s*$', '', text, flags=re.IGNORECASE).strip()
     text = re.sub(r'\s+S\d{1,3}\s*$', '', text, flags=re.IGNORECASE).strip()
     text = re.sub(r'\s*[-·]\s*第\s*\d+\s*季\s*$', '', text).strip()
+    if re.fullmatch(r'\s*第\s*\d+\s*季\s*', text):
+        return ''
+    if re.fullmatch(r'\s*(?:S|Season)\s*\d+\s*', text, flags=re.IGNORECASE):
+        return ''
     return text
 
 
@@ -2515,12 +2526,15 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
 
     season_row = rows.get('season') or {}
     series_row = rows.get('series') or {}
+    series_fallback_title = _first_display_text(candidate.get('series_title'), candidate.get('show_title'))
+    if _title_looks_invalid_for_center(series_fallback_title, series_id):
+        series_fallback_title = ''
     series_meta = meta_from_row(
         tmdb_id=series_id,
         item_type='Series',
         season_number=None,
         row=series_row,
-        fallback_title=candidate.get('title'),
+        fallback_title=series_fallback_title,
         fallback_year=candidate.get('release_year'),
         include_series_fields=True,
     ) if (series_row or series_id) else {}

@@ -344,12 +344,12 @@
                   v-for="person in centerDetailPeople(activeCenterDetailRow)"
                   :key="centerPersonKey(person)"
                   class="detail-person-card"
-                  :title="centerPersonTooltip(person)"
+                  :title="centerPersonTooltip(person, activeCenterDetailRow)"
                 >
-                  <img v-bind="centerProfileImgAttrs(person)" class="detail-person-avatar" @error="onCenterProfileError" />
+                  <img v-bind="centerProfileImgAttrs(person, activeCenterDetailRow)" class="detail-person-avatar" @error="onCenterProfileError" />
                   <div class="detail-person-info">
                     <div class="detail-person-name">{{ centerPersonName(person) }}</div>
-                    <div class="detail-person-role">{{ centerPersonRoleText(person) }}</div>
+                    <div class="detail-person-role">{{ centerPersonRoleText(person, activeCenterDetailRow) }}</div>
                   </div>
                 </div>
               </div>
@@ -2444,6 +2444,14 @@ const centerDisplayGenres = (row) => {
 const centerPeopleList = (value) => Array.isArray(value) ? value.filter(x => x && typeof x === 'object') : [];
 const centerPersonName = (p) => String(p?.name || p?.primary_name || p?.original_name || '').trim();
 const centerPersonCharacter = (p) => String(p?.character || p?.character_name || '').trim();
+const centerCharacterAlreadyPrefixed = (text) => /^(饰|飾|配|配音|声演|聲演|出演|饰演|飾演)\s*/.test(String(text || '').trim());
+const centerIsAnimationDetail = (row) => {
+  if (!row || typeof row !== 'object') return false;
+  if (isCenterAnimation(row)) return true;
+  const genres = centerDisplayGenres(row);
+  return /动画|動畫|动漫|動漫|animation/i.test(String(genres || ''));
+};
+const centerCharacterPrefix = (row) => centerIsAnimationDetail(row) ? '配' : '饰';
 const centerDetailCreditsText = (row) => {
   if (!row || typeof row !== 'object') return '';
   const actors = centerDetailPeople(row).filter(p => p._credit_role !== 'director');
@@ -2452,8 +2460,8 @@ const centerDetailCreditsText = (row) => {
   if (actors.length) {
     const text = actors.slice(0, 6).map(p => {
       const name = centerPersonName(p);
-      const character = centerPersonCharacter(p);
-      return name ? (character ? `${name} 饰 ${character}` : name) : '';
+      const role = centerPersonRoleText(p, row);
+      return name ? (role ? `${name} ${role}` : name) : '';
     }).filter(Boolean).join('；');
     if (text) parts.push(`主演：${text}`);
   }
@@ -2477,16 +2485,18 @@ const centerDetailPeople = (row) => {
   // 展示顺序：主演在前，导演最后。
   return [...actors, ...directors];
 };
-const centerPersonRoleText = (p) => {
+const centerPersonRoleText = (p, row = null) => {
   if (!p) return '';
   if (p._credit_role === 'director' || String(p.credit_type || '').toLowerCase() === 'director') return '导演';
   const character = centerPersonCharacter(p);
-  return character ? `饰 ${character}` : '主演';
+  if (!character) return '主演';
+  if (centerCharacterAlreadyPrefixed(character)) return character;
+  return `${centerCharacterPrefix(row)} ${character}`;
 };
 const centerPersonKey = (p) => `${p?._credit_role || p?.credit_type || 'person'}:${p?.tmdb_person_id || p?.id || centerPersonName(p)}:${centerPersonCharacter(p)}`;
-const centerPersonTooltip = (p) => {
+const centerPersonTooltip = (p, row = null) => {
   const name = centerPersonName(p);
-  const role = centerPersonRoleText(p);
+  const role = centerPersonRoleText(p, row);
   return [name, role].filter(Boolean).join(' · ');
 };
 const centerProfileFallbackSvg = 'data:image/svg+xml;utf8,' + encodeURIComponent(`
@@ -2497,10 +2507,10 @@ const centerProfileFallbackSvg = 'data:image/svg+xml;utf8,' + encodeURIComponent
   <path d="M20 82c4-18 16-28 28-28s24 10 28 28" fill="#94a3b8" opacity=".72"/>
 </svg>`);
 const centerProfileUrl = (p, size = 'w185') => tmdbPosterUrl(p?.profile_path || p?.profile_url || p?.avatar || '', size) || centerProfileFallbackSvg;
-const centerProfileImgAttrs = (p) => ({
+const centerProfileImgAttrs = (p, row = null) => ({
   src: centerProfileUrl(p, 'w185'),
   alt: centerPersonName(p) || '人物头像',
-  title: centerPersonTooltip(p),
+  title: centerPersonTooltip(p, row),
   loading: 'lazy',
   decoding: 'async',
   referrerpolicy: 'no-referrer',
