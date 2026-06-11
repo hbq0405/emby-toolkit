@@ -600,7 +600,12 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
         'backend': sign_req.get('backend') or '',
         'sign_key': sign_req.get('sign_key'),
         'sign_check': sign_req.get('sign_check'),
-        'request_meta_json': {'stage': sign_req.get('stage') or '', 'target_cid': target_cid},
+        'request_meta_json': {
+            'stage': sign_req.get('stage') or '',
+            'target_cid': target_cid,
+            'rapid_transfer_token': str(file_info.get('_rapid_transfer_token') or rapid_meta.get('_rapid_transfer_token') or ''),
+            'package_transfer': bool(file_info.get('_rapid_is_package_transfer') or rapid_meta.get('_rapid_is_package_transfer')),
+        },
     })
     job_id = str(create_resp.get('job_id') or (create_resp.get('job') or {}).get('job_id') or '').strip()
     holder_id = str(create_resp.get('holder_id') or (create_resp.get('job') or {}).get('holder_id') or '').strip()
@@ -613,16 +618,19 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     if status != 'done' or not _norm_sha1(sign_val):
         job_obj = (wait_resp.get('job') or {}) if isinstance(wait_resp, dict) else {}
         job_message = str(job_obj.get('message') or wait_resp.get('message') or '') if isinstance(wait_resp, dict) else ''
-        no_retry = status in ('failed', 'expired') or any(
-            x in job_message for x in ('所有 holder', '无可用 holder', 'no rapid sign holder available', 'holder 未领取签名任务')
+        result_meta = job_obj.get('result_meta_json') if isinstance(job_obj.get('result_meta_json'), dict) else {}
+        abort_transfer = bool(wait_resp.get('abort_transfer') or result_meta.get('abort_transfer'))
+        no_retry = status in ('failed', 'expired', 'cancelled') or abort_transfer or any(
+            x in job_message for x in ('所有 holder', '无可用 holder', 'no rapid sign holder available', 'holder 未领取签名任务', '资源签名不可用')
         )
-        logger.warning(f"  ➜ [负载均衡签名] sign_job 未完成：job_id={job_id}, status={status}, no_retry={no_retry}, resp={str(wait_resp)[:500]}")
+        logger.warning(f"  ➜ [负载均衡签名] sign_job 未完成：job_id={job_id}, status={status}, no_retry={no_retry}, abort={abort_transfer}, resp={str(wait_resp)[:500]}")
         return {
             'ok': False,
             'response': first_resp,
             'sign_job': wait_resp,
-            'message': job_message or f'sign_job 未完成: {status}',
+            'message': job_message or wait_resp.get('message') or f'sign_job 未完成: {status}',
             'no_retry': bool(no_retry),
+            'abort_transfer': bool(abort_transfer or status in ('failed', 'expired', 'cancelled')),
         }
 
     signed_meta = dict(rapid_meta or {})
@@ -1409,6 +1417,7 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
                 'sign_job': retry.get('sign_job'),
                 'message': retry.get('message') or '中心 holder 签名未完成',
                 'no_retry': bool(retry.get('no_retry')),
+                'abort_transfer': bool(retry.get('abort_transfer')),
             }
         except Exception as e:
             err_text = str(e)
@@ -1422,6 +1431,7 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
                 'target_cid': target_cid,
                 'message': err_text,
                 'no_retry': bool(no_retry),
+                'abort_transfer': bool(no_retry),
             }
 
     return {'ok': False, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
@@ -2257,70 +2267,89 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     ok_count = 0
     errors = []
     success_sources = []
-    RAPID_TRANSFER_MAX_RETRIES = 3
+    transfer_token = f"rapid:{event_id or source_id}:{int(time.time() * 1000)}"
+    abort_event = threading.Event()
 
     def _rapid_transfer_one(raw_file: Dict[str, Any]) -> Dict[str, Any]:
         f = dict(raw_file or {})
         f.setdefault('source_kind', source_kind)
         f.setdefault('source_id', source_id)
         f.setdefault('source_ref_id', source_id)
+        f['_rapid_transfer_token'] = transfer_token
+        f['_rapid_is_package_transfer'] = bool(is_package_transfer)
         file_source_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
         file_source_id = str(f.get('source_id') or f.get('source_ref_id') or source_id or '').strip()
         file_label = f.get('file_name') or f.get('name') or f.get('sha1') or 'unknown'
-        last_error = None
-        attempts = RAPID_TRANSFER_MAX_RETRIES + 1
-        for attempt in range(1, attempts + 1):
-            try:
-                if attempt > 1:
-                    logger.warning(
-                        f"  ➜ [共享资源] 秒传重试 {attempt - 1}/{RAPID_TRANSFER_MAX_RETRIES}：{file_label}"
-                    )
-                    time.sleep(min(1.5 * attempt, 6.0))
-                result = rapid_save_file(f, target_cid=target_cid)
-                if result.get('ok'):
-                    result['attempt'] = attempt
-                    return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
-                last_error = {'file': file_label, 'response': result.get('response'), 'result': result, 'attempt': attempt}
-                if result.get('no_retry'):
-                    logger.warning(
-                        f"  ➜ [共享资源] 中心已判定无可用 holder，本文件不再重复创建 sign_job：{file_label}，"
-                        f"reason={result.get('message') or '-'}"
-                    )
-                    break
-            except Exception as e:
-                last_error = {'file': file_label, 'error': str(e), 'attempt': attempt}
-        return {'ok': False, 'file': f, 'error': last_error or {'file': file_label, 'error': 'unknown'}}
+        if abort_event.is_set():
+            return {
+                'ok': False,
+                'file': f,
+                'error': {'file': file_label, 'error': 'transfer_aborted_by_center', 'abort_transfer': True},
+            }
+        try:
+            result = rapid_save_file(f, target_cid=target_cid)
+            if result.get('ok'):
+                result['attempt'] = 1
+                return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
+            error = {
+                'file': file_label,
+                'response': result.get('response'),
+                'result': result,
+                'attempt': 1,
+                'abort_transfer': bool(result.get('abort_transfer')),
+            }
+            if result.get('no_retry') or result.get('abort_transfer'):
+                abort_event.set()
+                logger.warning(
+                    f"  ➜ [共享资源] 中心已终止本次秒传：{file_label}，"
+                    f"reason={result.get('message') or '-'}"
+                )
+            return {'ok': False, 'file': f, 'error': error}
+        except Exception as e:
+            return {'ok': False, 'file': f, 'error': {'file': file_label, 'error': str(e), 'attempt': 1}}
 
-    # 完结季/公共季包通常会触发多文件 status=7 签名；并发发起秒传，中心才能把 sign_job
-    # 同时派给多个 holder，避免一集一集串行等待。单文件/电影仍走轻量串行。
+    # 完结季/公共季包并发发起签名请求；失败后的重派只由中心端在同一个 sign_job 内完成。
     parallel_transfer = is_package_transfer
     if parallel_transfer:
         max_workers = max(1, min(len(files), 8))
-        logger.info(f"  ➜ [共享资源] 季包秒传启用并发签名调度：files={len(files)}, workers={max_workers}, retries={RAPID_TRANSFER_MAX_RETRIES}")
+        logger.info(f"  ➜ [共享资源] 季包秒传启用并发签名调度：files={len(files)}, workers={max_workers}, local_retries=0")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='shared-rapid-transfer') as executor:
             future_map = {executor.submit(_rapid_transfer_one, f): f for f in files}
             for future in concurrent.futures.as_completed(future_map):
-                item = future.result()
+                try:
+                    item = future.result()
+                except concurrent.futures.CancelledError:
+                    continue
                 if item.get('ok'):
                     ok_count += 1
                     success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
                 else:
                     errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
+                    if (item.get('error') or {}).get('abort_transfer'):
+                        abort_event.set()
+                        for other in future_map:
+                            if other is not future:
+                                other.cancel()
     else:
         for f in files:
+            if abort_event.is_set():
+                break
             item = _rapid_transfer_one(f)
             if item.get('ok'):
                 ok_count += 1
                 success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
             else:
                 errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
+                if (item.get('error') or {}).get('abort_transfer'):
+                    abort_event.set()
+                    break
 
     report_errors = []
     report_results = []
     skipped_report_sources = []
     cleanup_result = {}
 
-    # 季包必须全量成功。任何一集连续重试后仍失败，整季放弃入库，删除临时目录，
+    # 季包必须全量成功。任何一集由中心判定不可签名/不可秒传，整季放弃入库，删除临时目录，
     # 不上报 success，不触发整理，避免 8/9 半季污染媒体库。消费端贡献点也不会被扣除。
     if is_package_transfer and ok_count != len(files):
         message = f'季包秒传不完整，已放弃整季入库：成功 {ok_count}/{len(files)}，失败 {len(errors)} 个文件'
