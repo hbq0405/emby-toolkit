@@ -1225,36 +1225,54 @@ def api_center_source_children():
 @shared_resource_bp.route('/center/sources/detail', methods=['GET'])
 @admin_required
 def api_center_source_detail():
-    """中心资源库详情元数据：简介/背景/主演导演按需加载，不进入首屏列表。"""
+    """中心资源库卡片详情：代理中心 display-detail，并统一装饰资源列表。"""
     try:
-        cfg = _shared_resource_config_payload()
-        center_url = str(cfg.get('p115_shared_center_url') or '').rstrip('/')
-        if not center_url:
-            return jsonify({'success': False, 'message': '共享中心地址未配置'}), 400
-        params = {
-            'tmdb_id': request.args.get('tmdb_id') or '',
-            'item_type': request.args.get('item_type') or '',
-            'season_number': request.args.get('season_number') or '',
-            'source_kind': request.args.get('source_kind') or '',
-            'source_id': request.args.get('source_id') or '',
-        }
-        # 去掉空 season_number，避免中心端把空字符串解析成 422。
-        params = {k: v for k, v in params.items() if str(v).strip()}
-        resp = requests.get(
-            f"{center_url}/api/v1/sources/display-detail",
-            headers=_center_headers_for_cfg(cfg),
-            params=params,
-            **_center_request_kwargs(30),
+        client = SharedCenterClient()
+        resp = client.display_detail(
+            tmdb_id=request.args.get('tmdb_id') or '',
+            item_type=request.args.get('item_type') or '',
+            season_number=request.args.get('season_number') or '',
+            source_kind=request.args.get('source_kind') or '',
+            source_id=request.args.get('source_id') or '',
         )
-        try:
-            data = resp.json()
-        except Exception:
-            data = {'ok': False, 'message': resp.text[:500]}
-        if resp.status_code >= 400:
-            return jsonify({'success': False, 'message': data.get('message') or data.get('detail') or f'中心详情接口失败: HTTP {resp.status_code}', **data}), resp.status_code
-        return jsonify({'success': True, **data})
+
+        def _decorate_center_row(row):
+            if not isinstance(row, dict):
+                return {}
+            row = dict(row)
+            for key in ('versions', 'children', 'pack_items'):
+                if isinstance(row.get(key), list):
+                    row[key] = [_decorate_center_row(x) for x in row.get(key) if isinstance(x, dict)]
+            short_direct = _center_direct_flag_state(row, 'is_short_drama', 'short_drama_meta_json')
+            if short_direct is False:
+                row['is_short_drama'] = False
+                row['short_drama_meta_json'] = row.get('short_drama_meta_json') or {'is_short_drama': False, 'manual_override': True}
+            else:
+                short_meta = _center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json')
+                if short_meta:
+                    row['is_short_drama'] = True
+                    row['short_drama_meta_json'] = short_meta
+            animation_meta = _center_flag_meta(row, 'is_animation', 'animation_meta_json')
+            if animation_meta:
+                row['is_animation'] = True
+                row['animation_meta_json'] = animation_meta
+            if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
+                row['version_summary'] = {}
+                row['summary_json'] = row.get('summary_json') or {}
+                row['media_signature_json'] = row.get('media_signature_json') or {}
+            else:
+                row['version_summary'] = _center_version_summary(row)
+            if not row.get('size') and row.get('total_size'):
+                row['size'] = row.get('total_size')
+            row = _apply_local_season_meta(row)
+            return row
+
+        for key in ('resources', 'versions', 'children', 'pack_items', 'parents'):
+            if isinstance(resp.get(key), list):
+                resp[key] = [_decorate_center_row(row) for row in resp.get(key) if isinstance(row, dict)]
+        return jsonify({'success': True, 'data': resp, **resp})
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': str(e), 'data': {}, 'resources': [], 'versions': [], 'children': [], 'pack_items': []}), 500
 
 @shared_resource_bp.route('/center/import', methods=['POST'])
 @admin_required

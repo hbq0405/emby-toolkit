@@ -367,6 +367,18 @@ class SharedCenterClient:
             'offset': max(0, int(offset or 0)),
         }, timeout=30)
 
+
+
+    def display_detail(self, *, tmdb_id: str = '', item_type: str = '', season_number=None,
+                       source_kind: str = '', source_id: str = '', **_ignored) -> Dict[str, Any]:
+        return self._get('/api/v1/sources/display-detail', {
+            'tmdb_id': tmdb_id or '',
+            'item_type': item_type or '',
+            'season_number': '' if season_number in (None, '') else season_number,
+            'source_kind': source_kind or '',
+            'source_id': source_id or '',
+        }, timeout=30)
+
     def list_hubs(self, *, q: str = '', status: str = '', tmdb_id: str = '', limit: int = 200, offset: int = 0) -> Dict[str, Any]:
         return self._get('/api/v1/hubs/list', {'q': q or '', 'status': status or '', 'tmdb_id': tmdb_id or '', 'limit': limit, 'offset': offset}, timeout=20)
 

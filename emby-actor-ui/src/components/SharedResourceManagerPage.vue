@@ -329,7 +329,7 @@
                 <span class="detail-year" v-if="centerDisplayYear(activeCenterDetailRow)">({{ centerDisplayYear(activeCenterDetailRow) }})</span>
               </div>
               <div class="detail-meta">
-                {{ centerCardMetaText(activeCenterDetailRow) }} · 包含 {{ centerDetailVersions.length }} 个版本
+                {{ centerCardMetaText(activeCenterDetailRow) }} · 资源 {{ centerDetailVersions.length }} 个
                 <span v-if="centerDisplayGenres(activeCenterDetailRow)" class="detail-genres">
                   · {{ centerDisplayGenres(activeCenterDetailRow) }}
                 </span>
@@ -348,10 +348,12 @@
           
           <n-divider style="margin: 4px 0 12px 0;" />
 
-          <!-- 版本列表 -->
+          <!-- 资源列表 -->
           <div class="center-version-detail-list">
+            <n-empty v-if="!centerDetailVersions.length" description="暂无可展示资源，请刷新中心资源库或检查详情接口返回" class="center-version-empty" />
             <div v-for="version in centerDetailVersions" :key="centerVersionKey(version)" class="center-version-detail-card">
               <div class="center-version-main">
+                <div class="center-version-title" :title="centerDetailResourceTitle(version)">{{ centerDetailResourceTitle(version) }}</div>
                 <div class="center-version-tags">
                   <n-tag v-for="tagItem in centerVersionTags(version)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
                     {{ tagItem.label }}
@@ -386,7 +388,7 @@ import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } f
 import axios from 'axios';
 import {
   NAlert, NButton, NCard, NCheckbox, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputGroup, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
+  NInputGroup, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch, NEmpty,
   NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
 import {
@@ -2390,7 +2392,13 @@ const centerColumns = [
 
 const centerTmdbMeta = (row) => {
   if (!row || typeof row !== 'object') return {};
-  return row.tmdb_meta || row;
+  const meta = { ...(row.media_meta || {}), ...(row.tmdb_meta || {}) };
+  for (const key of ['title', 'release_year', 'poster_path', 'backdrop_path', 'overview', 'genres_json', 'genres', 'rating']) {
+    if ((meta[key] === undefined || meta[key] === null || meta[key] === '') && row[key] !== undefined && row[key] !== null && row[key] !== '') meta[key] = row[key];
+  }
+  if (!meta.year && (meta.release_year || row.release_year)) meta.year = meta.release_year || row.release_year;
+  if (!meta.vote_average && (meta.rating || row.rating)) meta.vote_average = meta.rating || row.rating;
+  return meta;
 };
 const centerStripYear = (text) => String(text || '').replace(/\s*[（(]\s*(?:19|20)\d{2}\s*[）)]\s*$/g, '').trim();
 const centerBaseTitle = (row) => {
@@ -2411,21 +2419,13 @@ const centerDisplayTitle = (row) => {
 };
 const centerDisplayGenres = (row) => {
   const meta = centerTmdbMeta(row);
-  let genres = meta.genres;
+  let genres = meta.genres || meta.genres_json || row?.genres_json || [];
   if (!genres) return '';
-  
-  // 兼容本地数据库存的字符串格式 (如 "科幻,冒险")
   if (typeof genres === 'string') {
-    try {
-      genres = JSON.parse(genres);
-    } catch (e) {
-      genres = genres.split(/[,，、/]/);
-    }
+    try { genres = JSON.parse(genres); } catch (e) { genres = genres.split(/[,，、/]/); }
   }
-  
-  // 提取并截取前 3 个
   if (Array.isArray(genres)) {
-    const names = genres.map(g => typeof g === 'object' ? g.name : g).filter(Boolean);
+    const names = genres.map(g => typeof g === 'object' ? (g.name || g.zh_name || g.en_name || g.title) : g).filter(Boolean);
     return names.slice(0, 3).join(' / ');
   }
   return '';
@@ -2602,6 +2602,28 @@ const centerCardTags = (row) => {
   return tags.slice(0, 9);
 };
 
+
+const centerDetailBackdropUrl = (row) => {
+  const meta = centerTmdbMeta(row);
+  return tmdbPosterUrl(meta.backdrop_path || row?.backdrop_path || meta.poster_path || row?.poster_path, 'w780');
+};
+const centerDetailBackdropStyle = (row) => {
+  const url = centerDetailBackdropUrl(row);
+  return url && url !== '/default-poster.png' ? { backgroundImage: `url(${url})` } : {};
+};
+const centerDetailCreditsText = (row) => {
+  const meta = centerTmdbMeta(row);
+  const directors = Array.isArray(meta.directors) ? meta.directors : (Array.isArray(row?.directors) ? row.directors : []);
+  const actors = Array.isArray(meta.actors) ? meta.actors : (Array.isArray(row?.actors) ? row.actors : []);
+  const directorText = directors.map(x => x?.name || x?.primary_name || x?.original_name).filter(Boolean).slice(0, 1).join('、');
+  const actorText = actors.map(x => {
+    const name = x?.name || x?.primary_name || x?.original_name || '';
+    const character = x?.character || x?.character_name || '';
+    return name ? (character ? `${name} 饰 ${character}` : name) : '';
+  }).filter(Boolean).slice(0, 6).join(' ｜ ');
+  return [directorText ? `导演：${directorText}` : '', actorText ? `主演：${actorText}` : ''].filter(Boolean).join('  ·  ');
+};
+
 const centerDetailModalTitle = computed(() => {
   if (!activeCenterDetailRow.value) return '中心资源详情';
   const title = centerDisplayTitle(activeCenterDetailRow.value);
@@ -2616,12 +2638,22 @@ const centerDetailModalTitle = computed(() => {
 });
 const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || Math.random());
 // ★ 修改 1：按热度 (success_count) 降序排序
+
+const centerDetailResourceTitle = (row) => {
+  const title = row?.file_name || row?.title || row?.source_id || row?.sha1 || '共享资源';
+  const season = Number(row?.season_number || 0);
+  const episode = Number(row?.episode_number || 0);
+  const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
+  return se && !String(title).includes(se) ? `${title} · ${se}` : String(title);
+};
+
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
-  let versions = Array.isArray(row.versions) && row.versions.length ? row.versions : [];
+  let versions = Array.isArray(row.detail_resources) && row.detail_resources.length ? row.detail_resources : [];
+  if (!versions.length && Array.isArray(row.versions) && row.versions.length) versions = row.versions;
   if (!versions.length && Array.isArray(row.pack_items) && row.pack_items.length) versions = row.pack_items;
   if (!versions.length && Array.isArray(row.children) && row.children.length) versions = row.children;
-  if (!versions.length) versions = [row];
+  if (!versions.length && row.source_id) versions = [row];
   return versions
     .filter(v => v && !centerIsLazyPlaceholder(v))
     .sort((a, b) => (b.success_count || 0) - (a.success_count || 0)); 
@@ -2675,23 +2707,47 @@ const centerEpisodePreview = (row) => {
   return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
 };
 
-const mergeCenterDetailMeta = (row, detail = {}) => {
-  if (!row || !detail) return row;
+const unwrapCenterPayload = (payload) => {
+  if (!payload || typeof payload !== 'object') return {};
+  return (payload.data && typeof payload.data === 'object') ? payload.data : payload;
+};
+const normalizeCenterResourceRows = (values) => (Array.isArray(values) ? values : [])
+  .filter(v => v && typeof v === 'object' && !centerIsLazyPlaceholder(v));
+const mergeCenterDetailMeta = (row, rawDetail = {}) => {
+  if (!row || !rawDetail) return row;
+  const detail = unwrapCenterPayload(rawDetail);
   const meta = detail.tmdb_meta || detail.media_meta || {};
   const actors = Array.isArray(detail.actors) ? detail.actors : [];
   const directors = Array.isArray(detail.directors) ? detail.directors : [];
   const mergedMeta = {
     ...(row.tmdb_meta || {}),
+    ...(row.media_meta || {}),
     ...meta,
-    actors,
-    directors,
+    actors: actors.length ? actors : ((row.tmdb_meta || {}).actors || row.actors || []),
+    directors: directors.length ? directors : ((row.tmdb_meta || {}).directors || row.directors || []),
   };
-  Object.assign(row, {
-    tmdb_meta: mergedMeta,
-    poster_path: row.poster_path || mergedMeta.poster_path,
-    backdrop_path: row.backdrop_path || mergedMeta.backdrop_path,
-    overview: row.overview || mergedMeta.overview,
-  });
+  row.tmdb_meta = mergedMeta;
+  row.media_meta = mergedMeta;
+  row.actors = mergedMeta.actors || [];
+  row.directors = mergedMeta.directors || [];
+  row.poster_path = row.poster_path || mergedMeta.poster_path;
+  row.backdrop_path = row.backdrop_path || mergedMeta.backdrop_path;
+  row.overview = row.overview || mergedMeta.overview;
+  row.release_year = row.release_year || mergedMeta.release_year || mergedMeta.year;
+  const resources = normalizeCenterResourceRows(detail.resources || detail.versions || detail.items);
+  const children = normalizeCenterResourceRows(detail.children);
+  const packItems = normalizeCenterResourceRows(detail.pack_items);
+  if (resources.length) {
+    row.versions = resources;
+    row.detail_resources = resources;
+  }
+  if (children.length || packItems.length) {
+    row.children = children.length ? children : packItems;
+    row.pack_items = packItems.length ? packItems : children;
+    row.children_loaded = true;
+    row._center_children_loaded = true;
+    row.has_children = true;
+  }
   return row;
 };
 
@@ -2707,7 +2763,7 @@ const loadCenterSourceDetailMeta = async (row) => {
     source_id: primary?.source_id || primary?.source_ref_id || row?.source_id || row?.source_ref_id || row?.hub_id || '',
   };
   const res = await axios.get('/api/shared/resources/center/sources/detail', { params });
-  const detail = res.data?.data || res.data || {};
+  const detail = unwrapCenterPayload(res.data || {});
   mergeCenterDetailMeta(row, detail);
   return detail;
 };
@@ -2723,7 +2779,13 @@ const openCenterDetail = async (row) => {
     if (centerNeedsLoadChildren(row)) tasks.push(loadCenterSourceChildren(row));
     await Promise.allSettled(tasks);
     await nextTick();
-    activeCenterDetailRow.value = findCenterGroupByKey(groupedCenterSources.value || [], key) || row;
+    const latest = findCenterGroupByKey(groupedCenterSources.value || [], key);
+    if (latest && latest !== row) {
+      mergeCenterDetailMeta(latest, { tmdb_meta: row.tmdb_meta || row.media_meta || {}, actors: row.actors || [], directors: row.directors || [], resources: row.detail_resources || row.versions || [], children: row.children || [], pack_items: row.pack_items || [] });
+      activeCenterDetailRow.value = latest;
+    } else {
+      activeCenterDetailRow.value = row;
+    }
   } finally {
     centerDetailLoading.value = false;
   }
@@ -2914,9 +2976,16 @@ const loadCenterSourceChildren = async (row) => {
       limit: 5000,
     };
     const res = await axios.get('/api/shared/resources/center/sources/children', { params });
-    const children = res.data?.children || res.data?.items || [];
-    const packItems = res.data?.pack_items || children;
+    const payload = unwrapCenterPayload(res.data || {});
+    const children = payload.children || payload.items || [];
+    const packItems = payload.pack_items || children;
     applyCenterLoadedChildren(row, children, packItems);
+    row.children = children;
+    row.pack_items = packItems;
+    row.children_loaded = true;
+    row._center_children_loaded = true;
+    row.has_children = Array.isArray(children) && children.length > 0;
+    return { children, packItems, payload };
   } catch (e) {
     message.error(e.response?.data?.message || '加载季包集明细失败');
   } finally {
@@ -4054,6 +4123,7 @@ onUnmounted(() => {
 .center-detail-title { font-size: 18px; font-weight: 800; line-height: 1.35; }
 .center-detail-sub { margin-top: 4px; font-size: 12px; opacity: .68; }
 .center-version-detail-list { display: flex; flex-direction: column; gap: 10px; }
+.center-version-empty { padding: 20px 0; }
 .center-version-detail-card {
   display: flex;
   justify-content: space-between;
