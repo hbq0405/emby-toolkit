@@ -810,10 +810,15 @@ def api_manual_validate():
     只确认本地能定位到可秒传文件，并检查 RAW 媒体信息是否可用于中心展示/匹配。
     """
     data = shared_tasks._normalize_series_candidate_identity(_request_json())
-    # 手动预校验只检查本地是否能定位视频、是否能生成 RAW/summary_json。
-    # 不再调用 repair_candidate_fingerprints，避免连载季/维护前预检触发季包一致性校验。
+    # 手动预校验分两段：
+    # 1) 普通电影/连载季只检查本地是否能定位视频、是否能生成 RAW/summary_json；
+    # 2) 已完结季必须在这里同步执行 completed_season_source 硬门禁，不能等到点“登记共享源”时才报错。
+    #
+    # 注意：collect_files_for_candidate 仍然带 _skip_fingerprint_repair，避免连载季预检误触发一致性/指纹修复；
+    # 真正需要一致性门禁的已完结季，会单独用 gate_candidate 调 _completed_season_consistency_gate。
     data['_skip_fingerprint_repair'] = True
     consistency = {}
+    completed_consistency_gate = {}
     files = shared_share_db.collect_files_for_candidate(data)
     root = shared_share_db.candidate_root_from_files(files)
     missing_raw = []
@@ -827,8 +832,41 @@ def api_manual_validate():
         if sha1 and not entry:
             missing_raw.append({'sha1': sha1, 'file_name': f.get('file_name'), 'reason': 'RAW 或 summary_json 缺失'})
 
+    should_check_completed = False
+    try:
+        gate_candidate = dict(data)
+        gate_candidate.pop('_skip_fingerprint_repair', None)
+        gate_candidate['source_provider'] = 'manual_rapid'
+        should_check_completed = (
+            str(gate_candidate.get('item_type') or '').strip() == 'Season'
+            and shared_tasks._candidate_is_completed_season(gate_candidate, source_provider='manual_rapid', files=files)
+        )
+        if files and should_check_completed:
+            completed_consistency_gate = shared_tasks._completed_season_consistency_gate(gate_candidate, log_result=True) or {}
+            consistency = completed_consistency_gate.get('consistency') or {}
+    except Exception as e:
+        # 如果预检本身异常，已完结季宁可前置拦截，也不要再次放行到“登记共享源”才失败。
+        should_check_completed = should_check_completed or (
+            str(data.get('item_type') or '').strip() == 'Season'
+            and (
+                str(data.get('watching_status') or data.get('season_status') or '').strip().lower() == 'completed'
+                or _boolish(data.get('is_completed'), False)
+            )
+        )
+        completed_consistency_gate = {
+            'ok': False,
+            'reason': 'manual_validate_consistency_error',
+            'message': f'完结季一致性预校验异常，禁止登记中心：{e}',
+            'consistency': {},
+            'final_failure': False,
+        }
+        consistency = {}
+
     if not files:
         message = '没有找到可登记视频文件'
+        valid = False
+    elif should_check_completed and not completed_consistency_gate.get('ok'):
+        message = completed_consistency_gate.get('message') or '完结季一致性校验未通过，不能登记共享源'
         valid = False
     elif missing_raw:
         message = f'找到 {len(files)} 个视频文件，但有 {len(missing_raw)} 个缺少 RAW 媒体信息，暂不登记中心'
@@ -846,6 +884,10 @@ def api_manual_validate():
         'root': root,
         'root_fid': root.get('root_fid') or '',
         'consistency': consistency or {},
+        # 给前端保留完整门禁结果，用于展示 reason/message，并作为禁用按钮依据。
+        'completed_consistency_gate': completed_consistency_gate or {},
+        'season_pack_consistency': consistency or {},
+        'reason': (completed_consistency_gate or {}).get('reason') or ('raw_missing' if missing_raw else ''),
     }
     return jsonify({
         'success': True,

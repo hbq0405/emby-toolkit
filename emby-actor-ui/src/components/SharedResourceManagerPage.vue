@@ -541,7 +541,19 @@ const manualShareValidationMessage = computed(() => {
   if (!manualShareValidation.value) return '';
   const fileCount = manualShareValidation.value.file_count;
   const prefix = fileCount ? `已定位 ${fileCount} 个视频文件。` : '';
-  return `${prefix}${manualShareValidation.value.message || ''}`.trim();
+  const msg = String(manualShareValidation.value.message || '').trim();
+  const details = [];
+  const gate = manualShareValidation.value.completed_consistency_gate || {};
+  const consistency = manualShareValidation.value.consistency || manualShareValidation.value.season_pack_consistency || {};
+  if (manualShareValidation.value.valid !== true) {
+    const reasonText = gate.message || consistency.message || '';
+    if (reasonText && !msg.includes(reasonText)) details.push(reasonText);
+    const reasonCode = gate.reason || consistency.reason || manualShareValidation.value.reason || '';
+    if (reasonCode && !msg.includes(reasonCode) && !details.join('；').includes(reasonCode)) details.push(`原因代码：${reasonCode}`);
+    const missingRaw = manualShareValidation.value.missing_raw || [];
+    if (missingRaw.length) details.push(`RAW/summary_json 缺失 ${missingRaw.length} 个`);
+  }
+  return `${prefix}${[msg, ...details].filter(Boolean).join('；')}`.trim();
 });
 const manualCreateDisabled = computed(() => {
   if (!manualShareForm.root_fid) return true;
@@ -3413,7 +3425,10 @@ const validateManualShareSelection = async () => {
       message: data.message || res.data?.message || (data.valid ? '校验通过' : '校验未通过'),
       file_count: data.file_count || 0,
       missing_raw: data.missing_raw || [],
-      season_pack_consistency: data.season_pack_consistency || null,
+      consistency: data.consistency || data.season_pack_consistency || null,
+      season_pack_consistency: data.season_pack_consistency || data.consistency || null,
+      completed_consistency_gate: data.completed_consistency_gate || null,
+      reason: data.reason || data.completed_consistency_gate?.reason || data.consistency?.reason || '',
     };
     return manualShareValidation.value;
   } catch (e) {
@@ -3422,6 +3437,9 @@ const validateManualShareSelection = async () => {
       valid: false,
       message: e.response?.data?.message || '预校验失败，请稍后重试',
       file_count: 0,
+      reason: e.response?.data?.data?.reason || '',
+      consistency: e.response?.data?.data?.consistency || null,
+      completed_consistency_gate: e.response?.data?.data?.completed_consistency_gate || null,
     };
     return manualShareValidation.value;
   } finally {
