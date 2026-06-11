@@ -2369,6 +2369,19 @@ def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
     return {'people_json': people, 'credits_json': credits}
 
 
+def _display_image_path_for_center(*values: Any) -> str:
+    """中心元数据补齐时，图片字段只取本地库第一个非空值。
+
+    本地 media_metadata 里的 poster_path/backdrop_path 已经是标准图片字段，
+    这里不再做 TMDb/Emby/局域网路径白名单判断。
+    """
+    for value in values:
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
 def _display_title_is_season_only(value: Any) -> bool:
     """避免把“第 1 季 / S01 / Season 1”写进 Series 公共壳标题。"""
     text = str(value or '').strip()
@@ -2519,8 +2532,8 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
             'title': title_value,
             'original_title': original_title_value,
             'overview': _first_display_text(row.get('overview')),  # Season 不拿 Series 简介，由中心详情合并兜底。
-            'poster_path': _first_display_text(row.get('poster_path')),
-            'backdrop_path': _first_display_text(row.get('backdrop_path')),
+            'poster_path': _display_image_path_for_center(row.get('poster_path'), row.get('poster_url'), row.get('image'), row.get('cover')),
+            'backdrop_path': _display_image_path_for_center(row.get('backdrop_path'), row.get('backdrop_url'), row.get('background')),
             'release_year': _safe_int_or_none(row.get('release_year')) or _safe_int_or_none(fallback_year),
             'release_date': str(row.get('release_date') or '') or None,
         }
@@ -3982,33 +3995,130 @@ def _display_meta_has_useful_payload(meta: Dict[str, Any]) -> bool:
     return False
 
 
-def _list_display_meta_backfill_source_rows(limit: int = 500) -> List[Dict[str, Any]]:
-    """维护任务扫描本机已登记中心的资源源，用本地 media_metadata 反补中心展示壳。"""
-    limit = max(1, min(int(limit or 500), 5000))
+def _fetch_center_missing_display_meta_rows(limit: int = 500) -> Dict[str, Any]:
+    """向中心端询问哪些公共媒体壳缺展示元数据。
+
+    维护补齐不能再从本机 shared_rapid_sources 反推范围：
+    只要中心资源库里某个电影/季壳缺海报/简介/标题等展示字段，
+    任意客户端本地库有对应 media_metadata，就可以补传。
+    """
+    base_url = _center_base_url_for_display_meta()
+    headers = _center_request_headers_for_display_meta()
+    if not base_url or not headers.get('X-Device-Token'):
+        return {'ok': False, 'items': [], 'message': '共享中心 URL 或设备 Token 未配置'}
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, source_kind, center_source_id, tmdb_id, item_type,
-                           season_number, episode_number, title, file_name,
-                           source_provider, status, center_status, file_count,
-                           root_name, updated_at, created_at
-                    FROM shared_rapid_sources
-                    WHERE COALESCE(center_source_id, '') <> ''
-                      AND COALESCE(tmdb_id, '') <> ''
-                      AND COALESCE(status, '') NOT IN ('disabled','cancelled','canceled','deleted')
-                      AND COALESCE(center_status, '') NOT IN ('disabled','cancelled','canceled','deleted')
-                    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
-                return [dict(r) for r in (cur.fetchall() or [])]
+        resp = requests.get(
+            f"{base_url}/api/v1/metadata/display/missing",
+            headers=headers,
+            params={'limit': max(1, min(int(limit or 500), 5000))},
+            **_center_request_kwargs_for_display_meta(timeout=60),
+        )
+        if resp.status_code >= 400:
+            return {'ok': False, 'items': [], 'message': f"HTTP {resp.status_code}: {resp.text[:300]}"}
+        data = resp.json() if resp.content else {}
+        items = [x for x in (data.get('items') or []) if isinstance(x, dict)]
+        return {'ok': True, 'items': items, 'count': len(items), 'raw': data}
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源维护] 扫描本机展示元数据补齐候选失败: {e}")
+        return {'ok': False, 'items': [], 'message': str(e)}
+
+
+def _list_display_meta_backfill_source_rows(limit: int = 500) -> List[Dict[str, Any]]:
+    """维护任务只按中心缺失壳补齐，不再扫描本机已登记共享源。"""
+    limit = max(1, min(int(limit or 500), 5000))
+    fetched = _fetch_center_missing_display_meta_rows(limit=limit)
+    if not fetched.get('ok'):
+        logger.warning(f"  ➜ [共享资源维护] 查询中心缺失海报/元数据失败: {fetched.get('message') or 'unknown'}")
         return []
 
+    rows: List[Dict[str, Any]] = []
+    for item in fetched.get('items') or []:
+        item_type = str(item.get('item_type') or '').strip()
+        tmdb_id = str(item.get('tmdb_id') or '').strip()
+        if item_type not in ('Movie', 'Season') or not tmdb_id:
+            continue
+        season_no = _safe_int_or_none(item.get('season_number')) if item_type == 'Season' else None
+        if item_type == 'Season' and season_no is None:
+            continue
+        rows.append({
+            'id': item.get('media_key') or f"center-missing:{item_type}:{tmdb_id}:{season_no or ''}",
+            'source_kind': 'movie' if item_type == 'Movie' else 'season_hub',
+            'center_source_id': '',
+            'tmdb_id': tmdb_id,
+            'parent_series_tmdb_id': tmdb_id if item_type == 'Season' else '',
+            'series_tmdb_id': tmdb_id if item_type == 'Season' else '',
+            'item_type': item_type,
+            'season_number': season_no,
+            'episode_number': None,
+            'title': item.get('title') or item.get('fallback_title') or '',
+            'release_year': item.get('release_year'),
+            'missing_fields': item.get('missing_fields') or [],
+            'center_missing': True,
+        })
+    return rows
+
+
+def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type: str, missing_fields: List[str] = None) -> bool:
+    """确认本地 media_metadata 真有中心缺的字段，避免无效反复补传。"""
+    rows = rows if isinstance(rows, dict) else {}
+    item_type = str(item_type or '').strip()
+    missing = {str(x or '').strip() for x in (missing_fields or []) if str(x or '').strip()}
+
+    def has_any(row: Dict[str, Any], keys) -> bool:
+        row = row if isinstance(row, dict) else {}
+        return any(row.get(k) not in (None, '', [], {}) for k in keys)
+
+    def has_image(row: Dict[str, Any], *keys) -> bool:
+        row = row if isinstance(row, dict) else {}
+        return bool(_display_image_path_for_center(*(row.get(k) for k in keys)))
+
+    movie = rows.get('movie') or {}
+    series = rows.get('series') or {}
+    season = rows.get('season') or {}
+
+    if missing:
+        if item_type == 'Movie':
+            checks = {
+                'title': has_any(movie, ('title', 'original_title')),
+                'poster_path': has_image(movie, 'poster_path', 'poster_url', 'image', 'cover'),
+                'backdrop_path': has_image(movie, 'backdrop_path', 'backdrop_url', 'background'),
+                'overview': has_any(movie, ('overview',)),
+                'movie_meta': has_any(movie, (
+                    'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
+                    'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
+                    'actors_json', 'directors_json',
+                )),
+            }
+        else:
+            checks = {
+                'title': has_any(series, ('title', 'original_title')) or has_any(season, ('title', 'original_title')),
+                'poster_path': has_image(season, 'poster_path', 'poster_url', 'image', 'cover') or has_image(series, 'poster_path', 'poster_url', 'image', 'cover'),
+                'season_poster_path': has_image(season, 'poster_path', 'poster_url', 'image', 'cover'),
+                'series_poster_path': has_image(series, 'poster_path', 'poster_url', 'image', 'cover'),
+                'backdrop_path': has_image(season, 'backdrop_path', 'backdrop_url', 'background') or has_image(series, 'backdrop_path', 'backdrop_url', 'background'),
+                'season_backdrop_path': has_image(season, 'backdrop_path', 'backdrop_url', 'background'),
+                'series_backdrop_path': has_image(series, 'backdrop_path', 'backdrop_url', 'background'),
+                'overview': has_any(season, ('overview',)) or has_any(series, ('overview',)),
+                'season_overview': has_any(season, ('overview',)),
+                'series_overview': has_any(series, ('overview',)),
+                'series_meta': has_any(series, (
+                    'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
+                    'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
+                    'actors_json', 'directors_json',
+                )),
+                'season_meta': has_any(season, (
+                    'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
+                    'release_year', 'release_date',
+                )),
+            }
+        return any(checks.get(field, False) for field in missing)
+
+    candidates = [movie] if item_type == 'Movie' else [series, season]
+    useful_keys = (
+        'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
+        'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
+        'actors_json', 'directors_json',
+    )
+    return any(has_any(row, useful_keys) for row in candidates)
 
 def _build_display_meta_backfill_bundles(limit: int = 500) -> Dict[str, Any]:
     rows = _list_display_meta_backfill_source_rows(limit=limit)
@@ -4024,6 +4134,10 @@ def _build_display_meta_backfill_bundles(limit: int = 500) -> Dict[str, Any]:
             continue
         try:
             candidate = _normalize_series_candidate_identity(candidate)
+            local_rows = _local_display_meta_rows_for_candidate(candidate)
+            if not _local_rows_have_display_payload(local_rows, str(candidate.get('item_type') or ''), row.get('missing_fields') or []):
+                skipped_empty += 1
+                continue
             bundle = _center_display_meta_bundle_for_candidate(candidate)
         except Exception as e:
             logger.debug(
@@ -4229,7 +4343,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
     except Exception as e:
         result['airing_episode_backfill_error'] = str(e)
     try:
-        result['display_meta_backfill'] = _backfill_center_display_metadata(limit=800)
+        result['display_meta_backfill'] = _backfill_center_display_metadata(limit=3000)
     except Exception as e:
         result['display_meta_backfill_error'] = str(e)
     try:
