@@ -318,10 +318,7 @@
 
     <n-modal v-model:show="showCenterDetailModal" preset="card" style="width: 1040px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
       <n-spin :show="centerDetailLoading">
-        <div
-            v-if="activeCenterDetailRow"
-            class="center-detail-body"
-          >
+        <div v-if="activeCenterDetailRow" class="center-detail-body">
           <!-- ★ 新增：图文并茂的头部信息区 -->
           <div class="center-detail-header-new">
             <img v-bind="centerPosterImgAttrs(activeCenterDetailRow, 'w500')" class="detail-poster" @error="onCenterPosterError" />
@@ -2547,20 +2544,31 @@ const centerPosterWallTitle = (row) => centerPosterWallFullTitle(row);
 
 const centerPosterUrlCache = new Map();
 
-const tmdbPosterUrl = (value, size = 'w500') => {
+const tmdbPosterUrl = (value, size = 'w300') => {
   const raw = String(value || '').trim();
   if (!raw) return '';
+  if (raw === '/default-poster.png' || raw.startsWith('data:')) return raw;
 
-  // 已经是完整 URL
-  if (/^https?:\/\//i.test(raw)) {
-    return `/api/image_proxy?url=${encodeURIComponent(raw)}`;
+  const cacheKey = `${size}:${raw}`;
+  if (centerPosterUrlCache.has(cacheKey)) return centerPosterUrlCache.get(cacheKey);
+
+  let path = raw;
+  const proxyMatch = raw.match(/^\/api\/discover\/tmdb\/image\/[^/]+\/(.+)$/i);
+  if (proxyMatch) {
+    path = proxyMatch[1] || '';
+  } else if (/^https?:\/\//i.test(raw)) {
+    const tmdbMatch = raw.match(/image\.tmdb\.org\/t\/p\/[^/]+\/(.+)$/i);
+    if (!tmdbMatch) {
+      centerPosterUrlCache.set(cacheKey, raw);
+      return raw;
+    }
+    path = tmdbMatch[1] || '';
   }
 
-  // TMDb path: /abc.jpg
-  const path = raw.startsWith('/') ? raw : `/${raw}`;
-  const tmdbUrl = `https://image.tmdb.org/t/p/${size}${path}`;
-
-  return `/api/image_proxy?url=${encodeURIComponent(tmdbUrl)}`;
+  path = String(path || '').replace(/^\/+/, '');
+  const directUrl = path ? `https://image.tmdb.org/t/p/${size}/${encodeURI(path)}` : '';
+  centerPosterUrlCache.set(cacheKey, directUrl);
+  return directUrl;
 };
 
 const centerPosterCandidates = (row) => {
@@ -4150,29 +4158,7 @@ onUnmounted(() => {
   justify-content: center;
   margin: 4px 0 2px;
 }
-.center-detail-body {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  overflow: hidden;
-  border-radius: 18px;
-  padding: 18px 20px 16px;
-  color: var(--n-text-color-2);
-  background: color-mix(in srgb, var(--n-color) 96%, var(--n-text-color) 4%);
-  border: 1px solid var(--n-border-color);
-}
-
-.center-detail-header-new,
-.center-version-detail-list,
-.center-detail-body :deep(.n-divider) {
-  position: relative;
-  z-index: 1;
-}
-
-.center-detail-body :deep(.n-divider) {
-  border-color: var(--n-border-color) !important;
-}
+.center-detail-body { display: flex; flex-direction: column; gap: 14px; }
 .center-detail-head {
   display: flex;
   justify-content: space-between;
@@ -4192,9 +4178,8 @@ onUnmounted(() => {
   gap: 12px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: rgba(128,128,128,.055);
-  border: 1px solid var(--n-border-color);
-  box-shadow: 0 8px 20px color-mix(in srgb, var(--n-text-color) 6%, transparent);
+  background: rgba(12, 18, 42, .48);
+  border: 1px solid rgba(148, 177, 255, .14);
 }
 .center-version-main { min-width: 0; flex: 1; }
 .center-version-title { font-weight: 800; line-height: 1.35; }
@@ -4280,32 +4265,32 @@ onUnmounted(() => {
   font-size: 24px;
   font-weight: 800;
   line-height: 1.2;
-  color: var(--n-primary-color);
+  color: #fff;
 }
 .detail-year {
   font-size: 18px;
   font-weight: normal;
-  color: var(--n-text-color-3);
+  opacity: 0.7;
   margin-left: 6px;
 }
 .detail-meta {
   font-size: 13px;
-  color: var(--n-text-color-2);
+  color: rgba(255, 255, 255, 0.7);
   display: flex;
   align-items: center;
   gap: 12px;
 }
 .detail-rating {
-  color: var(--n-text-color-2);
-  font-weight: 700;
-  background: rgba(128,128,128,.10);
+  color: #f7b824;
+  font-weight: bold;
+  background: rgba(247, 184, 36, 0.15);
   padding: 2px 8px;
   border-radius: 12px;
 }
 .detail-overview {
   font-size: 13px;
   line-height: 1.6;
-  color: var(--n-text-color-2);
+  color: rgba(255, 255, 255, 0.85);
   display: -webkit-box;
   -webkit-line-clamp: 5;
   line-clamp: 5;
@@ -4314,10 +4299,9 @@ onUnmounted(() => {
   text-align: justify;
 }
 .detail-credits {
-  color: var(--n-text-color-2);
-  background: rgba(128,128,128,.055);
-  border: 1px solid var(--n-border-color);
-  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
   padding: 8px 10px;
 }
 .detail-people-row {
@@ -4333,15 +4317,15 @@ onUnmounted(() => {
   max-width: 210px;
   padding: 4px 7px 4px 4px;
   border-radius: 999px;
-  background: rgba(128,128,128,.06);
-  border: 1px solid var(--n-border-color);
+  background: rgba(8, 14, 35, .42);
+  border: 1px solid rgba(148, 177, 255, .12);
 }
 .detail-person-avatar {
   width: 34px;
   height: 34px;
   border-radius: 50%;
   object-fit: cover;
-  background: color-mix(in srgb, var(--n-text-color) 10%, transparent);
+  background: rgba(255,255,255,.08);
   flex: 0 0 auto;
 }
 .detail-person-info {
@@ -4351,7 +4335,7 @@ onUnmounted(() => {
 .detail-person-name {
   font-size: 12px;
   font-weight: 700;
-  color: var(--n-text-color-2);
+  color: rgba(255,255,255,.92);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4359,7 +4343,7 @@ onUnmounted(() => {
 .detail-person-role {
   margin-top: 2px;
   font-size: 11px;
-  color: var(--n-text-color-3);
+  color: rgba(255,255,255,.58);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
