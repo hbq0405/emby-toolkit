@@ -4195,17 +4195,18 @@ onUnmounted(() => {
 .center-detail-body::before {
   content: '';
   position: absolute;
-  inset: -40px -48px auto -48px;
+  inset: -28px -36px auto -36px;
   height: 320px;
   background-image:
-    linear-gradient(to bottom, rgba(7, 12, 32, .28), rgba(7, 12, 32, .96)),
-    linear-gradient(to right, rgba(7, 12, 32, .78), rgba(7, 12, 32, .25)),
+    linear-gradient(to bottom, rgba(7, 12, 32, .22), rgba(7, 12, 32, .90)),
+    linear-gradient(to right, rgba(7, 12, 32, .66), rgba(7, 12, 32, .18)),
     var(--center-detail-backdrop);
   background-size: cover;
   background-position: center 26%;
-  filter: blur(14px);
-  transform: scale(1.08);
-  opacity: .58;
+  filter: blur(6px);  /* 模糊度，越小越清楚 */
+  transform: scale(1.03);
+  opacity: .72;  /* 背景可见度，越大越明显 */
+  transform: scale(1.03); /* 放大补边，blur 越小这里也可以越小 */
   pointer-events: none;
   z-index: 0;
 }
