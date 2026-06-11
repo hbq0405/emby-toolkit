@@ -3934,6 +3934,232 @@ def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
     return {'ok': failed == 0, 'offline_found': len(rows), 'disabled': disabled, 'failed': failed, 'items': items[:50]}
 
 
+
+
+def _center_request_headers_for_display_meta() -> Dict[str, str]:
+    cfg = settings_db.get_shared_resource_config() or {}
+    return {
+        'X-Device-Token': str(cfg.get('p115_shared_device_token') or '').strip(),
+        'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
+        'Content-Type': 'application/json',
+    }
+
+
+def _center_base_url_for_display_meta() -> str:
+    cfg = settings_db.get_shared_resource_config() or {}
+    return str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
+
+
+def _center_request_kwargs_for_display_meta(timeout: int = 60) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {'timeout': timeout}
+    getter = getattr(config_manager, 'get_proxies_for_requests', None)
+    if callable(getter):
+        try:
+            proxies = getter()
+            if proxies:
+                kwargs['proxies'] = proxies
+        except Exception:
+            pass
+    return kwargs
+
+
+def _display_meta_key(meta: Dict[str, Any]) -> tuple:
+    meta = meta if isinstance(meta, dict) else {}
+    typ = str(meta.get('item_type') or '').strip()
+    tmdb = str(meta.get('tmdb_id') or '').strip()
+    season = _safe_int_or_none(meta.get('season_number')) if typ == 'Season' else None
+    return (tmdb, typ, season)
+
+
+def _display_meta_has_useful_payload(meta: Dict[str, Any]) -> bool:
+    meta = meta if isinstance(meta, dict) else {}
+    for key in (
+        'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
+        'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
+    ):
+        if meta.get(key) not in (None, '', [], {}):
+            return True
+    return False
+
+
+def _list_display_meta_backfill_source_rows(limit: int = 500) -> List[Dict[str, Any]]:
+    """维护任务扫描本机已登记中心的资源源，用本地 media_metadata 反补中心展示壳。"""
+    limit = max(1, min(int(limit or 500), 5000))
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, source_kind, center_source_id, tmdb_id, item_type,
+                           season_number, episode_number, title, file_name,
+                           source_provider, status, center_status, file_count,
+                           root_name, updated_at, created_at
+                    FROM shared_rapid_sources
+                    WHERE COALESCE(center_source_id, '') <> ''
+                      AND COALESCE(tmdb_id, '') <> ''
+                      AND COALESCE(status, '') NOT IN ('disabled','cancelled','canceled','deleted')
+                      AND COALESCE(center_status, '') NOT IN ('disabled','cancelled','canceled','deleted')
+                    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                return [dict(r) for r in (cur.fetchall() or [])]
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 扫描本机展示元数据补齐候选失败: {e}")
+        return []
+
+
+def _build_display_meta_backfill_bundles(limit: int = 500) -> Dict[str, Any]:
+    rows = _list_display_meta_backfill_source_rows(limit=limit)
+    bundles: List[Dict[str, Any]] = []
+    seen_meta_keys = set()
+    scanned_meta_items = 0
+    skipped_empty = 0
+
+    for row in rows:
+        candidate = _candidate_from_local_source(row)
+        if not candidate:
+            skipped_empty += 1
+            continue
+        try:
+            candidate = _normalize_series_candidate_identity(candidate)
+            bundle = _center_display_meta_bundle_for_candidate(candidate)
+        except Exception as e:
+            logger.debug(
+                "  ➜ [共享资源维护] 构建展示元数据补齐包失败: id=%s, tmdb=%s, err=%s",
+                row.get('id'), row.get('tmdb_id'), e,
+            )
+            skipped_empty += 1
+            continue
+
+        meta_items = bundle.get('display_meta_items_json') if isinstance(bundle.get('display_meta_items_json'), list) else []
+        if not meta_items and isinstance(bundle.get('display_meta_json'), dict):
+            meta_items = [bundle.get('display_meta_json')]
+
+        filtered_items = []
+        for meta in meta_items:
+            if not isinstance(meta, dict):
+                continue
+            key = _display_meta_key(meta)
+            if not key[0] or key[1] not in ('Movie', 'Series', 'Season'):
+                continue
+            scanned_meta_items += 1
+            if key in seen_meta_keys:
+                continue
+            if not _display_meta_has_useful_payload(meta):
+                continue
+            seen_meta_keys.add(key)
+            filtered_items.append(meta)
+
+        if not filtered_items:
+            skipped_empty += 1
+            continue
+
+        out = dict(bundle)
+        out['display_meta_items_json'] = filtered_items
+        out['display_meta_json'] = filtered_items[-1]
+        out['_local_source_id'] = row.get('id')
+        out['_source_kind'] = row.get('source_kind')
+        bundles.append(out)
+
+    return {
+        'rows': rows,
+        'bundles': bundles,
+        'candidate_count': len(rows),
+        'meta_item_count': len(seen_meta_keys),
+        'scanned_meta_items': scanned_meta_items,
+        'skipped_empty': skipped_empty,
+    }
+
+
+def _post_center_display_meta_backfill(bundles: List[Dict[str, Any]], *, batch_size: int = 100) -> Dict[str, Any]:
+    base_url = _center_base_url_for_display_meta()
+    headers = _center_request_headers_for_display_meta()
+    if not base_url or not headers.get('X-Device-Token'):
+        return {'ok': False, 'message': '共享中心 URL 或设备 Token 未配置', 'posted_batches': 0, 'accepted_meta_items': 0}
+
+    batch_size = max(1, min(int(batch_size or 100), 300))
+    accepted_meta_items = 0
+    accepted_bundles = 0
+    posted_batches = 0
+    errors = []
+    url = f"{base_url}/api/v1/metadata/display/upsert"
+
+    for start in range(0, len(bundles or []), batch_size):
+        batch = bundles[start:start + batch_size]
+        if not batch:
+            continue
+        try:
+            resp = requests.post(
+                url,
+                headers=headers,
+                json={'items': batch},
+                **_center_request_kwargs_for_display_meta(timeout=90),
+            )
+            posted_batches += 1
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            data = resp.json() if resp.content else {}
+            accepted_meta_items += _safe_int(data.get('accepted_meta_items'), 0)
+            accepted_bundles += _safe_int(data.get('accepted_bundles'), 0)
+            if data.get('errors'):
+                errors.extend(data.get('errors') or [])
+        except Exception as e:
+            errors.append({'batch_start': start, 'error': str(e)[:500]})
+
+    return {
+        'ok': not errors,
+        'posted_batches': posted_batches,
+        'accepted_meta_items': accepted_meta_items,
+        'accepted_bundles': accepted_bundles,
+        'errors': errors[:20],
+    }
+
+
+def _backfill_center_display_metadata(limit: int = 500) -> Dict[str, Any]:
+    """共享维护：把本机 media_metadata 中的海报/简介/演职员补传到中心公共壳。"""
+    built = _build_display_meta_backfill_bundles(limit=limit)
+    bundles = built.get('bundles') or []
+    if not bundles:
+        return {
+            'ok': True,
+            'candidate_count': built.get('candidate_count', 0),
+            'prepared_bundles': 0,
+            'prepared_meta_items': 0,
+            'uploaded_meta_items': 0,
+            'skipped_empty': built.get('skipped_empty', 0),
+        }
+
+    posted = _post_center_display_meta_backfill(bundles, batch_size=100)
+    uploaded = _safe_int(posted.get('accepted_meta_items'), 0)
+    if uploaded:
+        logger.info(
+            "  ➜ [共享资源维护] 中心海报/元数据补齐完成：候选=%s，补传壳=%s，中心接受=%s，批次=%s",
+            built.get('candidate_count', 0),
+            len(bundles),
+            uploaded,
+            posted.get('posted_batches', 0),
+        )
+    elif posted.get('errors'):
+        logger.warning(
+            "  ➜ [共享资源维护] 中心海报/元数据补齐失败：候选=%s，待传=%s，错误=%s",
+            built.get('candidate_count', 0),
+            len(bundles),
+            posted.get('errors'),
+        )
+    return {
+        'ok': bool(posted.get('ok')),
+        'candidate_count': built.get('candidate_count', 0),
+        'prepared_bundles': len(bundles),
+        'prepared_meta_items': built.get('meta_item_count', 0),
+        'uploaded_meta_items': uploaded,
+        'uploaded_bundles': _safe_int(posted.get('accepted_bundles'), 0),
+        'posted_batches': posted.get('posted_batches', 0),
+        'skipped_empty': built.get('skipped_empty', 0),
+        'errors': posted.get('errors') or [],
+    }
+
 def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
     result = result or {}
     parts = [f"监听={'已启动' if result.get('device_event_listener') else '未启动'}"]
@@ -3967,9 +4193,14 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
             failed_items = followup.get('failed_items') if isinstance(followup.get('failed_items'), list) else []
             names = '、'.join([str(x.get('title') or '').strip() for x in failed_items[:3] if isinstance(x, dict) and str(x.get('title') or '').strip()])
             parts.append(f"补登失败={followup.get('failed')}" + (f"（{names}）" if names else ''))
+    display_meta = result.get('display_meta_backfill') if isinstance(result.get('display_meta_backfill'), dict) else {}
+    if display_meta:
+        parts.append(f"海报元数据补齐={display_meta.get('uploaded_meta_items', 0)}/{display_meta.get('prepared_meta_items', 0)}")
+        if display_meta.get('errors'):
+            parts.append(f"元数据补齐失败={len(display_meta.get('errors') or [])}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
-    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'credit_error'):
+    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'display_meta_backfill_error', 'credit_error'):
         if result.get(key):
             parts.append(f"{key}={result.get(key)}")
     return '，'.join(parts)
@@ -3997,6 +4228,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['airing_episode_backfill'] = _backfill_airing_episode_sources(limit=500)
     except Exception as e:
         result['airing_episode_backfill_error'] = str(e)
+    try:
+        result['display_meta_backfill'] = _backfill_center_display_metadata(limit=800)
+    except Exception as e:
+        result['display_meta_backfill_error'] = str(e)
     try:
         result['credit'] = _sync_center_credit()
     except Exception as e:
