@@ -437,7 +437,7 @@ def _share_row_matches_filter(row: Dict[str, Any], status_filter: str) -> bool:
 
     live = status in {'active', 'available'}
     disabled = status in {'disabled', 'cancelled', 'canceled', 'deleted'} or center_status in {'disabled', 'cancelled', 'canceled'}
-    failed = status in {'failed', 'error', 'dead', 'expired', 'rejected', 'inconsistent', 'incomplete', 'raw_missing'} or center_status in {'failed', 'error', 'dead', 'expired', 'rejected', 'raw_missing'}
+    failed = status in {'failed', 'error', 'dead', 'expired', 'rejected', 'inconsistent', 'incomplete', 'raw_missing', 'dirty_raw', 'dirty_summary', 'dirty_meta'} or center_status in {'failed', 'error', 'dead', 'expired', 'rejected', 'raw_missing', 'dirty_raw', 'dirty_summary', 'dirty_meta'}
     reported = center_status in {'reported', 'partial'} or has_center_id
     local_only = not has_center_id and center_status in {'', 'local', 'pending', 'not_reported'}
 
@@ -624,7 +624,7 @@ def _local_source_requires_center_cancel(row: Dict[str, Any]) -> bool:
     center_status = str(row.get('center_status') or '').strip().lower()
     if status in {'disabled', 'cancelled', 'canceled', 'deleted'}:
         return False
-    if center_status in {'disabled', 'cancelled', 'canceled', 'deleted'}:
+    if center_status in {'disabled', 'cancelled', 'canceled', 'deleted', 'dirty_raw', 'dirty_summary', 'dirty_meta'}:
         return False
     return bool(status in {'active', 'available', 'updating', 'pending', ''} or center_status in {'reported', 'partial', 'local', 'pending', ''})
 
@@ -726,7 +726,7 @@ def api_delete_local_source(source_id: int):
     if result.get('center_cancelled'):
         message = '已同步中心取消登记，并删除本地共享源'
     elif center.get('skipped'):
-        message = '共享源已停用或未登记中心，已直接删除本地数据'
+        message = '共享源已停用、异常或无需取消中心登记，已直接删除本地数据'
     return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or message, 'data': result}), status
 
 

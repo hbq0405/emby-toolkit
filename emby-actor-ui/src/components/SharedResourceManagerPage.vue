@@ -646,7 +646,7 @@ const pickShareMetaText = (value) => {
 };
 const shareFailureReasonText = (row) => {
   const statusParts = [row?.status, row?.review_status, row?.center_status].map(v => String(v || '').toLowerCase()).filter(Boolean);
-  const failedStatus = statusParts.find(v => ['failed', 'error', 'dead', 'expired', 'rejected'].includes(v));
+  const failedStatus = statusParts.find(v => ['failed', 'error', 'dead', 'expired', 'rejected', 'raw_missing', 'dirty_raw', 'dirty_summary', 'dirty_meta'].includes(v));
   const rawErrorText = [
     row?.last_error, row?.error, row?.error_message, row?.failure_reason, row?.fail_reason,
   ].map(v => String(v || '').trim()).find(v => v && !isSuccessShareMessage(v));
@@ -717,7 +717,7 @@ const normalizedShareStatuses = (row) => [
   row?.center_status,
 ].map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
 const shareInactiveStatuses = new Set(['disabled', 'cancelled', 'canceled', 'deleted']);
-const shareProblemStatuses = new Set(['failed', 'error', 'dead', 'expired', 'rejected', 'raw_missing', 'inconsistent', 'incomplete']);
+const shareProblemStatuses = new Set(['failed', 'error', 'dead', 'expired', 'rejected', 'raw_missing', 'dirty_raw', 'dirty_summary', 'dirty_meta', 'inconsistent', 'incomplete']);
 const shareUsableStatuses = new Set(['active', 'available', 'alive', 'reported', 'partial', 'usable']);
 const isInactiveShareRow = (row) => normalizedShareStatuses(row).some(v => shareInactiveStatuses.has(v));
 const isProblemShareRow = (row) => normalizedShareStatuses(row).some(v => shareProblemStatuses.has(v));
@@ -728,14 +728,16 @@ const isEffectiveShareRow = (row) => {
 };
 const deleteShareDisabledTitle = (row) => isEffectiveShareRow(row)
   ? '有效共享不能直接删除，除非媒体项已不存在，判定为无效共享后再删除本地记录'
-  : '删除本地共享记录';
+  : (isProblemShareRow(row) ? '删除异常/识别已变更的共享记录' : '删除本地共享记录');
 
 const statusMap = {
   transferring: { text: '秒传中', type: 'warning' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
   active: { text: '本地可用', type: 'success' }, available: { text: '可用', type: 'success' }, alive: { text: '可用', type: 'success' },
   pending: { text: '待验证', type: 'warning' }, replenish: { text: '待补充', type: 'error' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
   reported: { text: '已登记', type: 'success' }, local: { text: '本地未登记', type: 'default' }, partial: { text: '部分登记', type: 'warning' },
-  inconsistent: { text: '不一致', type: 'error' }, incomplete: { text: '不完整', type: 'warning' }, raw_missing: { text: 'RAW缺失', type: 'error' }, disabled: { text: '已停用', type: 'default' },
+  inconsistent: { text: '不一致', type: 'error' }, incomplete: { text: '不完整', type: 'warning' }, raw_missing: { text: '媒体信息缺失', type: 'error' },
+  dirty_raw: { text: '识别已变更', type: 'warning' }, dirty_summary: { text: '摘要需重建', type: 'warning' }, dirty_meta: { text: '元数据已变更', type: 'warning' },
+  disabled: { text: '已停用', type: 'default' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
   not_reported: { text: '未登记', type: 'default' },
   open: { text: '求共享中', type: 'success' }, fulfilled: { text: '已完成', type: 'success' },
@@ -3589,12 +3591,12 @@ const deleteShare = (row) => {
   const ids = Array.isArray(row.source_ids) ? row.source_ids.filter(Boolean) : [];
   const isBatch = ids.length > 1;
   const title = row.title || row.root_name || row.file_name || '该资源';
-  const alreadyDisabled = isInactiveShareRow(row);
+  const alreadyDisabled = isInactiveShareRow(row) || isProblemShareRow(row);
   const countText = isBatch ? `该聚合项下 ${ids.length} 个本机源` : '该本机源';
   dialog.warning({
     title: '删除共享源',
     content: alreadyDisabled
-      ? `确定彻底删除《${title}》的${countText}本地记录吗？该资源已停用，不会再请求中心。`
+      ? `确定彻底删除《${title}》的${countText}本地记录吗？该资源已停用或已不可用，不会再请求中心。`
       : `确定删除《${title}》的${countText}吗？有效共享会先同步中心取消登记，成功后再删除本地数据。`,
     positiveText: alreadyDisabled ? '删除本地数据' : '取消登记并删除',
     negativeText: '保留',
