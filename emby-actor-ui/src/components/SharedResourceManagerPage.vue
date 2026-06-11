@@ -4204,9 +4204,8 @@ onUnmounted(() => {
   background-size: cover;
   background-position: center 26%;
   filter: blur(6px);  /* 模糊度，越小越清楚 */
-  transform: scale(1.03);
+  transform: scale(1.03);  /* 放大补边，blur 越小这里也可以越小 */
   opacity: .72;  /* 背景可见度，越大越明显 */
-  transform: scale(1.03); /* 放大补边，blur 越小这里也可以越小 */
   pointer-events: none;
   z-index: 0;
 }
