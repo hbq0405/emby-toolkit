@@ -660,6 +660,56 @@ def _json_obj(value) -> Dict[str, Any]:
     return {}
 
 
+def _chunks(values: List[Any], size: int):
+    size = max(1, int(size or 1))
+    for i in range(0, len(values or []), size):
+        yield values[i:i + size]
+
+
+def _extract_raw_items_from_batch_response(resp: Any) -> List[Dict[str, Any]]:
+    if not isinstance(resp, dict):
+        return []
+    items = resp.get('items') or resp.get('data') or resp.get('results') or []
+    return [x for x in items if isinstance(x, dict)] if isinstance(items, list) else []
+
+
+def _call_center_raw_batch(client: SharedCenterClient, sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
+    """优先走中心批量 RAW 拉取；客户端封装未更新时返回空，让上层降级单条。"""
+    sha1s = [x for x in (sha1s or []) if _norm_sha1(x)]
+    if not sha1s:
+        return {}
+
+    # SharedCenterClient 新方法名兼容：补丁版建议使用 get_raw_ffprobe_batch。
+    method = None
+    for name in ('get_raw_ffprobe_batch', 'fetch_raw_ffprobe_batch', 'get_raw_batch'):
+        candidate = getattr(client, name, None)
+        if callable(candidate):
+            method = candidate
+            break
+    if not method:
+        return {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for chunk in _chunks(sha1s, 300):
+        try:
+            try:
+                resp = method(chunk)
+            except TypeError:
+                resp = method({'sha1_list': chunk})
+            for item in _extract_raw_items_from_batch_response(resp):
+                sha1 = _norm_sha1(item.get('sha1'))
+                raw = item.get('raw_ffprobe_json') or item.get('raw_json') or item.get('raw') or {}
+                if sha1 and isinstance(raw, dict) and raw:
+                    out[sha1] = raw
+        except Exception as e:
+            logger.debug(
+                f"  ➜ [共享资源] 批量拉取中心 RAW 失败，降级单条："
+                f"batch={len(chunk)}, err={e}"
+            )
+            return out
+    return out
+
+
 def _load_center_raw_map(client: SharedCenterClient, files: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """转存/秒传前把中心 RAW 拉到本地，用于洗版预检和本地 MediaInfo 缓存。"""
     raw_map: Dict[str, Dict[str, Any]] = {}
@@ -675,6 +725,17 @@ def _load_center_raw_map(client: SharedCenterClient, files: List[Dict[str, Any]]
         if sha1 not in missing:
             missing.append(sha1)
 
+    if missing:
+        batch_started = time.time()
+        batch_map = _call_center_raw_batch(client, missing)
+        if batch_map:
+            raw_map.update(batch_map)
+            logger.info(
+                f"  ➜ [共享资源] 批量拉取中心 RAW：命中 {len(batch_map)}/{len(missing)}，"
+                f"耗时 {time.time() - batch_started:.1f}s"
+            )
+
+    # 兼容旧中心/旧 SharedCenterClient：批量缺的再单条兜底。
     for sha1 in missing:
         if sha1 in raw_map:
             continue
