@@ -546,3 +546,23 @@ class SharedCenterClient:
 
     def cancel_share_request(self, group_id: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
         return self._post(f"/api/v1/share-requests/{urllib.parse.quote(str(group_id or '').strip())}/cancel", payload or {}, timeout=20)
+    
+    def get_raw_ffprobe_batch(self, sha1_list, return_compressed=True):
+        sha1s = []
+        seen = set()
+        for value in sha1_list or []:
+            text = str(value or '').strip().upper()
+            if len(text) == 40 and all(c in '0123456789ABCDEF' for c in text) and text not in seen:
+                seen.add(text)
+                sha1s.append(text)
+        if not sha1s:
+            return {'items': [], 'missing': [], 'encoding': 'zstd_base64'}
+
+        return self._post(
+            '/api/v1/rawffprobe/fetch-batch',
+            {
+                'sha1_list': sha1s,
+                'return_compressed': bool(return_compressed),
+            },
+            timeout=max(60, min(180, 15 + len(sha1s) * 2)),
+        )

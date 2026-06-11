@@ -1,5 +1,6 @@
 # handler/shared_subscription_service.py
 # Rapid v2 共享资源消费入口：中心调度，本机 CK 执行秒传/入库。
+import base64
 import concurrent.futures
 import json
 import logging
@@ -673,13 +674,43 @@ def _extract_raw_items_from_batch_response(resp: Any) -> List[Dict[str, Any]]:
     return [x for x in items if isinstance(x, dict)] if isinstance(items, list) else []
 
 
+def _decode_zstd_b64_raw(value: Any) -> Dict[str, Any]:
+    text = str(value or '').strip()
+    if not text:
+        return {}
+    try:
+        compressed = base64.b64decode(text)
+    except Exception:
+        return {}
+    try:
+        import zstandard as zstd
+        raw_bytes = zstd.ZstdDecompressor().decompress(compressed)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 解压中心 RAW zstd 失败，准备降级单条 RAW：{e}")
+        return {}
+    try:
+        raw = json.loads(raw_bytes.decode('utf-8'))
+        return raw if isinstance(raw, dict) else {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 解析中心 RAW JSON 失败，准备降级单条 RAW：{e}")
+        return {}
+
+
+def _raw_from_batch_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    raw = item.get('raw_ffprobe_json') or item.get('raw_json') or item.get('raw') or {}
+    if isinstance(raw, dict) and raw:
+        return raw
+    return _decode_zstd_b64_raw(item.get('raw_zstd_b64') or item.get('raw_zstd_base64') or item.get('raw_compressed_b64'))
+
+
 def _call_center_raw_batch(client: SharedCenterClient, sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
-    """优先走中心批量 RAW 拉取；客户端封装未更新时返回空，让上层降级单条。"""
+    """走中心批量 RAW 拉取，但默认请求 zstd_base64，避免中心端巨型 JSON 负优化。"""
     sha1s = [x for x in (sha1s or []) if _norm_sha1(x)]
     if not sha1s:
         return {}
 
-    # SharedCenterClient 新方法名兼容：补丁版建议使用 get_raw_ffprobe_batch。
     method = None
     for name in ('get_raw_ffprobe_batch', 'fetch_raw_ffprobe_batch', 'get_raw_batch'):
         candidate = getattr(client, name, None)
@@ -689,24 +720,79 @@ def _call_center_raw_batch(client: SharedCenterClient, sha1s: List[str]) -> Dict
     if not method:
         return {}
 
-    out: Dict[str, Dict[str, Any]] = {}
-    for chunk in _chunks(sha1s, 300):
+    def fetch_chunk(chunk: List[str]) -> Dict[str, Dict[str, Any]]:
+        chunk_out: Dict[str, Dict[str, Any]] = {}
         try:
             try:
-                resp = method(chunk)
+                resp = method(chunk, return_compressed=True)
             except TypeError:
-                resp = method({'sha1_list': chunk})
+                try:
+                    resp = method({'sha1_list': chunk, 'return_compressed': True})
+                except TypeError:
+                    resp = method(chunk)
             for item in _extract_raw_items_from_batch_response(resp):
                 sha1 = _norm_sha1(item.get('sha1'))
-                raw = item.get('raw_ffprobe_json') or item.get('raw_json') or item.get('raw') or {}
+                raw = _raw_from_batch_item(item)
                 if sha1 and isinstance(raw, dict) and raw:
-                    out[sha1] = raw
+                    chunk_out[sha1] = raw
         except Exception as e:
             logger.debug(
                 f"  ➜ [共享资源] 批量拉取中心 RAW 失败，降级单条："
                 f"batch={len(chunk)}, err={e}"
             )
-            return out
+        return chunk_out
+
+    # 压缩 RAW 批量可以适当放大，但仍分片，避免一季几百/上千集形成超大响应。
+    chunks = list(_chunks(sha1s, 48))
+    out: Dict[str, Dict[str, Any]] = {}
+    if len(chunks) == 1:
+        return fetch_chunk(chunks[0])
+
+    workers = min(4, len(chunks))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix='center-raw-batch') as executor:
+        futures = [executor.submit(fetch_chunk, chunk) for chunk in chunks]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                out.update(future.result() or {})
+            except Exception:
+                pass
+    return out
+
+
+def _fetch_single_center_raw(client: SharedCenterClient, sha1: str) -> Tuple[str, Dict[str, Any]]:
+    sha1 = _norm_sha1(sha1)
+    if not sha1:
+        return '', {}
+    try:
+        resp = client.get_raw_ffprobe(sha1)
+        raw = (resp or {}).get('raw_ffprobe_json') or (resp or {}).get('raw') or {}
+        if isinstance(raw, dict) and raw:
+            return sha1, raw
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 拉取中心 RAW 失败: sha1={sha1[:12]}..., err={e}")
+    return sha1, {}
+
+
+def _call_center_raw_single_parallel(client: SharedCenterClient, sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
+    """批量缺失/旧中心兜底：并发单条拉取，避免回到纯串行。"""
+    sha1s = [x for x in (sha1s or []) if _norm_sha1(x)]
+    if not sha1s:
+        return {}
+    if len(sha1s) == 1:
+        sha1, raw = _fetch_single_center_raw(client, sha1s[0])
+        return {sha1: raw} if sha1 and raw else {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    workers = min(8, len(sha1s))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix='center-raw-get') as executor:
+        futures = [executor.submit(_fetch_single_center_raw, client, sha1) for sha1 in sha1s]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                sha1, raw = future.result()
+                if sha1 and isinstance(raw, dict) and raw:
+                    out[sha1] = raw
+            except Exception:
+                pass
     return out
 
 
@@ -730,22 +816,22 @@ def _load_center_raw_map(client: SharedCenterClient, files: List[Dict[str, Any]]
         batch_map = _call_center_raw_batch(client, missing)
         if batch_map:
             raw_map.update(batch_map)
-            logger.info(
-                f"  ➜ [共享资源] 批量拉取中心 RAW：命中 {len(batch_map)}/{len(missing)}，"
-                f"耗时 {time.time() - batch_started:.1f}s"
-            )
+        logger.info(
+            f"  ➜ [共享资源] 批量拉取中心 RAW(zstd)：命中 {len(batch_map)}/{len(missing)}，"
+            f"耗时 {time.time() - batch_started:.1f}s"
+        )
 
-    # 兼容旧中心/旧 SharedCenterClient：批量缺的再单条兜底。
-    for sha1 in missing:
-        if sha1 in raw_map:
-            continue
-        try:
-            resp = client.get_raw_ffprobe(sha1)
-            raw = (resp or {}).get('raw_ffprobe_json') or (resp or {}).get('raw') or {}
-            if isinstance(raw, dict) and raw:
-                raw_map[sha1] = raw
-        except Exception as e:
-            logger.debug(f"  ➜ [共享资源] 拉取中心 RAW 失败: sha1={sha1[:12]}..., err={e}")
+    # 批量未命中的再并发单条兜底：旧中心、旧 client、缺 zstandard 依赖都不会退回纯串行。
+    remain = [sha1 for sha1 in missing if sha1 not in raw_map]
+    if remain:
+        single_started = time.time()
+        single_map = _call_center_raw_single_parallel(client, remain)
+        if single_map:
+            raw_map.update(single_map)
+        logger.info(
+            f"  ➜ [共享资源] 并发单条拉取中心 RAW：命中 {len(single_map)}/{len(remain)}，"
+            f"耗时 {time.time() - single_started:.1f}s"
+        )
     return raw_map
 
 
