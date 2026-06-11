@@ -2069,20 +2069,13 @@ def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider
 
 
 def _title_looks_invalid_for_center(title: Any, tmdb_id: str = '') -> bool:
-    """中心公共标题防污染：空值、纯数字、裸季名、等于 TMDb ID 都视为无效。"""
+    """中心公共标题防污染：空值、纯数字、等于 TMDb ID 都视为无效。"""
     text = str(title or '').strip()
     if not text:
         return True
     if text.lower() in {'none', 'null', 'undefined', 'nan'}:
         return True
     if re.fullmatch(r'\d+', text):
-        return True
-    compact = re.sub(r'\s+', '', text)
-    if re.fullmatch(r'第\d{1,3}季', compact):
-        return True
-    if re.fullmatch(r'(?:S|SEASON)\d{1,3}', compact, flags=re.IGNORECASE):
-        return True
-    if re.fullmatch(r'季\d{1,3}', compact):
         return True
     tmdb_id = str(tmdb_id or '').strip()
     if tmdb_id and text == tmdb_id:
@@ -2097,10 +2090,6 @@ def _strip_season_suffix_from_title(title: str) -> str:
     text = re.sub(r'\s*[-·]\s*S\d{1,3}\s*$', '', text, flags=re.IGNORECASE).strip()
     text = re.sub(r'\s+S\d{1,3}\s*$', '', text, flags=re.IGNORECASE).strip()
     text = re.sub(r'\s*[-·]\s*第\s*\d+\s*季\s*$', '', text).strip()
-    if re.fullmatch(r'\s*第\s*\d+\s*季\s*', text):
-        return ''
-    if re.fullmatch(r'\s*(?:S|Season)\s*\d+\s*', text, flags=re.IGNORECASE):
-        return ''
     return text
 
 
@@ -2380,6 +2369,31 @@ def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
     return {'people_json': people, 'credits_json': credits}
 
 
+def _display_title_is_season_only(value: Any) -> bool:
+    """避免把“第 1 季 / S01 / Season 1”写进 Series 公共壳标题。"""
+    text = str(value or '').strip()
+    if not text:
+        return False
+    compact = re.sub(r'\s+', '', text, flags=re.I)
+    if re.fullmatch(r'第\d{1,3}季', compact):
+        return True
+    if re.fullmatch(r'S\d{1,3}', compact, flags=re.I):
+        return True
+    if re.fullmatch(r'Season\d{1,3}', compact, flags=re.I):
+        return True
+    if re.fullmatch(r'(?:第)?\d{1,3}(?:季|期)', compact):
+        return True
+    return False
+
+
+def _safe_series_title(*values: Any) -> str:
+    for value in values:
+        text = _first_display_text(value)
+        if text and not _display_title_is_season_only(text):
+            return text
+    return ''
+
+
 def _local_display_meta_rows_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """读取展示元数据源行。剧集拆成 Season 行和 Series 行。
 
@@ -2478,12 +2492,18 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
                       fallback_title: str = '', fallback_year=None, include_series_fields: bool = True) -> Dict[str, Any]:
         row = row if isinstance(row, dict) else {}
         genres = _safe_json_list(row.get('genres_json')) if row and include_series_fields else []
+        title_value = _first_display_text(row.get('title'), fallback_title)
+        original_title_value = _first_display_text(row.get('original_title'), candidate.get('original_title'))
+        if item_type == 'Series':
+            title_value = _safe_series_title(row.get('title'), fallback_title, candidate.get('series_title'), candidate.get('name'))
+            if _display_title_is_season_only(original_title_value):
+                original_title_value = ''
         meta = {
             'tmdb_id': str(tmdb_id or '').strip(),
             'item_type': item_type,
             'season_number': season_number,
-            'title': _first_display_text(row.get('title'), fallback_title),
-            'original_title': _first_display_text(row.get('original_title'), candidate.get('original_title')),
+            'title': title_value,
+            'original_title': original_title_value,
             'overview': _first_display_text(row.get('overview')),  # Season 不拿 Series 简介，由中心详情合并兜底。
             'poster_path': _first_display_text(row.get('poster_path')),
             'backdrop_path': _first_display_text(row.get('backdrop_path')),
@@ -2526,15 +2546,12 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
 
     season_row = rows.get('season') or {}
     series_row = rows.get('series') or {}
-    series_fallback_title = _first_display_text(candidate.get('series_title'), candidate.get('show_title'))
-    if _title_looks_invalid_for_center(series_fallback_title, series_id):
-        series_fallback_title = ''
     series_meta = meta_from_row(
         tmdb_id=series_id,
         item_type='Series',
         season_number=None,
         row=series_row,
-        fallback_title=series_fallback_title,
+        fallback_title=candidate.get('title'),
         fallback_year=candidate.get('release_year'),
         include_series_fields=True,
     ) if (series_row or series_id) else {}
