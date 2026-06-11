@@ -319,6 +319,11 @@
     <n-modal v-model:show="showCenterDetailModal" preset="card" style="width: 1040px; max-width: 96vw;" class="custom-modal glass-modal center-detail-modal">
       <n-spin :show="centerDetailLoading">
         <div v-if="activeCenterDetailRow" class="center-detail-body">
+          <div
+            v-if="centerDetailBackdropUrl(activeCenterDetailRow)"
+            class="center-detail-bg"
+            :style="centerDetailBackdropStyle(activeCenterDetailRow)"
+          ></div>
           <!-- ★ 新增：图文并茂的头部信息区 -->
           <div class="center-detail-header-new">
             <img v-bind="centerPosterImgAttrs(activeCenterDetailRow, 'w500')" class="detail-poster" @error="onCenterPosterError" />
@@ -2544,6 +2549,30 @@ const centerPosterWallTitle = (row) => centerPosterWallFullTitle(row);
 
 const centerPosterUrlCache = new Map();
 
+const centerBackdropCandidates = (row) => {
+  const meta = centerTmdbMeta(row);
+  return [
+    row?.backdrop_path,
+    row?.backdrop_url,
+    row?.backdrop,
+    meta.backdrop_path,
+    meta.backdrop_url,
+  ].map(v => String(v || '').trim()).filter(Boolean);
+};
+
+const centerDetailBackdropUrl = (row, size = 'w780') => {
+  for (const value of centerBackdropCandidates(row)) {
+    const url = tmdbPosterUrl(value, size);
+    if (url) return url;
+  }
+  return '';
+};
+
+const centerDetailBackdropStyle = (row) => {
+  const url = centerDetailBackdropUrl(row, 'w780');
+  return url ? { backgroundImage: `url("${url.replace(/"/g, '%22')}")` } : {};
+};
+
 const tmdbPosterUrl = (value, size = 'w300') => {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -4347,6 +4376,39 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.center-detail-body {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.center-detail-body > :not(.center-detail-bg) {
+  position: relative;
+  z-index: 1;
+}
+
+.center-detail-bg {
+  position: absolute;
+  inset: -28px -32px auto -32px;
+  height: 300px;
+  background-size: cover;
+  background-position: center 28%;
+  filter: blur(16px);
+  opacity: .34;
+  transform: scale(1.08);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.center-detail-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to bottom, rgba(8, 12, 32, .30), rgba(8, 12, 32, .92)),
+    linear-gradient(to right, rgba(8, 12, 32, .82), rgba(8, 12, 32, .34));
 }
 
 </style>
