@@ -2614,7 +2614,8 @@ const centerBackdropUrl = (row, size = 'w500') => {
 };
 
 const centerDetailBodyStyle = (row) => {
-  const url = centerBackdropUrl(row, 'w500');
+  // 详情页背景只在打开弹窗时加载一张中等尺寸 backdrop；走 /api/image_proxy，避免直连 TMDb。
+  const url = centerBackdropUrl(row, 'w780');
   return url ? { '--center-detail-backdrop': `url("${url.replace(/"/g, '%22')}")` } : {};
 };
 const centerPosterImgAttrs = (row, size = 'w185', index = 0) => {
@@ -4183,46 +4184,67 @@ onUnmounted(() => {
   margin: 4px 0 2px;
 }
 .center-detail-body {
+  --center-detail-backdrop: none;
   position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   gap: 14px;
   overflow: hidden;
-  border-radius: 16px;
-  padding: 0;
+  border-radius: 18px;
+  padding: 18px 20px 16px;
+  color: var(--n-text-color);
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--n-primary-color) 10%, transparent),
+      transparent 42%),
+    color-mix(in srgb, var(--n-color) 94%, var(--n-primary-color) 6%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 76%, var(--n-primary-color) 24%);
 }
 
 .center-detail-body::before {
   content: '';
   position: absolute;
-  inset: -28px -36px auto -36px;
-  height: 320px;
+  inset: 0;
   background-image:
-    linear-gradient(to bottom, rgba(7, 12, 32, .22), rgba(7, 12, 32, .90)),
-    linear-gradient(to right, rgba(7, 12, 32, .66), rgba(7, 12, 32, .18)),
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--n-color) 92%, transparent) 0%,
+      color-mix(in srgb, var(--n-color) 76%, transparent) 45%,
+      color-mix(in srgb, var(--n-color) 54%, transparent) 100%),
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--n-primary-color) 16%, transparent) 0%,
+      color-mix(in srgb, var(--n-color) 62%, transparent) 72%,
+      var(--n-color) 100%),
     var(--center-detail-backdrop);
   background-size: cover;
-  background-position: center 26%;
-  filter: blur(3px);  /* 模糊度，越小越清楚 */
-  transform: scale(1.03);  /* 放大补边，blur 越小这里也可以越小 */
-  opacity: .100;  /* 背景可见度，越大越明显 */
+  background-position: center 28%;
+  filter: none;
+  transform: none;
+  opacity: .98;
   pointer-events: none;
-  z-index: 0;
+  z-index: -2;
 }
 
 .center-detail-body::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 50% 0%, rgba(96, 165, 250, .12), transparent 48%);
+  background:
+    radial-gradient(circle at 38% 0%, color-mix(in srgb, var(--n-primary-color) 18%, transparent), transparent 48%),
+    linear-gradient(to bottom, transparent 0%, color-mix(in srgb, var(--n-color) 70%, transparent) 76%, var(--n-color) 100%);
   pointer-events: none;
-  z-index: 0;
+  z-index: -1;
 }
 
 .center-detail-header-new,
-.center-version-detail-list {
+.center-version-detail-list,
+.center-detail-body :deep(.n-divider) {
   position: relative;
   z-index: 1;
+}
+
+.center-detail-body :deep(.n-divider) {
+  border-color: color-mix(in srgb, var(--n-border-color) 72%, var(--n-primary-color) 28%) !important;
 }
 .center-detail-head {
   display: flex;
@@ -4243,8 +4265,10 @@ onUnmounted(() => {
   gap: 12px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: rgba(12, 18, 42, .48);
-  border: 1px solid rgba(148, 177, 255, .14);
+  background: color-mix(in srgb, var(--n-color) 78%, var(--n-primary-color) 7%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 72%, var(--n-primary-color) 28%);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--n-text-color) 8%, transparent);
+  backdrop-filter: blur(10px) saturate(1.05);
 }
 .center-version-main { min-width: 0; flex: 1; }
 .center-version-title { font-weight: 800; line-height: 1.35; }
@@ -4330,32 +4354,34 @@ onUnmounted(() => {
   font-size: 24px;
   font-weight: 800;
   line-height: 1.2;
-  color: #fff;
+  color: var(--n-text-color);
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--n-color) 72%, transparent);
 }
 .detail-year {
   font-size: 18px;
   font-weight: normal;
-  opacity: 0.7;
+  color: var(--n-text-color-2);
+  opacity: .86;
   margin-left: 6px;
 }
 .detail-meta {
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--n-text-color-2);
   display: flex;
   align-items: center;
   gap: 12px;
 }
 .detail-rating {
-  color: #f7b824;
+  color: var(--n-warning-color, #f0a020);
   font-weight: bold;
-  background: rgba(247, 184, 36, 0.15);
+  background: color-mix(in srgb, var(--n-warning-color, #f0a020) 18%, transparent);
   padding: 2px 8px;
   border-radius: 12px;
 }
 .detail-overview {
   font-size: 13px;
   line-height: 1.6;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--n-text-color);
   display: -webkit-box;
   -webkit-line-clamp: 5;
   line-clamp: 5;
@@ -4364,10 +4390,12 @@ onUnmounted(() => {
   text-align: justify;
 }
 .detail-credits {
-  color: rgba(255, 255, 255, 0.78);
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
+  color: var(--n-text-color);
+  background: color-mix(in srgb, var(--n-color) 70%, var(--n-primary-color) 8%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 70%, var(--n-primary-color) 30%);
+  border-radius: 12px;
   padding: 8px 10px;
+  backdrop-filter: blur(10px) saturate(1.05);
 }
 .detail-people-row {
   display: flex;
@@ -4382,15 +4410,15 @@ onUnmounted(() => {
   max-width: 210px;
   padding: 4px 7px 4px 4px;
   border-radius: 999px;
-  background: rgba(8, 14, 35, .42);
-  border: 1px solid rgba(148, 177, 255, .12);
+  background: color-mix(in srgb, var(--n-color) 74%, var(--n-primary-color) 8%);
+  border: 1px solid color-mix(in srgb, var(--n-border-color) 68%, var(--n-primary-color) 32%);
 }
 .detail-person-avatar {
   width: 34px;
   height: 34px;
   border-radius: 50%;
   object-fit: cover;
-  background: rgba(255,255,255,.08);
+  background: color-mix(in srgb, var(--n-text-color) 10%, transparent);
   flex: 0 0 auto;
 }
 .detail-person-info {
@@ -4400,7 +4428,7 @@ onUnmounted(() => {
 .detail-person-name {
   font-size: 12px;
   font-weight: 700;
-  color: rgba(255,255,255,.92);
+  color: var(--n-text-color);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4408,7 +4436,7 @@ onUnmounted(() => {
 .detail-person-role {
   margin-top: 2px;
   font-size: 11px;
-  color: rgba(255,255,255,.58);
+  color: var(--n-text-color-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
