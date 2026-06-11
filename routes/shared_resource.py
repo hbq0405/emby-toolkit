@@ -1221,6 +1221,41 @@ def api_center_source_children():
         return jsonify({'success': False, 'message': str(e), 'items': [], 'children': [], 'pack_items': [], 'total': 0}), 500
 
 
+
+@shared_resource_bp.route('/center/sources/detail', methods=['GET'])
+@admin_required
+def api_center_source_detail():
+    """中心资源库详情元数据：简介/背景/主演导演按需加载，不进入首屏列表。"""
+    try:
+        cfg = _shared_resource_config_payload()
+        center_url = str(cfg.get('p115_shared_center_url') or '').rstrip('/')
+        if not center_url:
+            return jsonify({'success': False, 'message': '共享中心地址未配置'}), 400
+        params = {
+            'tmdb_id': request.args.get('tmdb_id') or '',
+            'item_type': request.args.get('item_type') or '',
+            'season_number': request.args.get('season_number') or '',
+            'source_kind': request.args.get('source_kind') or '',
+            'source_id': request.args.get('source_id') or '',
+        }
+        # 去掉空 season_number，避免中心端把空字符串解析成 422。
+        params = {k: v for k, v in params.items() if str(v).strip()}
+        resp = requests.get(
+            f"{center_url}/api/v1/sources/display-detail",
+            headers=_center_headers_for_cfg(cfg),
+            params=params,
+            **_center_request_kwargs(30),
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            data = {'ok': False, 'message': resp.text[:500]}
+        if resp.status_code >= 400:
+            return jsonify({'success': False, 'message': data.get('message') or data.get('detail') or f'中心详情接口失败: HTTP {resp.status_code}', **data}), resp.status_code
+        return jsonify({'success': True, **data})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 @shared_resource_bp.route('/center/import', methods=['POST'])
 @admin_required
 def api_center_import():

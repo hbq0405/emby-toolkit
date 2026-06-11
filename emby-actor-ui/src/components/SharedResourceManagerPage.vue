@@ -320,6 +320,7 @@
       <n-spin :show="centerDetailLoading">
         <div v-if="activeCenterDetailRow" class="center-detail-body">
           <!-- ★ 新增：图文并茂的头部信息区 -->
+          <div class="center-detail-backdrop" :style="centerDetailBackdropStyle(activeCenterDetailRow)"></div>
           <div class="center-detail-header-new">
             <img v-bind="centerPosterImgAttrs(activeCenterDetailRow, 'w300')" class="detail-poster" @error="onCenterPosterError" />
             <div class="detail-info">
@@ -338,6 +339,9 @@
               </div>
               <div class="detail-overview">
                 {{ centerTmdbMeta(activeCenterDetailRow).overview || '暂无简介' }}
+              </div>
+              <div v-if="centerDetailCreditsText(activeCenterDetailRow)" class="detail-credits">
+                {{ centerDetailCreditsText(activeCenterDetailRow) }}
               </div>
             </div>
           </div>
@@ -2667,15 +2671,54 @@ const centerEpisodePreview = (row) => {
   const shown = nums.slice(0, 18).map(n => `E${String(n).padStart(2, '0')}`).join('、');
   return `包含 ${children.length} 集：${shown}${nums.length > 18 ? ` ……另 ${nums.length - 18} 集` : ''}`;
 };
+
+const mergeCenterDetailMeta = (row, detail = {}) => {
+  if (!row || !detail) return row;
+  const meta = detail.tmdb_meta || detail.media_meta || {};
+  const actors = Array.isArray(detail.actors) ? detail.actors : [];
+  const directors = Array.isArray(detail.directors) ? detail.directors : [];
+  const mergedMeta = {
+    ...(row.tmdb_meta || {}),
+    ...meta,
+    actors,
+    directors,
+  };
+  Object.assign(row, {
+    tmdb_meta: mergedMeta,
+    poster_path: row.poster_path || mergedMeta.poster_path,
+    backdrop_path: row.backdrop_path || mergedMeta.backdrop_path,
+    overview: row.overview || mergedMeta.overview,
+  });
+  return row;
+};
+
+const loadCenterSourceDetailMeta = async (row) => {
+  if (!row) return null;
+  const primary = centerPrimaryVersion(row) || row;
+  const sourceKind = String(primary?.source_kind || row?.source_kind || row?.lazy_children_kind || '').toLowerCase();
+  const params = {
+    tmdb_id: tmdbIdForRow(row),
+    item_type: centerRowType(row) === 'Movie' ? 'Movie' : 'Season',
+    season_number: row?.season_number || '',
+    source_kind: sourceKind,
+    source_id: primary?.source_id || primary?.source_ref_id || row?.source_id || row?.source_ref_id || row?.hub_id || '',
+  };
+  const res = await axios.get('/api/shared/resources/center/sources/detail', { params });
+  const detail = res.data || {};
+  mergeCenterDetailMeta(row, detail);
+  return detail;
+};
+
 const openCenterDetail = async (row) => {
   if (!row) return;
   const key = centerTableRowKey(row);
   activeCenterDetailRow.value = row;
   showCenterDetailModal.value = true;
-  if (!centerNeedsLoadChildren(row)) return;
   centerDetailLoading.value = true;
   try {
-    await loadCenterSourceChildren(row);
+    const tasks = [loadCenterSourceDetailMeta(row)];
+    if (centerNeedsLoadChildren(row)) tasks.push(loadCenterSourceChildren(row));
+    await Promise.allSettled(tasks);
     await nextTick();
     activeCenterDetailRow.value = findCenterGroupByKey(groupedCenterSources.value || [], key) || row;
   } finally {
@@ -4074,6 +4117,45 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
 }
+
+.center-detail-body {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+}
+.center-detail-backdrop {
+  position: absolute;
+  inset: -24px -24px auto -24px;
+  height: 260px;
+  background-position: center;
+  background-size: cover;
+  filter: blur(18px);
+  opacity: .30;
+  transform: scale(1.08);
+  pointer-events: none;
+}
+.center-detail-backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, rgba(0,0,0,.30), rgba(0,0,0,.92));
+}
+.center-detail-header-new,
+.center-version-detail-list {
+  position: relative;
+  z-index: 1;
+}
+.detail-credits {
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(255,255,255,.72);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* 弹窗头部图文排版 */
 .center-detail-header-new {
   display: flex;

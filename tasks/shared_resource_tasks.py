@@ -2200,6 +2200,264 @@ def _normalize_series_candidate_identity(candidate: Dict[str, Any]) -> Dict[str,
     return candidate
 
 
+
+def _safe_json_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _safe_json_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _first_display_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _person_id_from_credit(value: Dict[str, Any]):
+    if not isinstance(value, dict):
+        return None
+    for key in ('tmdb_person_id', 'person_id', 'id', 'tmdb_id'):
+        raw = value.get(key)
+        try:
+            if raw not in (None, ''):
+                n = int(float(raw))
+                if n > 0:
+                    return n
+        except Exception:
+            continue
+    return None
+
+
+def _credit_character_text(value: Dict[str, Any]) -> str:
+    if not isinstance(value, dict):
+        return ''
+    raw = value.get('character') or value.get('role') or value.get('role_name') or value.get('character_name') or ''
+    if isinstance(raw, list):
+        raw = ' / '.join(str(x or '').strip() for x in raw if str(x or '').strip())
+    return str(raw or '').strip()
+
+
+def _credit_order_value(value: Dict[str, Any], default: int = 0) -> int:
+    for key in ('order', 'sort_order', 'sort', 'index'):
+        try:
+            if value.get(key) not in (None, ''):
+                return int(float(value.get(key)))
+        except Exception:
+            pass
+    return default
+
+
+def _lookup_people_for_display(person_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    ids = sorted({int(x) for x in person_ids if x})[:64]
+    if not ids:
+        return {}
+    out: Dict[int, Dict[str, Any]] = {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT tmdb_person_id, primary_name, original_name, profile_path
+                    FROM person_metadata
+                    WHERE tmdb_person_id = ANY(%s)
+                    """,
+                    (ids,),
+                )
+                for row in cur.fetchall() or []:
+                    item = dict(row)
+                    pid = _safe_int(item.get('tmdb_person_id'), 0)
+                    if pid > 0:
+                        out[pid] = item
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询人物展示元数据失败: {e}")
+    return out
+
+
+def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
+    """从本地媒体元数据提取“前 6 位主演 + 1 位导演”。
+
+    中心端只存轻量展示缓存：人物基础信息进 center_person_metadata，
+    角色名/排序进 center_media_credits，不镜像完整 TMDb cast。
+    """
+    actors_raw = _safe_json_list((meta_row or {}).get('actors_json'))
+    directors_raw = _safe_json_list((meta_row or {}).get('directors_json'))
+
+    actor_items = []
+    for idx, raw in enumerate(actors_raw):
+        if not isinstance(raw, dict):
+            continue
+        pid = _person_id_from_credit(raw)
+        if not pid:
+            continue
+        actor_items.append((
+            _credit_order_value(raw, idx),
+            pid,
+            raw,
+        ))
+    actor_items.sort(key=lambda x: x[0])
+    actor_items = actor_items[:6]
+
+    director_items = []
+    for idx, raw in enumerate(directors_raw):
+        if not isinstance(raw, dict):
+            continue
+        pid = _person_id_from_credit(raw)
+        if not pid:
+            continue
+        director_items.append((_credit_order_value(raw, idx), pid, raw))
+    director_items.sort(key=lambda x: x[0])
+    director_items = director_items[:1]
+
+    person_ids = [x[1] for x in actor_items] + [x[1] for x in director_items]
+    person_map = _lookup_people_for_display(person_ids)
+
+    people = []
+    credits = []
+
+    def add_person(pid: int, raw: Dict[str, Any]) -> None:
+        info = person_map.get(pid) or {}
+        people.append({
+            'tmdb_person_id': pid,
+            'primary_name': _first_display_text(info.get('primary_name'), raw.get('primary_name'), raw.get('name'), raw.get('actor_name')),
+            'original_name': _first_display_text(info.get('original_name'), raw.get('original_name'), raw.get('originalName')),
+            'profile_path': _first_display_text(info.get('profile_path'), raw.get('profile_path'), raw.get('profile')),
+        })
+
+    seen_people = set()
+    for sort_order, pid, raw in actor_items:
+        if pid not in seen_people:
+            add_person(pid, raw)
+            seen_people.add(pid)
+        credits.append({
+            'tmdb_person_id': pid,
+            'credit_type': 'actor',
+            'character_name': _credit_character_text(raw),
+            'sort_order': sort_order,
+        })
+
+    for sort_order, pid, raw in director_items:
+        if pid not in seen_people:
+            add_person(pid, raw)
+            seen_people.add(pid)
+        credits.append({
+            'tmdb_person_id': pid,
+            'credit_type': 'director',
+            'character_name': '',
+            'sort_order': 1000 + sort_order,
+        })
+
+    return {'people_json': people, 'credits_json': credits}
+
+
+def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    item_type = str((candidate or {}).get('item_type') or '').strip()
+    tmdb_id = str((candidate or {}).get('tmdb_id') or '').strip()
+    series_id = str((candidate or {}).get('parent_series_tmdb_id') or (candidate or {}).get('series_tmdb_id') or tmdb_id).strip()
+    season_no = _safe_int_or_none((candidate or {}).get('season_number'))
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if item_type == 'Movie' and tmdb_id:
+                    cur.execute(
+                        """
+                        SELECT * FROM media_metadata
+                        WHERE item_type='Movie' AND tmdb_id=%s
+                        ORDER BY last_updated_at DESC NULLS LAST
+                        LIMIT 1
+                        """,
+                        (tmdb_id,),
+                    )
+                    row = cur.fetchone()
+                    return dict(row) if row else {}
+                if item_type in ('Season', 'Episode') and series_id:
+                    if season_no is not None:
+                        cur.execute(
+                            """
+                            SELECT * FROM media_metadata
+                            WHERE item_type='Season'
+                              AND season_number=%s
+                              AND (tmdb_id=%s OR parent_series_tmdb_id=%s)
+                            ORDER BY CASE WHEN parent_series_tmdb_id=%s THEN 0 ELSE 1 END,
+                                     last_updated_at DESC NULLS LAST
+                            LIMIT 1
+                            """,
+                            (season_no, series_id, series_id, series_id),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            return dict(row)
+                    cur.execute(
+                        """
+                        SELECT * FROM media_metadata
+                        WHERE item_type='Series' AND tmdb_id=%s
+                        ORDER BY last_updated_at DESC NULLS LAST
+                        LIMIT 1
+                        """,
+                        (series_id,),
+                    )
+                    row = cur.fetchone()
+                    return dict(row) if row else {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询本地展示元数据失败: {e}")
+    return {}
+
+
+def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    candidate = candidate if isinstance(candidate, dict) else {}
+    item_type = str(candidate.get('item_type') or '').strip()
+    if item_type == 'Movie':
+        media_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
+        display_type = 'Movie'
+        season_no = None
+    else:
+        media_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+        display_type = 'Season'
+        season_no = _safe_int_or_none(candidate.get('season_number'))
+    if not media_tmdb_id:
+        return {}
+
+    row = _local_display_meta_row_for_candidate(candidate)
+    genres = _safe_json_list(row.get('genres_json')) if row else []
+    display_meta = {
+        'tmdb_id': media_tmdb_id,
+        'item_type': display_type,
+        'season_number': season_no,
+        'title': _first_display_text(row.get('title') if row else '', candidate.get('title')),
+        'original_title': _first_display_text(row.get('original_title') if row else '', candidate.get('original_title')),
+        'overview': _first_display_text(row.get('overview') if row else '', candidate.get('overview')),
+        'poster_path': _first_display_text(row.get('poster_path') if row else '', candidate.get('poster_path')),
+        'backdrop_path': _first_display_text(row.get('backdrop_path') if row else '', candidate.get('backdrop_path')),
+        'release_year': _safe_int_or_none(row.get('release_year') if row else None) or _safe_int_or_none(candidate.get('release_year')),
+        'release_date': str((row or {}).get('release_date') or '') or None,
+        'rating': (row or {}).get('rating'),
+        'genres_json': genres[:12],
+        'original_language': _first_display_text((row or {}).get('original_language'), candidate.get('original_language')),
+    }
+    display_meta = {k: v for k, v in display_meta.items() if v not in (None, '', [], {})}
+    bundle = {'display_meta_json': display_meta}
+    bundle.update(_build_display_credits_bundle(row) if row else {'people_json': [], 'credits_json': []})
+    return bundle
+
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid') -> Dict[str, Any]:
     """把本地媒体库中的电影/分集/季登记到 Rapid v2 中心。
 
@@ -2290,6 +2548,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             'fingerprint_repair': repair_result or {},
         }
     animation_meta = _animation_meta_for_candidate(candidate)
+    display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate)
     results = []
     if item_type == 'Season' and not should_register_completed:
         should_register_completed = _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
@@ -2317,6 +2576,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'title': candidate.get('title'),
                     'release_year': candidate.get('release_year'),
                     'source_provider': source_provider,
+                    **display_meta_bundle,
                     **common,
                 }
                 resp = client.register_movie_source(payload)
@@ -2349,6 +2609,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'release_year': candidate.get('release_year'),
                     'expected_episode_count': expected_count,
                     'source_provider': source_provider,
+                    **display_meta_bundle,
                     **common,
                 }
                 resp = client.register_episode_source(payload)
@@ -2461,6 +2722,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 'status_message': status['message'],
                 'manifest_hash': shared_share_db.manifest_hash(completed_files),
                 'source_provider': 'rapid_completed_season',
+                **display_meta_bundle,
                 'is_clean_version': is_clean_version,
                 'clean_version_confidence': clean_confidence,
                 'clean_version_meta_json': clean_detection,
