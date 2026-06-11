@@ -92,7 +92,7 @@
               <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
               <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
               <n-select v-model:value="centerFilters.order_by" :options="centerOrderOptions" style="width: 130px" />
-              <n-button type="primary" :loading="centerLoading" @click="resetCenterSources()">查询中心</n-button>
+              <n-button type="primary" :loading="centerLoading" @click="resetCenterSources(true)">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
             <n-spin :show="centerLoading && !centerAppendLoading">
@@ -2474,9 +2474,9 @@ const tmdbPosterUrl = (value, size = 'w300') => {
   }
 
   path = String(path || '').replace(/^\/+/, '');
-  const proxyUrl = path ? `/api/shared/resources/tmdb/image/${size}/${encodeURI(path)}` : '';
-  centerPosterUrlCache.set(cacheKey, proxyUrl);
-  return proxyUrl;
+  const directUrl = path ? `https://image.tmdb.org/t/p/${size}/${encodeURI(path)}` : '';
+  centerPosterUrlCache.set(cacheKey, directUrl);
+  return directUrl;
 };
 
 const centerPosterCandidates = (row) => {
