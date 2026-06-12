@@ -1068,6 +1068,25 @@ class P115OpenAPIClient:
                 out.setdefault('file_name', file_name)
                 out.setdefault('target_cid', target_cid)
                 out.setdefault('size', size)
+                
+                # ★ 修复：秒传成功后顺手把 preid 写入缓存，避免整理模块舍近求远重新下载计算
+                data_dict = out.get('data') or {}
+                fid_val = data_dict.get('fileid') or data_dict.get('fid') or data_dict.get('id') or out.get('fileid') or out.get('fid')
+                pc_val = data_dict.get('pickcode') or data_dict.get('pick_code') or data_dict.get('pc') or out.get('pickcode') or out.get('pick_code')
+                if fid_val and pc_val and cache_mgr and hasattr(cache_mgr, 'save_file_cache'):
+                    try:
+                        cache_mgr.save_file_cache(
+                            fid=fid_val,
+                            parent_id=target_cid,
+                            name=file_name,
+                            sha1=sha1,
+                            pick_code=pc_val,
+                            size=size,
+                            preid=preid or sha1
+                        )
+                    except Exception as e:
+                        logger.debug(f"  ➜ [共享秒传] 秒传成功后写入缓存失败: {e}")
+                        
                 return out
             return {
                 'state': False,
@@ -1654,6 +1673,11 @@ class P115CookieClient:
             rapid_meta.get('size'), rapid_meta.get('file_size'), rapid_meta.get('filesize'), rapid_meta.get('size_bytes'),
             source_meta.get('size'), source_meta.get('file_size'), source_meta.get('filesize'), source_meta.get('size_bytes'),
         ))
+        preid = str(_first(
+            payload.get('preid'), payload.get('pre_sha1'), payload.get('pre_sha1_128k'),
+            rapid_meta.get('preid'), rapid_meta.get('pre_sha1'), rapid_meta.get('pre_sha1_128k'),
+            source_meta.get('preid'), source_meta.get('pre_sha1'), source_meta.get('pre_sha1_128k'),
+        ) or '').strip().upper()
         sign_key = _first(payload.get('sign_key'), rapid_meta.get('sign_key'), source_meta.get('sign_key'))
         sign_val = _first(
             payload.get('sign_val'), payload.get('sign_check_value'),
@@ -1746,6 +1770,25 @@ class P115CookieClient:
             out.setdefault('message', '115 Cookie initupload 秒传成功')
             out.setdefault('rapid_upload', True)
             logger.info(f"  ➜ [Cookie秒传] Cookie initupload 秒传成功: {file_name}")
+            
+            # ★ 修复：秒传成功后顺手把 preid 写入缓存，避免整理模块舍近求远重新下载计算
+            data_dict = out.get('data') or {}
+            fid_val = data_dict.get('fileid') or data_dict.get('fid') or data_dict.get('id') or out.get('fileid') or out.get('fid')
+            pc_val = data_dict.get('pickcode') or data_dict.get('pick_code') or data_dict.get('pc') or out.get('pickcode') or out.get('pick_code')
+            if fid_val and pc_val and cache_mgr and hasattr(cache_mgr, 'save_file_cache'):
+                try:
+                    cache_mgr.save_file_cache(
+                        fid=fid_val,
+                        parent_id=target_cid,
+                        name=file_name,
+                        sha1=sha1,
+                        pick_code=pc_val,
+                        size=size,
+                        preid=preid or sha1
+                    )
+                except Exception as e:
+                    logger.debug(f"  ➜ [Cookie秒传] 秒传成功后写入缓存失败: {e}")
+                    
             return out
 
         if status == '1':
