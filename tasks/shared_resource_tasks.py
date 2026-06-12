@@ -565,17 +565,28 @@ def _extract_completed_share_payload(resp: Dict[str, Any], *, receive_code: str 
     }
 
 
-def _completed_share_status_from_info(resp: Dict[str, Any]) -> Dict[str, str]:
+def _completed_share_status_from_info(resp: Dict[str, Any], *, allow_implicit_valid: bool = True) -> Dict[str, str]:
+    """把 115 分享状态响应映射为中心状态。
+
+    注意：115 刚创建分享时，/share/snap 或部分接口可能 state=True，
+    但 Web 列表仍显示“处理中”。state=True 只能说明接口请求成功，不能等价于审核通过。
+    创建后的首次上报一律不允许仅凭 state=True 判定 valid；后续同步也优先吃
+    “处理中/审核中/违规/失效”等明确状态。
+    """
     text = json.dumps(resp if isinstance(resp, dict) else {'value': str(resp)}, ensure_ascii=False, default=str).lower()
     message = _p115_error(resp)
-    if any(x in text for x in ('审核不通过', '审核失败', '违规', '违法', '禁止分享', '封禁', 'risk', 'violation')):
+    if any(x in text for x in ('审核不通过', '审核失败', '违规', '违法', '禁止分享', '封禁', 'risk', 'violation', 'forbidden')):
         return {'status': 'review_failed', 'review_status': 'failed', 'message': message or '115 分享审核失败/违规'}
-    if any(x in text for x in ('审核中', '待审核', 'reviewing', 'pending_review')):
-        return {'status': 'pending_review', 'review_status': 'pending', 'message': message or '115 分享审核中'}
-    if any(x in text for x in ('不存在', '已取消', '已删除', '过期', '失效', 'expired', 'not found')):
+    if any(x in text for x in ('审核中', '待审核', '处理中', '正在处理', 'reviewing', 'pending_review', 'pending review', 'processing')):
+        return {'status': 'pending_review', 'review_status': 'pending', 'message': message or '115 分享审核中/处理中'}
+    if any(x in text for x in ('不存在', '已取消', '已删除', '过期', '失效', 'expired', 'not found', 'cancelled', 'canceled')):
         return {'status': 'expired', 'review_status': 'expired', 'message': message or '115 分享已失效'}
-    if _p115_ok(resp):
+    if any(x in text for x in ('审核通过', '通过审核', '已通过', 'approved', 'review_passed', 'passed_review')):
+        return {'status': 'valid', 'review_status': 'passed', 'message': '115 分享审核通过'}
+    if allow_implicit_valid and _p115_ok(resp):
         return {'status': 'valid', 'review_status': 'passed', 'message': '115 分享可用'}
+    if _p115_ok(resp):
+        return {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
     return {'status': 'failed', 'review_status': 'unknown', 'message': message or '115 分享状态未知'}
 
 
@@ -716,10 +727,14 @@ def handle_create_completed_season_share_event(event: Dict[str, Any], *, ack: bo
 
     info_resp = {}
     try:
-        info_resp = p115.share_info(share_payload.get('share_code'), receive_code=share_payload.get('receive_code') or receive_code)
+        # 创建后查询“本账号自己的分享信息”，不要走 /share/snap。
+        # snap 即使 state=True 也不代表 115 审核已通过。
+        info_resp = p115.share_info(share_payload.get('share_code'))
     except Exception as e:
         info_resp = {'state': False, 'error_msg': str(e), 'stage': 'share_info_after_create'}
-    status_info = _completed_share_status_from_info(info_resp)
+    status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=False)
+    if status_info.get('status') == 'failed':
+        status_info = {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
     report_payload = {
         'channel_id': channel_id,
         'status': status_info.get('status') or 'pending_review',
@@ -812,8 +827,9 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
             if not channel_id or not share_code:
                 continue
             try:
-                info_resp = p115.share_info(share_code, receive_code=receive_code)
-                status_info = _completed_share_status_from_info(info_resp)
+                # 状态同步也优先查询“本账号自己的分享信息”，这里才可能拿到处理中/审核失败等审核状态。
+                info_resp = p115.share_info(share_code)
+                status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=True)
                 status = status_info.get('status') or 'failed'
                 msg = status_info.get('message') or status
                 center_resp = client.update_completed_season_share_status(channel_id, {
@@ -4712,7 +4728,8 @@ def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: 
     """系统硬编码高频后台任务入口。
 
     周期由 scheduler_manager.py 固定控制，不进入用户可配置任务链；
-    用于同步完结季 115 分享通道状态，并兼容执行原共享资源维护。
+    只同步完结季 115 分享通道状态，不顺带执行共享资源维护任务。
+    maintenance_silent 参数仅为兼容 scheduler_manager.py 旧调用签名保留。
     """
     share_sync = _sync_completed_season_share_channels_once(limit=50)
-    return {'ok': True, 'completed_season_share_sync': share_sync, 'maintenance': maintenance}
+    return {'ok': True, 'completed_season_share_sync': share_sync}
