@@ -2351,6 +2351,42 @@ const trackRawText = (item) => {
   if (typeof item === 'string') return item;
   return item.display || item.display_title || item.title || item.name || item.label || item.language || item.lang || '';
 };
+const trackTextTokens = (item) => {
+  if (item == null) return [];
+  if (typeof item === 'string' || typeof item === 'number') return [String(item)];
+  if (Array.isArray(item)) return item.flatMap(trackTextTokens);
+  if (typeof item !== 'object') return [];
+  const tokens = [];
+  const push = (value) => {
+    const text = String(value || '').trim();
+    if (text && !tokens.includes(text)) tokens.push(text);
+  };
+  [
+    'display', 'display_title', 'title', 'name', 'label', 'language', 'lang',
+    'language_title', 'localized_title', 'codec', 'codec_name', 'codec_title',
+    'format', 'format_name', 'comment', 'description', 'note', 'remark'
+  ].forEach(key => push(item[key]));
+  Object.entries(item).forEach(([key, value]) => {
+    if (typeof value !== 'string') return;
+    if (/(title|name|label|language|lang|comment|description|display|codec|format|note|remark|备注|说明)/i.test(key)) push(value);
+  });
+  return tokens;
+};
+const trackSearchText = (item) => trackTextTokens(item).join(' ');
+const mergeVersionTrackLists = (...lists) => {
+  const out = [];
+  const seen = new Set();
+  lists.forEach(list => {
+    trackListToArray(list).forEach(item => {
+      const text = trackSearchText(item).replace(/\s+/g, ' ').trim().toLowerCase();
+      const key = text || `idx:${out.length}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(item);
+    });
+  });
+  return out;
+};
 const isDefaultTrack = (item) => {
   if (item == null) return false;
   if (typeof item === 'object' && (item.is_default === true || item.default === true || item.selected === true)) return true;
@@ -2394,13 +2430,23 @@ const compactEffectText = (value) => {
 const centerVersionSummary = (it) => {
   const sig = it?.media_signature_json || it?.media_signature || {};
   const raw = it?.summary_json || it?.raw_summary_json || {};
-  const v = { ...(raw || {}), ...(sig || {}), ...(it?.version_summary || {}) };
+  const version = it?.version_summary || {};
+  const v = { ...(raw || {}), ...(sig || {}), ...(version || {}) };
   if (!v.resolution) v.resolution = sig.resolution_display || sig.resolution || raw.resolution || '';
   if (!v.effect) v.effect = sig.effect_display || sig.effect_key || sig.effect || raw.effect || '';
   if (!v.video_codec && !v.codec) v.video_codec = sig.video_codec || sig.codec_display || sig.codec || raw.video_codec || raw.codec || '';
   if (!v.fps) v.fps = sig.fps || sig.frame_rate || raw.fps || raw.frame_rate || '';
-  if (!v.audio_list) v.audio_list = sig.audio_list || sig.audio_tracks || sig.audios || raw.audio_list || raw.audio_tracks || raw.audios || [];
-  if (!v.subtitle_list) v.subtitle_list = sig.subtitle_list || sig.subtitles || sig.subtitle_tracks || raw.subtitle_list || raw.subtitles || [];
+  v.audio_list = mergeVersionTrackLists(
+    raw.audio_list, raw.audio_tracks, raw.audios,
+    sig.audio_list, sig.audio_tracks, sig.audios,
+    version.audio_list, version.audio_tracks, version.audios
+  );
+  v.subtitle_list = mergeVersionTrackLists(
+    raw.subtitle_list, raw.subtitle_tracks, raw.subtitles,
+    sig.subtitle_list, sig.subtitle_tracks,
+    sig.subtitles,
+    version.subtitle_list, version.subtitle_tracks, version.subtitles
+  );
   return v;
 };
 const versionAudioTracks = (it) => centerVersionSummary(it).audio_list || centerVersionSummary(it).audios || centerVersionSummary(it).audio_tracks || centerVersionSummary(it).audio || [];
@@ -2737,7 +2783,7 @@ const centerTagPush = (arr, label, type = 'default', key = '') => {
   if (arr.some(x => x.label === text)) return;
   arr.push({ key: key || text, label: text, type });
 };
-const centerTrackTextForTags = (items) => trackListToArray(items).map(item => String(trackRawText(item) || '').trim()).filter(Boolean).join(' ');
+const centerTrackTextForTags = (items) => trackListToArray(items).map(item => trackSearchText(item).trim()).filter(Boolean).join(' ');
 const centerTrackFeatureTags = (row) => {
   const tags = [];
   const audioText = centerTrackTextForTags(versionAudioTracks(row));
