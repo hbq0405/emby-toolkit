@@ -353,6 +353,20 @@
                   </div>
                 </div>
               </div>
+              <div v-if="centerDetailSeasons.length" class="detail-season-tabs">
+                <n-button
+                  v-for="season in centerDetailSeasons"
+                  :key="centerSeasonTabKey(season)"
+                  size="small"
+                  round
+                  :type="centerDetailSeasonActive(season) ? 'primary' : 'default'"
+                  :secondary="!centerDetailSeasonActive(season)"
+                  :loading="centerDetailSeasonLoading(season)"
+                  @click="switchCenterDetailSeason(season)"
+                >
+                  {{ centerSeasonTabLabel(season) }}
+                </n-button>
+              </div>
             </div>
           </div>
           
@@ -468,6 +482,7 @@ const centerInfiniteSentinel = ref(null);
 const showCenterDetailModal = ref(false);
 const activeCenterDetailRow = ref(null);
 const centerDetailLoading = ref(false);
+const centerDetailActiveSeason = ref(null);
 const shareRequests = ref([]);
 const shareRequestSearchKeyword = ref('');
 const shareRequestSearchItems = ref([]);
@@ -794,7 +809,7 @@ const tmdbMediaKind = (row) => {
   if (type.includes('movie') || type === 'film' || type === '电影') return 'movie';
   return 'tv';
 };
-const centerRowTypeSafe = (row) => row?.display_type || (row?.source_kind === 'season_hub' ? 'Pack' : (row?.is_collapsed_pack || row?.pack_item_count ? 'Pack' : row?.item_type));
+const centerRowTypeSafe = (row) => row?.display_type || (row?.source_kind === 'series_group' ? 'Series' : (row?.source_kind === 'season_hub' ? 'Pack' : (row?.is_collapsed_pack || row?.pack_item_count ? 'Pack' : row?.item_type)));
 const tmdbHref = (row) => {
   const id = tmdbIdForRow(row);
   if (!id) return '';
@@ -1502,7 +1517,7 @@ const withLedgerTooltip = (row, node, extraClass = '') => {
 
 const centerTypeLabel = (value) => ({
   Movie: '电影', movie: '电影', movies: '电影', movie_file: '电影', movie_folder: '电影',
-  Pack: '季', pack: '季', Season: '季', season: '季', Series: '季', series: '季', tv: '季', season_pack: '季', series_pack: '季',
+  Pack: '季', pack: '季', Season: '季', season: '季', Series: '剧集', series: '剧集', tv: '剧集', season_pack: '季', series_pack: '剧集',
   Episode: '单集', episode: '单集', episodes: '单集', episode_file: '单集',
 }[value] || value || '-');
 const centerRowType = centerRowTypeSafe;
@@ -1512,11 +1527,18 @@ const centerSeasonNumber = (row) => {
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 };
+const centerIsSeriesGroup = (row) => {
+  const label = centerTypeLabel(centerRowType(row));
+  const kind = String(row?.source_kind || '').trim().toLowerCase();
+  const type = String(row?.item_type || row?.display_type || '').trim().toLowerCase();
+  return label === '剧集' || kind === 'series_group' || ['series', 'tv'].includes(type);
+};
 const centerIsSeasonLike = (row) => {
+  if (centerIsSeriesGroup(row)) return false;
   const label = centerTypeLabel(centerRowType(row));
   const kind = String(row?.source_kind || row?.lazy_children_kind || '').trim().toLowerCase();
   const type = String(row?.item_type || row?.display_type || '').trim().toLowerCase();
-  return label === '季' || kind === 'season_hub' || kind === 'completed_season' || ['season', 'pack', 'series'].includes(type);
+  return label === '季' || kind === 'season_hub' || kind === 'completed_season' || ['season', 'pack'].includes(type);
 };
 const centerIsSpecialSeason = (row) => centerSeasonNumber(row) === 0 && centerIsSeasonLike(row);
 const appendCenterSpecialSeasonSuffix = (title) => {
@@ -1988,6 +2010,7 @@ const centerGroupKey = (row) => {
   const episode = Number(row.episode_number) || 0;
 
   if (baseType === '电影') return `movie:${tmdb || title}`;
+  if (baseType === '剧集') return `series:${tmdb || title}`;
   if (baseType === '季') return `pack:${tmdb || title}:S${season}`;
   if (baseType === '单集') return `ep:${tmdb || title}:S${season}:E${episode}`;
   return `${baseType}:${tmdb || title}:${season}:${episode}`;
@@ -2505,6 +2528,7 @@ const centerDisplayTitle = (row) => {
   const typeLabel = centerTypeLabel(centerRowType(row));
   const season = Number(row?.season_number || 0);
   const episode = Number(row?.episode_number || 0);
+  if (typeLabel === '剧集') return base;
   if (typeLabel === '季' && season > 0 && !/第\s*\d+\s*季/.test(base)) return `${base} 第 ${season} 季`;
   if (typeLabel === '单集') {
     const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
@@ -2618,6 +2642,7 @@ const centerPosterWallPrimaryTitle = (row) => {
   const typeLabel = centerTypeLabel(centerRowType(row));
   const season = Number(row?.season_number || 0);
   const episode = Number(row?.episode_number || 0);
+  if (typeLabel === '剧集') return base;
   if (typeLabel === '季' && season > 0 && !/第\s*\d+\s*季/.test(base)) return `${base} 第 ${season} 季`;
   if (typeLabel === '单集') {
     const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
@@ -2625,7 +2650,15 @@ const centerPosterWallPrimaryTitle = (row) => {
   }
   return base;
 };
-const centerPosterWallYear = (row) => centerDisplayYear(row) || '';
+const centerSeasonCount = (row) => Number(row?.season_count || row?.number_of_seasons || (Array.isArray(row?.seasons) ? row.seasons.length : 0) || 0);
+const centerPosterWallYear = (row) => {
+  const year = centerDisplayYear(row) || '';
+  const seasonCount = centerIsSeriesGroup(row) ? centerSeasonCount(row) : 0;
+  const parts = [];
+  if (year) parts.push(year);
+  if (seasonCount > 1) parts.push(`共 ${seasonCount} 季`);
+  return parts.join(' · ');
+};
 const centerPosterWallFullTitle = (row) => {
   const title = centerPosterWallPrimaryTitle(row);
   const year = centerPosterWallYear(row);
@@ -2724,8 +2757,14 @@ const centerCardMetaText = (row) => {
   const parts = [typeLabel];
   const season = centerSeasonNumber(row);
   const episode = Number(row?.episode_number || 0);
-  if (typeLabel === '季' && centerIsSpecialSeason(row)) parts.push('特别篇');
-  else if (typeLabel === '季' && season > 0) parts.push(`S${String(season).padStart(2, '0')}`);
+  if (typeLabel === '剧集') {
+    const seasonCount = centerSeasonCount(row);
+    if (seasonCount > 1) parts.push(`共 ${seasonCount} 季`);
+  } else if (typeLabel === '季' && centerIsSpecialSeason(row)) {
+    parts.push('特别篇');
+  } else if (typeLabel === '季' && season > 0) {
+    parts.push(`S${String(season).padStart(2, '0')}`);
+  }
   if (typeLabel === '单集' && (season || episode)) parts.push(`${season ? `S${String(season).padStart(2, '0')}` : ''}${episode ? `E${String(episode).padStart(2, '0')}` : ''}`);
   const tmdb = tmdbIdForRow(row);
   if (tmdb) parts.push(`TMDb ${tmdb}`);
@@ -2783,6 +2822,8 @@ const centerCardTags = (row) => {
   centerTagPush(tags, '115秒传', 'success', 'rapid');
   const progress = centerProgressText(row);
   if (progress) centerTagPush(tags, progress, 'info', 'progress');
+  const seasonCount = centerIsSeriesGroup(row) ? centerSeasonCount(row) : 0;
+  if (seasonCount > 1) centerTagPush(tags, `共 ${seasonCount} 季`, 'info', 'season-count');
   if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
@@ -2797,29 +2838,107 @@ const centerCardTags = (row) => {
   return tags.slice(0, 9);
 };
 
+const centerSeasonTabNumber = (season) => {
+  const raw = (season && typeof season === 'object')
+    ? (season.season_number ?? season.active_season_number ?? season.default_season_number)
+    : season;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+};
+const centerSeasonTabSortValue = (season) => {
+  const n = centerSeasonTabNumber(season);
+  if (n === null) return 99999;
+  // 特别篇排在常规季后面，默认详情优先第一季。
+  return n === 0 ? 90000 : n;
+};
+const centerSeasonTabKey = (season) => {
+  const n = centerSeasonTabNumber(season);
+  return `season:${n ?? centerVersionKey(season)}`;
+};
+const centerSeasonTabLabel = (season) => {
+  const n = centerSeasonTabNumber(season);
+  if (n === 0) return '特别篇';
+  if (n !== null) return `第 ${n} 季`;
+  return season?.season_label || season?.season_title || '未知季';
+};
+const centerDetailSeasonListFromRow = (row) => {
+  const raw = Array.isArray(row?.seasons) ? row.seasons.filter(Boolean) : [];
+  let list = raw.length ? raw : [];
+  if (!list.length && centerIsSeasonLike(row)) {
+    const season = centerSeasonNumber(row);
+    if (season !== null) list = [{ ...row, season_number: season }];
+  }
+  const seen = new Set();
+  return list
+    .map(item => (item && typeof item === 'object') ? item : { season_number: item })
+    .filter(item => {
+      const n = centerSeasonTabNumber(item);
+      const key = String(n ?? centerVersionKey(item));
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => centerSeasonTabSortValue(a) - centerSeasonTabSortValue(b));
+};
+const centerDefaultDetailSeason = (row) => {
+  const explicit = centerSeasonTabNumber(row?.active_season_number ?? row?.default_season_number);
+  if (explicit !== null) return explicit;
+  const list = centerDetailSeasonListFromRow(row);
+  const nums = list.map(centerSeasonTabNumber).filter(n => n !== null);
+  if (nums.includes(1)) return 1;
+  if (nums.length) return nums[0];
+  return centerSeasonNumber(row);
+};
+const centerDetailSeasons = computed(() => centerDetailSeasonListFromRow(activeCenterDetailRow.value));
+const centerDetailSeasonActive = (season) => {
+  const n = centerSeasonTabNumber(season);
+  if (n === null) return false;
+  const current = centerSeasonTabNumber(centerDetailActiveSeason.value ?? centerDefaultDetailSeason(activeCenterDetailRow.value));
+  return current === n;
+};
+const centerDetailSeasonLoading = (season) => centerDetailLoading.value && centerDetailSeasonActive(season);
+const centerDetailActiveSeasonRow = computed(() => {
+  const row = activeCenterDetailRow.value || {};
+  if (!centerIsSeriesGroup(row)) return row;
+  const active = centerSeasonTabNumber(centerDetailActiveSeason.value ?? centerDefaultDetailSeason(row));
+  const seasons = centerDetailSeasonListFromRow(row);
+  const selected = seasons.find(item => centerSeasonTabNumber(item) === active) || seasons[0] || {};
+  return {
+    ...selected,
+    tmdb_id: row.tmdb_id || selected.tmdb_id,
+    title: row.title || selected.title,
+    poster_path: row.poster_path || selected.poster_path,
+    overview: row.overview || selected.overview,
+    backdrop_path: row.backdrop_path || selected.backdrop_path,
+    release_year: row.release_year || selected.release_year,
+    actors: row.actors || selected.actors,
+    directors: row.directors || selected.directors,
+    tmdb_meta: { ...(centerTmdbMeta(row) || {}), ...(centerTmdbMeta(selected) || {}) },
+  };
+});
+
 const centerDetailModalTitle = computed(() => {
   if (!activeCenterDetailRow.value) return '中心资源详情';
   const title = centerDisplayTitle(activeCenterDetailRow.value);
-  const versions = Array.isArray(activeCenterDetailRow.value.versions) && activeCenterDetailRow.value.versions.length ? activeCenterDetailRow.value.versions : [activeCenterDetailRow.value];
-  const validVersions = versions.filter(v => v && !centerIsLazyPlaceholder(v));
-  
-  // 如果有多个版本，直接追加到标题后面
+  const validVersions = centerDetailVersions.value.filter(v => v && !centerIsLazyPlaceholder(v));
   if (validVersions.length > 1) {
     return `${title} · 包含 ${validVersions.length} 个版本`;
   }
   return title;
 });
-const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || Math.random());
+const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || row?.file_name || Math.random());
 // ★ 修改 1：按热度 (success_count) 降序排序
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
-  const pick = (key) => Array.isArray(row[key]) ? row[key].filter(Boolean) : [];
+  const host = centerIsSeriesGroup(row) ? (centerDetailActiveSeasonRow.value || row) : row;
+  const pick = (key) => Array.isArray(host[key]) ? host[key].filter(Boolean) : [];
   // 详情页资源列表只展示“电影源 / 季包源”这一层。
   // children / pack_items 是包内单集，详情页不兜底展示；秒传时再懒加载。
   let versions = pick('resources');
   if (!versions.length) versions = pick('versions');
   if (!versions.length) versions = pick('items');
-  if (!versions.length) versions = [row];
+  if (!versions.length && !centerIsSeriesGroup(row)) versions = [host];
   const seen = new Set();
   return versions
     .filter(v => v && !centerIsLazyPlaceholder(v))
@@ -2886,41 +3005,90 @@ const mergeCenterDetailPayload = (base, payload) => {
   }
   if (!merged.actors && Array.isArray(data.actors)) merged.actors = data.actors;
   if (!merged.directors && Array.isArray(data.directors)) merged.directors = data.directors;
+
+  const activeSeason = centerSeasonTabNumber(
+    data.active_season_number ?? data.default_season_number ?? data.season_number ?? centerDetailActiveSeason.value ?? row.active_season_number ?? row.default_season_number
+  );
+  if (Array.isArray(data.seasons) && data.seasons.length) {
+    merged.seasons = data.seasons;
+  } else if (Array.isArray(row.seasons) && row.seasons.length) {
+    merged.seasons = row.seasons;
+  }
+
   for (const key of ['resources', 'versions', 'items']) {
     if (Array.isArray(data[key]) && data[key].length) merged[key] = data[key];
   }
+
+  if (centerIsSeriesGroup(merged)) {
+    if (activeSeason !== null) merged.active_season_number = activeSeason;
+    if (merged.default_season_number === undefined || merged.default_season_number === null || merged.default_season_number === '') {
+      merged.default_season_number = centerDefaultDetailSeason(merged);
+    }
+    const resources = Array.isArray(data.resources) && data.resources.length
+      ? data.resources
+      : (Array.isArray(data.versions) && data.versions.length ? data.versions : (Array.isArray(data.items) ? data.items : []));
+    if (activeSeason !== null && resources.length) {
+      let seasons = centerDetailSeasonListFromRow(merged);
+      if (!seasons.some(s => centerSeasonTabNumber(s) === activeSeason)) {
+        seasons = [...seasons, { season_number: activeSeason, season_label: activeSeason === 0 ? '特别篇' : `第 ${activeSeason} 季` }];
+      }
+      merged.seasons = seasons.map(season => centerSeasonTabNumber(season) === activeSeason
+        ? { ...season, resources, versions: resources, items: resources, children: [], pack_items: [] }
+        : season);
+    }
+  }
+
   // 详情页不接收包内单集，避免旧中心/旧缓存把 children/pack_items 带回弹窗。
   delete merged.children;
   delete merged.pack_items;
   return merged;
 };
 
-const centerDetailParams = (row) => ({
-  source_kind: row?.source_kind || row?.lazy_children_kind || '',
-  source_id: row?.source_id || row?.source_ref_id || '',
-  hub_id: row?.hub_id || '',
-  tmdb_id: row?.tmdb_id || '',
-  item_type: centerRowType(row) || row?.item_type || '',
-  season_number: row?.season_number ?? '',
-  // 详情页只取展示元数据 + 版本壳；包内集列表在秒传确认后再请求。
-  limit: 120,
-});
+const centerDetailParams = (row, seasonOverride = null) => {
+  const isSeries = centerIsSeriesGroup(row);
+  const overrideProvided = seasonOverride !== null && seasonOverride !== undefined && seasonOverride !== '';
+  const season = centerSeasonTabNumber(overrideProvided ? seasonOverride : (isSeries ? null : centerSeasonNumber(row)));
+  return {
+    source_kind: isSeries ? 'series_group' : (row?.source_kind || row?.lazy_children_kind || ''),
+    source_id: isSeries ? (row?.source_id || row?.source_ref_id || `series:${tmdbIdForRow(row)}`) : (row?.source_id || row?.source_ref_id || ''),
+    hub_id: isSeries ? '' : (row?.hub_id || ''),
+    tmdb_id: tmdbIdForRow(row) || row?.tmdb_id || '',
+    item_type: isSeries ? 'Series' : (centerRowType(row) || row?.item_type || ''),
+    season_number: season ?? '',
+    // 详情页只取展示元数据 + 版本壳；包内集列表在秒传确认后再请求。
+    limit: 120,
+  };
+};
 
-const loadCenterSourceDetail = async (row) => {
-  const res = await axios.get('/api/shared/resources/center/sources/detail', { params: centerDetailParams(row) });
+const loadCenterSourceDetail = async (row, seasonOverride = null) => {
+  const res = await axios.get('/api/shared/resources/center/sources/detail', { params: centerDetailParams(row, seasonOverride) });
   if (res.data?.success === false) throw new Error(res.data?.message || '加载详情失败');
   return res.data?.data || res.data || {};
 };
 
+const applyCenterDetailPayload = (base, payload, seasonOverride = null) => {
+  const merged = mergeCenterDetailPayload(base, payload);
+  if (centerIsSeriesGroup(merged)) {
+    const active = centerSeasonTabNumber(payload?.active_season_number ?? payload?.data?.active_season_number ?? seasonOverride ?? merged.active_season_number ?? centerDefaultDetailSeason(merged));
+    if (active !== null) {
+      merged.active_season_number = active;
+      centerDetailActiveSeason.value = active;
+    }
+  }
+  return merged;
+};
+
 const openCenterDetail = async (row) => {
   if (!row) return;
+  centerDetailActiveSeason.value = centerIsSeriesGroup(row) ? centerDefaultDetailSeason(row) : centerSeasonNumber(row);
   activeCenterDetailRow.value = row;
   showCenterDetailModal.value = true;
   centerDetailLoading.value = true;
   try {
     try {
-      const detailPayload = await loadCenterSourceDetail(row);
-      activeCenterDetailRow.value = mergeCenterDetailPayload(row, detailPayload);
+      const requestedSeason = centerIsSeriesGroup(row) ? null : centerDetailActiveSeason.value;
+      const detailPayload = await loadCenterSourceDetail(row, requestedSeason);
+      activeCenterDetailRow.value = applyCenterDetailPayload(row, detailPayload, requestedSeason);
     } catch (e) {
       console.warn('[共享资源] 加载中心详情失败，退回列表壳:', e);
     }
@@ -2928,6 +3096,29 @@ const openCenterDetail = async (row) => {
     centerDetailLoading.value = false;
   }
 };
+
+const switchCenterDetailSeason = async (season) => {
+  const seasonNo = centerSeasonTabNumber(season);
+  const row = activeCenterDetailRow.value;
+  if (seasonNo === null || !row || !centerIsSeriesGroup(row)) return;
+  if (centerDetailActiveSeason.value === seasonNo) return;
+  centerDetailActiveSeason.value = seasonNo;
+  const cached = centerDetailSeasonListFromRow(row).find(item => centerSeasonTabNumber(item) === seasonNo);
+  if (cached && (Array.isArray(cached.resources) || Array.isArray(cached.versions) || Array.isArray(cached.items))) {
+    return;
+  }
+  centerDetailLoading.value = true;
+  try {
+    const detailPayload = await loadCenterSourceDetail(row, seasonNo);
+    activeCenterDetailRow.value = applyCenterDetailPayload(row, detailPayload, seasonNo);
+  } catch (e) {
+    console.warn('[共享资源] 切换中心详情季失败:', e);
+    window.$message?.error?.(e?.message || '切换季资源失败');
+  } finally {
+    centerDetailLoading.value = false;
+  }
+};
+
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => withLedgerTooltip(row, fmtDate(row.created_at)) },
   { title: '事件', key: 'event_type', width: 190, render: row => withLedgerTooltip(row, row.event_label || ledgerEventLabel(row.event_type)) },
@@ -4470,6 +4661,16 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.detail-season-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding-top: 2px;
+}
+.detail-season-tabs :deep(.n-button) {
+  min-width: 74px;
 }
 
 </style>

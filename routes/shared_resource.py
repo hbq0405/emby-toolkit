@@ -1552,7 +1552,7 @@ def api_center_source_children():
             row = _apply_local_season_meta(row)
             return row
 
-        for key in ('items', 'children', 'pack_items', 'parents'):
+        for key in ('items', 'children', 'pack_items', 'parents', 'seasons', 'resources', 'versions'):
             if isinstance(resp.get(key), list):
                 resp[key] = [_decorate_center_row(row) for row in resp.get(key) if isinstance(row, dict)]
         return jsonify({'success': True, **resp})
@@ -1607,7 +1607,7 @@ def api_center_source_detail():
             row = _apply_local_season_meta(row)
             return row
 
-        for key in ('resources', 'versions', 'items'):
+        for key in ('resources', 'versions', 'items', 'seasons'):
             if isinstance(resp.get(key), list):
                 resp[key] = [_decorate_detail_row(x) for x in resp.get(key) if isinstance(x, dict)]
         # 顶层 children / pack_items 不再给详情弹窗使用；展开集详情另走 children 接口。
