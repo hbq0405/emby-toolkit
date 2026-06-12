@@ -1444,63 +1444,27 @@ def _center_track_display(stream: Dict[str, Any], stream_type: str) -> str:
     return ' '.join([x for x in parts if x])
 
 
-def _center_track_payload(stream: Dict[str, Any], stream_type: str) -> Dict[str, Any]:
-    """保留 p115_media_analyzer 已格式化后的音轨/字幕核心字段。
+def _center_track_title(stream: Dict[str, Any]) -> str:
+    """只保留格式化轨道 Title。
 
-    _build_emby_mediainfo_from_ffprobe 会把字幕特效、双语、简繁、默认轨等信息
-    写进 Title / DisplayTitle / DisplayLanguage / Language。旧摘要只保留 display
-    字符串，导致 Title 里的“中英双语特效简体”被丢掉。这里保留完整轨道对象的
-    关键字段，同时给旧前端留 display 兼容字段。
+    摘要不是 RAW，音轨/字幕展示继续用 DisplayTitle；标签识别只需要
+    p115_media_analyzer 写好的 Title，例如“国语（台配）”、
+    “中英双语特效简体（上译）”。
     """
-    stream = stream if isinstance(stream, dict) else {}
-    if not stream:
-        return {}
-
-    def pick(*keys):
-        for key in keys:
-            value = stream.get(key)
-            if value not in (None, '', [], {}):
-                return value
+    if not isinstance(stream, dict):
         return ''
+    return str(stream.get('Title') or stream.get('title') or '').strip()
 
-    out = {
-        'type': stream_type,
-        'index': pick('Index', 'index'),
-        'codec': _center_codec_label(pick('Codec', 'codec', 'codec_name')),
-        'title': pick('Title', 'title'),
-        'display_title': pick('DisplayTitle', 'display_title', 'displayTitle'),
-        'display_language': pick('DisplayLanguage', 'display_language', 'displayLanguage'),
-        'language': pick('Language', 'language', 'lang'),
-        'is_default': bool(pick('IsDefault', 'is_default', 'default')),
-        'is_forced': bool(pick('IsForced', 'is_forced', 'forced')),
-        'is_external': bool(pick('IsExternal', 'is_external')),
-        'is_hearing_impaired': bool(pick('IsHearingImpaired', 'is_hearing_impaired')),
-        'display': _center_track_display(stream, stream_type),
-    }
 
-    if stream_type == 'Audio':
-        out.update({
-            'channels': pick('Channels', 'channels'),
-            'channel_layout': pick('ChannelLayout', 'channel_layout'),
-            'profile': pick('Profile', 'profile'),
-            'bitrate': pick('BitRate', 'bit_rate', 'bitrate'),
-            'sample_rate': pick('SampleRate', 'sample_rate'),
-        })
-    elif stream_type == 'Subtitle':
-        out.update({
-            'is_text_subtitle_stream': bool(pick('IsTextSubtitleStream', 'is_text_subtitle_stream')),
-            'subtitle_location_type': pick('SubtitleLocationType', 'subtitle_location_type'),
-        })
-        blob = ' '.join(str(out.get(k) or '') for k in (
-            'title', 'display_title', 'display_language', 'language', 'codec', 'display'
-        ))
-        if re.search(r'特效|字幕特效|特效字幕|effects?|\btx\b|styled|style', blob, flags=re.I):
-            out['has_subtitle_effect'] = True
-            out['is_effect'] = True
-        if re.search(r'双语|雙語|中英|中日|中韩|bilingual|dual\s*(?:sub|subtitle)?', blob, flags=re.I):
-            out['is_bilingual'] = True
-
-    return {k: v for k, v in out.items() if v not in (None, '', [], {})}
+def _center_track_summary(stream: Dict[str, Any], stream_type: str) -> Dict[str, Any]:
+    display = _center_track_display(stream, stream_type)
+    title = _center_track_title(stream)
+    out = {}
+    if display:
+        out['display'] = display
+    if title:
+        out['title'] = title
+    return out
 
 
 _CENTER_MEDIAINFO_FORMATTER = None
@@ -1618,12 +1582,14 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         bitrate = (raw.get('format') or {}).get('bit_rate') or ''
         video_display = ' · '.join([x for x in [_center_resolution(width, height), codec, f"{bit_depth}bit" if bit_depth else '', fps_text] if x])
 
-    audio_tracks = [_center_track_payload(s, 'Audio') for s in audios]
-    subtitle_tracks = [_center_track_payload(s, 'Subtitle') for s in subs]
-    audio_tracks = [x for x in audio_tracks if x.get('display') or x.get('title') or x.get('language') or x.get('codec')]
-    subtitle_tracks = [x for x in subtitle_tracks if x.get('display') or x.get('title') or x.get('language') or x.get('codec')]
-    audio_list = [x.get('display') for x in audio_tracks if x.get('display')]
-    subtitle_list = [x.get('display') for x in subtitle_tracks if x.get('display')]
+    audio_list = [_center_track_display(s, 'Audio') for s in audios]
+    subtitle_list = [_center_track_display(s, 'Subtitle') for s in subs]
+    audio_list = [x for x in audio_list if x]
+    subtitle_list = [x for x in subtitle_list if x]
+    # 摘要只保留展示文本 + Title。Title 是标签识别的最小必要字段，
+    # 不把 Language/Codec/Index/IsDefault 等完整轨道对象塞进 summary_json。
+    audio_items = [x for x in (_center_track_summary(s, 'Audio') for s in audios) if x.get('display') or x.get('title')]
+    subtitle_items = [x for x in (_center_track_summary(s, 'Subtitle') for s in subs) if x.get('display') or x.get('title')]
 
     summary = {
         'resolution': _center_resolution(width, height),
@@ -1645,14 +1611,10 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         'size_gb': round(size / 1024 / 1024 / 1024, 2) if size else 0,
         'audio_count': len(audios),
         'subtitle_count': len(subs),
-        # *_list 保持字符串数组，兼容旧前端；*_tracks / audios / subtitles 保留
-        # p115_media_analyzer 格式化后的轨道字段，供标签提取使用。
         'audio_list': audio_list[:16],
         'subtitle_list': subtitle_list[:24],
-        'audio_tracks': audio_tracks[:16],
-        'subtitle_tracks': subtitle_tracks[:24],
-        'audios': audio_tracks[:16],
-        'subtitles': subtitle_tracks[:24],
+        'audios': audio_items[:16],
+        'subtitles': subtitle_items[:24],
         'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
     }
     return _apply_short_drama_meta(summary, raw, source)
@@ -1685,12 +1647,12 @@ def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, A
         'resolution', 'width', 'height', 'video_codec', 'codec', 'effect', 'bit_depth',
         'fps', 'bitrate', 'container', 'video_display', 'size', 'size_gb',
         'audio_count', 'subtitle_count', 'audio_list', 'subtitle_list',
-        'audio_tracks', 'subtitle_tracks', 'audios', 'subtitles', 'formatted_by',
+        'audios', 'subtitles', 'formatted_by',
         'resolution_display', 'codec_display', 'effect_key', 'frame_rate',
         'duration_minutes', 'is_short_drama', 'short_drama_meta_json',
     }
     compact = {k: summary.get(k) for k in allowed_keys if k in summary}
-    for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audio_tracks', 16), ('subtitle_tracks', 24), ('audios', 16), ('subtitles', 24)):
+    for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audios', 16), ('subtitles', 24)):
         value = compact.get(key)
         if isinstance(value, list):
             compact[key] = value[:max_len]
@@ -1709,8 +1671,7 @@ def _summary_json_usable_for_center(summary: Dict[str, Any]) -> bool:
         return False
     for key in (
         'resolution', 'width', 'height', 'video_codec', 'codec', 'video_display',
-        'fps', 'frame_rate', 'bitrate', 'audio_list', 'subtitle_list',
-        'audio_tracks', 'subtitle_tracks', 'audios', 'subtitles',
+        'fps', 'frame_rate', 'bitrate', 'audio_list', 'subtitle_list', 'audios', 'subtitles',
     ):
         value = summary.get(key)
         if value in (None, '', [], {}):
@@ -1720,48 +1681,26 @@ def _summary_json_usable_for_center(summary: Dict[str, Any]) -> bool:
         return True
     return False
 
-def _summary_json_preserves_formatted_tracks(summary: Dict[str, Any]) -> bool:
-    """判断中心摘要是否已经保留格式化后的轨道对象。
+def _summary_json_preserves_track_titles(summary: Dict[str, Any]) -> bool:
+    """旧摘要只有 display，会丢掉字幕 Title 里的“特效”。
 
-    旧摘要里 audio_list/subtitle_list 是字符串，audios/subtitles 也只有 {'display': ...}，
-    会丢掉 p115_media_analyzer 写入 Title 的“特效/双语/简繁”等信息。重新登记时
-    不能把这种旧摘要视作 ready，否则不会触发 RAW/summary_json 补传。
+    重新登记时，中心已有 RAW 但 summary_json 缺少 Title，也需要补传新版摘要。
     """
     if not isinstance(summary, dict) or not summary:
         return False
 
-    def _list_value(*keys):
-        out = []
-        for key in keys:
-            value = summary.get(key)
-            if isinstance(value, list):
-                out.extend(value)
-            elif value not in (None, '', [], {}):
-                out.append(value)
-        return out
+    def _items(key):
+        value = summary.get(key)
+        return value if isinstance(value, list) else []
 
-    def _has_rich_track(items):
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            # display 只是紧凑展示；这些字段才说明保留了 Emby 格式化轨道对象。
-            for key in (
-                'title', 'Title', 'display_title', 'DisplayTitle',
-                'display_language', 'DisplayLanguage', 'language', 'Language',
-                'codec', 'Codec', 'is_default', 'IsDefault',
-            ):
-                if item.get(key) not in (None, '', [], {}):
-                    return True
+    def _has_title(items):
+        return any(isinstance(x, dict) and str(x.get('title') or x.get('Title') or '').strip() for x in items)
+
+    audio_count = _safe_int(summary.get('audio_count'), 0)
+    subtitle_count = _safe_int(summary.get('subtitle_count'), 0)
+    if audio_count > 0 and not _has_title(_items('audios')):
         return False
-
-    audio_items = _list_value('audio_tracks', 'audios', 'audio_list')
-    subtitle_items = _list_value('subtitle_tracks', 'subtitles', 'subtitle_list')
-    need_audio_detail = _safe_int(summary.get('audio_count'), 0) > 0 or bool(audio_items)
-    need_subtitle_detail = _safe_int(summary.get('subtitle_count'), 0) > 0 or bool(subtitle_items)
-
-    if need_audio_detail and not _has_rich_track(_list_value('audio_tracks', 'audios')):
-        return False
-    if need_subtitle_detail and not _has_rich_track(_list_value('subtitle_tracks', 'subtitles')):
+    if subtitle_count > 0 and not _has_title(_items('subtitles')):
         return False
     return True
 
@@ -1822,7 +1761,7 @@ def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -
                 ready = (
                     item.get('raw_ready') is not False
                     and _summary_json_usable_for_center(center_summary)
-                    and _summary_json_preserves_formatted_tracks(center_summary)
+                    and _summary_json_preserves_track_titles(center_summary)
                 )
                 if ready:
                     uploaded[sha] = True
