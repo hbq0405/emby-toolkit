@@ -4709,7 +4709,10 @@ def trigger_share_all_library_task() -> bool:
 
 
 def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: bool = True):
-    """高频同步完结季 115 分享通道状态，并兼容执行原共享资源维护。"""
+    """系统硬编码高频后台任务入口。
+
+    周期由 scheduler_manager.py 固定控制，不进入用户可配置任务链；
+    用于同步完结季 115 分享通道状态，并兼容执行原共享资源维护。
+    """
     share_sync = _sync_completed_season_share_channels_once(limit=50)
-    maintenance = task_shared_resource_maintenance(processor=processor, maintenance_silent=maintenance_silent)
     return {'ok': True, 'completed_season_share_sync': share_sync, 'maintenance': maintenance}

@@ -387,7 +387,11 @@ class SchedulerManager:
 
 
     def update_shared_share_status_sync_job(self):
-        """硬编码共享分享状态同步任务。只处理 115 审核/RAW/中心登记，业务触发不再放这里。"""
+        """系统硬编码共享资源高频后台任务。
+
+        不读取用户任务链配置，不允许用户配置执行周期；只跟随共享资源总开关。
+        shared-share-status-sync 在任务注册表里即使保留，也必须是 False，避免出现在前端可编排任务里。
+        """
         if not self.scheduler.running:
             return
 
@@ -416,7 +420,8 @@ class SchedulerManager:
                 logger.trace("  ➜ 定时任务触发：共享分享状态同步。")
                 t = threading.Thread(
                     target=task_shared_share_status_sync_high_freq,
-                    kwargs={'maintenance_silent': False},
+                    # 系统后台高频任务：静默执行，避免每 10 分钟刷前端实时任务状态/日志。
+                    kwargs={'maintenance_silent': True},
                     name="SharedShareStatusSync",
                     daemon=True
                 )

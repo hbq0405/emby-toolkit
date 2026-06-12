@@ -329,6 +329,7 @@ def get_task_registry(context: str = 'all'):
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', False),
         'share-all-library': (share_all_library, "一键登记媒体库", 'media', False),
         'recalculate_library_washing_priorities': (task_recalculate_library_washing_priorities, "重新计算洗版优先级", 'media', False),
+        # 系统硬编码后台任务：False = 前端不可见/不可编排，执行周期由 scheduler_manager.py 固定控制。
         'shared-share-status-sync': (task_shared_share_status_sync_high_freq, "共享分享状态同步", 'media', False),
     }
 
