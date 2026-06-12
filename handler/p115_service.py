@@ -1710,7 +1710,6 @@ class P115CookieClient:
 
         logger.info(
             f"  ➜ [Cookie秒传] 初始化上传: {file_name} | "
-            f"sha1={sha1[:12]}... | size={size} | target={target}"
         )
 
         try:
@@ -4138,7 +4137,7 @@ class P115CacheManager:
             except Exception as e_preid:
                 logger.debug(f"  ➜ [媒体信息缓存] 顺手计算 preid 失败: sha1={sha1[:12]}..., err={e_preid}")
 
-            logger.info(f"  ➜ [媒体信息缓存] 已写入本地 p115_mediainfo_cache -> {sha1[:12]}...")
+            logger.debug(f"  ➜ [媒体信息缓存] 已写入本地 p115_mediainfo_cache -> {sha1[:12]}...")
             return True
 
         except Exception as e:

@@ -49,7 +49,7 @@
         <n-tabs v-model:value="activeTab" animated type="line" @update:value="handleTabChange">
           <n-tab-pane name="shares" tab="我的共享源">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-              管理本机登记到共享中心的秒传资源。Rapid v2 不再创建 115 共享，中心不保存 CK，只保存 SHA1/大小/媒体信息等索引；“登记”会把本地资源索引上传中心，“停用”会让该资源不再参与共享。
+              管理本机登记到共享中心的秒传资源。电影和单集不再创建 115 分享，仅完结季包会尝试创建 115 分享；“登记”会把本地资源索引上传中心，“停用”会让该资源不再参与共享。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="shareFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadShares">

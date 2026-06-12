@@ -42,10 +42,10 @@ def _kick_115_organize_detached(reason: str = '', delay: float = 3.0) -> Dict[st
             time.sleep(delay)
         try:
             from tasks.p115 import task_scan_and_organize_115
-            logger.info(f"  ➜ [共享资源] 异步触发 115 待整理扫描: {reason or 'rapid-import'}")
+            logger.info(f"  ➜ [共享资源] 准备扫描待整理...")
             task_scan_and_organize_115()
         except Exception as e:
-            logger.error(f"  ➜ [共享资源] 异步触发 115 待整理扫描失败: {e}", exc_info=True)
+            logger.error(f"  ➜ [共享资源] 触发 115 待整理扫描失败: {e}", exc_info=True)
 
     threading.Thread(target=_runner, name='shared-rapid-import-organize', daemon=True).start()
     return {'started': True, 'message': '已异步触发 115 待整理扫描'}
@@ -638,7 +638,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     signed_meta['sign_val'] = sign_val
     logger.info(
         f"  ➜ [负载均衡签名] 已收到签名，开始秒传："
-        f"job_id={job_id}, sign_val={sign_val[:12]}..., file={file_name}"
+        f"{file_name}"
     )
     signed_resp = _call_rapid_method(
         p115,
@@ -890,7 +890,7 @@ def _load_center_raw_map(client: SharedCenterClient, files: List[Dict[str, Any]]
         batch_map = _call_center_raw_batch(client, missing)
         if batch_map:
             raw_map.update(batch_map)
-        logger.info(
+        logger.debug(
             f"  ➜ [共享资源] 批量拉取中心 RAW(zstd)：命中 {len(batch_map)}/{len(missing)}，"
             f"耗时 {time.time() - batch_started:.1f}s"
         )
@@ -1198,9 +1198,9 @@ def _prepare_files_before_rapid_transfer(
             }
 
     raw_started_at = time.time()
-    logger.info(f"  ➜ [共享资源] 秒传前预检：开始拉取中心 RAW，source={source_label}, files={len(files)}")
+    logger.info(f"  ➜ [共享资源] 秒传前预检：开始拉取 {len(files)} 条媒体信息")
     raw_map = _load_center_raw_map(client, files)
-    logger.info(
+    logger.debug(
         f"  ➜ [共享资源] 秒传前预检：中心 RAW 拉取完成，"
         f"命中 {len(raw_map)}/{len(files)}，耗时 {time.time() - raw_started_at:.1f}s"
     )
@@ -1222,7 +1222,7 @@ def _prepare_files_before_rapid_transfer(
         except Exception as e:
             cache_errors.append(file_name or sha1)
             logger.warning(f"  ➜ [共享资源] 秒传前预检：RAW 转本地 MediaInfo 异常：{file_name} -> {e}")
-    logger.info(
+    logger.debug(
         f"  ➜ [共享资源] 秒传前预检：RAW 缓存完成，成功 {cached}/{len(raw_map)}，"
         f"失败 {len(cache_errors)}"
     )
@@ -1270,7 +1270,7 @@ def _prepare_files_before_rapid_transfer(
     is_ongoing_hub = str(source_kind or '') == 'season_hub'
     target_cache: Dict[Tuple[str, str, Any], Dict[str, Any]] = {}
 
-    logger.info(
+    logger.debug(
         f"  ➜ [共享资源] 洗版预检开始：source={source_label}, files={len(files)}, "
         f"completed_pack={is_completed_pack}, ongoing_hub={is_ongoing_hub}"
     )
@@ -1302,7 +1302,7 @@ def _prepare_files_before_rapid_transfer(
         raw = raw_map.get(sha1)
         logger.info(
             f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 准备："
-            f"{file_name}，sha1={(sha1[:12] + '...') if sha1 else '-'}"
+            f"{file_name}"
         )
         if not raw:
             msg = f"{file_name}: 中心缺少 RAW，洗版预检拒绝秒传"
@@ -1345,7 +1345,7 @@ def _prepare_files_before_rapid_transfer(
             )
         else:
             target_started_at = time.time()
-            logger.info(
+            logger.debug(
                 f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 计算目标目录："
                 f"tmdb={tmdb_for_washing}, media_type={media_type}, season={s_num if s_num is not None else '-'}, file={file_name}"
             )
@@ -1366,7 +1366,7 @@ def _prepare_files_before_rapid_transfer(
                     'target_cid': str(target_cid_for_washing),
                     'original_lang': original_lang or '',
                 }
-                logger.info(
+                logger.debug(
                     f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 目标目录完成："
                     f"target_cid={target_cid_for_washing}, lang={original_lang or '-'}, "
                     f"耗时 {time.time() - target_started_at:.1f}s"
@@ -1381,7 +1381,7 @@ def _prepare_files_before_rapid_transfer(
 
         file_size = _rapid_size_to_int(src.get('size') or src.get('file_size'), 0)
         decision_started_at = time.time()
-        logger.info(
+        logger.debug(
             f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 调用规则："
             f"target_cid={target_cid_for_washing}, tmdb={tmdb_for_washing}, "
             f"S{s_num if s_num is not None else '-'}E{e_num if e_num is not None else '-'}, size={file_size}"
@@ -1399,7 +1399,7 @@ def _prepare_files_before_rapid_transfer(
             is_active_washing=False,
             has_external_subtitle=False,
         )
-        logger.info(
+        logger.debug(
             f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 规则结果："
             f"{file_name} -> {action}，{reason}，耗时 {time.time() - decision_started_at:.1f}s"
         )
@@ -1411,7 +1411,7 @@ def _prepare_files_before_rapid_transfer(
             continue
 
         level_started_at = time.time()
-        logger.info(f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 计算评分：{file_name}")
+        logger.debug(f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 计算评分：{file_name}")
         level, level_reason = _washing_new_level(
             sha1,
             file_name,
@@ -1485,7 +1485,7 @@ def _prepare_files_before_rapid_transfer(
 
     # 电影/单集/完结季：预检通过的文件全部进入秒传；完结季如果任一视频被拒绝，前面已 hard_reject。
     logger.info(
-        f"  ➜ [共享资源] 洗版预检通过：source={source_label}, "
+        f"  ➜ [共享资源] 洗版预检通过："
         f"选中 {len(candidates)}/{len(files)}，跳过/拒绝 {len(errors)}，耗时 {time.time() - preflight_started_at:.1f}s"
     )
     return [c['file'] for c in sorted(candidates, key=lambda x: x.get('index') or 0)], {
@@ -1518,7 +1518,7 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
     preid = _norm_sha1(file_info.get('preid') or rapid_meta.get('preid') or rapid_meta.get('pre_sha1') or rapid_meta.get('pre_sha1_128k'))
     if preid:
         rapid_meta.setdefault('preid', preid)
-    logger.info(f"  ➜ [共享资源] 准备执行 115 秒传：{file_name}, sha1={sha1[:8]}..., preid={(preid[:8] + '...') if preid else '-'}, size={size}, target_cid={target_cid}")
+    logger.info(f"  ➜ [共享资源] 准备执行 115 秒传：{file_name}")
     resp = _call_rapid_method(
         p115,
         target_cid=target_cid,
