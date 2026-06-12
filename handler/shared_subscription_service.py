@@ -657,6 +657,72 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     return {'ok': ok, 'response': signed_resp, 'sign_job': wait_resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
 
 
+def _remember_rapid_preid_hint(
+    file_info: Dict[str, Any],
+    *,
+    target_cid: str,
+    sha1: str,
+    size: int,
+    file_name: str,
+    rapid_meta: Dict[str, Any] = None,
+    response: Any = None,
+) -> str:
+    """共享秒传成功后，把中心已知 preid 喂给整理缓存链路。"""
+    rapid_meta = dict(rapid_meta or {})
+    preid = _norm_sha1(
+        (file_info or {}).get('preid')
+        or rapid_meta.get('preid')
+        or rapid_meta.get('pre_sha1')
+        or rapid_meta.get('pre_sha1_128k')
+    )
+    if not preid:
+        return ''
+
+    hint_payload = {
+        'sha1': sha1,
+        'preid': preid,
+        'file_name': file_name,
+        'name': file_name,
+        'size': size,
+        'file_size': size,
+        'parent_id': str(target_cid or ''),
+        'target_cid': str(target_cid or ''),
+        'source_kind': (file_info or {}).get('source_kind') or rapid_meta.get('source_kind') or '',
+        'source_id': (file_info or {}).get('source_id') or (file_info or {}).get('source_ref_id') or rapid_meta.get('source_id') or '',
+    }
+
+    if isinstance(response, dict):
+        for key in ('fid', 'file_id', 'id', 'pick_code', 'pickcode', 'pc'):
+            value = response.get(key)
+            if value not in (None, '', [], {}):
+                hint_payload[key] = value
+        data = response.get('data') if isinstance(response.get('data'), dict) else {}
+        for key in ('fid', 'file_id', 'id', 'pick_code', 'pickcode', 'pc'):
+            value = data.get(key)
+            if value not in (None, '', [], {}) and key not in hint_payload:
+                hint_payload[key] = value
+
+    try:
+        cached_preid = P115CacheManager.register_preid_hint(
+            hint_payload,
+            sha1=sha1,
+            preid=preid,
+            parent_id=str(target_cid or ''),
+            file_name=file_name,
+            size=size,
+            source='shared_rapid_transfer',
+        )
+        if cached_preid:
+            logger.debug(
+                f"  ➜ [共享资源] 已缓存共享秒传 preid 提示："
+                f"{file_name}, sha1={sha1[:12]}..., preid={cached_preid[:12]}..., target_cid={target_cid}"
+            )
+        return cached_preid or ''
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 缓存共享秒传 preid 提示失败：{file_name} -> {e}")
+        return ''
+
+
 def _json_obj(value) -> Dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -1463,6 +1529,15 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
         rapid_meta=rapid_meta,
     )
     if _rapid_success(resp):
+        _remember_rapid_preid_hint(
+            file_info,
+            target_cid=target_cid,
+            sha1=sha1,
+            size=size,
+            file_name=file_name,
+            rapid_meta=rapid_meta,
+            response=resp,
+        )
         return {'ok': True, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
 
     sign_req = _rapid_sign_request_from_response(resp)
@@ -1474,6 +1549,15 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
                 sha1=sha1, size=size, file_name=file_name, rapid_meta=rapid_meta, first_resp=resp,
             )
             if retry.get('ok'):
+                _remember_rapid_preid_hint(
+                    file_info,
+                    target_cid=target_cid,
+                    sha1=sha1,
+                    size=size,
+                    file_name=file_name,
+                    rapid_meta=rapid_meta,
+                    response=retry.get('response'),
+                )
                 return retry
             return {
                 'ok': False,
