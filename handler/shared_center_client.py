@@ -620,6 +620,19 @@ class SharedCenterClient:
     def report_transfer(self, source_kind: str, source_id: str, result: str, **kwargs) -> Dict[str, Any]:
         payload = {'source_kind': source_kind, 'source_id': source_id, 'result': result}
         payload.update({k: v for k, v in kwargs.items() if v is not None})
+
+        # 兼容旧的第 4 步客户端：分享转存成功上报里只有 message="本机通过 115 分享转存成功..."，
+        # 没有显式 transfer_mode。中心端第 5 步按 transfer_mode=share 才会启用 10 点封顶结算。
+        if not payload.get('transfer_mode'):
+            msg = str(payload.get('message') or '')
+            if str(source_kind or '').strip() == 'completed_season' and result == 'success' and (
+                '分享转存' in msg or '115 分享' in msg or 'share_import' in msg or 'transfer_mode=share' in msg
+            ):
+                payload['transfer_mode'] = 'share'
+                import re
+                match = re.search(r'channel=([A-Za-z0-9_:\-.]+)', msg)
+                if match and not payload.get('share_channel_id'):
+                    payload['share_channel_id'] = match.group(1)
         return self._post('/api/v1/transfers/report', payload, timeout=20)
 
     def register_rapid_sign_holder(self, payload: Dict[str, Any]) -> Dict[str, Any]:

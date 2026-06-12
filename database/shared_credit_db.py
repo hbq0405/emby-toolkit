@@ -116,6 +116,8 @@ def _center_reason_label(reason: str) -> str:
         'source_registered': '共享资源首次被验证入池',
         'rapid_source_served': '共享资源被其他设备秒传',
         'rapid_source_consumed': '从共享中心秒传资源',
+        'share_source_served': '115 分享被其他设备转存',
+        'share_source_consumed': '从共享中心转存 115 分享资源',
         'share_request_escrow': '求资源冻结',
         'share_request_refund': '求资源退款',
     }

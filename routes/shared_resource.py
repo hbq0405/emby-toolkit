@@ -1657,6 +1657,12 @@ LEDGER_EVENT_LABEL_MAP = {
     'center_rapid_source_served_group': '共享资源被秒传',
     'center_rapid_source_consumed': '秒传共享资源',
     'center_rapid_source_consumed_group': '秒传共享资源',
+    'center_share_source_served': '115分享被转存',
+    'center_share_source_served_group': '115分享被转存',
+    'center_share_source_consumed': '转存115分享资源',
+    'center_share_source_consumed_group': '转存115分享资源',
+    'share_source_served': '115分享被转存',
+    'share_source_consumed': '转存115分享资源',
     'center_rapid_sign_success': '秒传签名成功',
     'center_rapid_sign_failed': '秒传签名失败',
     'center_rapid_sign_timeout': '秒传签名超时',
@@ -1691,6 +1697,8 @@ LEDGER_REASON_LABEL_MAP = {
     'rapid_sign_timeout': '响应中心秒传签名超时',
     'rapid_source_consumed': '从共享中心秒传资源',
     'rapid_source_served': '本机共享资源被他人秒传',
+    'share_source_consumed': '从共享中心转存 115 分享资源',
+    'share_source_served': '本机 115 分享被他人转存',
     'source_registered': '共享资源登记入池',
     'center_initial_credit': '基础贡献点',
     'backup_source_registered': '备份共享入池',
@@ -1722,6 +1730,10 @@ def _ledger_event_label(event_type: Any) -> str:
         if 'timeout' in low:
             return '秒传签名超时'
         return '秒传签名'
+    if 'share_source' in low and 'consume' in low:
+        return '转存115分享资源'
+    if 'share_source' in low and 'serv' in low:
+        return '115分享被转存'
     if 'rapid' in low and 'consume' in low:
         return '秒传共享资源'
     if 'rapid' in low and 'serv' in low:
@@ -1966,13 +1978,21 @@ def _ledger_is_sign_row(row: Dict[str, Any]) -> bool:
 def _ledger_is_consumed_row(row: Dict[str, Any]) -> bool:
     code = _ledger_event_code(row)
     reason = _ledger_reason_code(row)
-    return 'rapid_source_consumed' in code or reason == 'rapid_source_consumed' or 'shared_source_consumed' in code or reason == 'shared_source_consumed'
+    return (
+        'rapid_source_consumed' in code or reason == 'rapid_source_consumed'
+        or 'shared_source_consumed' in code or reason == 'shared_source_consumed'
+        or 'share_source_consumed' in code or reason == 'share_source_consumed'
+    )
 
 
 def _ledger_is_served_row(row: Dict[str, Any]) -> bool:
     code = _ledger_event_code(row)
     reason = _ledger_reason_code(row)
-    return 'rapid_source_served' in code or reason == 'rapid_source_served' or 'shared_source_served' in code or reason == 'shared_source_served'
+    return (
+        'rapid_source_served' in code or reason == 'rapid_source_served'
+        or 'shared_source_served' in code or reason == 'shared_source_served'
+        or 'share_source_served' in code or reason == 'share_source_served'
+    )
 
 
 def _ledger_is_pro_quota_row(row: Dict[str, Any]) -> bool:
