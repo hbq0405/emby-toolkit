@@ -501,7 +501,6 @@ class P115MediaAnalyzerMixin:
         original_language = _first("original_language", "original_lang", "originalLanguage", "OriginalLanguage")
         season_number = _first("season_number", "season", "seasonNumber", "SeasonNumber", "_forced_season")
         episode_number = _first("episode_number", "episode", "episodeNumber", "EpisodeNumber", "_forced_episode")
-        preid = _first("preid", "pre_sha1", "pre_sha1_128k")
 
         def _etk_int(value):
             try:
@@ -526,7 +525,6 @@ class P115MediaAnalyzerMixin:
             "season_number": _etk_int(season_number),
             "episode_number": _etk_int(episode_number),
             "sha1": str(sha1).strip().upper() if sha1 else None,
-            "preid": str(preid).strip().upper() if preid else None,
         }
         etk_context = {k: v for k, v in etk_context.items() if v not in [None, "", [], {}]}
 

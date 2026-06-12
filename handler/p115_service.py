@@ -3643,7 +3643,8 @@ class P115CacheManager:
         ctx = raw_ffprobe_json.get("_etk")
         if isinstance(ctx, dict):
             # 只保留跨账号、长期稳定的共享字段。
-            allowed = {"tmdb_id", "type", "original_language", "sha1", "season_number", "episode_number", "preid"}
+            # season_number / episode_number 是媒体身份的一部分，上传到中心后可避免消费端再次从文件名正则猜集号。
+            allowed = {"tmdb_id", "type", "original_language", "sha1", "season_number", "episode_number"}
             raw_ffprobe_json["_etk"] = {
                 k: v for k, v in ctx.items()
                 if k in allowed and v not in [None, "", [], {}]
@@ -3868,36 +3869,6 @@ class P115CacheManager:
                 logger.info(f"  ➜ [115缓存] 已计算并缓存 preid: {file_name or sha1 or pick_code} -> {preid[:12]}...")
             except Exception as e:
                 logger.debug(f"  ➜ [115缓存] 回写 p115_filesystem_cache.preid 失败: {e}")
-        # =================================================================
-        # 同步将 preid 写入 p115_mediainfo_cache 的 _etk 中，供共享 RAW 提取
-        # =================================================================
-        if sha1 and re.fullmatch(r'[A-F0-9]{40}', sha1):
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
-                        row = cursor.fetchone()
-                        if row and row.get('raw_ffprobe_json'):
-                            raw_probe = row['raw_ffprobe_json']
-                            if isinstance(raw_probe, str):
-                                raw_probe = json.loads(raw_probe)
-                            if isinstance(raw_probe, dict):
-                                ctx = raw_probe.get('_etk')
-                                if not isinstance(ctx, dict):
-                                    ctx = {}
-                                if ctx.get('preid') != preid:
-                                    ctx['preid'] = preid
-                                    raw_probe['_etk'] = ctx
-                                    from psycopg2.extras import Json
-                                    cursor.execute(
-                                        "UPDATE p115_mediainfo_cache SET raw_ffprobe_json = %s WHERE sha1 = %s",
-                                        (Json(raw_probe, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)), sha1)
-                                    )
-                                    conn.commit()
-                                    logger.debug(f"  ➜ [115缓存] 已同步 preid 至 p115_mediainfo_cache._etk: {preid[:12]}...")
-            except Exception as e:
-                logger.debug(f"  ➜ [115缓存] 同步 preid 至 p115_mediainfo_cache 失败: {e}")
-
         return preid
 
     @staticmethod
@@ -3910,27 +3881,6 @@ class P115CacheManager:
             from psycopg2.extras import Json
 
             sha1 = str(sha1).upper()
-            # =================================================================
-            # ★ 核心修复：在写入前先计算 preid，并注入到 raw_ffprobe_json 的 _etk 中
-            # =================================================================
-            try:
-                preid = P115CacheManager.ensure_file_preid(
-                    file_info if isinstance(file_info, dict) else {'sha1': sha1},
-                    sha1=sha1,
-                    fid=fid,
-                    pick_code=pick_code,
-                    file_name=file_name,
-                )
-                if preid:
-                    if isinstance(file_info, dict):
-                        file_info['preid'] = preid
-                    if isinstance(raw_ffprobe_json, dict):
-                        if '_etk' not in raw_ffprobe_json or not isinstance(raw_ffprobe_json['_etk'], dict):
-                            raw_ffprobe_json['_etk'] = {}
-                        raw_ffprobe_json['_etk']['preid'] = preid
-            except Exception as e_preid:
-                logger.debug(f"  ➜ [媒体信息缓存] 顺手计算 preid 失败: sha1={sha1[:12]}..., err={e_preid}")
-
             raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
 
             with get_db_connection() as conn:
@@ -3949,6 +3899,21 @@ class P115CacheManager:
                         Json(raw_ffprobe_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)) if raw_ffprobe_json else None
                     ))
                     conn.commit()
+
+            # 整理/MP直出提取媒体信息时顺手补齐 preid：
+            # 只读取前 128KB，写入 p115_filesystem_cache，供后续 Rapid v2 登记/秒传直接复用。
+            try:
+                preid = P115CacheManager.ensure_file_preid(
+                    file_info if isinstance(file_info, dict) else {'sha1': sha1},
+                    sha1=sha1,
+                    fid=fid,
+                    pick_code=pick_code,
+                    file_name=file_name,
+                )
+                if preid and isinstance(file_info, dict):
+                    file_info['preid'] = preid
+            except Exception as e_preid:
+                logger.debug(f"  ➜ [媒体信息缓存] 顺手计算 preid 失败: sha1={sha1[:12]}..., err={e_preid}")
 
             logger.info(f"  ➜ [媒体信息缓存] 已写入本地 p115_mediainfo_cache -> {sha1[:12]}...")
             return True
@@ -7926,7 +7891,6 @@ def _extract_raw_ffprobe_identity(raw_ffprobe_json):
     media_type = ctx.get("type") or ctx.get("media_type") or ctx.get("item_type")
     original_language = ctx.get("original_language")
     sha1 = ctx.get("sha1")
-    preid = ctx.get("preid")
 
     def _identity_int(*values):
         for value in values:
@@ -7959,7 +7923,6 @@ def _extract_raw_ffprobe_identity(raw_ffprobe_json):
         "season_number": season_number,
         "episode_number": episode_number,
         "sha1": str(sha1).strip().upper() if sha1 not in [None, ""] else None,
-        "preid": str(preid).strip().upper() if preid not in [None, ""] else None,
     }
     return {k: v for k, v in identity.items() if v not in [None, "", [], {}]}
 
