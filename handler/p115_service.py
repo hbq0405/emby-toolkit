@@ -1958,13 +1958,151 @@ class P115CookieClient:
         r = self.request(url, method='POST', data=payload)
         return self._json_result(r)
 
+    def _share_snap_root_file_ids(self, share_code, receive_code):
+        """读取分享根节点 file_id。115 share/receive 只有带 file_id + cid 时才稳定保存到指定目录。"""
+        try:
+            snap = self.share_info(share_code, receive_code=receive_code, cid=0, limit=500, offset=0)
+        except Exception as e:
+            logger.debug(f"  ➜ [115转存] 读取分享快照失败，改用 receive 兜底: {e}")
+            return [], {}
+
+        def _as_list(value):
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                for key in ('list', 'items', 'files', 'data', 'file_list'):
+                    child = value.get(key)
+                    if isinstance(child, list):
+                        return child
+                    if isinstance(child, dict):
+                        got = _as_list(child)
+                        if got:
+                            return got
+            return []
+
+        boxes = []
+        if isinstance(snap, dict):
+            boxes.append(snap)
+            if isinstance(snap.get('data'), dict):
+                boxes.append(snap.get('data'))
+        ids = []
+        for box in boxes:
+            for item in _as_list(box):
+                if not isinstance(item, dict):
+                    continue
+                fid = str(
+                    item.get('fid') or item.get('file_id') or item.get('id') or
+                    item.get('cid') or item.get('category_id') or ''
+                ).strip()
+                if fid and fid not in ids:
+                    ids.append(fid)
+        return ids, snap if isinstance(snap, dict) else {}
+
+    def _extract_receive_file_ids(self, value):
+        """从 115 转存响应/最近接收记录里尽量提取可移动的文件或目录 ID。"""
+        ids = []
+        seen = set()
+
+        def add(raw):
+            text = str(raw or '').strip()
+            if not text or not re.fullmatch(r'\d+', text) or text in seen:
+                return
+            seen.add(text)
+            ids.append(text)
+
+        def walk(obj, key_hint=''):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    lk = str(k or '').lower()
+                    if lk in {'file_id', 'fileid', 'fid', 'cid', 'category_id', 'to_cid', 'target_cid', 'id'}:
+                        # history/receive_list 的 id 可能只是历史记录 id，只有带 file/folder 语义时才收。
+                        if lk != 'id' or any(x in key_hint for x in ('file', 'folder', 'receive', 'data', 'item')):
+                            add(v)
+                    elif lk in {'file_ids', 'fids', 'ids'}:
+                        if isinstance(v, (list, tuple, set)):
+                            for x in v:
+                                add(x)
+                        else:
+                            for x in re.split(r'[,;\s]+', str(v or '')):
+                                add(x)
+                    if isinstance(v, (dict, list, tuple, set)):
+                        walk(v, f"{key_hint}.{lk}" if key_hint else lk)
+            elif isinstance(obj, (list, tuple, set)):
+                for item in obj:
+                    walk(item, key_hint)
+
+        walk(value, '')
+        return ids
+
+    def _best_effort_move_received_files(self, resp, target_cid):
+        """兜底处理：如果 115 仍保存到“我的接收”，尽量把收到的文件移动到待整理目录。"""
+        target_cid = str(target_cid or '').strip()
+        if not target_cid or target_cid == '0':
+            return {'ok': False, 'skipped': True, 'message': '缺少目标 CID'}
+        ids = self._extract_receive_file_ids(resp)
+        ids = [x for x in ids if x and x != target_cid]
+        if not ids:
+            return {'ok': False, 'skipped': True, 'message': '响应中未返回可移动文件 ID'}
+        try:
+            move_resp = self.fs_move(ids, target_cid)
+            ok = _p115_success(move_resp)
+            return {'ok': ok, 'ids': ids, 'target_cid': target_cid, 'response': move_resp}
+        except Exception as e:
+            return {'ok': False, 'ids': ids, 'target_cid': target_cid, 'error': str(e)}
+
     def share_import(self, share_code, receive_code, cid):
-        # 放弃调用第三方库的 share_receive，直接使用最稳妥的官方原生 API
-        # 官方接口完美支持直接传入 cid 保存到指定目录
+        """把别人分享转存到指定 115 CID。
+
+        115 的 /share/receive 需要同时带 share_code / receive_code / file_id / cid。
+        旧写法只传 cid，部分账号会被 115 保存到“我的接收”。这里先读取分享快照拿根
+        file_id，再转存到指定 CID；若响应仍暴露了接收文件 ID，再做一次 best-effort move。
+        """
+        share_code = str(share_code or '').strip()
+        receive_code = str(receive_code or '').strip()
+        cid = str(cid or '').strip()
+        if not share_code:
+            return {'state': False, 'error_msg': '缺少 share_code，无法转存'}
+        if not cid or cid == '0':
+            return {'state': False, 'error_msg': '缺少目标目录 cid，拒绝转存到默认我的接收'}
+
+        file_ids, snap = self._share_snap_root_file_ids(share_code, receive_code)
         url = "https://webapi.115.com/share/receive"
         payload = {'share_code': share_code, 'receive_code': receive_code, 'cid': cid}
+        if file_ids:
+            payload['file_id'] = ','.join(file_ids)
+            # 兼容部分 Web API 表单解析；重复字段不会影响标准 file_id。
+            for idx, fid in enumerate(file_ids):
+                payload[f'file_id[{idx}]'] = fid
+        else:
+            logger.warning(
+                f"  ➜ [115转存] 未能从分享快照提取 file_id，拒绝调用 receive 兜底，"
+                f"避免被 115 保存到默认我的接收：share={share_code}"
+            )
+            return {
+                'state': False,
+                'errno': 'share_snap_file_id_missing',
+                'error_msg': '未能从分享快照提取 file_id，已拒绝转存到默认我的接收',
+                '_share_snap_state': snap.get('state') if isinstance(snap, dict) else None,
+                '_share_import_payload': {'share_code': share_code, 'cid': cid, 'file_ids': []},
+            }
+
+        logger.info(
+            f"  ➜ [115转存] 提交分享转存：share={share_code}, files={len(file_ids) or '-'}, target_cid={cid}"
+        )
         r = self.request(url, method='POST', data=payload)
-        return r.json() if hasattr(r, 'json') else r
+        resp = self._json_result(r) if hasattr(self, '_json_result') else (r.json() if hasattr(r, 'json') else r)
+        if not isinstance(resp, dict):
+            resp = {'state': False, 'raw_response': str(resp)[:1000]}
+        resp.setdefault('state', _p115_success(resp))
+        resp['_share_import_payload'] = {'share_code': share_code, 'cid': cid, 'file_ids': file_ids}
+        if snap:
+            resp['_share_snap_state'] = snap.get('state')
+
+        # 保险：如果 115 响应里暴露了实际接收文件 ID，确保它们最终在目标 CID 下。
+        move_result = self._best_effort_move_received_files(resp, cid)
+        if move_result and not move_result.get('skipped'):
+            resp['_post_receive_move'] = move_result
+        return resp
 
     def history_receive_list(self, offset=0, limit=100):
         """获取 115 最近接收记录。

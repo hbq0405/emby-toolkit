@@ -915,16 +915,48 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                 if list_item and list_status_info.get('explicit'):
                     info_resp = {'share_list_item': list_item}
                     status_info = list_status_info
+                    status_source = 'share_list'
                 else:
                     info_resp = p115.share_info(share_code)
-                    status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=True)
-                status = status_info.get('status') or 'failed'
-                msg = status_info.get('message') or status
+                    # 关键：同步任务不再允许 state=True 这种隐式成功把“处理中”误判成 valid。
+                    # 只有 share_list/share_info 暴露明确状态文案时，才回写中心；否则保持原状态。
+                    status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=False)
+                    status_source = 'share_info'
+
                 raw_status_json = {
                     'share_list_item': list_item,
                     'share_info_response': info_resp,
-                    'status_source': 'share_list' if list_item and list_status_info.get('explicit') else 'share_info',
+                    'status_source': status_source,
                 }
+
+                if not status_info.get('explicit'):
+                    keep_status = str(row.get('status') or '').strip() or 'pending_review'
+                    keep_review = str(row.get('review_status') or '').strip() or ('passed' if keep_status == 'valid' else 'pending')
+                    msg = (
+                        f"115 未返回明确审核状态，保持原状态 {keep_status}；"
+                        f"{status_info.get('message') or '等待下轮同步'}"
+                    )
+                    saved = shared_share_db.update_completed_season_share_channel(
+                        channel_id,
+                        status=keep_status,
+                        review_status=keep_review,
+                        status_message=msg[:1000],
+                        raw_json={**raw_status_json, 'center_status_skipped': True, 'reason': 'implicit_status_ignored'},
+                        last_checked_at='NOW()',
+                    )
+                    items.append({
+                        'channel_id': channel_id,
+                        'source_id': source_id,
+                        'status': keep_status,
+                        'ok': True,
+                        'skipped_center_update': True,
+                        'reason': 'implicit_status_ignored',
+                        'local': saved,
+                    })
+                    continue
+
+                status = status_info.get('status') or 'failed'
+                msg = status_info.get('message') or status
                 center_resp = client.update_completed_season_share_status(channel_id, {
                     'status': status,
                     'review_status': status_info.get('review_status') or '',

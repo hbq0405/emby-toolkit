@@ -2115,13 +2115,105 @@ def _completed_share_channel_for_transfer(client: SharedCenterClient, source_id:
     return {}
 
 
+def _share_import_resp_text(resp: Any, error: str = '') -> str:
+    try:
+        base = json.dumps(resp, ensure_ascii=False, default=str) if isinstance(resp, (dict, list)) else str(resp or '')
+    except Exception:
+        base = str(resp or '')
+    return (base + ' ' + str(error or '')).strip()
+
+
+def _share_import_resp_code(resp: Any) -> str:
+    if isinstance(resp, dict):
+        for key in ('errno', 'code', 'errNo', 'err_no'):
+            value = resp.get(key)
+            if value not in (None, ''):
+                return str(value)
+    return ''
+
+
+def _is_share_import_already_saved(resp: Any) -> bool:
+    """115 返回“已经转存/接收过”只代表本账号幂等限制，不代表共享源失效。
+
+    融合版要求文件进入待整理目录；因此这里不能直接当作转存成功，
+    只能归为本机账号侧问题，后续自动回退 Rapid。
+    """
+    code = _share_import_resp_code(resp)
+    text = _share_import_resp_text(resp).lower()
+    return (
+        code == '4100024'
+        or '4100024' in text
+        or '你已经转存过' in text
+        or '已经转存过' in text
+        or '转存过该文件' in text
+        or '已接收过' in text
+        or '已经接收过' in text
+        or '重复接收' in text
+        or '无需重复' in text
+        or 'already received' in text
+        or 'already saved' in text
+    )
+
+
+def _is_share_import_local_account_issue(resp: Any, error: str = '') -> bool:
+    """本机账号/频率/空间/幂等问题，不应污染中心 share_channel 状态。"""
+    if _is_share_import_already_saved(resp):
+        return True
+    code = _share_import_resp_code(resp)
+    if code in ('4200041',):
+        return True
+    text = _share_import_resp_text(resp, error).lower()
+    return any(k in text for k in (
+        '空间不足', '超过限制', '转存超限', '任务上限', '频繁',
+        '你已被限制接收', '限制接收', '被限制接收', '接收功能受限', '接收功能被限制',
+        '你已被限制转存', '限制转存', '被限制转存', '转存功能受限', '转存功能被限制',
+        '770004', '990001', '4100010', '4100025', '4200041',
+        'quota', 'limit', 'too many', 'rate', 'account', 'permission',
+    ))
+
+
+def _is_share_import_source_dead(resp: Any, error: str = '') -> bool:
+    """只有明确死链/提取码错误/源文件删除，才允许把中心通道置为异常。"""
+    if _is_share_import_local_account_issue(resp, error):
+        return False
+    code = _share_import_resp_code(resp)
+    if code in ('4100005',):
+        return True
+    text = _share_import_resp_text(resp, error).lower()
+    return any(k in text for k in (
+        '分享已取消', '分享已失效', '分享不存在', '取消分享', '已取消', '已失效',
+        '提取码错误', '访问码错误', '密码错误',
+        '文件(夹)已被移动或删除', '已被移动或删除', '源文件不存在',
+        'share not found', 'expired', 'cancelled', 'canceled', 'not found', 'deleted',
+    ))
+
+
+def _share_import_success(resp: Any) -> bool:
+    """分享转存成功判定。
+
+    注意：4100024/已经转存过不能算成功；融合版要把资源放进待整理目录，
+    这种幂等限制只能走 Rapid 兜底。
+    """
+    if _is_share_import_already_saved(resp):
+        return False
+    text = _share_import_resp_text(resp).lower()
+    if isinstance(resp, dict):
+        if resp.get('state') is True or resp.get('success') is True:
+            return True
+        code = _share_import_resp_code(resp)
+        if code in ('0', '200'):
+            return True
+    return any(k in text for k in ('转存成功', '接收成功', '保存成功', 'receive success', 'successfully'))
+
+
 def _share_import_failed_status(resp: Any, error: str = '') -> str:
-    text = (json.dumps(resp, ensure_ascii=False, default=str) if isinstance(resp, (dict, list)) else str(resp or '')) + ' ' + str(error or '')
-    low = text.lower()
-    if any(x in low for x in ('不存在', '已取消', '已删除', '过期', '失效', 'expired', 'not found', 'cancelled', 'canceled')):
+    if _is_share_import_source_dead(resp, error):
         return 'expired'
-    if any(x in low for x in ('审核', '处理中', 'pending', 'review', 'processing')):
+    text = _share_import_resp_text(resp, error).lower()
+    if any(x in text for x in ('审核', '处理中', 'pending', 'review', 'processing')):
         return 'pending_review'
+    if _is_share_import_local_account_issue(resp, error):
+        return 'local_account_issue'
     return 'import_failed'
 
 
@@ -2150,7 +2242,7 @@ def _try_completed_season_share_transfer(
         title = payload.get('title') or payload.get('share_title') or source_id
         logger.info(f"  ➜ [共享资源] 完结季优先走 115 分享转存：《{title}》，channel={channel_id or '-'}，target_cid={target_cid}")
         resp = p115.share_import(share_code, receive_code, target_cid)
-        if _rapid_success(resp):
+        if _share_import_success(resp):
             report = client.report_transfer(
                 'completed_season',
                 source_id,
@@ -2161,33 +2253,48 @@ def _try_completed_season_share_transfer(
             )
             _kick_115_organize_detached(reason=f'share:{source_id}')
             return {'ok': True, 'transfer_mode': 'share', 'channel': channel, 'response': resp, 'report': report}
+
         status = _share_import_failed_status(resp)
         msg = f"115 分享转存失败，准备回退 Rapid：{resp}"
-        if channel_id and status in {'expired', 'import_failed', 'pending_review'}:
+
+        # 只在确认分享源自身异常时污染中心通道状态。
+        # 空间不足/频控/已转存过等都是消费端本机账号问题，不能把共享池 valid 通道改成 import_failed。
+        should_update_center = channel_id and status in {'expired', 'pending_review'}
+        if should_update_center:
             try:
                 client.update_completed_season_share_status(channel_id, {
                     'status': status,
-                    'review_status': 'failed' if status in {'expired', 'import_failed'} else 'pending',
+                    'review_status': 'expired' if status == 'expired' else 'pending',
                     'status_message': str(msg)[:1000],
-                    'raw_json': {'share_import_response': resp, 'consumer_source_id': source_id},
+                    'raw_json': {'share_import_response': resp, 'consumer_source_id': source_id, 'failure_scope': 'share_channel'},
                 })
             except Exception as e:
                 logger.debug(f"  ➜ [共享资源] 上报分享转存失败状态失败：channel={channel_id}, err={e}")
+        elif status == 'local_account_issue':
+            logger.warning(
+                f"  ➜ [共享资源] 115 分享转存命中本机账号限制/幂等限制，不更新中心通道状态，直接回退 Rapid："
+                f"source={source_id}, channel={channel_id or '-'}"
+            )
+        else:
+            logger.warning(
+                f"  ➜ [共享资源] 115 分享转存返回未知失败，不污染中心通道状态，先回退 Rapid："
+                f"source={source_id}, channel={channel_id or '-'}"
+            )
         logger.warning(f"  ➜ [共享资源] {msg}")
         return {'ok': False, 'attempted': True, 'transfer_mode': 'share', 'channel': channel, 'response': resp, 'status': status, 'message': msg}
     except Exception as e:
         status = _share_import_failed_status({}, str(e))
-        if channel_id and status in {'expired', 'import_failed', 'pending_review'}:
+        if channel_id and status in {'expired', 'pending_review'}:
             try:
                 client.update_completed_season_share_status(channel_id, {
                     'status': status,
-                    'review_status': 'failed' if status in {'expired', 'import_failed'} else 'pending',
+                    'review_status': 'expired' if status == 'expired' else 'pending',
                     'status_message': f'115 分享转存异常，准备回退 Rapid：{e}'[:1000],
-                    'raw_json': {'share_import_exception': str(e), 'consumer_source_id': source_id},
+                    'raw_json': {'share_import_exception': str(e), 'consumer_source_id': source_id, 'failure_scope': 'share_channel'},
                 })
             except Exception:
                 pass
-        logger.warning(f"  ➜ [共享资源] 115 分享转存异常，准备回退 Rapid：source={source_id}, err={e}")
+        logger.warning(f"  ➜ [共享资源] 115 分享转存异常，准备回退 Rapid：source={source_id}, status={status}, err={e}")
         return {'ok': False, 'attempted': True, 'transfer_mode': 'share', 'channel': channel, 'status': status, 'message': str(e)}
 
 def _handle_pro_quota_auth_event(client: SharedCenterClient, event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
@@ -2402,6 +2509,45 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                 f"  ➜ [共享资源] 完结季分享转存未成功，自动回退 Rapid 秒传："
                 f"source={source_kind}:{source_id}, reason={share_transfer.get('status') or share_transfer.get('reason') or '-'}"
             )
+            # 分享转存失败后，目标临时目录里可能已经被 115 写入了部分内容；
+            # Rapid 兜底必须换一个干净临时目录，避免半季/重复目录污染整理扫描。
+            if is_package_transfer and rapid_target.get('season_package_temp_dir'):
+                cleanup_after_share = _cleanup_rapid_temp_dir(
+                    rapid_target,
+                    reason=f"share_import_failed_before_rapid_fallback:{share_transfer.get('status') or share_transfer.get('reason') or 'unknown'}",
+                )
+                rapid_target = _prepare_rapid_target_dir_for_source(
+                    base_target_cid=base_target_cid,
+                    source_kind=source_kind,
+                    source_id=source_id,
+                    payload=payload,
+                    files=files,
+                )
+                target_cid = str(rapid_target.get('target_cid') or base_target_cid)
+                share_transfer['rapid_fallback_cleanup'] = cleanup_after_share
+                share_transfer['rapid_fallback_target'] = rapid_target
+                if rapid_target.get('temp_dir_required') and not rapid_target.get('season_package_temp_dir'):
+                    message = f"分享转存失败后重建 Rapid 临时目录也失败，放弃本次整季入库：{rapid_target.get('temp_dir_error') or 'unknown'}"
+                    _report_transfer_failed_safely(client, source_kind=source_kind, source_id=source_id, files=files, errors=[message], message=message)
+                    if ack and event_id:
+                        try:
+                            client.ack_device_events([event_id], result='failed', message=message[:500])
+                        except Exception:
+                            pass
+                    return {
+                        'ok': False,
+                        'message': message,
+                        'event_id': event_id,
+                        'source_kind': source_kind,
+                        'source_id': source_id,
+                        'success_count': 0,
+                        'total': len(files),
+                        'errors': [{'error': message}],
+                        'share_transfer': share_transfer,
+                        'preflight': locals().get('preflight', {}),
+                        'rapid_target': rapid_target,
+                        'aborted_season_package': True,
+                    }
 
     ok_count = 0
     errors = []
