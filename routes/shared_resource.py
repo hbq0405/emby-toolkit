@@ -1314,66 +1314,6 @@ def _center_source_transfer_preflight(source: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True}
 
 
-
-def _track_list(value: Any) -> List[Any]:
-    if isinstance(value, list):
-        return value
-    if isinstance(value, tuple):
-        return list(value)
-    return [value] if value not in (None, '', [], {}) else []
-
-
-def _track_text_tokens(value: Any) -> List[str]:
-    if value in (None, '', [], {}):
-        return []
-    if isinstance(value, (str, int, float)):
-        text = str(value).strip()
-        return [text] if text else []
-    if isinstance(value, list):
-        out: List[str] = []
-        for item in value:
-            for text in _track_text_tokens(item):
-                if text and text not in out:
-                    out.append(text)
-        return out
-    if not isinstance(value, dict):
-        return []
-    keys = (
-        'display', 'display_title', 'title', 'name', 'label', 'language', 'lang',
-        'language_title', 'localized_title', 'codec', 'codec_name', 'codec_title',
-        'format', 'format_name', 'comment', 'description', 'note', 'remark'
-    )
-    out: List[str] = []
-    for key in keys:
-        text = str(value.get(key) or '').strip()
-        if text and text not in out:
-            out.append(text)
-    for key, raw in value.items():
-        if not isinstance(raw, str):
-            continue
-        if not re.search(r'(title|name|label|language|lang|comment|description|display|codec|format|note|remark|备注|说明)', str(key), re.I):
-            continue
-        text = raw.strip()
-        if text and text not in out:
-            out.append(text)
-    return out
-
-
-def _merge_track_lists(*values: Any) -> List[Any]:
-    out: List[Any] = []
-    seen = set()
-    for value in values:
-        for item in _track_list(value):
-            tokens = _track_text_tokens(item)
-            key = re.sub(r'\s+', ' ', ' '.join(tokens)).strip().lower()
-            if not key:
-                key = f'idx:{len(out)}'
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(item)
-    return out
-
 def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     """中心资源库展示用版本摘要。
 
@@ -1382,13 +1322,7 @@ def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     row = row or {}
     sig = _json_dict(row.get('media_signature_json') or row.get('media_signature'))
-    raw_summary = _json_dict(row.get('raw_summary_json'))
-    summary = _json_dict(row.get('summary_json'))
-    version = _json_dict(row.get('version_summary'))
-    raw: Dict[str, Any] = {}
-    for part in (version, summary, raw_summary):
-        if isinstance(part, dict):
-            raw.update(part)
+    raw = _json_dict(row.get('raw_summary_json') or row.get('summary_json') or row.get('version_summary'))
     out = {}
     out.update(raw)
     out.update(sig)
@@ -1397,18 +1331,8 @@ def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     video_codec = _first_text(out.get('video_codec'), out.get('codec_display'), out.get('codec'), raw.get('video_codec'))
     bit_depth = _first_text(out.get('bit_depth'), raw.get('bit_depth'), sig.get('bit_depth'))
     fps = _first_text(out.get('fps'), out.get('frame_rate'), raw.get('fps'), raw.get('frame_rate'))
-    audio_list = _merge_track_lists(
-        raw_summary.get('audio_list'), raw_summary.get('audio_tracks'), raw_summary.get('audios'),
-        summary.get('audio_list'), summary.get('audio_tracks'), summary.get('audios'),
-        version.get('audio_list'), version.get('audio_tracks'), version.get('audios'),
-        sig.get('audio_list'), sig.get('audio_tracks'), sig.get('audios'),
-    )
-    subtitle_list = _merge_track_lists(
-        raw_summary.get('subtitle_list'), raw_summary.get('subtitle_tracks'), raw_summary.get('subtitles'),
-        summary.get('subtitle_list'), summary.get('subtitle_tracks'), summary.get('subtitles'),
-        version.get('subtitle_list'), version.get('subtitle_tracks'), version.get('subtitles'),
-        sig.get('subtitle_list'), sig.get('subtitle_tracks'), sig.get('subtitles'),
-    )
+    audio_list = out.get('audio_list') or out.get('audio_tracks') or out.get('audios') or []
+    subtitle_list = out.get('subtitle_list') or out.get('subtitle_tracks') or out.get('subtitles') or []
     out.update({
         'resolution': resolution,
         'effect': effect,
@@ -1416,8 +1340,8 @@ def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
         'codec': video_codec,
         'bit_depth': bit_depth,
         'fps': fps,
-        'audio_list': audio_list,
-        'subtitle_list': subtitle_list,
+        'audio_list': audio_list if isinstance(audio_list, list) else ([audio_list] if audio_list else []),
+        'subtitle_list': subtitle_list if isinstance(subtitle_list, list) else ([subtitle_list] if subtitle_list else []),
     })
     return {k: v for k, v in out.items() if v not in (None, '', [], {})}
 
