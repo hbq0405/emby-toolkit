@@ -55,6 +55,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'shared_rapid_source_files': {
             'media_signature_json', 'rapid_meta_json', 'raw_json'
         },
+        'shared_completed_season_share_channels': {'raw_json'},
     }
 
     LIST_TO_STRING_COLUMNS = {

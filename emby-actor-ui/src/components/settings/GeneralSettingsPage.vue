@@ -2196,7 +2196,8 @@ const tableInfo = {
   'shared_rapid_source_files': { cn: '本机共享文件索引', isSharable: false },
   'shared_credit_snapshot': { cn: '贡献点快照', isSharable: false },
   'shared_credit_ledger_local': { cn: '贡献值明细', isSharable: false },
-  'washing_priority_groups': {cn: '115洗版规则', isSharable: false }
+  'washing_priority_groups': {cn: '115洗版规则', isSharable: false },
+  'shared_completed_season_share_channels': { cn: '115分享记录', isSharable: false }
 };
 const tableDependencies = {
   'emby_users': ['user_media_data', 'emby_users_extended'],
