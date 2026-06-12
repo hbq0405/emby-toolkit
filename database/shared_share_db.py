@@ -1788,6 +1788,42 @@ def get_completed_season_share_channel(channel_id: str) -> Dict[str, Any]:
             return _row(cur.fetchone()) or {}
 
 
+
+def get_completed_season_share_channel_by_local_source(local_source_id: int, statuses=None) -> Dict[str, Any]:
+    try:
+        local_source_id = int(local_source_id or 0)
+    except Exception:
+        local_source_id = 0
+    if local_source_id <= 0:
+        return {}
+    status_list = [str(x).strip() for x in (statuses or []) if str(x).strip()]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if status_list:
+                cur.execute(
+                    """
+                    SELECT * FROM shared_completed_season_share_channels
+                    WHERE local_source_id=%s AND status=ANY(%s)
+                    ORDER BY CASE status WHEN 'valid' THEN 0 WHEN 'pending_review' THEN 1 WHEN 'creating' THEN 2 ELSE 9 END,
+                             updated_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (local_source_id, status_list),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT * FROM shared_completed_season_share_channels
+                    WHERE local_source_id=%s
+                    ORDER BY CASE status WHEN 'valid' THEN 0 WHEN 'pending_review' THEN 1 WHEN 'creating' THEN 2 ELSE 9 END,
+                             updated_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (local_source_id,),
+                )
+            return _row(cur.fetchone()) or {}
+
+
 def get_completed_season_share_channel_by_source(center_source_id: str, statuses=None) -> Dict[str, Any]:
     center_source_id = str(center_source_id or '').strip()
     if not center_source_id:

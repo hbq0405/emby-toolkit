@@ -800,7 +800,11 @@ def handle_create_completed_season_share_event(event: Dict[str, Any], *, ack: bo
 
 
 def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
-    """轻量同步本机已创建的完结季分享状态；供高频任务调用。"""
+    """轻量同步本机已创建的完结季分享状态；供高频任务调用。
+
+    基准是 shared_completed_season_share_channels 本地托管列表，绝不扫描 115 全量分享列表，
+    避免把用户未发布到共享池的私人分享同步进中心。
+    """
     if not _enabled():
         return {'ok': False, 'message': '共享资源未启用', 'checked': 0}
     if not _COMPLETED_SHARE_SYNC_LOCK.acquire(blocking=False):

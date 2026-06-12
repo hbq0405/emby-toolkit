@@ -2087,6 +2087,109 @@ def _filter_files_before_transfer(
         'message': message,
     }
 
+
+def _completed_share_channel_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    for key in ('share_channel', 'completed_season_share_channel', 'completed_share_channel'):
+        value = payload.get(key)
+        if isinstance(value, dict) and value:
+            return dict(value)
+    return {}
+
+
+def _completed_share_channel_for_transfer(client: SharedCenterClient, source_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """读取完结季可转存分享通道。只信中心托管 channel，不扫描 115 全量分享列表。"""
+    source_id = str(source_id or '').strip()
+    channel = _completed_share_channel_from_payload(payload)
+    if str((channel or {}).get('status') or '').lower() == 'valid' and channel.get('share_code'):
+        return channel
+    if not source_id:
+        return {}
+    try:
+        resp = client.get_completed_season_share_channel(source_id) or {}
+        item = resp.get('item') if isinstance(resp.get('item'), dict) else {}
+        if str((item or {}).get('status') or '').lower() == 'valid' and item.get('share_code'):
+            return dict(item)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询完结季分享通道失败：source={source_id}, err={e}")
+    return {}
+
+
+def _share_import_failed_status(resp: Any, error: str = '') -> str:
+    text = (json.dumps(resp, ensure_ascii=False, default=str) if isinstance(resp, (dict, list)) else str(resp or '')) + ' ' + str(error or '')
+    low = text.lower()
+    if any(x in low for x in ('不存在', '已取消', '已删除', '过期', '失效', 'expired', 'not found', 'cancelled', 'canceled')):
+        return 'expired'
+    if any(x in low for x in ('审核', '处理中', 'pending', 'review', 'processing')):
+        return 'pending_review'
+    return 'import_failed'
+
+
+def _try_completed_season_share_transfer(
+    *,
+    client: SharedCenterClient,
+    source_id: str,
+    payload: Dict[str, Any],
+    files: List[Dict[str, Any]],
+    target_cid: str,
+) -> Dict[str, Any]:
+    if _normalize_source_kind(payload.get('source_kind') or 'completed_season') != 'completed_season':
+        return {'ok': False, 'skipped': True, 'reason': 'not_completed_season'}
+    channel = _completed_share_channel_for_transfer(client, source_id, payload)
+    if not channel:
+        return {'ok': False, 'skipped': True, 'reason': 'no_valid_share_channel'}
+    share_code = str(channel.get('share_code') or '').strip()
+    receive_code = str(channel.get('receive_code') or '').strip()
+    channel_id = str(channel.get('channel_id') or '').strip()
+    if not share_code:
+        return {'ok': False, 'skipped': True, 'reason': 'share_code_missing', 'channel': channel}
+    try:
+        p115 = P115Service.get_client()
+        if not p115:
+            raise RuntimeError('115 客户端未初始化')
+        title = payload.get('title') or payload.get('share_title') or source_id
+        logger.info(f"  ➜ [共享资源] 完结季优先走 115 分享转存：《{title}》，channel={channel_id or '-'}，target_cid={target_cid}")
+        resp = p115.share_import(share_code, receive_code, target_cid)
+        if _rapid_success(resp):
+            report = client.report_transfer(
+                'completed_season',
+                source_id,
+                'success',
+                success_count=len(files or []) or int(channel.get('file_count') or 1),
+                total_count=len(files or []) or int(channel.get('file_count') or 1),
+                message=f"本机通过 115 分享转存成功：{len(files or []) or int(channel.get('file_count') or 1)} 个视频；channel={channel_id or '-'}",
+            )
+            _kick_115_organize_detached(reason=f'share:{source_id}')
+            return {'ok': True, 'transfer_mode': 'share', 'channel': channel, 'response': resp, 'report': report}
+        status = _share_import_failed_status(resp)
+        msg = f"115 分享转存失败，准备回退 Rapid：{resp}"
+        if channel_id and status in {'expired', 'import_failed', 'pending_review'}:
+            try:
+                client.update_completed_season_share_status(channel_id, {
+                    'status': status,
+                    'review_status': 'failed' if status in {'expired', 'import_failed'} else 'pending',
+                    'status_message': str(msg)[:1000],
+                    'raw_json': {'share_import_response': resp, 'consumer_source_id': source_id},
+                })
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源] 上报分享转存失败状态失败：channel={channel_id}, err={e}")
+        logger.warning(f"  ➜ [共享资源] {msg}")
+        return {'ok': False, 'attempted': True, 'transfer_mode': 'share', 'channel': channel, 'response': resp, 'status': status, 'message': msg}
+    except Exception as e:
+        status = _share_import_failed_status({}, str(e))
+        if channel_id and status in {'expired', 'import_failed', 'pending_review'}:
+            try:
+                client.update_completed_season_share_status(channel_id, {
+                    'status': status,
+                    'review_status': 'failed' if status in {'expired', 'import_failed'} else 'pending',
+                    'status_message': f'115 分享转存异常，准备回退 Rapid：{e}'[:1000],
+                    'raw_json': {'share_import_exception': str(e), 'consumer_source_id': source_id},
+                })
+            except Exception:
+                pass
+        logger.warning(f"  ➜ [共享资源] 115 分享转存异常，准备回退 Rapid：source={source_id}, err={e}")
+        return {'ok': False, 'attempted': True, 'transfer_mode': 'share', 'channel': channel, 'status': status, 'message': str(e)}
+
 def _handle_pro_quota_auth_event(client: SharedCenterClient, event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
     event_id = str((event or {}).get('event_id') or '')
     try:
@@ -2242,6 +2345,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     target_cid = str(rapid_target.get('target_cid') or base_target_cid)
 
     is_package_transfer = source_kind in ('completed_season', 'season_hub') and len(files) > 1
+    payload.setdefault('source_kind', source_kind)
     if is_package_transfer and rapid_target.get('temp_dir_required') and not rapid_target.get('season_package_temp_dir'):
         message = f"季包临时接收目录创建失败，放弃本次整季入库：{rapid_target.get('temp_dir_error') or 'unknown'}"
         _report_transfer_failed_safely(client, source_kind=source_kind, source_id=source_id, files=files, errors=[message], message=message)
@@ -2263,6 +2367,41 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'rapid_target': rapid_target,
             'aborted_season_package': True,
         }
+
+    share_transfer = {}
+    if source_kind == 'completed_season':
+        share_transfer = _try_completed_season_share_transfer(
+            client=client,
+            source_id=source_id,
+            payload=payload,
+            files=files,
+            target_cid=target_cid,
+        )
+        if share_transfer.get('ok'):
+            if ack and event_id:
+                try:
+                    client.ack_device_events([event_id], result='ok', message=f"转存 {len(files)}/{len(files)}")
+                except Exception as e:
+                    logger.debug(f"  ➜ [共享资源] ACK 中心事件失败: {e}")
+            return {
+                'ok': True,
+                'message': f"转存完成：{len(files)}/{len(files)}",
+                'event_id': event_id,
+                'source_kind': source_kind,
+                'source_id': source_id,
+                'success_count': len(files),
+                'total': len(files),
+                'errors': [],
+                'transfer_mode': 'share',
+                'share_transfer': share_transfer,
+                'preflight': locals().get('preflight', {}),
+                'rapid_target': locals().get('rapid_target', {}),
+            }
+        if share_transfer.get('attempted'):
+            logger.warning(
+                f"  ➜ [共享资源] 完结季分享转存未成功，自动回退 Rapid 秒传："
+                f"source={source_kind}:{source_id}, reason={share_transfer.get('status') or share_transfer.get('reason') or '-'}"
+            )
 
     ok_count = 0
     errors = []
@@ -2447,6 +2586,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         'skipped_report_sources': skipped_report_sources,
         'preflight': locals().get('preflight', {}),
         'rapid_target': locals().get('rapid_target', {}),
+        'share_transfer': locals().get('share_transfer', {}),
     }
 
 

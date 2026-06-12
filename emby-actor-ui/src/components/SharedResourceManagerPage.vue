@@ -591,6 +591,10 @@ const shareStatusOptions = [
   { label: '有效共享', value: 'usable' },
   { label: '全部状态', value: 'all' },
   { label: '已上报中心', value: 'reported' },
+  { label: '已有115分享', value: 'with_share' },
+  { label: '分享可转存', value: 'share_valid' },
+  { label: '分享待审核', value: 'share_pending' },
+  { label: '无115分享', value: 'without_share' },
   { label: '本地未上报', value: 'local' },
   { label: '不合格/异常', value: 'failed' },
   { label: 'RAW缺失', value: 'raw_missing' },
@@ -710,6 +714,29 @@ const shareRemarkNode = (row) => {
   const type = source === '自动共享' ? 'warning' : (source === '备份共享' ? 'info' : 'default');
   return h(NTag, { type, size: 'small', round: true }, { default: () => source });
 };
+const localCompletedShareChannel = (row) => row?.completed_share_channel || row?.completed_season_share_channel || {};
+const localShareChannelStatus = (row) => String(row?.share_channel_status || localCompletedShareChannel(row)?.status || 'none').toLowerCase();
+const localShareChannelTag = (row) => {
+  const status = localShareChannelStatus(row);
+  const meta = {
+    valid: ['可转存', 'success'],
+    pending_review: ['待审核', 'warning'],
+    creating: ['创建中', 'warning'],
+    review_failed: ['审核失败', 'error'],
+    expired: ['已失效', 'default'],
+    import_failed: ['转存失败', 'error'],
+    disabled: ['已取消', 'default'],
+    source_unavailable: ['源不可用', 'error'],
+    failed: ['失败', 'error'],
+    none: ['无', 'default'],
+  }[status] || [status || '无', 'default'];
+  return h(NTag, { type: meta[1], size: 'small', round: true }, { default: () => meta[0] });
+};
+const canCancelCompletedShare = (row) => Boolean(
+  String(row?.source_kind || '').toLowerCase() === 'completed_season'
+  && row?.has_share_channel
+  && !['disabled', 'expired', 'review_failed', 'failed'].includes(localShareChannelStatus(row))
+);
 const isAutoShareRow = (row) => shareSourceText(row) === '自动共享';
 const normalizedShareStatuses = (row) => [
   row?.status,
@@ -898,6 +925,7 @@ const shareColumns = [
       missingSize > 0 ? h('div', { class: 'sub-title warning-text' }, `缺大小 ${missingSize}`) : null
     ]);
   } },
+  { title: '115分享', key: 'share_channel_status', width: 105, render: row => localShareChannelTag(row) },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '备注', key: 'share_remark', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareRemarkNode(row) },
   { title: '操作', key: 'actions', width: 300, fixed: 'right', render: row => h(NSpace, { size: 8, align: 'center', wrap: false }, { default: () => [
@@ -908,6 +936,14 @@ const shareColumns = [
       title: '重新上传 RAW/summary_json，并重新登记中心',
       onClick: () => reregisterShare(row),
     }, { icon: () => h(NIcon, null, { default: () => h(ShareIcon) }), default: () => '重新登记' }),
+    h(NButton, {
+      size: 'small',
+      type: 'warning',
+      secondary: true,
+      disabled: !canCancelCompletedShare(row),
+      title: canCancelCompletedShare(row) ? '仅取消本机托管的完结季 115 分享，不扫描或影响账号其它私人分享' : '没有可取消的完结季 115 分享',
+      onClick: () => cancelCompletedSeasonShare(row),
+    }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '取消分享' }),
     h(NButton, {
       size: 'small',
       type: 'error',
@@ -1676,6 +1712,9 @@ const centerStatusTag = (row) => {
   const type = row.status_type || statusMap[row.status]?.type || 'default';
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
+const centerShareChannel = (row) => row?.share_channel || row?.completed_season_share_channel || {};
+const centerHasValidShareChannel = (row) => Boolean(row?.share_transfer_available || row?.has_valid_share_channel || String(centerShareChannel(row)?.status || '').toLowerCase() === 'valid');
+const centerTransferActionText = (row) => centerHasValidShareChannel(row) ? '转存' : '秒传';
 const centerSourceText = (row) => {
   // 中心端历史字段不完全统一：自动维护创建、手动创建、频道/影巢外部源可能分别落在
   // source_provider / source_label / provider / origin / create_mode 等字段里。这里不要缺省成“手动共享”，
@@ -1810,9 +1849,9 @@ const buildCenterImportSourcePayload = (row) => {
 };
 
 const executeImport = async (row, mode) => {
-  const modeText = '秒传';
+  const modeText = centerTransferActionText(row);
   if (isCenterReplenishRow(row)) {
-    message.warning('该资源处于待补充状态，不能秒传');
+    message.warning(`该资源处于待补充状态，不能${modeText}`);
     return;
   }
   let importRow = row;
@@ -1858,9 +1897,9 @@ const executeImport = async (row, mode) => {
 };
 
 const importCenterSource = (row, mode) => {
-  const modeText = '秒传';
+  const modeText = centerTransferActionText(row);
   if (isCenterReplenishRow(row)) {
-    message.warning('该资源处于待补充状态，不能秒传');
+    message.warning(`该资源处于待补充状态，不能${modeText}`);
     return;
   }
   dialog.info({
@@ -2421,7 +2460,7 @@ const centerColumns = [
       loading: isImportingPermanent,
       disabled: Boolean(importingMap[it.source_id]) && !isImportingPermanent,
       onClick: () => importCenterSource(it, 'permanent')
-    }, { default: () => '秒传' });
+    }, { default: () => centerTransferActionText(it) });
   }) },
 ];
 
@@ -3553,6 +3592,29 @@ const reregisterShare = (row) => {
     }
   });
 };
+
+const cancelCompletedSeasonShare = (row) => {
+  if (!canCancelCompletedShare(row)) {
+    return message.warning('没有可取消的完结季 115 分享');
+  }
+  const title = row.title || row.root_name || row.file_name || '该资源';
+  dialog.warning({
+    title: '取消 115 分享',
+    content: `确定取消《${title}》当前托管的 115 分享吗？只会取消 ETK 为共享池创建的这条分享，不会扫描或影响你账号里的其它私人分享。`,
+    positiveText: '取消分享',
+    negativeText: '保留',
+    onPositiveClick: async () => {
+      try {
+        await axios.post(`/api/shared/resources/shares/${row.id}/share/cancel`, {});
+        message.success('已取消 115 分享');
+        await Promise.allSettled([loadShares(), loadCenterSources(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '取消分享失败');
+      }
+    }
+  });
+};
+
 
 const cancelShare = (row) => {
   if (isAutoShareRow(row)) {

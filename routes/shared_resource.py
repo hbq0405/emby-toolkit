@@ -15,6 +15,7 @@ import constants
 import config_manager
 from extensions import admin_required
 from database import shared_credit_db, shared_share_db, settings_db
+from database.connection import get_db_connection
 from handler.shared_center_client import SharedCenterClient
 from handler.shared_subscription_service import consume_device_event
 from handler import tmdb as tmdb_handler
@@ -409,6 +410,101 @@ def _apply_local_season_meta(row: Dict[str, Any], meta_map: Dict[tuple, Dict[str
     return row
 
 
+
+def _local_completed_share_public(channel: Dict[str, Any]) -> Dict[str, Any]:
+    channel = dict(channel or {})
+    if not channel:
+        return {}
+    out = {}
+    for key in (
+        'channel_id', 'center_source_id', 'hub_id', 'manifest_hash', 'share_code', 'receive_code',
+        'share_url', 'share_title', 'root_fid', 'root_cid', 'root_name', 'file_count', 'total_size',
+        'status', 'review_status', 'status_message', 'fail_count', 'last_checked_at', 'last_reported_at',
+        'created_at', 'updated_at'
+    ):
+        value = channel.get(key)
+        if value not in (None, '', [], {}):
+            out[key] = value
+    return out
+
+
+def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -> None:
+    """我的共享源只对账 ETK 本地托管的完结季分享通道，不扫描 115 账号全量分享。"""
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    local_ids = []
+    center_ids = []
+    for row in rows:
+        kind = str(row.get('source_kind') or '').strip().lower()
+        if kind != 'completed_season':
+            continue
+        try:
+            rid = int(row.get('id') or 0)
+            if rid > 0 and rid not in local_ids:
+                local_ids.append(rid)
+        except Exception:
+            pass
+        cid = str(row.get('center_source_id') or '').strip()
+        if cid and cid not in center_ids:
+            center_ids.append(cid)
+    if not local_ids and not center_ids:
+        return
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                clauses, args = [], []
+                if local_ids:
+                    clauses.append('local_source_id = ANY(%s)')
+                    args.append(local_ids)
+                if center_ids:
+                    clauses.append('center_source_id = ANY(%s)')
+                    args.append(center_ids)
+                cur.execute(
+                    f"""
+                    SELECT *
+                    FROM shared_completed_season_share_channels
+                    WHERE {' OR '.join(clauses)}
+                    ORDER BY CASE status WHEN 'valid' THEN 0 WHEN 'pending_review' THEN 1 WHEN 'creating' THEN 2 ELSE 9 END,
+                             updated_at DESC NULLS LAST, id DESC
+                    """,
+                    args,
+                )
+                channels = [dict(r) for r in cur.fetchall() or []]
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 读取本地完结季分享通道失败: {e}")
+        return
+    by_local = {}
+    by_center = {}
+    for ch in channels:
+        lid = ch.get('local_source_id')
+        if lid not in (None, '') and int(lid) not in by_local:
+            by_local[int(lid)] = ch
+        cid = str(ch.get('center_source_id') or '').strip()
+        if cid and cid not in by_center:
+            by_center[cid] = ch
+    for row in rows:
+        channel = None
+        try:
+            channel = by_local.get(int(row.get('id') or 0))
+        except Exception:
+            channel = None
+        if not channel:
+            channel = by_center.get(str(row.get('center_source_id') or '').strip())
+        if not channel:
+            row['has_share_channel'] = False
+            row['share_channel_status'] = 'none'
+            continue
+        public = _local_completed_share_public(channel)
+        status = str(channel.get('status') or '').strip().lower()
+        row['completed_share_channel'] = public
+        row['completed_season_share_channel'] = public
+        row['has_share_channel'] = True
+        row['share_channel_status'] = status
+        row['share_review_status'] = channel.get('review_status') or ''
+        row['share_status_message'] = channel.get('status_message') or ''
+        row['has_valid_share_channel'] = status == 'valid'
+        row['share_transfer_available'] = status == 'valid'
+
+
 def _share_status_tokens(value: Any) -> List[str]:
     tokens = []
     for token in str(value or 'usable').split(','):
@@ -441,9 +537,27 @@ def _share_row_matches_filter(row: Dict[str, Any], status_filter: str) -> bool:
     reported = center_status in {'reported', 'partial'} or has_center_id
     local_only = not has_center_id and center_status in {'', 'local', 'pending', 'not_reported'}
 
+    share_channel_status = str(row.get('share_channel_status') or '').strip().lower()
+    has_share_channel = bool(row.get('has_share_channel'))
+
     for token in tokens:
         if token in {'usable', 'active', 'alive', 'valid', 'valid_share', '有效', '有效共享'}:
             if live and not disabled and not failed:
+                return True
+        elif token in {'with_share', 'has_share', 'share', '已创建分享', '有分享'}:
+            if has_share_channel:
+                return True
+        elif token in {'share_valid', 'valid_channel', '可转存', '分享可用'}:
+            if share_channel_status == 'valid':
+                return True
+        elif token in {'share_pending', 'pending_review', '分享审核中', '待审核分享'}:
+            if share_channel_status in {'creating', 'pending_review'}:
+                return True
+        elif token in {'share_abnormal', 'share_failed', '分享异常'}:
+            if share_channel_status in {'review_failed', 'expired', 'import_failed', 'disabled', 'source_unavailable', 'failed'}:
+                return True
+        elif token in {'without_share', 'no_share', 'none_share', '无分享'}:
+            if not has_share_channel:
                 return True
         elif token in {'reported', 'center_reported', 'registered', '已登记', '已登记中心', '已上报'}:
             if reported:
@@ -516,6 +630,7 @@ def api_list_local_sources():
 
     # 2. 在内存中进行聚合和过滤（因为没有庞大的 JSON，这一步只需 1-2 毫秒）
     aggregated = _aggregate_local_sources(light_rows)
+    _attach_completed_share_channels_to_local_rows(aggregated)
     filtered = [row for row in aggregated if _share_row_matches_filter(row, status)]
     
     start = (page - 1) * page_size
@@ -655,6 +770,75 @@ def _delete_local_source_with_center_cancel(source_id: int, *, message: str = 'l
         'center': center_resp,
         'center_cancelled': bool(center_resp and not center_resp.get('skipped') and center_resp.get('ok') is not False),
     }
+
+
+
+def _p115_response_ok(resp: Any) -> bool:
+    if not isinstance(resp, dict):
+        return False
+    if resp.get('state') is True or resp.get('success') is True:
+        return True
+    code = str(resp.get('errno') if resp.get('errno') is not None else resp.get('code') if resp.get('code') is not None else '')
+    return code in {'0', '200'} and not (resp.get('error') or resp.get('error_msg'))
+
+
+@shared_resource_bp.route('/shares/<int:source_id>/share/cancel', methods=['POST'])
+@admin_required
+def api_cancel_completed_season_share_channel(source_id: int):
+    """取消本机托管的完结季 115 分享；不扫描/影响用户其它 115 私人分享。"""
+    row = shared_share_db.get_local_source(source_id)
+    if not row:
+        return jsonify({'success': False, 'message': '本地共享源不存在'}), 404
+    if str(row.get('source_kind') or '').strip().lower() != 'completed_season':
+        return jsonify({'success': False, 'message': '只有完结季源才有 115 分享通道'}), 400
+    channel = shared_share_db.get_completed_season_share_channel_by_local_source(source_id) or {}
+    if not channel and row.get('center_source_id'):
+        channel = shared_share_db.get_completed_season_share_channel_by_source(row.get('center_source_id')) or {}
+    if not channel:
+        return jsonify({'success': False, 'message': '该本地完结季没有可取消的分享通道'}), 404
+    share_code = str(channel.get('share_code') or '').strip()
+    p115_resp = {'state': True, 'skipped': True, 'message': '无 share_code，仅更新本地/中心状态'}
+    if share_code:
+        try:
+            from handler.p115_service import P115Service
+            p115 = P115Service.get_client()
+            if not p115:
+                raise RuntimeError('115 客户端未初始化')
+            p115_resp = p115.share_cancel(share_code)
+        except Exception as e:
+            return jsonify({'success': False, 'message': f'取消 115 分享失败：{e}', 'channel': _local_completed_share_public(channel)}), 400
+        if not _p115_response_ok(p115_resp):
+            text = json.dumps(p115_resp, ensure_ascii=False, default=str)
+            if not any(x in text for x in ('不存在', '已取消', '已删除', '失效', '过期', 'not found', 'cancel')):
+                return jsonify({'success': False, 'message': f'取消 115 分享失败：{text[:300]}', 'channel': _local_completed_share_public(channel)}), 400
+    status = 'disabled'
+    message = '用户手动取消完结季 115 分享'
+    center_resp = {}
+    try:
+        center_resp = SharedCenterClient().update_completed_season_share_status(channel.get('channel_id'), {
+            'status': status,
+            'review_status': 'disabled',
+            'status_message': message,
+            'raw_json': {'p115_cancel_response': p115_resp, 'local_source_id': source_id},
+        })
+    except Exception as e:
+        center_resp = {'ok': False, 'message': str(e)}
+    saved = shared_share_db.update_completed_season_share_channel(
+        channel.get('channel_id'),
+        status=status,
+        review_status='disabled',
+        status_message=message,
+        raw_json={'p115_cancel_response': p115_resp, 'center_response': center_resp},
+        last_checked_at='NOW()',
+        last_reported_at='NOW()',
+    )
+    return jsonify({
+        'success': True,
+        'message': '已取消完结季 115 分享',
+        'item': _local_completed_share_public(saved),
+        'center': center_resp,
+        'p115': p115_resp,
+    })
 
 
 @shared_resource_bp.route('/shares/<int:source_id>/cancel', methods=['POST'])
