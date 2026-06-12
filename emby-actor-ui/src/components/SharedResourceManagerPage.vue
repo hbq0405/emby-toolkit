@@ -353,7 +353,7 @@
                   </div>
                 </div>
               </div>
-              <div v-if="centerDetailSeasons.length" class="detail-season-tabs">
+              <div v-if="centerDetailSeasons.length > 1" class="detail-season-tabs">
                 <n-button
                   v-for="season in centerDetailSeasons"
                   :key="centerSeasonTabKey(season)"
@@ -3104,7 +3104,8 @@ const switchCenterDetailSeason = async (season) => {
   if (centerDetailActiveSeason.value === seasonNo) return;
   centerDetailActiveSeason.value = seasonNo;
   const cached = centerDetailSeasonListFromRow(row).find(item => centerSeasonTabNumber(item) === seasonNo);
-  if (cached && (Array.isArray(cached.resources) || Array.isArray(cached.versions) || Array.isArray(cached.items))) {
+  const cachedHasResources = cached && ['resources', 'versions', 'items'].some(key => Array.isArray(cached[key]) && cached[key].length > 0);
+  if (cachedHasResources) {
     return;
   }
   centerDetailLoading.value = true;
