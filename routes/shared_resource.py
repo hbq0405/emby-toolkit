@@ -1552,7 +1552,7 @@ def api_center_source_children():
             row = _apply_local_season_meta(row)
             return row
 
-        for key in ('items', 'children', 'pack_items', 'parents'):
+        for key in ('items', 'children', 'pack_items', 'parents', 'seasons', 'resources', 'versions'):
             if isinstance(resp.get(key), list):
                 resp[key] = [_decorate_center_row(row) for row in resp.get(key) if isinstance(row, dict)]
         return jsonify({'success': True, **resp})
