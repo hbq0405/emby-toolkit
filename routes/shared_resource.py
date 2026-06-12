@@ -782,6 +782,76 @@ def _p115_response_ok(resp: Any) -> bool:
     return code in {'0', '200'} and not (resp.get('error') or resp.get('error_msg'))
 
 
+def _p115_response_text(resp: Any) -> str:
+    try:
+        return json.dumps(resp, ensure_ascii=False, default=str)
+    except Exception:
+        return str(resp or '')
+
+
+def _p115_share_deleted_ok(resp: Any) -> bool:
+    if _p115_response_ok(resp):
+        return True
+    text = _p115_response_text(resp).lower()
+    return any(x in text for x in (
+        '已删除', '删除成功', '已取消', '取消成功', '不存在', '失效', '过期',
+        'not found', 'deleted', 'delete success', 'cancelled', 'canceled', 'expired', 'success'
+    ))
+
+
+def _delete_p115_share_record(p115, share_code: str) -> Dict[str, Any]:
+    """删除 115 链接分享列表里的记录；失败时才退回取消分享。
+
+    取消分享只会让 Web 列表显示“已取消”，时间久了就是垃圾。
+    所以这里优先 share_delete；如果旧账号/接口要求先取消，再 cancel 后补一次 delete。
+    """
+    share_code = str(share_code or '').strip()
+    if not share_code:
+        return {'state': True, 'skipped': True, 'message': '无 share_code，无需删除 115 分享记录'}
+    if not p115:
+        return {'state': False, 'error_msg': '115 客户端未初始化'}
+
+    attempts = []
+
+    delete_method = getattr(p115, 'share_delete', None)
+    cancel_method = getattr(p115, 'share_cancel', None)
+
+    if callable(delete_method):
+        try:
+            resp = delete_method(share_code)
+            attempts.append({'method': 'share_delete', 'response': resp})
+            if _p115_share_deleted_ok(resp):
+                return {'state': True, 'deleted': True, 'method': 'share_delete', 'attempts': attempts}
+        except Exception as e:
+            attempts.append({'method': 'share_delete', 'error': str(e)})
+
+    if callable(cancel_method):
+        try:
+            resp = cancel_method(share_code)
+            attempts.append({'method': 'share_cancel', 'response': resp})
+        except Exception as e:
+            attempts.append({'method': 'share_cancel', 'error': str(e)})
+
+    if callable(delete_method):
+        try:
+            resp = delete_method(share_code)
+            attempts.append({'method': 'share_delete_after_cancel', 'response': resp})
+            if _p115_share_deleted_ok(resp):
+                return {'state': True, 'deleted': True, 'method': 'share_delete_after_cancel', 'attempts': attempts}
+        except Exception as e:
+            attempts.append({'method': 'share_delete_after_cancel', 'error': str(e)})
+
+    # 如果至少取消成功，但删除记录失败，也返回非阻断结果，避免本地/中心一直保留可转存。
+    cancel_ok = any(_p115_share_deleted_ok(a.get('response')) for a in attempts if a.get('method') == 'share_cancel')
+    return {
+        'state': bool(cancel_ok),
+        'deleted': False,
+        'cancelled_only': bool(cancel_ok),
+        'error_msg': '' if cancel_ok else '删除/取消 115 分享均失败',
+        'attempts': attempts,
+    }
+
+
 @shared_resource_bp.route('/shares/<int:source_id>/share/cancel', methods=['POST'])
 @admin_required
 def api_cancel_completed_season_share_channel(source_id: int):
@@ -804,22 +874,21 @@ def api_cancel_completed_season_share_channel(source_id: int):
             p115 = P115Service.get_client()
             if not p115:
                 raise RuntimeError('115 客户端未初始化')
-            p115_resp = p115.share_cancel(share_code)
+            p115_resp = _delete_p115_share_record(p115, share_code)
         except Exception as e:
-            return jsonify({'success': False, 'message': f'取消 115 分享失败：{e}', 'channel': _local_completed_share_public(channel)}), 400
-        if not _p115_response_ok(p115_resp):
-            text = json.dumps(p115_resp, ensure_ascii=False, default=str)
-            if not any(x in text for x in ('不存在', '已取消', '已删除', '失效', '过期', 'not found', 'cancel')):
-                return jsonify({'success': False, 'message': f'取消 115 分享失败：{text[:300]}', 'channel': _local_completed_share_public(channel)}), 400
+            return jsonify({'success': False, 'message': f'删除 115 分享记录失败：{e}', 'channel': _local_completed_share_public(channel)}), 400
+        if not _p115_share_deleted_ok(p115_resp):
+            text = _p115_response_text(p115_resp)
+            return jsonify({'success': False, 'message': f'删除 115 分享记录失败：{text[:300]}', 'channel': _local_completed_share_public(channel)}), 400
     status = 'disabled'
-    message = '用户手动取消完结季 115 分享'
+    message = '用户手动删除完结季 115 分享记录'
     center_resp = {}
     try:
         center_resp = SharedCenterClient().update_completed_season_share_status(channel.get('channel_id'), {
             'status': status,
             'review_status': 'disabled',
             'status_message': message,
-            'raw_json': {'p115_cancel_response': p115_resp, 'local_source_id': source_id},
+            'raw_json': {'p115_delete_response': p115_resp, 'local_source_id': source_id},
         })
     except Exception as e:
         center_resp = {'ok': False, 'message': str(e)}
@@ -828,13 +897,13 @@ def api_cancel_completed_season_share_channel(source_id: int):
         status=status,
         review_status='disabled',
         status_message=message,
-        raw_json={'p115_cancel_response': p115_resp, 'center_response': center_resp},
+        raw_json={'p115_delete_response': p115_resp, 'center_response': center_resp},
         last_checked_at='NOW()',
         last_reported_at='NOW()',
     )
     return jsonify({
         'success': True,
-        'message': '已取消完结季 115 分享',
+        'message': '已删除完结季 115 分享记录',
         'item': _local_completed_share_public(saved),
         'center': center_resp,
         'p115': p115_resp,

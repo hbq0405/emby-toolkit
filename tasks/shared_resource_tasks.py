@@ -542,6 +542,61 @@ def _p115_error(resp: Any) -> str:
     return str(resp)[:2000]
 
 
+def _completed_share_resp_text(resp: Any) -> str:
+    try:
+        return json.dumps(resp, ensure_ascii=False, default=str)
+    except Exception:
+        return str(resp or '')
+
+
+def _completed_share_delete_ok(resp: Any) -> bool:
+    if _p115_ok(resp):
+        return True
+    text = _completed_share_resp_text(resp).lower()
+    return any(x in text for x in (
+        '已删除', '删除成功', '已取消', '取消成功', '不存在', '失效', '过期',
+        'not found', 'deleted', 'delete success', 'cancelled', 'canceled', 'expired', 'success'
+    ))
+
+
+def _delete_completed_share_from_115(p115, share_code: str) -> Dict[str, Any]:
+    """删除 ETK 托管的 115 分享记录；不要只 cancel 留垃圾记录。"""
+    share_code = str(share_code or '').strip()
+    if not share_code:
+        return {'state': True, 'skipped': True, 'message': '无 share_code，无需删除'}
+    attempts = []
+    delete_method = getattr(p115, 'share_delete', None)
+    cancel_method = getattr(p115, 'share_cancel', None)
+
+    if callable(delete_method):
+        try:
+            resp = delete_method(share_code)
+            attempts.append({'method': 'share_delete', 'response': resp})
+            if _completed_share_delete_ok(resp):
+                return {'state': True, 'deleted': True, 'method': 'share_delete', 'attempts': attempts}
+        except Exception as e:
+            attempts.append({'method': 'share_delete', 'error': str(e)})
+
+    if callable(cancel_method):
+        try:
+            resp = cancel_method(share_code)
+            attempts.append({'method': 'share_cancel', 'response': resp})
+        except Exception as e:
+            attempts.append({'method': 'share_cancel', 'error': str(e)})
+
+    if callable(delete_method):
+        try:
+            resp = delete_method(share_code)
+            attempts.append({'method': 'share_delete_after_cancel', 'response': resp})
+            if _completed_share_delete_ok(resp):
+                return {'state': True, 'deleted': True, 'method': 'share_delete_after_cancel', 'attempts': attempts}
+        except Exception as e:
+            attempts.append({'method': 'share_delete_after_cancel', 'error': str(e)})
+
+    cancel_ok = any(_completed_share_delete_ok(a.get('response')) for a in attempts if a.get('method') == 'share_cancel')
+    return {'state': bool(cancel_ok), 'deleted': False, 'cancelled_only': bool(cancel_ok), 'attempts': attempts}
+
+
 def _extract_completed_share_payload(resp: Dict[str, Any], *, receive_code: str = '') -> Dict[str, Any]:
     resp = resp if isinstance(resp, dict) else {}
     data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
@@ -886,7 +941,8 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
         return {'ok': True, 'skipped': True, 'message': '已有分享状态同步正在运行', 'checked': 0}
     try:
         rows = shared_share_db.list_completed_season_share_channels(
-            statuses=['pending_review', 'valid', 'creating'],
+            # active 状态用于正常审核同步；bad/disabled 状态用于清理历史“已取消”分享记录。
+            statuses=['pending_review', 'valid', 'creating', 'expired', 'review_failed', 'disabled'],
             limit=limit,
             need_check=True,
         )
@@ -908,6 +964,42 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
             if not channel_id or not share_code:
                 continue
             try:
+                row_status = str(row.get('status') or '').strip().lower()
+                if row_status == 'disabled':
+                    delete_resp = _delete_completed_share_from_115(p115, share_code)
+                    msg = '用户已取消完结季分享；已尝试删除 115 分享记录'
+                    raw_status_json = {
+                        'share_delete_response': delete_resp,
+                        'status_source': 'local_disabled_cleanup',
+                    }
+                    try:
+                        center_resp = client.update_completed_season_share_status(channel_id, {
+                            'status': 'disabled',
+                            'review_status': 'disabled',
+                            'status_message': msg,
+                            'raw_json': raw_status_json,
+                        })
+                    except Exception as ce:
+                        center_resp = {'ok': False, 'error': str(ce)}
+                    saved = shared_share_db.update_completed_season_share_channel(
+                        channel_id,
+                        status='disabled',
+                        review_status='disabled',
+                        status_message=msg,
+                        raw_json={**raw_status_json, 'center_status_response': center_resp},
+                        last_checked_at='NOW()',
+                        last_reported_at='NOW()',
+                    )
+                    items.append({
+                        'channel_id': channel_id,
+                        'source_id': source_id,
+                        'status': 'disabled',
+                        'ok': True,
+                        'cleanup_deleted': bool(delete_resp.get('deleted')),
+                        'local': saved,
+                    })
+                    continue
+
                 list_item = share_list_map.get(share_code) or {}
                 list_status_info = _completed_share_status_from_info({'share_list_item': list_item}, allow_implicit_valid=False) if list_item else {}
                 # share_list 能看到 Web 后台的“处理中/正常/已取消”等状态，优先信明确状态；
@@ -957,6 +1049,16 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
 
                 status = status_info.get('status') or 'failed'
                 msg = status_info.get('message') or status
+                # 115 Web 列表显示已取消/失效/违规时，顺手删除分享记录，
+                # 避免链接分享页面长期堆一堆“已取消”的垃圾。只处理 ETK 本地 channel 表里的 share_code。
+                if status in {'expired', 'review_failed'}:
+                    delete_resp = _delete_completed_share_from_115(p115, share_code)
+                    raw_status_json['share_delete_response'] = delete_resp
+                    if delete_resp.get('deleted'):
+                        msg = (msg + '；已删除 115 分享记录')[:1000]
+                    elif delete_resp.get('cancelled_only'):
+                        msg = (msg + '；已取消分享但删除记录失败')[:1000]
+
                 center_resp = client.update_completed_season_share_status(channel_id, {
                     'status': status,
                     'review_status': status_info.get('review_status') or '',
