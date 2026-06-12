@@ -1422,7 +1422,10 @@ class WatchlistProcessor:
         is_force_ended: bool = False,
         allow_start_washing: bool = False,
     ) -> Optional[bool]:
-        """已完结状态下统一执行最终季一致性门禁。
+        """已完结状态下统一执行本地已集齐季的一致性门禁。
+
+        旧逻辑只校验“本地已入库的最大季号”，两季同批入库时 S01 会被 S02
+        覆盖掉，无法触发完结季包登记。这里改为按本地已集齐的有效季逐季校验。
 
         门禁可以在 Completed -> Completed 的 webhook/单项刷新中反复执行，
         但只有首次从追更/暂停/待定流转到 Completed 时才允许发起新的洗版。
@@ -1430,18 +1433,51 @@ class WatchlistProcessor:
         """
         self._last_completed_season_quality_gate = {
             'checked': False,
+            'checked_count': 0,
             'target_season': None,
+            'target_seasons': [],
             'expected_episode_count': 0,
             'local_episode_count': 0,
             'consistency_ok': None,
             'consistency_failed': False,
             'completed_pack_triggered': False,
+            'has_unresolved_failed_gate': False,
+            'season_results': [],
             'reason': '',
         }
 
         def _mark_gate(**kwargs):
             state = dict(getattr(self, '_last_completed_season_quality_gate', {}) or {})
             state.update(kwargs)
+            self._last_completed_season_quality_gate = state
+
+        def _append_season_result(season_number: int, expected_count: int, local_count: int, **kwargs):
+            state = dict(getattr(self, '_last_completed_season_quality_gate', {}) or {})
+            results = list(state.get('season_results') or [])
+            result = {
+                'season_number': season_number,
+                'expected_episode_count': expected_count,
+                'local_episode_count': local_count,
+            }
+            result.update(kwargs)
+            results.append(result)
+
+            target_seasons = list(state.get('target_seasons') or [])
+            if season_number and season_number not in target_seasons:
+                target_seasons.append(season_number)
+
+            state['season_results'] = results
+            state['target_seasons'] = target_seasons
+            state['target_season'] = season_number
+            state['expected_episode_count'] = expected_count
+            state['local_episode_count'] = local_count
+            state['checked_count'] = sum(1 for r in results if r.get('checked'))
+            state['checked'] = state['checked_count'] > 0
+            state['completed_pack_triggered'] = any(bool(r.get('completed_pack_triggered')) for r in results)
+            state['consistency_failed'] = any(bool(r.get('consistency_failed')) for r in results)
+            state['has_unresolved_failed_gate'] = any(bool(r.get('unresolved_failed_gate')) for r in results)
+            if kwargs.get('reason'):
+                state['reason'] = kwargs.get('reason')
             self._last_completed_season_quality_gate = state
 
         if is_force_ended:
@@ -1455,125 +1491,237 @@ class WatchlistProcessor:
             return None
 
         seasons = latest_series_data.get('seasons', [])
-        
-        # 1. 获取本地已入库的最大季号作为校验目标
-        valid_local_seasons = [s for s in emby_seasons.keys() if s > 0]
+        seasons_by_num = {}
+        for season in seasons or []:
+            try:
+                s_num = int(season.get('season_number'))
+            except Exception:
+                continue
+            if s_num > 0:
+                seasons_by_num[s_num] = season
+
+        normalized_emby_seasons = {}
+        for raw_s_num, episode_set in (emby_seasons or {}).items():
+            try:
+                s_num = int(raw_s_num)
+            except Exception:
+                continue
+            if s_num > 0:
+                normalized_emby_seasons[s_num] = episode_set
+
+        valid_local_seasons = sorted(normalized_emby_seasons.keys())
+
         if not valid_local_seasons:
             _mark_gate(reason='no_local_season')
             logger.debug(f"  ➜ [完结校验跳过] 《{series_name}》本地无任何有效季文件，跳过一致性校验。")
             return None
-            
-        target_local_s_num = max(valid_local_seasons)
 
-        # 2. 从 TMDb 数据中提取该目标季的总集数信息
-        target_season = next((s for s in seasons if s.get('season_number') == target_local_s_num), None)
-        
-        if not target_season:
-            _mark_gate(reason='invalid_final_season')
-            logger.debug(f"  ➜ [完结校验跳过] 《{series_name}》在 TMDb 中未找到对应的 S{target_local_s_num} 信息，跳过一致性校验。")
-            return None
+        release_date = latest_series_data.get('first_air_date') or ''
+        release_year = release_date[:4] if release_date else ''
+        set_waiting_flag: Optional[bool] = None
+        checked_seasons = []
+        skipped_reasons = defaultdict(int)
 
-        last_s_num = target_season.get('season_number')
-        last_ep_count = target_season.get('episode_count', 0) or 0
-        if not last_s_num:
-            _mark_gate(reason='invalid_final_season')
-            logger.debug(f"  ➜ [完结校验] 《{series_name}》最终季号无效，跳过一致性校验。")
-            return None
+        for last_s_num in valid_local_seasons:
+            target_season = seasons_by_num.get(last_s_num)
+            if not target_season:
+                skipped_reasons['invalid_final_season'] += 1
+                _append_season_result(
+                    last_s_num,
+                    0,
+                    len(normalized_emby_seasons.get(last_s_num, set()) or []),
+                    checked=False,
+                    skipped=True,
+                    reason='invalid_final_season',
+                )
+                logger.debug(f"  ➜ [完结校验跳过] 《{series_name}》在 TMDb 中未找到对应的 S{last_s_num} 信息，跳过该季一致性校验。")
+                continue
 
-        local_target_count = len(emby_seasons.get(last_s_num, set()))
-        _mark_gate(
-            target_season=last_s_num,
-            expected_episode_count=last_ep_count,
-            local_episode_count=local_target_count,
-        )
-        if local_target_count <= 0:
-            _mark_gate(reason='local_zero_episode')
-            logger.info(f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 本地 0 集，视为未追本季，不触发洗版/等待完结包。")
-            return False
+            last_ep_count = target_season.get('episode_count', 0) or 0
+            local_target_count = len(normalized_emby_seasons.get(last_s_num, set()) or [])
 
-        if last_ep_count <= 0:
-            _mark_gate(reason='unknown_episode_count')
-            logger.info(f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 总集数未知，暂不触发洗版/季源登记。")
-            return None
+            if local_target_count <= 0:
+                skipped_reasons['local_zero_episode'] += 1
+                _append_season_result(
+                    last_s_num,
+                    last_ep_count,
+                    local_target_count,
+                    checked=False,
+                    skipped=True,
+                    reason='local_zero_episode',
+                )
+                logger.info(f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 本地 0 集，视为未追本季，不触发洗版/等待完结包。")
+                continue
 
-        if old_status == STATUS_COMPLETED:
-            logger.info(f"  ➜ [完结校验] 《{series_name}》已处于完结状态，继续校验 S{last_s_num} 本地一致性。")
-        else:
-            logger.info(
-                f"  ➜ [完结校验] 《{series_name}》状态 {translate_internal_status(old_status)} -> 已完结，"
-                f"校验 S{last_s_num} 本地一致性。"
-            )
+            if last_ep_count <= 0:
+                skipped_reasons['unknown_episode_count'] += 1
+                _append_season_result(
+                    last_s_num,
+                    last_ep_count,
+                    local_target_count,
+                    checked=False,
+                    skipped=True,
+                    reason='unknown_episode_count',
+                )
+                logger.info(f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 总集数未知，暂不触发洗版/季源登记。")
+                continue
 
-        _mark_gate(checked=True)
-        if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
-            _mark_gate(
-                consistency_ok=True,
-                consistency_failed=False,
-                completed_pack_triggered=True,
-                reason='consistency_ok',
-            )
-            self._set_season_active_washing(
-                tmdb_id,
+            if local_target_count < last_ep_count:
+                skipped_reasons['local_incomplete'] += 1
+                _append_season_result(
+                    last_s_num,
+                    last_ep_count,
+                    local_target_count,
+                    checked=False,
+                    skipped=True,
+                    reason='local_incomplete',
+                )
+                logger.info(
+                    f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 本地 {local_target_count}/{last_ep_count}，"
+                    "尚未集齐，不触发完结一致性校验/季包登记。"
+                )
+                continue
+
+            if old_status == STATUS_COMPLETED:
+                logger.info(f"  ➜ [完结校验] 《{series_name}》已处于完结状态，继续校验 S{last_s_num} 本地一致性。")
+            else:
+                logger.info(
+                    f"  ➜ [完结校验] 《{series_name}》状态 {translate_internal_status(old_status)} -> 已完结，"
+                    f"校验 S{last_s_num} 本地一致性。"
+                )
+
+            checked_seasons.append(last_s_num)
+            if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
+                _append_season_result(
+                    last_s_num,
+                    last_ep_count,
+                    local_target_count,
+                    checked=True,
+                    consistency_ok=True,
+                    consistency_failed=False,
+                    completed_pack_triggered=True,
+                    unresolved_failed_gate=False,
+                    reason='consistency_ok',
+                )
+                self._set_season_active_washing(
+                    tmdb_id,
+                    last_s_num,
+                    False,
+                    reason="一致性已通过，完结洗版事务收口。",
+                )
+                logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包登记。")
+                self._trigger_completed_season_pack_share_detached(
+                    tmdb_id,
+                    last_s_num,
+                    series_name,
+                    year=release_year,
+                    expected_episode_count=last_ep_count,
+                )
+                if set_waiting_flag is not True:
+                    set_waiting_flag = False
+                continue
+
+            has_active_washing = self._season_has_active_washing(tmdb_id, last_s_num)
+            if has_active_washing:
+                _append_season_result(
+                    last_s_num,
+                    last_ep_count,
+                    local_target_count,
+                    checked=True,
+                    consistency_ok=False,
+                    consistency_failed=True,
+                    completed_pack_triggered=False,
+                    unresolved_failed_gate=True,
+                    reason='consistency_failed_active_washing',
+                )
+                logger.info(
+                    f"  ➜ [完结洗版] 《{series_name}》S{last_s_num} 洗版进行中，本次一致性仍未通过，"
+                    f"不重复提交洗版，等待后续分集入库。"
+                )
+                if watchlist_cfg.get('tg_channel_tracking', False):
+                    set_waiting_flag = True
+                continue
+
+            if not allow_start_washing:
+                _append_season_result(
+                    last_s_num,
+                    last_ep_count,
+                    local_target_count,
+                    checked=True,
+                    consistency_ok=False,
+                    consistency_failed=True,
+                    completed_pack_triggered=False,
+                    unresolved_failed_gate=True,
+                    reason='consistency_failed_no_new_washing',
+                )
+                logger.info(
+                    f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 一致性不通过，但本轮不是首次完结流转，"
+                    f"只保留校验结果，不重新提交洗版。"
+                )
+                continue
+
+            if watchlist_cfg.get('tg_channel_tracking', False):
+                _append_season_result(
+                    last_s_num,
+                    last_ep_count,
+                    local_target_count,
+                    checked=True,
+                    consistency_ok=False,
+                    consistency_failed=True,
+                    completed_pack_triggered=False,
+                    unresolved_failed_gate=True,
+                    reason='consistency_failed_wait_tg_pack',
+                )
+                self._set_season_active_washing(
+                    tmdb_id,
+                    last_s_num,
+                    True,
+                    reason="一致性不通过，等待 TG 完结包替换。",
+                )
+                logger.info(f"  ➜ [TG洗版拦截] 《{series_name}》S{last_s_num} 已完结但文件不一致。已开启 '等待完结包' 标志，静候 TG 频道发布。")
+                set_waiting_flag = True
+                continue
+
+            _append_season_result(
                 last_s_num,
-                False,
-                reason="一致性已通过，完结洗版事务收口。",
+                last_ep_count,
+                local_target_count,
+                checked=True,
+                consistency_ok=False,
+                consistency_failed=True,
+                completed_pack_triggered=False,
+                unresolved_failed_gate=True,
+                reason='consistency_failed_start_mp_washing',
             )
-            release_date = latest_series_data.get('first_air_date') or ''
-            release_year = release_date[:4] if release_date else ''
-            logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包登记。")
-            self._trigger_completed_season_pack_share_detached(
+            logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 一致性不通过，首次完结流转允许提交 MP 完结洗版。")
+            self._handle_auto_resub_ended(
                 tmdb_id,
-                last_s_num,
                 series_name,
-                year=release_year,
-                expected_episode_count=last_ep_count,
-            )
-            return False
-
-        _mark_gate(
-            consistency_ok=False,
-            consistency_failed=True,
-            completed_pack_triggered=False,
-            reason='consistency_failed',
-        )
-        has_active_washing = self._season_has_active_washing(tmdb_id, last_s_num)
-        if has_active_washing:
-            _mark_gate(reason='consistency_failed_active_washing')
-            logger.info(
-                f"  ➜ [完结洗版] 《{series_name}》S{last_s_num} 洗版进行中，本次一致性仍未通过，"
-                f"不重复提交洗版，等待后续分集入库。"
-            )
-            return True if watchlist_cfg.get('tg_channel_tracking', False) else None
-
-        if not allow_start_washing:
-            _mark_gate(reason='consistency_failed_no_new_washing')
-            logger.info(
-                f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 一致性不通过，但本轮不是首次完结流转，"
-                f"只保留校验结果，不重新提交洗版。"
-            )
-            return None
-
-        if watchlist_cfg.get('tg_channel_tracking', False):
-            _mark_gate(reason='consistency_failed_wait_tg_pack')
-            self._set_season_active_washing(
-                tmdb_id,
                 last_s_num,
-                True,
-                reason="一致性不通过，等待 TG 完结包替换。",
+                last_ep_count,
+                skip_consistency_check=True,
             )
-            logger.info(f"  ➜ [TG洗版拦截] 《{series_name}》S{last_s_num} 已完结但文件不一致。已开启 '等待完结包' 标志，静候 TG 频道发布。")
-            return True
+            if set_waiting_flag is not True:
+                set_waiting_flag = False
 
-        _mark_gate(reason='consistency_failed_start_mp_washing')
-        logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 一致性不通过，首次完结流转允许提交 MP 完结洗版。")
-        self._handle_auto_resub_ended(
-            tmdb_id,
-            series_name,
-            last_s_num,
-            last_ep_count,
-            skip_consistency_check=True,
-        )
-        return False
+        if checked_seasons:
+            state = getattr(self, '_last_completed_season_quality_gate', {}) or {}
+            logger.info(
+                "  ➜ [完结校验] 《%s》本轮已校验 %s 个本地已集齐季：%s，季包触发=%s，失败=%s。",
+                series_name,
+                len(checked_seasons),
+                ', '.join(f"S{s:02d}" for s in checked_seasons),
+                bool(state.get('completed_pack_triggered')),
+                bool(state.get('consistency_failed')),
+            )
+            return set_waiting_flag
+
+        reason = 'no_completed_local_season'
+        if skipped_reasons:
+            reason = ','.join(f"{k}:{v}" for k, v in sorted(skipped_reasons.items()))
+        _mark_gate(reason=reason)
+        logger.info(f"  ➜ [完结校验跳过] 《{series_name}》本轮没有本地已集齐的有效季可做一致性校验，原因：{reason}。")
+        return None
 
     def _handle_auto_resub_ended(self, tmdb_id: str, series_name: str, season_number: int, episode_count: int, *, skip_consistency_check: bool = False):
         """
@@ -2441,10 +2589,16 @@ class WatchlistProcessor:
         # - Completed 且一致性通过：只登记 completed_season_source，季包成功后会停用同季单集源。
         if allow_airing_episode_share:
             should_register_episode_source = final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]
+            has_unresolved_failed_gate = bool(
+                completed_quality_gate.get(
+                    'has_unresolved_failed_gate',
+                    bool(completed_quality_gate.get('consistency_failed'))
+                    and not bool(completed_quality_gate.get('completed_pack_triggered')),
+                )
+            )
             if (
                 final_status == STATUS_COMPLETED
-                and bool(completed_quality_gate.get('consistency_failed'))
-                and not bool(completed_quality_gate.get('completed_pack_triggered'))
+                and has_unresolved_failed_gate
             ):
                 should_register_episode_source = True
                 logger.info(
