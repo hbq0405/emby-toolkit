@@ -1581,7 +1581,37 @@ const centerTitleNode = (row) => {
   const text = centerTitleText(row);
   return h('div', { class: 'main-title center-title-ellipsis', title: text }, text);
 };
-const centerIsOngoingHub = (row) => Boolean(!centerIsSpecialSeason(row) && (row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing'));
+const centerSeriesSeasonRows = (row) => Array.isArray(row?.seasons) ? row.seasons.filter(x => x && typeof x === 'object') : [];
+const centerSeasonIsSpecialNumber = (row) => centerSeasonTabNumber(row) === 0;
+const centerSeasonRowIsOngoing = (row) => {
+  if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
+  const kind = String(row.source_kind || row.lazy_children_kind || '').trim().toLowerCase();
+  const status = String(row.season_status || '').trim().toLowerCase();
+  return Boolean(row.is_ongoing_hub || kind === 'season_hub' || status === 'ongoing');
+};
+const centerSeriesHasOngoingSeason = (row) => centerIsSeriesGroup(row) && centerSeriesSeasonRows(row).some(centerSeasonRowIsOngoing);
+const centerIsOngoingHub = (row) => {
+  if (!row || typeof row !== 'object' || centerIsSpecialSeason(row)) return false;
+  if (centerSeriesHasOngoingSeason(row)) return true;
+  return Boolean(row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing');
+};
+const centerSeasonRowIsCompleted = (row) => {
+  if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
+  const kind = String(row.source_kind || row.lazy_children_kind || '').trim().toLowerCase();
+  const status = String(row.status || '').trim().toLowerCase();
+  const seasonStatus = String(row.season_status || '').trim().toLowerCase();
+  return Boolean(
+    (kind === 'completed_season' && status === 'available')
+    || row.is_completed_certified
+    || row.is_completed
+    || seasonStatus === 'completed'
+  );
+};
+const centerSeriesAllRegularSeasonsCompleted = (row) => {
+  if (!centerIsSeriesGroup(row)) return false;
+  const regular = centerSeriesSeasonRows(row).filter(item => !centerSeasonIsSpecialNumber(item));
+  return regular.length > 0 && regular.every(centerSeasonRowIsCompleted);
+};
 const centerStatusValue = (row) => String(row?.status || '').trim().toLowerCase();
 const centerIsCompletedPack = (row) => Boolean(row?.source_kind === 'completed_season');
 const centerIsCompletedCertifiedSource = (row) => Boolean(row?.source_kind === 'completed_season' && centerStatusValue(row) === 'available');
@@ -1670,7 +1700,10 @@ const centerCompletedCertifiedMeta = (row) => {
   }
   return {};
 };
-const isCenterCompletedCertified = (row) => Boolean(!centerIsOngoingHub(row) && centerCompletedCertifiedMeta(row).is_completed_certified);
+const isCenterCompletedCertified = (row) => Boolean(
+  !centerIsOngoingHub(row)
+  && (centerSeriesAllRegularSeasonsCompleted(row) || centerCompletedCertifiedMeta(row).is_completed_certified)
+);
 const centerCompletedCertifiedTooltip = (row) => {
   const meta = centerCompletedCertifiedMeta(row);
   const parts = ['已通过一致性校验'];
@@ -2742,14 +2775,15 @@ const centerPosterMark = (row) => {
 };
 const centerRibbonText = (row) => {
   if (isCenterReplenishRow(row)) return '待补充';
-  if (isCenterCompletedCertified(row)) return '已完结';
+  // 剧卡片优先显示连载状态：只要任一普通季连载中就挂“连载中”，特别篇不参与判定。
   if (centerIsOngoingHub(row)) return '连载中';
+  if (isCenterCompletedCertified(row)) return '已完结';
   return '';
 };
 const centerRibbonClass = (row) => {
   if (isCenterReplenishRow(row)) return 'center-ribbon-warning';
-  if (isCenterCompletedCertified(row)) return 'center-ribbon-green';
   if (centerIsOngoingHub(row)) return 'center-ribbon-blue';
+  if (isCenterCompletedCertified(row)) return 'center-ribbon-green';
   return 'center-ribbon-dark';
 };
 const centerCardMetaText = (row) => {
@@ -2824,8 +2858,8 @@ const centerCardTags = (row) => {
   if (progress) centerTagPush(tags, progress, 'info', 'progress');
   const seasonCount = centerIsSeriesGroup(row) ? centerSeasonCount(row) : 0;
   if (seasonCount > 1) centerTagPush(tags, `共 ${seasonCount} 季`, 'info', 'season-count');
-  if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
+  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
   if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
   if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
@@ -2849,8 +2883,8 @@ const centerSeasonTabNumber = (season) => {
 const centerSeasonTabSortValue = (season) => {
   const n = centerSeasonTabNumber(season);
   if (n === null) return 99999;
-  // 特别篇排在常规季后面，默认详情优先第一季。
-  return n === 0 ? 90000 : n;
+  // 特别篇标签按惯例放最前面；默认资源列表仍由 centerDefaultDetailSeason 固定优先第一季。
+  return n === 0 ? -1 : n;
 };
 const centerSeasonTabKey = (season) => {
   const n = centerSeasonTabNumber(season);
@@ -2882,11 +2916,14 @@ const centerDetailSeasonListFromRow = (row) => {
     .sort((a, b) => centerSeasonTabSortValue(a) - centerSeasonTabSortValue(b));
 };
 const centerDefaultDetailSeason = (row) => {
-  const explicit = centerSeasonTabNumber(row?.active_season_number ?? row?.default_season_number);
-  if (explicit !== null) return explicit;
   const list = centerDetailSeasonListFromRow(row);
   const nums = list.map(centerSeasonTabNumber).filter(n => n !== null);
-  if (nums.includes(1)) return 1;
+  const regular = nums.filter(n => n > 0);
+  const firstRegular = nums.includes(1) ? 1 : (regular.length ? regular[0] : null);
+  const explicit = centerSeasonTabNumber(row?.active_season_number ?? row?.default_season_number);
+  // 打开详情默认看第一季资源；如果中心旧缓存把特别篇设成默认，前端兜底纠正。
+  if (explicit !== null && !(explicit === 0 && firstRegular !== null)) return explicit;
+  if (firstRegular !== null) return firstRegular;
   if (nums.length) return nums[0];
   return centerSeasonNumber(row);
 };
@@ -2980,8 +3017,8 @@ const centerVersionTags = (row) => {
   }
   
   // 5. 其他标签
-  if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
+  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
   if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
   if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
@@ -3069,7 +3106,12 @@ const loadCenterSourceDetail = async (row, seasonOverride = null) => {
 const applyCenterDetailPayload = (base, payload, seasonOverride = null) => {
   const merged = mergeCenterDetailPayload(base, payload);
   if (centerIsSeriesGroup(merged)) {
-    const active = centerSeasonTabNumber(payload?.active_season_number ?? payload?.data?.active_season_number ?? seasonOverride ?? merged.active_season_number ?? centerDefaultDetailSeason(merged));
+    let active = centerSeasonTabNumber(payload?.active_season_number ?? payload?.data?.active_season_number ?? seasonOverride ?? merged.active_season_number ?? centerDefaultDetailSeason(merged));
+    // 打开详情时不显式指定季号；即使旧中心返回 active=0，也不要默认落到特别篇。
+    if (active === 0 && (seasonOverride === null || seasonOverride === undefined || seasonOverride === '')) {
+      const fallback = centerDefaultDetailSeason({ ...merged, active_season_number: null, default_season_number: null });
+      if (fallback !== null && fallback > 0) active = fallback;
+    }
     if (active !== null) {
       merged.active_season_number = active;
       centerDetailActiveSeason.value = active;
