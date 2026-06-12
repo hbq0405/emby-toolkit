@@ -3652,18 +3652,20 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
         skipped_existing = int(candidate_stats.get('skipped_existing') or 0)
         skipped_duplicate = int(candidate_stats.get('skipped_duplicate') or 0)
         skipped_completed_episode = int(candidate_stats.get('skipped_completed_episode') or 0)
+        skipped_episode_candidate = int(candidate_stats.get('skipped_episode_candidate') or skipped_completed_episode or 0)
+        skipped_non_completed_season = int(candidate_stats.get('skipped_non_completed_season') or 0)
         scanned = int(candidate_stats.get('scanned') or 0)
         existing_summary = candidate_stats.get('existing_index') or {}
         timings = candidate_stats.get('timings') or {}
 
-        _task_status(10, f'扫描完成：媒体候选 {scanned}，已排除有效共享 {skipped_existing}，已屏蔽完结季分集 {skipped_completed_episode}，待登记 {total}。')
+        _task_status(10, f'扫描完成：媒体候选 {scanned}，已排除有效共享 {skipped_existing}，已跳过分集 {skipped_episode_candidate}，已跳过非完结季 {skipped_non_completed_season}，待登记 {total}。')
         logger.info(
-            '  ➜ [共享资源] 一键登记媒体库扫描完成：扫描 %s，跳过已有有效共享 %s，屏蔽完结季分集 %s，跳过重复候选 %s，待登记 %s，已有索引=%s，耗时=%s',
-            scanned, skipped_existing, skipped_completed_episode, skipped_duplicate, total, existing_summary, timings,
+            '  ➜ [共享资源] 一键登记媒体库扫描完成：扫描 %s，跳过已有有效共享 %s，跳过分集 %s，跳过非完结季 %s，跳过重复候选 %s，待登记 %s，已有索引=%s，耗时=%s',
+            scanned, skipped_existing, skipped_episode_candidate, skipped_non_completed_season, skipped_duplicate, total, existing_summary, timings,
         )
 
         if total <= 0:
-            msg = f'无需登记：扫描 {scanned} 个候选，已排除有效共享 {skipped_existing} 个，已屏蔽完结季分集 {skipped_completed_episode} 个。'
+            msg = f'无需登记：扫描 {scanned} 个候选，已排除有效共享 {skipped_existing} 个，已跳过分集 {skipped_episode_candidate} 个，已跳过非完结季 {skipped_non_completed_season} 个。'
             _task_status(100, msg)
             logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：{msg}")
             return {
@@ -3674,6 +3676,8 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                 'skipped_existing': skipped_existing,
                 'skipped_duplicate': skipped_duplicate,
                 'skipped_completed_episode': skipped_completed_episode,
+                'skipped_episode_candidate': skipped_episode_candidate,
+                'skipped_non_completed_season': skipped_non_completed_season,
                 'scanned': scanned,
                 'timings': timings,
                 'message': msg,
@@ -3697,6 +3701,8 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                     'skipped_existing': skipped_existing,
                     'skipped_duplicate': skipped_duplicate,
                     'skipped_completed_episode': skipped_completed_episode,
+                    'skipped_episode_candidate': skipped_episode_candidate,
+                    'skipped_non_completed_season': skipped_non_completed_season,
                     'scanned': scanned,
                     'items': items[:50],
                     'timings': timings,
@@ -3738,9 +3744,9 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                 items.append({'title': title, 'ok': False, 'message': str(e)})
                 logger.warning(f"  ➜ [共享资源] 一键登记媒体库失败: {title} -> {e}")
 
-        msg = f'一键登记完成：扫描 {scanned}，跳过已有有效共享 {skipped_existing}，屏蔽完结季分集 {skipped_completed_episode}，完结季不合格跳过 {skipped_bad_completed}，登记成功 {ok}，失败 {failed}。'
+        msg = f'一键登记完成：扫描 {scanned}，跳过已有有效共享 {skipped_existing}，跳过分集 {skipped_episode_candidate}，跳过非完结季 {skipped_non_completed_season}，完结季不合格跳过 {skipped_bad_completed}，登记成功 {ok}，失败 {failed}。'
         _task_status(100, msg)
-        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}，屏蔽完结季分集 {skipped_completed_episode}，完结季不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}")
+        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}，跳过分集 {skipped_episode_candidate}，跳过非完结季 {skipped_non_completed_season}，完结季不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}")
         return {
             'ok': True,
             'total': total,
@@ -3750,6 +3756,8 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
             'skipped_existing': skipped_existing,
             'skipped_duplicate': skipped_duplicate,
             'skipped_completed_episode': skipped_completed_episode,
+            'skipped_episode_candidate': skipped_episode_candidate,
+            'skipped_non_completed_season': skipped_non_completed_season,
             'scanned': scanned,
             'items': items[:50],
             'timings': timings,

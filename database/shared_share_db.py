@@ -1300,11 +1300,14 @@ def all_library_share_candidates(
     seen = set()
     skipped_existing = 0
     skipped_duplicate = 0
+    # 兼容旧统计字段：过去只屏蔽“完结季分集”，现在一键登记不再登记任何分集。
     skipped_completed_episode = 0
+    skipped_episode_candidate = 0
+    skipped_non_completed_season = 0
     scanned = len(rows)
     t_filter = time.perf_counter()
 
-    _emit_scan_progress(progress_callback, 3, f'已读取媒体候选 {scanned} 个，正在做增量排除...')
+    _emit_scan_progress(progress_callback, 3, f'已读取媒体候选 {scanned} 个，正在筛选电影与完结季候选...')
 
     for idx, row in enumerate(rows, 1):
         item_type = str(row.get('item_type') or '')
@@ -1313,7 +1316,7 @@ def all_library_share_candidates(
             _emit_scan_progress(
                 progress_callback,
                 min(10, progress),
-                f'正在筛选媒体候选 {idx}/{scanned}，已排除有效共享 {skipped_existing}，已屏蔽完结季分集 {skipped_completed_episode}，待登记 {len(result)}...'
+                f'正在筛选媒体候选 {idx}/{scanned}，已排除有效共享 {skipped_existing}，已跳过分集 {skipped_episode_candidate}，已跳过非完结季 {skipped_non_completed_season}，待登记 {len(result)}...'
             )
 
         if exclude_existing and _media_row_already_registered(row, existing_index):
@@ -1324,15 +1327,23 @@ def all_library_share_candidates(
             cand = _build_lightweight_share_candidate(row)
             key = ('Movie', cand.get('tmdb_id'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Episode':
-            # 完结季必须以 Season 候选走严格一致性门禁；
-            # 一键登记不能绕过季门禁，把历史脏数据的零散分集登记进中心 season_hub。
+            # 一键登记媒体库只登记电影和“已完结 Season”。
+            # 连载分集交给维护任务 list_unregistered_airing_episode_candidates 做追更补齐，
+            # 避免全库登记把连载季的存量分集批量塞进中心 season_hub。
+            skipped_episode_candidate += 1
             if _is_completed_status(row.get('season_watching_status')):
                 skipped_completed_episode += 1
+            continue
+        elif item_type == 'Season':
+            status = row.get('watching_status') or row.get('season_watching_status')
+            if not _is_completed_status(status):
+                skipped_non_completed_season += 1
                 continue
             cand = _build_lightweight_share_candidate(row)
-            key = ('Episode', cand.get('tmdb_id'), cand.get('season_number'), cand.get('episode_number'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
-        elif item_type == 'Season':
-            cand = _build_lightweight_share_candidate(row)
+            # 登记阶段 _candidate_is_completed_season 只认 Completed；这里统一归一化，
+            # 避免数据库里出现 ended / 已完结 这类等价状态时又被当成连载季拆分登记。
+            cand['watching_status'] = 'Completed'
+            cand['season_status'] = 'Completed'
             key = ('Season', cand.get('tmdb_id'), cand.get('season_number'))
         else:
             continue
@@ -1345,7 +1356,7 @@ def all_library_share_candidates(
 
     timings['filter_candidates_sec'] = round(time.perf_counter() - t_filter, 3)
     timings['total_scan_sec'] = round(time.perf_counter() - t0, 3)
-    _emit_scan_progress(progress_callback, 10, f'候选扫描完成：扫描 {scanned}，排除有效共享 {skipped_existing}，屏蔽完结季分集 {skipped_completed_episode}，重复 {skipped_duplicate}，待登记 {len(result)}。')
+    _emit_scan_progress(progress_callback, 10, f'候选扫描完成：扫描 {scanned}，排除有效共享 {skipped_existing}，跳过分集 {skipped_episode_candidate}，跳过非完结季 {skipped_non_completed_season}，重复 {skipped_duplicate}，待登记 {len(result)}。')
 
     if return_stats:
         return {
@@ -1355,6 +1366,8 @@ def all_library_share_candidates(
             'skipped_existing': skipped_existing,
             'skipped_duplicate': skipped_duplicate,
             'skipped_completed_episode': skipped_completed_episode,
+            'skipped_episode_candidate': skipped_episode_candidate,
+            'skipped_non_completed_season': skipped_non_completed_season,
             'existing_index': existing_summary,
             'timings': timings,
         }
