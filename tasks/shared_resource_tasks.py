@@ -570,24 +570,103 @@ def _completed_share_status_from_info(resp: Dict[str, Any], *, allow_implicit_va
 
     注意：115 刚创建分享时，/share/snap 或部分接口可能 state=True，
     但 Web 列表仍显示“处理中”。state=True 只能说明接口请求成功，不能等价于审核通过。
-    创建后的首次上报一律不允许仅凭 state=True 判定 valid；后续同步也优先吃
-    “处理中/审核中/违规/失效”等明确状态。
+    创建后的首次上报一律不允许仅凭 state=True 判定 valid。
+
+    返回里的 ``explicit`` 表示状态来自 115 明确审核/分享状态字段或状态文案；
+    只有这种结果才允许覆盖 share_list 定点对账结果。这样避免把“处理中”的
+    分享因为 state=True 误判为可转存。
     """
     text = json.dumps(resp if isinstance(resp, dict) else {'value': str(resp)}, ensure_ascii=False, default=str).lower()
     message = _p115_error(resp)
-    if any(x in text for x in ('审核不通过', '审核失败', '违规', '违法', '禁止分享', '封禁', 'risk', 'violation', 'forbidden')):
-        return {'status': 'review_failed', 'review_status': 'failed', 'message': message or '115 分享审核失败/违规'}
+    if any(x in text for x in ('审核不通过', '审核失败', '审核未通过', '未通过审核', '违规', '违法', '禁止分享', '封禁', 'risk', 'violation', 'forbidden')):
+        return {'status': 'review_failed', 'review_status': 'failed', 'message': message or '115 分享审核失败/违规', 'explicit': True}
     if any(x in text for x in ('审核中', '待审核', '处理中', '正在处理', 'reviewing', 'pending_review', 'pending review', 'processing')):
-        return {'status': 'pending_review', 'review_status': 'pending', 'message': message or '115 分享审核中/处理中'}
-    if any(x in text for x in ('不存在', '已取消', '已删除', '过期', '失效', 'expired', 'not found', 'cancelled', 'canceled')):
-        return {'status': 'expired', 'review_status': 'expired', 'message': message or '115 分享已失效'}
-    if any(x in text for x in ('审核通过', '通过审核', '已通过', 'approved', 'review_passed', 'passed_review')):
-        return {'status': 'valid', 'review_status': 'passed', 'message': '115 分享审核通过'}
+        return {'status': 'pending_review', 'review_status': 'pending', 'message': message or '115 分享审核中/处理中', 'explicit': True}
+    if any(x in text for x in ('不存在', '已取消', '已删除', '取消分享', '取消了分享', '过期', '失效', 'expired', 'not found', 'cancelled', 'canceled', 'deleted')):
+        return {'status': 'expired', 'review_status': 'expired', 'message': message or '115 分享已失效', 'explicit': True}
+    if any(x in text for x in ('审核通过', '通过审核', '已通过', '分享可用', '可转存', '正常', '已生效', 'approved', 'review_passed', 'passed_review', 'normal', 'available')):
+        return {'status': 'valid', 'review_status': 'passed', 'message': '115 分享审核通过', 'explicit': True}
     if allow_implicit_valid and _p115_ok(resp):
-        return {'status': 'valid', 'review_status': 'passed', 'message': '115 分享可用'}
+        return {'status': 'valid', 'review_status': 'passed', 'message': '115 分享可用', 'explicit': False}
     if _p115_ok(resp):
-        return {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
-    return {'status': 'failed', 'review_status': 'unknown', 'message': message or '115 分享状态未知'}
+        return {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核', 'explicit': False}
+    return {'status': 'failed', 'review_status': 'unknown', 'message': message or '115 分享状态未知', 'explicit': False}
+
+
+def _completed_share_list_items(resp: Any) -> List[Dict[str, Any]]:
+    """从 115 share_list 响应里提取分享条目列表，兼容不同 Cookie 库返回结构。"""
+    out: List[Dict[str, Any]] = []
+    seen = set()
+
+    def walk(value: Any, depth: int = 0) -> None:
+        if depth > 5:
+            return
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    code = str(item.get('share_code') or item.get('shareCode') or item.get('code') or '').strip()
+                    marker = code or id(item)
+                    if marker not in seen:
+                        seen.add(marker)
+                        out.append(item)
+                elif isinstance(item, (list, tuple, dict)):
+                    walk(item, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+        for key in ('list', 'data', 'items', 'share_list', 'shareList', 'rows', 'result'):
+            child = value.get(key)
+            if child is not None:
+                walk(child, depth + 1)
+
+    walk(resp)
+    return out
+
+
+def _completed_share_code_from_list_item(item: Dict[str, Any]) -> str:
+    item = item if isinstance(item, dict) else {}
+    return str(
+        item.get('share_code')
+        or item.get('shareCode')
+        or item.get('code')
+        or item.get('share_id')
+        or item.get('shareId')
+        or ''
+    ).strip()
+
+
+def _completed_share_known_list_map(p115, share_codes: List[str], *, max_pages: int = 5) -> Dict[str, Dict[str, Any]]:
+    """只按 ETK 本地 channel 的 share_code 做 115 状态定点对账。
+
+    这里不会把 115 全量分享列表作为共享池基准，也不会把用户私人分享导入 ETK；
+    share_list 只作为“这些已知 share_code 当前在 115 后台显示什么状态”的查询来源。
+    """
+    wanted = {str(x or '').strip() for x in (share_codes or []) if str(x or '').strip()}
+    if not wanted or not hasattr(p115, 'share_list'):
+        return {}
+    found: Dict[str, Dict[str, Any]] = {}
+    limit = 100
+    for page in range(max_pages):
+        if not wanted:
+            break
+        offset = page * limit
+        try:
+            resp = p115.share_list({'limit': limit, 'offset': offset, 'show_cancel_share': 1, 'order': 'create_time', 'asc': 0})
+        except Exception as e:
+            logger.debug(f"  ➜ [完结季分享] 查询 115 分享列表失败，回退 share_info：offset={offset}, err={e}")
+            break
+        items = _completed_share_list_items(resp)
+        if not items:
+            break
+        for item in items:
+            code = _completed_share_code_from_list_item(item)
+            if code in wanted:
+                found[code] = item
+                wanted.discard(code)
+        # 大多数账号近期 ETK 创建的分享都在前几页；不全量扫，避免把用户私人分享列表当成共享池基准。
+        if len(items) < limit:
+            break
+    return found
 
 
 def _completed_share_file_ids_for_local_source(local_source: Dict[str, Any]) -> List[str]:
@@ -800,11 +879,7 @@ def handle_create_completed_season_share_event(event: Dict[str, Any], *, ack: bo
 
 
 def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
-    """轻量同步本机已创建的完结季分享状态；供高频任务调用。
-
-    基准是 shared_completed_season_share_channels 本地托管列表，绝不扫描 115 全量分享列表，
-    避免把用户未发布到共享池的私人分享同步进中心。
-    """
+    """轻量同步本机已创建的完结季分享状态；供高频任务调用。"""
     if not _enabled():
         return {'ok': False, 'message': '共享资源未启用', 'checked': 0}
     if not _COMPLETED_SHARE_SYNC_LOCK.acquire(blocking=False):
@@ -822,32 +897,46 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
         if not p115:
             return {'ok': False, 'message': '115 客户端未初始化', 'checked': 0}
         client = SharedCenterClient()
+        share_codes = [str(r.get('share_code') or '').strip() for r in rows if str(r.get('share_code') or '').strip()]
+        # 只拿本地 ETK channel 已知的 share_code 做定点状态对账；不会把 115 私人分享导入共享池。
+        share_list_map = _completed_share_known_list_map(p115, share_codes)
         items = []
         for row in rows:
             channel_id = str(row.get('channel_id') or '').strip()
             share_code = str(row.get('share_code') or '').strip()
-            receive_code = str(row.get('receive_code') or '').strip()
             source_id = str(row.get('center_source_id') or '').strip()
             if not channel_id or not share_code:
                 continue
             try:
-                # 状态同步也优先查询“本账号自己的分享信息”，这里才可能拿到处理中/审核失败等审核状态。
-                info_resp = p115.share_info(share_code)
-                status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=True)
+                list_item = share_list_map.get(share_code) or {}
+                list_status_info = _completed_share_status_from_info({'share_list_item': list_item}, allow_implicit_valid=False) if list_item else {}
+                # share_list 能看到 Web 后台的“处理中/正常/已取消”等状态，优先信明确状态；
+                # 如果 share_list 条目结构太简陋没有明确状态，再回退 share_info 的兼容判断。
+                if list_item and list_status_info.get('explicit'):
+                    info_resp = {'share_list_item': list_item}
+                    status_info = list_status_info
+                else:
+                    info_resp = p115.share_info(share_code)
+                    status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=True)
                 status = status_info.get('status') or 'failed'
                 msg = status_info.get('message') or status
+                raw_status_json = {
+                    'share_list_item': list_item,
+                    'share_info_response': info_resp,
+                    'status_source': 'share_list' if list_item and list_status_info.get('explicit') else 'share_info',
+                }
                 center_resp = client.update_completed_season_share_status(channel_id, {
                     'status': status,
                     'review_status': status_info.get('review_status') or '',
                     'status_message': msg,
-                    'raw_json': {'share_info_response': info_resp},
+                    'raw_json': raw_status_json,
                 })
                 saved = shared_share_db.update_completed_season_share_channel(
                     channel_id,
                     status=status,
                     review_status=status_info.get('review_status') or '',
                     status_message=msg,
-                    raw_json={'share_info_response': info_resp, 'center_status_response': center_resp},
+                    raw_json={**raw_status_json, 'center_status_response': center_resp},
                     last_checked_at='NOW()',
                     last_reported_at='NOW()',
                 )
