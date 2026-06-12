@@ -1314,25 +1314,169 @@ def _center_source_transfer_preflight(source: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True}
 
 
+def _track_list_value(value: Any) -> List[Any]:
+    if value in (None, '', [], {}):
+        return []
+    if isinstance(value, list):
+        return [x for x in value if x not in (None, '', [], {})]
+    return [value]
+
+
+def _merge_track_values(*values: Any) -> List[Any]:
+    out: List[Any] = []
+    seen = set()
+    for value in values:
+        for item in _track_list_value(value):
+            try:
+                key = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) if isinstance(item, (dict, list)) else str(item)
+            except Exception:
+                key = str(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _json_any(value: Any) -> Any:
+    """解析中心返回的 JSON 字段，保留 list 形态的 Emby MediaInfo。"""
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            obj = json.loads(value)
+            return obj if isinstance(obj, (dict, list)) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _emby_stream_containers(value: Any, depth: int = 0) -> List[Dict[str, Any]]:
+    """从 p115_media_analyzer 产出的 Emby MediaInfo 中递归提取 MediaStreams。
+
+    p115_media_analyzer 写入的是 Emby 兼容结构：
+    [{"MediaSourceInfo": {"MediaStreams": [...]}}]，中心端摘要有时会把这层包进
+    raw_summary_json / summary_json / version_summary。这里保留 Title / DisplayTitle / DisplayLanguage，
+    避免“中英双语特效简体”被只剩 DisplayTitle 的摘要覆盖。
+    """
+    if value in (None, '', [], {}) or depth > 5:
+        return []
+    value = _json_any(value)
+    out: List[Dict[str, Any]] = []
+    if isinstance(value, list):
+        for item in value:
+            out.extend(_emby_stream_containers(item, depth + 1))
+        return out
+    if not isinstance(value, dict):
+        return out
+
+    streams = value.get('MediaStreams') or value.get('media_streams') or value.get('streams')
+    if isinstance(streams, list):
+        out.extend([x for x in streams if isinstance(x, dict)])
+
+    media_source = value.get('MediaSourceInfo') or value.get('media_source_info')
+    if isinstance(media_source, (dict, list, str)):
+        out.extend(_emby_stream_containers(media_source, depth + 1))
+
+    # 兼容少数中心摘要把 Emby 原始信息嵌在 raw/raw_json/mediainfo 等键下。
+    for key in ('raw', 'raw_json', 'emby_json', 'mediainfo', 'media_info', 'media_source', 'source_info'):
+        nested = value.get(key)
+        if isinstance(nested, (dict, list, str)):
+            out.extend(_emby_stream_containers(nested, depth + 1))
+    return out
+
+
+def _stream_bool(value: Any) -> bool:
+    state = _bool_state(value)
+    return bool(state) if state is not None else False
+
+
+def _emby_track_entry(stream: Dict[str, Any]) -> Dict[str, Any]:
+    stream = stream if isinstance(stream, dict) else {}
+    tags = stream.get('tags') if isinstance(stream.get('tags'), dict) else {}
+    title = _first_text(stream.get('Title'), stream.get('title'), tags.get('title'))
+    display_title = _first_text(stream.get('DisplayTitle'), stream.get('display_title'), stream.get('displayTitle'), tags.get('DisplayTitle'))
+    display_language = _first_text(stream.get('DisplayLanguage'), stream.get('display_language'), stream.get('displayLanguage'))
+    language = _first_text(stream.get('Language'), stream.get('language'), stream.get('lang'), tags.get('language'))
+    codec = _first_text(stream.get('Codec'), stream.get('codec'), stream.get('codec_name'))
+    text_blob = ' '.join(str(x or '') for x in (title, display_title, display_language, language, codec))
+    entry = {
+        # display 只服务紧凑展示；标签提取会扫描 title/display_title/display_language 全量字段。
+        'display': display_title or display_language or title or language,
+        'display_title': display_title,
+        'title': title,
+        'display_language': display_language,
+        'language': language,
+        'codec': codec,
+        'is_default': _stream_bool(stream.get('IsDefault', stream.get('is_default', stream.get('default')))),
+        'is_forced': _stream_bool(stream.get('IsForced', stream.get('is_forced', stream.get('forced')))),
+        'is_hearing_impaired': _stream_bool(stream.get('IsHearingImpaired', stream.get('is_hearing_impaired'))),
+    }
+    if re.search(r'特效|字幕特效|特效字幕|effects?|\btx\b|styled|style', text_blob, flags=re.I):
+        entry['has_subtitle_effect'] = True
+        entry['is_effect'] = True
+    if re.search(r'双语|雙語|中英|中日|中韩|bilingual|dual\s*(?:sub|subtitle)?', text_blob, flags=re.I):
+        entry['is_bilingual'] = True
+    return {k: v for k, v in entry.items() if v not in (None, '', [], {})}
+
+
+def _emby_tracks_from_containers(*values: Any) -> Dict[str, List[Dict[str, Any]]]:
+    audio: List[Dict[str, Any]] = []
+    subtitles: List[Dict[str, Any]] = []
+    for value in values:
+        for stream in _emby_stream_containers(value):
+            typ = str(stream.get('Type') or stream.get('type') or stream.get('codec_type') or '').strip().lower()
+            if typ == 'audio':
+                audio.append(_emby_track_entry(stream))
+            elif typ == 'subtitle':
+                subtitles.append(_emby_track_entry(stream))
+    return {
+        'audio': _merge_track_values(audio),
+        'subtitle': _merge_track_values(subtitles),
+    }
+
+
 def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     """中心资源库展示用版本摘要。
 
     Rapid v2 中心源的媒体参数来自 media_signature_json；中心若同时返回 raw_summary_json/summary_json，
-    则作为兜底。前端表格只读 version_summary，避免字段散落导致整列都是“-”。
+    则作为兜底。音轨/字幕字段在不同中心端版本里可能落在 row 顶层、version_summary、
+    media_signature_json、raw_summary_json，甚至是 p115_media_analyzer 产出的 Emby MediaInfo。
+    这里必须合并并保留字幕 Title，否则 DisplayTitle 只有“Chinese Simplified (PGSSUB)”，
+    “中英双语特效简体”里的“特效”会被吃掉。
     """
     row = row or {}
-    sig = _json_dict(row.get('media_signature_json') or row.get('media_signature'))
-    raw = _json_dict(row.get('raw_summary_json') or row.get('summary_json') or row.get('version_summary'))
+    version_value = _json_any(row.get('version_summary'))
+    sig_value = _json_any(row.get('media_signature_json') or row.get('media_signature'))
+    raw_value = _json_any(row.get('raw_summary_json') or row.get('summary_json'))
+    version = version_value if isinstance(version_value, dict) else {}
+    sig = sig_value if isinstance(sig_value, dict) else {}
+    raw = raw_value if isinstance(raw_value, dict) else {}
     out = {}
     out.update(raw)
     out.update(sig)
-    resolution = _first_text(out.get('resolution'), out.get('resolution_display'), raw.get('resolution'), sig.get('resolution'))
-    effect = _first_text(out.get('effect'), out.get('effect_display'), out.get('effect_key'), raw.get('effect'), sig.get('effect_key'))
-    video_codec = _first_text(out.get('video_codec'), out.get('codec_display'), out.get('codec'), raw.get('video_codec'))
-    bit_depth = _first_text(out.get('bit_depth'), raw.get('bit_depth'), sig.get('bit_depth'))
-    fps = _first_text(out.get('fps'), out.get('frame_rate'), raw.get('fps'), raw.get('frame_rate'))
-    audio_list = out.get('audio_list') or out.get('audio_tracks') or out.get('audios') or []
-    subtitle_list = out.get('subtitle_list') or out.get('subtitle_tracks') or out.get('subtitles') or []
+    out.update(version)
+    resolution = _first_text(out.get('resolution'), out.get('resolution_display'), raw.get('resolution'), sig.get('resolution'), row.get('resolution'))
+    effect = _first_text(out.get('effect'), out.get('effect_display'), out.get('effect_key'), raw.get('effect'), sig.get('effect_key'), row.get('effect'))
+    video_codec = _first_text(out.get('video_codec'), out.get('codec_display'), out.get('codec'), raw.get('video_codec'), row.get('video_codec'), row.get('codec'))
+    bit_depth = _first_text(out.get('bit_depth'), raw.get('bit_depth'), sig.get('bit_depth'), row.get('bit_depth'))
+    fps = _first_text(out.get('fps'), out.get('frame_rate'), raw.get('fps'), raw.get('frame_rate'), row.get('fps'), row.get('frame_rate'))
+
+    emby_tracks = _emby_tracks_from_containers(version_value, sig_value, raw_value, row)
+    audio_list = _merge_track_values(
+        version.get('audio_list'), version.get('audio_tracks'), version.get('audios'), version.get('audio'),
+        sig.get('audio_list'), sig.get('audio_tracks'), sig.get('audios'), sig.get('audio'),
+        raw.get('audio_list'), raw.get('audio_tracks'), raw.get('audios'), raw.get('audio'),
+        row.get('audio_list'), row.get('audio_tracks'), row.get('audios'), row.get('audio'),
+        emby_tracks.get('audio'),
+    )
+    subtitle_list = _merge_track_values(
+        version.get('subtitle_list'), version.get('subtitle_tracks'), version.get('subtitles'), version.get('subtitle'),
+        sig.get('subtitle_list'), sig.get('subtitle_tracks'), sig.get('subtitles'), sig.get('subtitle'),
+        raw.get('subtitle_list'), raw.get('subtitle_tracks'), raw.get('subtitles'), raw.get('subtitle'),
+        row.get('subtitle_list'), row.get('subtitle_tracks'), row.get('subtitles'), row.get('subtitle'),
+        emby_tracks.get('subtitle'),
+    )
     out.update({
         'resolution': resolution,
         'effect': effect,
@@ -1340,11 +1484,10 @@ def _center_version_summary(row: Dict[str, Any]) -> Dict[str, Any]:
         'codec': video_codec,
         'bit_depth': bit_depth,
         'fps': fps,
-        'audio_list': audio_list if isinstance(audio_list, list) else ([audio_list] if audio_list else []),
-        'subtitle_list': subtitle_list if isinstance(subtitle_list, list) else ([subtitle_list] if subtitle_list else []),
+        'audio_list': audio_list,
+        'subtitle_list': subtitle_list,
     })
     return {k: v for k, v in out.items() if v not in (None, '', [], {})}
-
 
 def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
     """中心资源库列表兜底瘦身。

@@ -2349,11 +2349,91 @@ const stripTrackParams = (value) => {
 const trackRawText = (item) => {
   if (item == null) return '';
   if (typeof item === 'string') return item;
-  return item.display || item.display_title || item.title || item.name || item.label || item.language || item.lang || '';
+  return item.display
+    || item.display_title || item.DisplayTitle || item.displayTitle
+    || item.title || item.Title
+    || item.name || item.Name || item.label || item.Label
+    || item.display_language || item.DisplayLanguage || item.displayLanguage
+    || item.language || item.Language || item.lang || '';
 };
+const trackAllText = (item) => String(trackFeatureText(item) || trackRawText(item) || '').trim();
+const mergeTrackLists = (...values) => {
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    if (value == null || value === '') return;
+    if (Array.isArray(value)) {
+      value.forEach(add);
+      return;
+    }
+    const key = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(value);
+  };
+  values.forEach(add);
+  return out;
+};
+const trackFeatureText = (item, depth = 0, seen = new Set()) => {
+  if (item == null) return '';
+  if (typeof item === 'string' || typeof item === 'number') return String(item);
+  if (typeof item === 'boolean') return item ? 'true' : '';
+  if (Array.isArray(item)) return item.map(x => trackFeatureText(x, depth + 1, seen)).filter(Boolean).join(' ');
+  if (typeof item !== 'object' || depth > 3) return '';
+  if (seen.has(item)) return '';
+  seen.add(item);
+
+  // Emby/Jellyfin/Plex/中心摘要在不同版本里可能把“轨道标题”放在
+  // display/title/name/comment/raw_json/properties 等不同字段。这里用于标签提取，
+  // 必须扫完整轨道对象；compactTrackText 仍然只取 display，避免展示变乱。
+  const preferredKeys = [
+    // p115_media_analyzer 输出的是 Emby 字段：Title / DisplayTitle / DisplayLanguage / Language。
+    // “特效”在字幕 Title 里，DisplayTitle 往往只有 Chinese Simplified (PGSSUB)。
+    'display', 'display_title', 'DisplayTitle', 'displayTitle',
+    'title', 'Title', 'name', 'Name', 'label', 'Label',
+    'language_title', 'display_language', 'DisplayLanguage', 'displayLanguage', 'language', 'Language', 'lang',
+    'codec', 'Codec', 'format', 'Format', 'type', 'Type',
+    'comment', 'description', 'tag', 'tags', 'features',
+    'properties', 'raw', 'raw_json', 'extra', 'meta', 'metadata'
+  ];
+  const parts = [];
+  preferredKeys.forEach(key => {
+    if (Object.prototype.hasOwnProperty.call(item, key)) {
+      const text = trackFeatureText(item[key], depth + 1, seen);
+      if (text) parts.push(text);
+    }
+  });
+  Object.keys(item).forEach(key => {
+    if (preferredKeys.includes(key)) return;
+    const value = item[key];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || Array.isArray(value) || (value && typeof value === 'object')) {
+      const text = trackFeatureText(value, depth + 1, seen);
+      if (text) parts.push(text);
+    }
+  });
+  return parts.join(' ');
+};
+const pascalKey = (key) => String(key || '').split('_').filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+const camelKey = (key) => String(key || '').replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+const trackBoolFlag = (item, keys) => {
+  if (!item || typeof item !== 'object') return false;
+  return keys.some(key => {
+    const candidates = [key, camelKey(key), pascalKey(key), `Is${pascalKey(key).replace(/^Is/, '')}`, `Has${pascalKey(key).replace(/^Has/, '')}`];
+    return candidates.some(k => {
+      const value = item[k];
+      if (value === true || value === 1) return true;
+      if (typeof value === 'string') return /^(1|true|yes|y|on|是|有)$/i.test(value.trim());
+      return false;
+    });
+  });
+};
+const trackListHasFeature = (items, regex, flagKeys = []) => trackListToArray(items).some(item => {
+  if (trackBoolFlag(item, flagKeys)) return true;
+  return regex.test(trackFeatureText(item));
+});
 const isDefaultTrack = (item) => {
   if (item == null) return false;
-  if (typeof item === 'object' && (item.is_default === true || item.default === true || item.selected === true)) return true;
+  if (typeof item === 'object' && (item.is_default === true || item.IsDefault === true || item.default === true || item.Default === true || item.selected === true)) return true;
   return /默认|default/i.test(trackRawText(item));
 };
 const compactTrackText = (items) => {
@@ -2365,7 +2445,9 @@ const compactTrackText = (items) => {
 const fullTrackTooltipLines = (items) => {
   return trackListToArray(items)
     .map(item => {
-      let text = String(trackRawText(item) || '').trim();
+      const main = String(trackRawText(item) || '').trim();
+      const title = item && typeof item === 'object' ? String(item.title || item.Title || '').trim() : '';
+      let text = [main, title && title !== main ? title : ''].filter(Boolean).join(' · ');
       if (!text) return '';
       if (isDefaultTrack(item) && !/默认|default/i.test(text)) text = `${text}（默认）`;
       return text.replace(/\s+/g, ' ').trim();
@@ -2394,13 +2476,24 @@ const compactEffectText = (value) => {
 const centerVersionSummary = (it) => {
   const sig = it?.media_signature_json || it?.media_signature || {};
   const raw = it?.summary_json || it?.raw_summary_json || {};
-  const v = { ...(raw || {}), ...(sig || {}), ...(it?.version_summary || {}) };
-  if (!v.resolution) v.resolution = sig.resolution_display || sig.resolution || raw.resolution || '';
-  if (!v.effect) v.effect = sig.effect_display || sig.effect_key || sig.effect || raw.effect || '';
-  if (!v.video_codec && !v.codec) v.video_codec = sig.video_codec || sig.codec_display || sig.codec || raw.video_codec || raw.codec || '';
-  if (!v.fps) v.fps = sig.fps || sig.frame_rate || raw.fps || raw.frame_rate || '';
-  if (!v.audio_list) v.audio_list = sig.audio_list || sig.audio_tracks || sig.audios || raw.audio_list || raw.audio_tracks || raw.audios || [];
-  if (!v.subtitle_list) v.subtitle_list = sig.subtitle_list || sig.subtitles || sig.subtitle_tracks || raw.subtitle_list || raw.subtitles || [];
+  const version = it?.version_summary || {};
+  const v = { ...(raw || {}), ...(sig || {}), ...(version || {}) };
+  if (!v.resolution) v.resolution = sig.resolution_display || sig.resolution || raw.resolution || it?.resolution || '';
+  if (!v.effect) v.effect = sig.effect_display || sig.effect_key || sig.effect || raw.effect || it?.effect || '';
+  if (!v.video_codec && !v.codec) v.video_codec = sig.video_codec || sig.codec_display || sig.codec || raw.video_codec || raw.codec || it?.video_codec || it?.codec || '';
+  if (!v.fps) v.fps = sig.fps || sig.frame_rate || raw.fps || raw.frame_rate || it?.fps || it?.frame_rate || '';
+  v.audio_list = mergeTrackLists(
+    version.audio_list, version.audio_tracks, version.audios, version.audio,
+    sig.audio_list, sig.audio_tracks, sig.audios, sig.audio,
+    raw.audio_list, raw.audio_tracks, raw.audios, raw.audio,
+    it?.audio_list, it?.audio_tracks, it?.audios, it?.audio
+  );
+  v.subtitle_list = mergeTrackLists(
+    version.subtitle_list, version.subtitle_tracks, version.subtitles, version.subtitle,
+    sig.subtitle_list, sig.subtitle_tracks, sig.subtitles, sig.subtitle,
+    raw.subtitle_list, raw.subtitle_tracks, raw.subtitles, raw.subtitle,
+    it?.subtitle_list, it?.subtitle_tracks, it?.subtitles, it?.subtitle
+  );
   return v;
 };
 const versionAudioTracks = (it) => centerVersionSummary(it).audio_list || centerVersionSummary(it).audios || centerVersionSummary(it).audio_tracks || centerVersionSummary(it).audio || [];
@@ -2737,15 +2830,23 @@ const centerTagPush = (arr, label, type = 'default', key = '') => {
   if (arr.some(x => x.label === text)) return;
   arr.push({ key: key || text, label: text, type });
 };
-const centerTrackTextForTags = (items) => trackListToArray(items).map(item => String(trackRawText(item) || '').trim()).filter(Boolean).join(' ');
+const centerTrackTextForTags = (items) => trackListToArray(items)
+  .map(item => trackAllText(item))
+  .filter(Boolean)
+  .join(' ');
 const centerTrackFeatureTags = (row) => {
   const tags = [];
-  const audioText = centerTrackTextForTags(versionAudioTracks(row));
-  const subText = centerTrackTextForTags(versionSubtitleTracks(row));
-  if (/国语|普通话|普通話/.test(audioText)) centerTagPush(tags, '国语', 'success', 'audio-mandarin');
-  if (/中文|简中|繁中|简体|繁体|中英/.test(subText)) centerTagPush(tags, '中字', 'info', 'sub-zh');
-  if (/特效/.test(subText)) centerTagPush(tags, '特效', 'warning', 'sub-effect');
-  if (/双语|雙語/.test(subText)) centerTagPush(tags, '双语', 'info', 'sub-bilingual');
+  const audioTracks = versionAudioTracks(row);
+  const subTracks = versionSubtitleTracks(row);
+  const audioText = centerTrackTextForTags(audioTracks);
+  const subText = centerTrackTextForTags(subTracks);
+  if (/国语|普通话|普通話|mandarin|cmn/i.test(audioText)) centerTagPush(tags, '国语', 'success', 'audio-mandarin');
+  if (/中文|简中|繁中|简体|繁体|中英|chs|cht|zho|chi|chinese\s*(?:simplified|traditional)?/i.test(subText)) centerTagPush(tags, '中字', 'info', 'sub-zh');
+  if (trackListHasFeature(subTracks, /特效|特效字幕|effects?|styled|style|ass特效|字幕特效/i, [
+    'is_effect', 'has_effect', 'effect', 'special_effect', 'is_special_effect',
+    'subtitle_effect', 'has_subtitle_effect', 'is_styled', 'styled'
+  ])) centerTagPush(tags, '特效', 'warning', 'sub-effect');
+  if (/双语|雙語|中英|bilingual|dual\s*(?:audio|sub|subtitle)?/i.test(subText)) centerTagPush(tags, '双语', 'info', 'sub-bilingual');
   return tags;
 };
 const centerPrimaryVersion = (row) => {
