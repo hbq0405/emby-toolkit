@@ -605,6 +605,37 @@ def init_db():
                     )
                 """)
 
+
+                logger.trace("  ➜ 正在创建完结季 115 分享通道本地表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_completed_season_share_channels (
+                        id SERIAL PRIMARY KEY,
+                        channel_id TEXT NOT NULL UNIQUE,
+                        center_source_id TEXT NOT NULL,
+                        local_source_id INTEGER REFERENCES shared_rapid_sources(id) ON DELETE SET NULL,
+                        hub_id TEXT,
+                        manifest_hash TEXT,
+                        share_code TEXT,
+                        receive_code TEXT,
+                        share_url TEXT,
+                        share_title TEXT,
+                        root_fid TEXT,
+                        root_cid TEXT,
+                        root_name TEXT,
+                        file_count INTEGER NOT NULL DEFAULT 0,
+                        total_size BIGINT DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'creating',
+                        review_status TEXT,
+                        status_message TEXT,
+                        fail_count INTEGER NOT NULL DEFAULT 0,
+                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        last_reported_at TIMESTAMP WITH TIME ZONE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
                 # ======================================================================
                 # ★★★ 数据库平滑升级 (START) ★★★
                 # 此处代码用于新增在新版本中添加的列。
@@ -791,6 +822,10 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_sha1 ON shared_rapid_source_files(UPPER(sha1));")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_episode ON shared_rapid_source_files(tmdb_id, season_number, episode_number);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_source_episode_sha1 ON shared_rapid_source_files(local_source_id, tmdb_id, season_number, episode_number, UPPER(sha1));")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scssc_channel ON shared_completed_season_share_channels(channel_id);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scssc_center_source ON shared_completed_season_share_channels(center_source_id, status, updated_at DESC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scssc_status_check ON shared_completed_season_share_channels(status, last_checked_at NULLS FIRST, updated_at ASC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scssc_share_code ON shared_completed_season_share_channels(share_code) WHERE share_code IS NOT NULL AND share_code <> '';")
                     # 共享资源维护：非有效状态重登记、追更补齐差异扫描。
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srs_status_center_updated ON shared_rapid_sources(status, center_status, updated_at ASC, id ASC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_episode_parent_season_ep_library ON media_metadata(parent_series_tmdb_id, season_number, episode_number) WHERE item_type='Episode' AND in_library=TRUE;")

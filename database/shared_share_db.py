@@ -1697,6 +1697,188 @@ def disable_local_source(local_source_id: int, *, reason: str = '', center_respo
     )
 
 
+# ======================================================================
+# 完结季 115 分享通道本地缓存（混合模式：完结季优先 115 分享，Rapid 兜底）
+# ======================================================================
+def _completed_share_status(value: str = '') -> str:
+    text = str(value or '').strip().lower()
+    allowed = {
+        'creating', 'pending_review', 'valid', 'review_failed', 'expired',
+        'import_failed', 'disabled', 'source_unavailable', 'failed'
+    }
+    return text if text in allowed else 'creating'
+
+
+def upsert_completed_season_share_channel(data: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(data or {})
+    channel_id = str(data.get('channel_id') or '').strip()
+    center_source_id = str(data.get('center_source_id') or data.get('source_id') or '').strip()
+    if not channel_id or not center_source_id:
+        return {}
+    local_source_id = data.get('local_source_id')
+    try:
+        local_source_id = int(local_source_id) if local_source_id not in (None, '') else None
+    except Exception:
+        local_source_id = None
+    raw_json = data.get('raw_json') if isinstance(data.get('raw_json'), dict) else {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO shared_completed_season_share_channels(
+                    channel_id, center_source_id, local_source_id, hub_id, manifest_hash,
+                    share_code, receive_code, share_url, share_title, root_fid, root_cid, root_name,
+                    file_count, total_size, status, review_status, status_message, fail_count,
+                    raw_json, last_checked_at, last_reported_at, updated_at
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,
+                         CASE WHEN %s THEN NOW() ELSE NULL END,
+                         CASE WHEN %s THEN NOW() ELSE NULL END,
+                         NOW())
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    center_source_id=COALESCE(EXCLUDED.center_source_id, shared_completed_season_share_channels.center_source_id),
+                    local_source_id=COALESCE(EXCLUDED.local_source_id, shared_completed_season_share_channels.local_source_id),
+                    hub_id=COALESCE(EXCLUDED.hub_id, shared_completed_season_share_channels.hub_id),
+                    manifest_hash=COALESCE(EXCLUDED.manifest_hash, shared_completed_season_share_channels.manifest_hash),
+                    share_code=COALESCE(NULLIF(EXCLUDED.share_code, ''), shared_completed_season_share_channels.share_code),
+                    receive_code=COALESCE(NULLIF(EXCLUDED.receive_code, ''), shared_completed_season_share_channels.receive_code),
+                    share_url=COALESCE(NULLIF(EXCLUDED.share_url, ''), shared_completed_season_share_channels.share_url),
+                    share_title=COALESCE(NULLIF(EXCLUDED.share_title, ''), shared_completed_season_share_channels.share_title),
+                    root_fid=COALESCE(NULLIF(EXCLUDED.root_fid, ''), shared_completed_season_share_channels.root_fid),
+                    root_cid=COALESCE(NULLIF(EXCLUDED.root_cid, ''), shared_completed_season_share_channels.root_cid),
+                    root_name=COALESCE(NULLIF(EXCLUDED.root_name, ''), shared_completed_season_share_channels.root_name),
+                    file_count=GREATEST(COALESCE(EXCLUDED.file_count, 0), COALESCE(shared_completed_season_share_channels.file_count, 0)),
+                    total_size=GREATEST(COALESCE(EXCLUDED.total_size, 0), COALESCE(shared_completed_season_share_channels.total_size, 0)),
+                    status=EXCLUDED.status,
+                    review_status=COALESCE(NULLIF(EXCLUDED.review_status, ''), shared_completed_season_share_channels.review_status),
+                    status_message=COALESCE(NULLIF(EXCLUDED.status_message, ''), shared_completed_season_share_channels.status_message),
+                    fail_count=GREATEST(COALESCE(EXCLUDED.fail_count, 0), COALESCE(shared_completed_season_share_channels.fail_count, 0)),
+                    raw_json=CASE
+                        WHEN EXCLUDED.raw_json = '{}'::jsonb THEN shared_completed_season_share_channels.raw_json
+                        ELSE shared_completed_season_share_channels.raw_json || EXCLUDED.raw_json
+                    END,
+                    last_checked_at=CASE WHEN %s THEN NOW() ELSE shared_completed_season_share_channels.last_checked_at END,
+                    last_reported_at=CASE WHEN %s THEN NOW() ELSE shared_completed_season_share_channels.last_reported_at END,
+                    updated_at=NOW()
+                RETURNING *
+                """,
+                (
+                    channel_id, center_source_id, local_source_id,
+                    data.get('hub_id') or None, data.get('manifest_hash') or None,
+                    data.get('share_code') or '', data.get('receive_code') or '', data.get('share_url') or '', data.get('share_title') or '',
+                    data.get('root_fid') or '', data.get('root_cid') or '', data.get('root_name') or '',
+                    _safe_int(data.get('file_count'), 0), _safe_int(data.get('total_size'), 0),
+                    _completed_share_status(data.get('status') or 'creating'), data.get('review_status') or '',
+                    str(data.get('status_message') or '')[:2000], _safe_int(data.get('fail_count'), 0),
+                    _as_jsonb(raw_json), bool(data.get('checked')), bool(data.get('reported')),
+                    bool(data.get('checked')), bool(data.get('reported')),
+                ),
+            )
+            row = _row(cur.fetchone())
+            conn.commit()
+            return row or {}
+
+
+def get_completed_season_share_channel(channel_id: str) -> Dict[str, Any]:
+    channel_id = str(channel_id or '').strip()
+    if not channel_id:
+        return {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM shared_completed_season_share_channels WHERE channel_id=%s LIMIT 1", (channel_id,))
+            return _row(cur.fetchone()) or {}
+
+
+def get_completed_season_share_channel_by_source(center_source_id: str, statuses=None) -> Dict[str, Any]:
+    center_source_id = str(center_source_id or '').strip()
+    if not center_source_id:
+        return {}
+    status_list = [str(x).strip() for x in (statuses or []) if str(x).strip()]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if status_list:
+                cur.execute(
+                    """
+                    SELECT * FROM shared_completed_season_share_channels
+                    WHERE center_source_id=%s AND status=ANY(%s)
+                    ORDER BY updated_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (center_source_id, status_list),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT * FROM shared_completed_season_share_channels
+                    WHERE center_source_id=%s
+                    ORDER BY updated_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (center_source_id,),
+                )
+            return _row(cur.fetchone()) or {}
+
+
+def list_completed_season_share_channels(statuses=None, limit: int = 100, need_check: bool = False) -> List[Dict[str, Any]]:
+    status_list = [str(x).strip() for x in (statuses or []) if str(x).strip()]
+    limit = max(1, min(int(limit or 100), 1000))
+    where = []
+    args: List[Any] = []
+    if status_list:
+        where.append('status = ANY(%s)')
+        args.append(status_list)
+    if need_check:
+        where.append("share_code IS NOT NULL AND share_code <> ''")
+    where_sql = 'WHERE ' + ' AND '.join(where) if where else ''
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT * FROM shared_completed_season_share_channels
+                {where_sql}
+                ORDER BY last_checked_at ASC NULLS FIRST, updated_at ASC NULLS LAST, id ASC
+                LIMIT %s
+                """,
+                args + [limit],
+            )
+            return _rows(cur.fetchall())
+
+
+def update_completed_season_share_channel(channel_id: str, **fields) -> Dict[str, Any]:
+    channel_id = str(channel_id or '').strip()
+    if not channel_id:
+        return {}
+    allowed = {
+        'center_source_id', 'local_source_id', 'hub_id', 'manifest_hash', 'share_code', 'receive_code',
+        'share_url', 'share_title', 'root_fid', 'root_cid', 'root_name', 'file_count', 'total_size',
+        'status', 'review_status', 'status_message', 'fail_count', 'raw_json', 'last_checked_at', 'last_reported_at'
+    }
+    sets, args = [], []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        if key == 'raw_json':
+            sets.append(f"{key}=%s::jsonb")
+            args.append(_as_jsonb(value if isinstance(value, dict) else {}))
+        elif key in {'last_checked_at', 'last_reported_at'} and value == 'NOW()':
+            sets.append(f"{key}=NOW()")
+        elif key == 'status':
+            sets.append(f"{key}=%s")
+            args.append(_completed_share_status(value))
+        else:
+            sets.append(f"{key}=%s")
+            args.append(value)
+    if not sets:
+        return get_completed_season_share_channel(channel_id)
+    sets.append('updated_at=NOW()')
+    args.append(channel_id)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE shared_completed_season_share_channels SET {', '.join(sets)} WHERE channel_id=%s RETURNING *", args)
+            row = _row(cur.fetchone())
+            conn.commit()
+            return row or {}
+
+
 # 下面保留少量旧函数名为空实现，避免未改到的调用点抛 AttributeError；不会再创建 115 分享。
 def active_share_statuses(): return ['active', 'available', 'updating', 'inconsistent', 'incomplete', 'error']
 def invalid_share_statuses(): return ['inconsistent', 'error']

@@ -509,7 +509,344 @@ def _event_source_payload(event: Dict[str, Any]) -> Dict[str, Any]:
     return event
 
 
+COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_completed_season_share'
+_COMPLETED_SHARE_SYNC_LOCK = threading.Lock()
+
+
+def _completed_share_event_type(event: Dict[str, Any]) -> str:
+    payload = _event_source_payload(event)
+    return str((event or {}).get('event_type') or payload.get('event_type') or payload.get('command') or '').strip()
+
+
+def _completed_share_receive_code(channel_id: str, source_id: str = '') -> str:
+    seed = f"{channel_id or ''}:{source_id or ''}:{int(time.time() // 86400)}"
+    return hashlib.sha1(seed.encode('utf-8')).hexdigest()[:4]
+
+
+def _p115_ok(resp: Any) -> bool:
+    if not isinstance(resp, dict):
+        return False
+    state = resp.get('state')
+    if state is True or state == 1 or state == '1' or str(state).lower() == 'true':
+        return True
+    if resp.get('errno') in (0, '0') and not resp.get('error'):
+        return True
+    if resp.get('code') in (0, 200, '0', '200') and not (resp.get('error') or resp.get('error_msg') or resp.get('message')):
+        return True
+    return False
+
+
+def _p115_error(resp: Any) -> str:
+    if isinstance(resp, dict):
+        return str(resp.get('error_msg') or resp.get('error') or resp.get('message') or resp.get('msg') or resp)[:2000]
+    return str(resp)[:2000]
+
+
+def _extract_completed_share_payload(resp: Dict[str, Any], *, receive_code: str = '') -> Dict[str, Any]:
+    resp = resp if isinstance(resp, dict) else {}
+    data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
+    candidates = [data, resp]
+    share_code = ''
+    share_url = ''
+    got_receive_code = str(receive_code or '').strip()
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        share_code = share_code or str(item.get('share_code') or item.get('shareCode') or item.get('code') or '').strip()
+        share_url = share_url or str(item.get('share_url') or item.get('shareUrl') or item.get('url') or '').strip()
+        got_receive_code = got_receive_code or str(item.get('receive_code') or item.get('receiveCode') or item.get('receive_code_text') or item.get('pass_code') or '').strip()
+    if not share_url and share_code:
+        share_url = f'https://115.com/s/{share_code}'
+    return {
+        'share_code': share_code,
+        'receive_code': got_receive_code,
+        'share_url': share_url,
+        'raw_json': resp,
+    }
+
+
+def _completed_share_status_from_info(resp: Dict[str, Any]) -> Dict[str, str]:
+    text = json.dumps(resp if isinstance(resp, dict) else {'value': str(resp)}, ensure_ascii=False, default=str).lower()
+    message = _p115_error(resp)
+    if any(x in text for x in ('审核不通过', '审核失败', '违规', '违法', '禁止分享', '封禁', 'risk', 'violation')):
+        return {'status': 'review_failed', 'review_status': 'failed', 'message': message or '115 分享审核失败/违规'}
+    if any(x in text for x in ('审核中', '待审核', 'reviewing', 'pending_review')):
+        return {'status': 'pending_review', 'review_status': 'pending', 'message': message or '115 分享审核中'}
+    if any(x in text for x in ('不存在', '已取消', '已删除', '过期', '失效', 'expired', 'not found')):
+        return {'status': 'expired', 'review_status': 'expired', 'message': message or '115 分享已失效'}
+    if _p115_ok(resp):
+        return {'status': 'valid', 'review_status': 'passed', 'message': '115 分享可用'}
+    return {'status': 'failed', 'review_status': 'unknown', 'message': message or '115 分享状态未知'}
+
+
+def _completed_share_file_ids_for_local_source(local_source: Dict[str, Any]) -> List[str]:
+    local_source = dict(local_source or {})
+    root_fid = str(local_source.get('root_fid') or '').strip()
+    if root_fid:
+        return [root_fid]
+    ids: List[str] = []
+    for row in shared_share_db.list_source_files(int(local_source.get('id') or 0)) if local_source.get('id') else []:
+        fid = str(row.get('fid') or row.get('file_id') or '').strip()
+        if fid and fid not in ids:
+            ids.append(fid)
+    return ids
+
+
+def _report_completed_share_failure(client: SharedCenterClient, *, source_id: str, channel_id: str, local_source: Dict[str, Any] | None = None,
+                                    status: str = 'failed', message: str = '', raw_json: Dict[str, Any] | None = None,
+                                    event_id: str = '') -> Dict[str, Any]:
+    local_source = dict(local_source or {})
+    payload = {
+        'channel_id': channel_id,
+        'status': status,
+        'review_status': status,
+        'status_message': message[:1000] or status,
+        'root_fid': local_source.get('root_fid') or '',
+        'root_name': local_source.get('root_name') or local_source.get('title') or '',
+        'file_count': local_source.get('file_count') or 0,
+        'total_size': local_source.get('total_size') or 0,
+        'raw_json': raw_json or {},
+    }
+    try:
+        resp = client.report_completed_season_share(source_id, payload)
+        shared_share_db.upsert_completed_season_share_channel({
+            'channel_id': channel_id,
+            'center_source_id': source_id,
+            'local_source_id': local_source.get('id'),
+            'status': status,
+            'review_status': status,
+            'status_message': message,
+            'root_fid': local_source.get('root_fid') or '',
+            'root_name': local_source.get('root_name') or local_source.get('title') or '',
+            'file_count': local_source.get('file_count') or 0,
+            'total_size': local_source.get('total_size') or 0,
+            'raw_json': {'report_response': resp, 'event_id': event_id, **(raw_json or {})},
+            'reported': True,
+        })
+        return resp
+    except Exception as e:
+        shared_share_db.upsert_completed_season_share_channel({
+            'channel_id': channel_id,
+            'center_source_id': source_id,
+            'local_source_id': local_source.get('id'),
+            'status': status,
+            'status_message': f'{message}; 上报中心失败: {e}',
+            'raw_json': {'event_id': event_id, **(raw_json or {})},
+        })
+        return {'ok': False, 'error': str(e)}
+
+
+def handle_create_completed_season_share_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
+    """处理中心端 create_completed_season_share 事件：本机创建 115 分享并上报中心。"""
+    client = SharedCenterClient()
+    event_id = str((event or {}).get('event_id') or '')
+    payload = _event_source_payload(event)
+    channel_id = str(payload.get('channel_id') or (event or {}).get('source_ref_id') or '').strip()
+    source_id = str(payload.get('source_id') or payload.get('source_ref_id') or '').strip()
+    title = str(payload.get('title') or source_id or channel_id or '完结季').strip()
+
+    if not channel_id or not source_id:
+        message = '创建完结季分享事件缺少 channel_id/source_id'
+        if ack and event_id:
+            client.ack_device_events([event_id], result='failed', message=message)
+        return {'ok': False, 'event_id': event_id, 'message': message}
+
+    local_source = shared_share_db.get_local_source_by_center('completed_season', source_id) or {}
+    if not local_source:
+        message = f'本机找不到中心完结季源，无法创建分享：{source_id}'
+        report = _report_completed_share_failure(client, source_id=source_id, channel_id=channel_id, status='source_unavailable', message=message, event_id=event_id)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report}
+
+    local_status = str(local_source.get('status') or '').strip().lower()
+    if local_status in {'disabled', 'deleted', 'offline', 'raw_missing', 'dirty_raw'}:
+        message = f'本地完结季源状态不可用，无法创建分享：{local_status}'
+        report = _report_completed_share_failure(client, source_id=source_id, channel_id=channel_id, local_source=local_source, status='source_unavailable', message=message, event_id=event_id)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report}
+
+    share_ids = _completed_share_file_ids_for_local_source(local_source)
+    if not share_ids:
+        message = f'本地完结季源缺少 root_fid/fid，无法创建 115 分享：{title}'
+        report = _report_completed_share_failure(client, source_id=source_id, channel_id=channel_id, local_source=local_source, status='failed', message=message, event_id=event_id)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report}
+
+    receive_code = str(payload.get('receive_code') or '').strip() or _completed_share_receive_code(channel_id, source_id)
+    shared_share_db.upsert_completed_season_share_channel({
+        'channel_id': channel_id,
+        'center_source_id': source_id,
+        'local_source_id': local_source.get('id'),
+        'hub_id': payload.get('hub_id') or local_source.get('hub_id') or '',
+        'manifest_hash': payload.get('manifest_hash') or local_source.get('manifest_hash') or '',
+        'status': 'creating',
+        'status_message': f'正在创建 115 分享：{title}',
+        'receive_code': receive_code,
+        'root_fid': local_source.get('root_fid') or '',
+        'root_name': local_source.get('root_name') or local_source.get('title') or '',
+        'file_count': local_source.get('file_count') or payload.get('file_count') or 0,
+        'total_size': local_source.get('total_size') or payload.get('total_size') or 0,
+        'raw_json': {'event': payload, 'share_ids': share_ids},
+    })
+
+    try:
+        from handler.p115_service import P115Service
+        p115 = P115Service.get_client()
+        if not p115:
+            raise RuntimeError('115 客户端未初始化')
+        logger.info(f"  ➜ [完结季分享] 开始创建 115 分享：{title}，items={len(share_ids)}，channel={channel_id}")
+        create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
+    except Exception as e:
+        message = f'创建 115 分享异常：{e}'
+        report = _report_completed_share_failure(client, source_id=source_id, channel_id=channel_id, local_source=local_source, status='failed', message=message, raw_json={'exception': str(e)}, event_id=event_id)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report}
+
+    share_payload = _extract_completed_share_payload(create_resp, receive_code=receive_code)
+    if not _p115_ok(create_resp) or not share_payload.get('share_code'):
+        message = f"创建 115 分享失败：{_p115_error(create_resp)}"
+        report = _report_completed_share_failure(client, source_id=source_id, channel_id=channel_id, local_source=local_source, status='failed', message=message, raw_json={'create_response': create_resp}, event_id=event_id)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report, 'create_response': create_resp}
+
+    info_resp = {}
+    try:
+        info_resp = p115.share_info(share_payload.get('share_code'), receive_code=share_payload.get('receive_code') or receive_code)
+    except Exception as e:
+        info_resp = {'state': False, 'error_msg': str(e), 'stage': 'share_info_after_create'}
+    status_info = _completed_share_status_from_info(info_resp)
+    report_payload = {
+        'channel_id': channel_id,
+        'status': status_info.get('status') or 'pending_review',
+        'review_status': status_info.get('review_status') or '',
+        'status_message': status_info.get('message') or '115 分享已创建',
+        'share_code': share_payload.get('share_code') or '',
+        'receive_code': share_payload.get('receive_code') or receive_code,
+        'share_url': share_payload.get('share_url') or '',
+        'share_title': title,
+        'root_fid': local_source.get('root_fid') or '',
+        'root_name': local_source.get('root_name') or local_source.get('title') or title,
+        'file_count': local_source.get('file_count') or payload.get('file_count') or 0,
+        'total_size': local_source.get('total_size') or payload.get('total_size') or 0,
+        'raw_json': {
+            'event_id': event_id,
+            'share_ids': share_ids,
+            'create_response': create_resp,
+            'share_info_response': info_resp,
+        },
+    }
+    try:
+        report_resp = client.report_completed_season_share(source_id, report_payload)
+        reported = True
+    except Exception as e:
+        report_resp = {'ok': False, 'error': str(e)}
+        reported = False
+
+    local_saved = shared_share_db.upsert_completed_season_share_channel({
+        'channel_id': channel_id,
+        'center_source_id': source_id,
+        'local_source_id': local_source.get('id'),
+        'hub_id': payload.get('hub_id') or local_source.get('hub_id') or '',
+        'manifest_hash': payload.get('manifest_hash') or local_source.get('manifest_hash') or '',
+        'status': report_payload['status'],
+        'review_status': report_payload['review_status'],
+        'status_message': report_payload['status_message'],
+        'share_code': report_payload['share_code'],
+        'receive_code': report_payload['receive_code'],
+        'share_url': report_payload['share_url'],
+        'share_title': title,
+        'root_fid': report_payload['root_fid'],
+        'root_name': report_payload['root_name'],
+        'file_count': report_payload['file_count'],
+        'total_size': report_payload['total_size'],
+        'raw_json': {'center_report_response': report_resp},
+        'checked': True,
+        'reported': reported,
+    })
+
+    if ack and event_id:
+        client.ack_device_events([event_id], result='ok' if reported else 'failed', message=(report_payload['status_message'] or '')[:500])
+    logger.info(f"  ➜ [完结季分享] 创建分享完成：{title}，status={report_payload['status']}，channel={channel_id}")
+    return {
+        'ok': bool(reported),
+        'event_id': event_id,
+        'channel_id': channel_id,
+        'source_id': source_id,
+        'status': report_payload['status'],
+        'share_code': report_payload['share_code'],
+        'local': local_saved,
+        'report': report_resp,
+    }
+
+
+def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
+    """轻量同步本机已创建的完结季分享状态；供高频任务调用。"""
+    if not _enabled():
+        return {'ok': False, 'message': '共享资源未启用', 'checked': 0}
+    if not _COMPLETED_SHARE_SYNC_LOCK.acquire(blocking=False):
+        return {'ok': True, 'skipped': True, 'message': '已有分享状态同步正在运行', 'checked': 0}
+    try:
+        rows = shared_share_db.list_completed_season_share_channels(
+            statuses=['pending_review', 'valid', 'creating'],
+            limit=limit,
+            need_check=True,
+        )
+        if not rows:
+            return {'ok': True, 'checked': 0, 'items': []}
+        from handler.p115_service import P115Service
+        p115 = P115Service.get_client()
+        if not p115:
+            return {'ok': False, 'message': '115 客户端未初始化', 'checked': 0}
+        client = SharedCenterClient()
+        items = []
+        for row in rows:
+            channel_id = str(row.get('channel_id') or '').strip()
+            share_code = str(row.get('share_code') or '').strip()
+            receive_code = str(row.get('receive_code') or '').strip()
+            source_id = str(row.get('center_source_id') or '').strip()
+            if not channel_id or not share_code:
+                continue
+            try:
+                info_resp = p115.share_info(share_code, receive_code=receive_code)
+                status_info = _completed_share_status_from_info(info_resp)
+                status = status_info.get('status') or 'failed'
+                msg = status_info.get('message') or status
+                center_resp = client.update_completed_season_share_status(channel_id, {
+                    'status': status,
+                    'review_status': status_info.get('review_status') or '',
+                    'status_message': msg,
+                    'raw_json': {'share_info_response': info_resp},
+                })
+                saved = shared_share_db.update_completed_season_share_channel(
+                    channel_id,
+                    status=status,
+                    review_status=status_info.get('review_status') or '',
+                    status_message=msg,
+                    raw_json={'share_info_response': info_resp, 'center_status_response': center_resp},
+                    last_checked_at='NOW()',
+                    last_reported_at='NOW()',
+                )
+                items.append({'channel_id': channel_id, 'source_id': source_id, 'status': status, 'ok': True, 'local': saved})
+            except Exception as e:
+                shared_share_db.update_completed_season_share_channel(
+                    channel_id,
+                    status_message=f'同步分享状态失败: {e}',
+                    last_checked_at='NOW()',
+                )
+                items.append({'channel_id': channel_id, 'source_id': source_id, 'ok': False, 'error': str(e)})
+        return {'ok': True, 'checked': len(items), 'items': items}
+    finally:
+        _COMPLETED_SHARE_SYNC_LOCK.release()
+
+
 def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
+    if _completed_share_event_type(event) == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
+        return handle_create_completed_season_share_event(event, ack=bool(kwargs.get('ack', True)))
     source = _event_source_payload(event)
     gate = _shared_transfer_gate(source)
     if not gate.get('ok'):
@@ -4372,5 +4709,7 @@ def trigger_share_all_library_task() -> bool:
 
 
 def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: bool = True):
-    """兼容旧任务名：Rapid v2 没有 115 分享状态同步，转为共享资源维护。"""
-    return task_shared_resource_maintenance(processor=processor, maintenance_silent=maintenance_silent)
+    """高频同步完结季 115 分享通道状态，并兼容执行原共享资源维护。"""
+    share_sync = _sync_completed_season_share_channels_once(limit=50)
+    maintenance = task_shared_resource_maintenance(processor=processor, maintenance_silent=maintenance_silent)
+    return {'ok': True, 'completed_season_share_sync': share_sync, 'maintenance': maintenance}
