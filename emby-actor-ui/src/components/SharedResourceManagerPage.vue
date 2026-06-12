@@ -2737,7 +2737,18 @@ const centerTagPush = (arr, label, type = 'default', key = '') => {
   if (arr.some(x => x.label === text)) return;
   arr.push({ key: key || text, label: text, type });
 };
-const centerTrackTextForTags = (items) => trackListToArray(items).map(item => String(trackRawText(item) || '').trim()).filter(Boolean).join(' ');
+const centerTrackTextForTags = (items) => trackListToArray(items).map(item => {
+  if (typeof item === 'string') return item;
+  if (!item) return '';
+  // ★ 核心修复：将所有可能包含特征词的字段拼接起来供正则匹配，防止 display_title 截断 title
+  const parts = [
+    item.title, item.Title,
+    item.display_title, item.DisplayTitle,
+    item.name, item.Name,
+    item.language, item.Language
+  ];
+  return parts.filter(Boolean).join(' ');
+}).join(' ');
 const centerTrackFeatureTags = (row) => {
   const tags = [];
   const audioText = centerTrackTextForTags(versionAudioTracks(row));
