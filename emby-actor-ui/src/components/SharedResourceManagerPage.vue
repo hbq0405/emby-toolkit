@@ -1506,6 +1506,29 @@ const centerTypeLabel = (value) => ({
   Episode: '单集', episode: '单集', episodes: '单集', episode_file: '单集',
 }[value] || value || '-');
 const centerRowType = centerRowTypeSafe;
+const centerSeasonNumber = (row) => {
+  const raw = row?.season_number;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+};
+const centerIsSeasonLike = (row) => {
+  const label = centerTypeLabel(centerRowType(row));
+  const kind = String(row?.source_kind || row?.lazy_children_kind || '').trim().toLowerCase();
+  const type = String(row?.item_type || row?.display_type || '').trim().toLowerCase();
+  return label === '季' || kind === 'season_hub' || kind === 'completed_season' || ['season', 'pack', 'series'].includes(type);
+};
+const centerIsSpecialSeason = (row) => centerSeasonNumber(row) === 0 && centerIsSeasonLike(row);
+const appendCenterSpecialSeasonSuffix = (title) => {
+  const text = String(title || '').trim();
+  if (!text) return '特别篇';
+  if (/(特别篇|特别季|特别节目|番外|SP|Specials?|Special)$/i.test(text)) return text;
+  return `${text} 特别篇`;
+};
+const centerSeasonBaseTitle = (title, row = {}) => {
+  const text = stripCenterSeasonFromTitle(title, row);
+  return centerIsSpecialSeason(row) ? appendCenterSpecialSeasonSuffix(text) : text;
+};
 const stripCenterSeasonFromTitle = (title, row = {}) => {
   let text = String(title || '').trim();
   if (!text) return '';
@@ -1530,13 +1553,13 @@ const stripCenterSeasonFromTitle = (title, row = {}) => {
 };
 const centerTitleText = (row) => {
   const rawTitle = row?.title || row?.standard_title || row?.media_title || row?.root_name || row?.file_name || row?.tmdb_id || '';
-  return appendYear(stripCenterSeasonFromTitle(rawTitle, row), row?.release_year);
+  return appendYear(centerSeasonBaseTitle(rawTitle, row), row?.release_year);
 };
 const centerTitleNode = (row) => {
   const text = centerTitleText(row);
   return h('div', { class: 'main-title center-title-ellipsis', title: text }, text);
 };
-const centerIsOngoingHub = (row) => Boolean(row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing');
+const centerIsOngoingHub = (row) => Boolean(!centerIsSpecialSeason(row) && (row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing'));
 const centerStatusValue = (row) => String(row?.status || '').trim().toLowerCase();
 const centerIsCompletedPack = (row) => Boolean(row?.source_kind === 'completed_season');
 const centerIsCompletedCertifiedSource = (row) => Boolean(row?.source_kind === 'completed_season' && centerStatusValue(row) === 'available');
@@ -1550,13 +1573,15 @@ const centerProgressText = (row) => {
 const centerSeasonText = (row) => {
   const displayType = centerRowType(row);
   const label = centerTypeLabel(displayType);
-  const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
+  const seasonNo = centerSeasonNumber(row);
+  const s = seasonNo > 0 ? `S${String(seasonNo).padStart(2, '0')}` : '';
   const e = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
 
   if (label === '电影') return '电影';
 
   if (label === '季') {
     const progress = centerProgressText(row);
+    if (centerIsSpecialSeason(row)) return ['特别篇', progress].filter(Boolean).join(' · ') || '特别篇';
     return [s, progress].filter(Boolean).join(' · ') || '-';
   }
 
@@ -2472,7 +2497,7 @@ const centerStripYear = (text) => String(text || '').replace(/\s*[（(]\s*(?:19|
 const centerBaseTitle = (row) => {
   const meta = centerTmdbMeta(row);
   const rawTitle = row?.display_title || meta.display_title || row?.series_title || meta.series_title || row?.title || row?.standard_title || row?.media_title || row?.root_name || row?.file_name || row?.tmdb_id || '';
-  return centerStripYear(stripCenterSeasonFromTitle(rawTitle, row));
+  return centerStripYear(centerSeasonBaseTitle(rawTitle, row));
 };
 const centerDisplayYear = (row) => centerTmdbMeta(row).year || row?.release_year || '';
 const centerDisplayTitle = (row) => {
@@ -2697,9 +2722,10 @@ const centerRibbonClass = (row) => {
 const centerCardMetaText = (row) => {
   const typeLabel = centerTypeLabel(centerRowType(row));
   const parts = [typeLabel];
-  const season = Number(row?.season_number || 0);
+  const season = centerSeasonNumber(row);
   const episode = Number(row?.episode_number || 0);
-  if (typeLabel === '季' && season > 0) parts.push(`S${String(season).padStart(2, '0')}`);
+  if (typeLabel === '季' && centerIsSpecialSeason(row)) parts.push('特别篇');
+  else if (typeLabel === '季' && season > 0) parts.push(`S${String(season).padStart(2, '0')}`);
   if (typeLabel === '单集' && (season || episode)) parts.push(`${season ? `S${String(season).padStart(2, '0')}` : ''}${episode ? `E${String(episode).padStart(2, '0')}` : ''}`);
   const tmdb = tmdbIdForRow(row);
   if (tmdb) parts.push(`TMDb ${tmdb}`);

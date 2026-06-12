@@ -296,8 +296,11 @@ def _lookup_local_season_meta(tmdb_id: str, season_number) -> Dict[str, Any]:
     media_metadata.total_episodes，追剧状态只看 watching_status。
     """
     tmdb_id = str(tmdb_id or '').strip()
-    season_no = _safe_int(season_number, 0)
-    if not tmdb_id or season_no <= 0:
+    if season_number in (None, ''):
+        return {}
+    season_no = _safe_int(season_number, -1)
+    # season_number=0 是 TMDb 特别篇，不能按缺失季号跳过。
+    if not tmdb_id or season_no < 0:
         return {}
     try:
         from database.connection import get_db_connection
@@ -334,8 +337,9 @@ def _batch_lookup_local_season_meta(rows: List[Dict[str, Any]]) -> Dict[tuple, D
         source_kind = str(value.get('source_kind') or '').strip().lower()
         if item_type in ('season', 'pack') or source_kind in ('season_hub', 'completed_season'):
             tmdb_id = str(value.get('tmdb_id') or '').strip()
-            season_no = _safe_int(value.get('season_number'), 0)
-            if tmdb_id and season_no > 0 and (tmdb_id, season_no) not in pairs:
+            raw_season = value.get('season_number')
+            season_no = _safe_int(raw_season, -1)
+            if tmdb_id and raw_season not in (None, '') and season_no >= 0 and (tmdb_id, season_no) not in pairs:
                 pairs.append((tmdb_id, season_no))
         for key in ('versions', 'children', 'pack_items'):
             children = value.get(key)
@@ -389,11 +393,16 @@ def _apply_local_season_meta(row: Dict[str, Any], meta_map: Dict[tuple, Dict[str
     if item_type not in ('season', 'pack') and source_kind not in ('season_hub', 'completed_season'):
         return row
     tmdb_id = str(row.get('tmdb_id') or '').strip()
-    season_no = _safe_int(row.get('season_number'), 0)
+    raw_season = row.get('season_number')
+    if raw_season in (None, ''):
+        return row
+    season_no = _safe_int(raw_season, -1)
+    if season_no < 0:
+        return row
     if meta_map is not None:
         meta = meta_map.get((tmdb_id, season_no)) or {}
     else:
-        meta = _lookup_local_season_meta(row.get('tmdb_id'), row.get('season_number'))
+        meta = _lookup_local_season_meta(row.get('tmdb_id'), raw_season)
     if not meta:
         return row
     total = _safe_int(meta.get('total_episodes'), 0)
