@@ -1455,16 +1455,24 @@ class WatchlistProcessor:
             return None
 
         seasons = latest_series_data.get('seasons', [])
-        valid_seasons = sorted(
-            [s for s in seasons if s.get('season_number', 0) > 0],
-            key=lambda x: x['season_number'],
-        )
-        if not valid_seasons:
-            _mark_gate(reason='no_valid_season')
-            logger.debug(f"  ➜ [完结校验] 《{series_name}》未找到有效季信息，跳过一致性校验。")
+        
+        # 1. 获取本地已入库的最大季号作为校验目标
+        valid_local_seasons = [s for s in emby_seasons.keys() if s > 0]
+        if not valid_local_seasons:
+            _mark_gate(reason='no_local_season')
+            logger.debug(f"  ➜ [完结校验跳过] 《{series_name}》本地无任何有效季文件，跳过一致性校验。")
+            return None
+            
+        target_local_s_num = max(valid_local_seasons)
+
+        # 2. 从 TMDb 数据中提取该目标季的总集数信息
+        target_season = next((s for s in seasons if s.get('season_number') == target_local_s_num), None)
+        
+        if not target_season:
+            _mark_gate(reason='invalid_final_season')
+            logger.debug(f"  ➜ [完结校验跳过] 《{series_name}》在 TMDb 中未找到对应的 S{target_local_s_num} 信息，跳过一致性校验。")
             return None
 
-        target_season = valid_seasons[-1]
         last_s_num = target_season.get('season_number')
         last_ep_count = target_season.get('episode_count', 0) or 0
         if not last_s_num:
