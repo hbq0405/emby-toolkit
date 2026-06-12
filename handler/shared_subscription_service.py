@@ -962,6 +962,73 @@ def _block_clean_version_transfer_enabled() -> bool:
         return False
 
 
+def _episode_transfer_disabled_enabled() -> bool:
+    """读取“禁用单集共享秒传”开关。
+
+    优先使用 shared_resource_config，兼容后续如果把同名 key 放进 APP_CONFIG。
+    启用后只跳过 episode / season_hub 这类按集消费的共享源，
+    不影响 movie 和 completed_season 完结季包。
+    """
+    key = 'p115_shared_disable_episode_transfer'
+    try:
+        shared_cfg = settings_db.get_shared_resource_config() or {}
+        if key in shared_cfg:
+            return _boolish_local(shared_cfg.get(key), False)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 读取单集秒传禁用开关失败，降级 APP_CONFIG：{e}")
+    return _boolish_local(_cfg('CONFIG_OPTION_115_SHARED_DISABLE_EPISODE_TRANSFER', key, False), False)
+
+
+def _episode_transfer_disabled_guard(source_kind: str, source_id: str = '', payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """启用 p115_shared_disable_episode_transfer 时，跳过单集/连载集消费。
+
+    season_hub 是公共连载季壳，但实际消费的是 episode 源；因此也归为
+    “单集秒传”并跳过。completed_season 是整季收藏包，不在此处拦截。
+    """
+    if not _episode_transfer_disabled_enabled():
+        return {'blocked': False}
+    payload = payload if isinstance(payload, dict) else {}
+    normalized_kind = _normalize_source_kind(source_kind)
+    if normalized_kind == 'completed_season' and payload.get('hub_id') and not payload.get('source_id'):
+        normalized_kind = 'season_hub'
+    if not normalized_kind and payload.get('hub_id'):
+        normalized_kind = 'season_hub'
+    if normalized_kind not in ('episode', 'season_hub'):
+        return {'blocked': False, 'source_kind': normalized_kind}
+    sid = str(source_id or payload.get('source_id') or payload.get('source_ref_id') or payload.get('hub_id') or payload.get('id') or '').strip()
+    title = str(payload.get('title') or payload.get('name') or payload.get('file_name') or sid or '').strip()
+    message = f"已按配置 p115_shared_disable_episode_transfer 跳过单集共享秒传：{title or sid or normalized_kind}"
+    return {
+        'blocked': True,
+        'source_kind': normalized_kind,
+        'source_id': sid,
+        'message': message,
+    }
+
+
+def _event_episode_transfer_disabled_guard(event: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    event_kind = _normalize_source_kind(
+        (event or {}).get('source_kind')
+        or payload.get('source_kind')
+        or payload.get('kind')
+        or payload.get('item_type')
+        or payload.get('display_type')
+        or ''
+    )
+    if not event_kind and (payload.get('hub_id') or payload.get('is_season_hub')):
+        event_kind = 'season_hub'
+    event_id = str(
+        (event or {}).get('source_ref_id')
+        or payload.get('source_id')
+        or payload.get('source_ref_id')
+        or payload.get('hub_id')
+        or payload.get('id')
+        or ''
+    ).strip()
+    return _episode_transfer_disabled_guard(event_kind, event_id, payload)
+
+
 def _center_clean_version_flagged(source_kind: str, payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
     """消费端只信中心端标签，不再根据 RAW/TMDb 现场识别纯净版。"""
     if str(source_kind or '').strip() != 'completed_season':
@@ -2335,7 +2402,52 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     # 消费端再兜底排除本机共享源；即使手动中心资源库/批量探测返回了 is_mine，
     # 也不能秒传自己的资源形成回旋镖。
 
+    episode_disabled = _event_episode_transfer_disabled_guard(event, payload)
+    if episode_disabled.get('blocked'):
+        message = episode_disabled.get('message') or '已按配置跳过单集共享秒传'
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='ok', message=message[:500])
+            except Exception:
+                pass
+        logger.info(f"  ➜ [共享资源] {message}")
+        return {
+            'ok': False,
+            'skipped': True,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': episode_disabled.get('source_kind') or '',
+            'source_id': episode_disabled.get('source_id') or '',
+            'success_count': 0,
+            'total': 0,
+            'errors': [],
+            'skip_reason': 'episode_transfer_disabled',
+            'episode_transfer_filter': {'enabled': True, **episode_disabled},
+        }
+
     source_kind, source_id, files = _event_sources(event, client)
+    episode_disabled = _episode_transfer_disabled_guard(source_kind, source_id, payload)
+    if episode_disabled.get('blocked'):
+        message = episode_disabled.get('message') or '已按配置跳过单集共享秒传'
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='ok', message=message[:500])
+            except Exception:
+                pass
+        logger.info(f"  ➜ [共享资源] {message}")
+        return {
+            'ok': False,
+            'skipped': True,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': episode_disabled.get('source_kind') or source_kind,
+            'source_id': episode_disabled.get('source_id') or source_id,
+            'success_count': 0,
+            'total': 0,
+            'errors': [],
+            'skip_reason': 'episode_transfer_disabled',
+            'episode_transfer_filter': {'enabled': True, **episode_disabled},
+        }
     if not source_kind or not source_id:
         if ack and event_id:
             client.ack_device_events([event_id], result='failed', message='事件缺少 source_kind/source_id')
