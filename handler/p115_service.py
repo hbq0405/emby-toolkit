@@ -7363,6 +7363,29 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             # -----------------------------------------------------------
             if fids_to_delete:
                 logger.warning(f"  ➜ [版本控制] 正在删除 {len(fids_to_delete)} 个被替换的旧版本文件...")
+
+                # === 共享资源主动下架：洗版窗口期内先通知中心端禁用旧源 ===
+                # 维护任务会兜底清理“本地已换版/删除”的共享源，但维护窗口内中心仍可能
+                # 派发 holder 签名任务。这里在物理删除旧 115 文件前精准下架，避免旧源
+                # 已删除后继续参与签名导致贡献点被平白扣除。
+                try:
+                    from tasks import shared_resource_tasks
+                    disable_res = shared_resource_tasks.disable_shared_sources_for_deleted_fids(
+                        list(fids_to_delete),
+                        reason='washing_replaced_old_version',
+                        message='local file replaced by washing; disable old shared source before deleting old version',
+                    )
+                    if disable_res.get('matched'):
+                        logger.info(
+                            "  ➜ [版本控制] 洗版旧共享源主动下架完成：匹配 %s，成功 %s，失败 %s",
+                            disable_res.get('matched', 0),
+                            disable_res.get('disabled', 0),
+                            disable_res.get('failed', 0),
+                        )
+                except Exception as e:
+                    # 下架失败不能阻塞洗版删除；失败源会保留本地 active/reported 锚点，
+                    # 后续共享资源维护任务会继续尝试中心下架。
+                    logger.warning(f"  ➜ [版本控制] 洗版旧共享源主动下架异常，继续删除旧版并等待维护任务兜底: {e}")
                 
                 # === 本地擦屁股逻辑 ===
                 local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)

@@ -4539,6 +4539,172 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
         'items': items[:50],
     }
 
+def disable_shared_sources_for_deleted_fids(
+    fids: List[Any],
+    *,
+    reason: str = 'washing_replaced_old_version',
+    message: str = '',
+) -> Dict[str, Any]:
+    """洗版删除旧版 115 文件前，主动把相关 Rapid 共享源从中心下架。
+
+    维护任务里的离线清理是兜底扫描，存在时间窗口；洗版替换旧版时已明确知道
+    将要删除哪些 115 fid，因此这里同步做一次精准下架，避免中心在维护窗口期继续
+    派发 holder 签名任务，导致源端因为旧文件已删除而白白扣贡献点。
+
+    策略与维护任务保持一致：
+    - 中心下架成功：本地源标记 disabled，不再参与重登/签名；
+    - 中心下架失败：只写 last_error，保留 active/reported 锚点，交给后续维护任务重试；
+    - 尚未上报中心的本地源：直接本地 disabled。
+    """
+    fid_list: List[str] = []
+    seen = set()
+    for value in fids or []:
+        text = str(value or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        fid_list.append(text)
+
+    if not fid_list:
+        return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0, 'items': []}
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        s.*,
+                        ARRAY_REMOVE(ARRAY_AGG(DISTINCT f.fid) FILTER (WHERE f.fid = ANY(%s)), NULL) AS matched_file_fids
+                    FROM shared_rapid_sources s
+                    LEFT JOIN shared_rapid_source_files f
+                      ON f.local_source_id = s.id
+                    WHERE COALESCE(s.status, '') NOT IN ('disabled', 'cancelled', 'canceled', 'deleted')
+                      AND COALESCE(s.center_status, '') <> 'disabled'
+                      AND (
+                            COALESCE(s.root_fid, '') = ANY(%s)
+                         OR COALESCE(f.fid, '') = ANY(%s)
+                      )
+                    GROUP BY s.id
+                    ORDER BY s.id ASC
+                    """,
+                    (fid_list, fid_list, fid_list),
+                )
+                rows = [dict(r) for r in (cur.fetchall() or [])]
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 洗版下架旧共享源：查询待下架源失败: fids={len(fid_list)}, err={e}")
+        return {'ok': False, 'matched': 0, 'disabled': 0, 'failed': 1, 'error': str(e), 'items': []}
+
+    if not rows:
+        return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0, 'items': []}
+
+    reason_text = str(reason or 'washing_replaced_old_version').strip()
+    center_message = str(message or '').strip() or f'local file deleted by washing: {reason_text}'
+    client = None
+    disabled = 0
+    failed = 0
+    items: List[Dict[str, Any]] = []
+
+    for row in rows:
+        local_id = int(row.get('id') or 0)
+        source_kind = str(row.get('source_kind') or '').strip()
+        center_source_id = str(row.get('center_source_id') or '').strip()
+        title = str(row.get('title') or row.get('file_name') or row.get('tmdb_id') or local_id)
+        matched_file_fids = [str(x) for x in (row.get('matched_file_fids') or []) if str(x or '').strip()]
+        center_resp: Dict[str, Any] = {}
+
+        if center_source_id:
+            try:
+                if not _enabled():
+                    raise RuntimeError('共享资源中心未启用，无法主动下架中心源')
+                if client is None:
+                    client = SharedCenterClient()
+                if getattr(client, 'ready', True) is False:
+                    raise RuntimeError('共享中心未配置，无法主动下架中心源')
+                center_resp = client.disable_source(source_kind, center_source_id, message=center_message) or {}
+                if center_resp.get('ok') is False:
+                    raise RuntimeError(center_resp.get('message') or center_resp.get('error') or center_resp)
+            except Exception as e:
+                failed += 1
+                err = f'洗版删除旧版前中心下架失败: {e}'
+                try:
+                    shared_share_db.update_local_source(local_id, last_error=err)
+                except Exception:
+                    pass
+                logger.warning(
+                    "  ➜ [共享资源] 洗版旧源中心下架失败，保留本地 active 等维护任务重试: "
+                    "id=%s, kind=%s, center=%s, title=%s, matched_fids=%s, err=%s",
+                    local_id,
+                    source_kind,
+                    center_source_id,
+                    title,
+                    len(matched_file_fids) or ('root' if str(row.get('root_fid') or '') in fid_list else 0),
+                    e,
+                )
+                items.append({
+                    'id': local_id,
+                    'source_kind': source_kind,
+                    'center_source_id': center_source_id,
+                    'title': title,
+                    'ok': False,
+                    'error': str(e),
+                })
+                continue
+
+        try:
+            saved = shared_share_db.disable_local_source(
+                local_id,
+                reason=reason_text,
+                center_response=center_resp,
+                source='washing_delete_old_version',
+            )
+            disabled += 1
+            item = {
+                'id': local_id,
+                'source_kind': source_kind,
+                'center_source_id': center_source_id,
+                'title': title,
+                'ok': True,
+                'matched_file_fids': matched_file_fids,
+                'root_fid_matched': str(row.get('root_fid') or '') in fid_list,
+            }
+            items.append(item)
+            logger.info(
+                "  ➜ [共享资源] 洗版删除旧版前已下架旧共享源: id=%s, kind=%s, center=%s, title=%s, matched_files=%s",
+                local_id,
+                source_kind,
+                center_source_id or '-',
+                title,
+                len(matched_file_fids) or ('root' if item['root_fid_matched'] else 0),
+            )
+        except Exception as e:
+            failed += 1
+            logger.warning(
+                "  ➜ [共享资源] 洗版旧源本地禁用失败: id=%s, kind=%s, center=%s, title=%s, err=%s",
+                local_id,
+                source_kind,
+                center_source_id or '-',
+                title,
+                e,
+            )
+            items.append({
+                'id': local_id,
+                'source_kind': source_kind,
+                'center_source_id': center_source_id,
+                'title': title,
+                'ok': False,
+                'error': str(e),
+            })
+
+    return {
+        'ok': failed == 0,
+        'matched': len(rows),
+        'disabled': disabled,
+        'failed': failed,
+        'items': items[:50],
+    }
+
+
 def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
     """维护任务里的轻量离线清理。
 

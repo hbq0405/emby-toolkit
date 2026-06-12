@@ -1691,13 +1691,19 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
             )
             return _rows(cur.fetchall())
 
-def disable_local_source(local_source_id: int, *, reason: str = '', center_response: Dict[str, Any] = None) -> Dict[str, Any]:
+def disable_local_source(
+    local_source_id: int,
+    *,
+    reason: str = '',
+    center_response: Dict[str, Any] = None,
+    source: str = 'local_maintenance',
+) -> Dict[str, Any]:
     """把本地 Rapid 源标记为 disabled，保留原 raw_json，并追加停用原因。"""
-    source = get_local_source(local_source_id) or {}
-    raw = source.get('raw_json') if isinstance(source.get('raw_json'), dict) else {}
+    source_row = get_local_source(local_source_id) or {}
+    raw = source_row.get('raw_json') if isinstance(source_row.get('raw_json'), dict) else {}
     raw = dict(raw or {})
     raw['disabled_reason'] = reason or 'disabled'
-    raw['disabled_at_source'] = 'local_maintenance'
+    raw['disabled_at_source'] = str(source or 'local_maintenance')
     if center_response is not None:
         raw['center_disable_response'] = center_response
     return update_local_source(
