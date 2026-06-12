@@ -83,7 +83,7 @@
           <n-tab-pane name="center" tab="中心资源库">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
               这里展示共享中心已收录的资源版本。
-“秒传”会把资源秒传到你的 115 网盘。
+有可用 115 分享通道的完结季会显示“转存”；没有可用分享时仍显示“秒传”并走 Rapid 兜底。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="resetCenterSources()">
@@ -376,7 +376,7 @@
                   :loading="importingMap[version.source_id] === 'permanent'"
                   :disabled="isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
                   @click="importCenterSource(version, 'permanent')"
-                >秒传</n-button>
+                >{{ centerTransferActionText(version) }}</n-button>
               </div>
             </div>
           </div>
