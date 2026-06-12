@@ -901,10 +901,19 @@ def api_cancel_completed_season_share_channel(source_id: int):
         last_checked_at='NOW()',
         last_reported_at='NOW()',
     )
+    local_deleted = {}
+    center_ok = not (isinstance(center_resp, dict) and center_resp.get('ok') is False)
+    if center_ok:
+        # 分享已取消/删除且中心已收到终态后，直接删除本地 channel 缓存。
+        # 否则同步任务会把 disabled 记录反复捞出来，继续调 115 API 删除同一个 share_code。
+        local_deleted = shared_share_db.delete_completed_season_share_channel(channel.get('channel_id'))
+        saved = local_deleted or saved
+
     return jsonify({
         'success': True,
-        'message': '已删除完结季 115 分享记录',
-        'item': _local_completed_share_public(saved),
+        'message': '已删除完结季 115 分享记录' + ('' if center_ok else '；中心状态上报失败，已保留本地记录等待下轮同步'),
+        'item': {} if local_deleted else _local_completed_share_public(saved),
+        'deleted_local_channel': bool(local_deleted),
         'center': center_resp,
         'p115': p115_resp,
     })

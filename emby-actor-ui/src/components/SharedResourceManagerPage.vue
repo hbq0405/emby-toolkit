@@ -216,21 +216,21 @@
           <n-form-item label="设备 Token">
             <n-input v-model:value="sharedConfigForm.p115_shared_device_token" type="password" show-password-on="click" placeholder="注册设备后自动写入，也可手动粘贴" />
           </n-form-item>
-          <n-form-item label="共享池单集秒传">
+          <n-form-item label="禁止单集秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_disable_episode_transfer">
               <template #checked>不秒传单集</template>
               <template #unchecked>允许秒传</template>
             </n-switch>
             <template #feedback>仅影响共享池中心源消费；开启后会过滤 `Episode` 单集资源，电影和季包不受影响。</template>
           </n-form-item>
-          <n-form-item label="共享池纯净版秒传">
+          <n-form-item label="禁止纯净版秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_block_clean_version_transfer">
               <template #checked>不秒传纯净版</template>
               <template #unchecked>允许秒传</template>
             </n-switch>
             <template #feedback>仅检测季包资源：普通剧多数集实际时长比 TMDb 官方时长短约 3 分钟会识别为纯净版；短剧片头更短，阈值改为约 1 分钟。自动/手动秒传都会按该开关拦截。</template>
           </n-form-item>
-          <n-form-item label="共享池短剧秒传">
+          <n-form-item label="禁止短剧秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_block_short_drama_transfer">
               <template #checked>不秒传短剧</template>
               <template #unchecked>允许秒传</template>

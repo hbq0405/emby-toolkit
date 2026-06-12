@@ -990,13 +990,20 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                         last_checked_at='NOW()',
                         last_reported_at='NOW()',
                     )
+                    local_deleted = {}
+                    center_ok = not (isinstance(center_resp, dict) and center_resp.get('ok') is False)
+                    if center_ok and delete_resp.get('state') is not False:
+                        # disabled 是本地已取消的终态；中心也收到终态后，删除本地 channel 缓存，
+                        # 防止每轮同步继续拿同一 share_code 调 115 API 删除。
+                        local_deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
                     items.append({
                         'channel_id': channel_id,
                         'source_id': source_id,
                         'status': 'disabled',
                         'ok': True,
                         'cleanup_deleted': bool(delete_resp.get('deleted')),
-                        'local': saved,
+                        'deleted_local_channel': bool(local_deleted),
+                        'local': local_deleted or saved,
                     })
                     continue
 
@@ -1049,6 +1056,7 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
 
                 status = status_info.get('status') or 'failed'
                 msg = status_info.get('message') or status
+                delete_resp = {}
                 # 115 Web 列表显示已取消/失效/违规时，顺手删除分享记录，
                 # 避免链接分享页面长期堆一堆“已取消”的垃圾。只处理 ETK 本地 channel 表里的 share_code。
                 if status in {'expired', 'review_failed'}:
@@ -1074,7 +1082,19 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                     last_checked_at='NOW()',
                     last_reported_at='NOW()',
                 )
-                items.append({'channel_id': channel_id, 'source_id': source_id, 'status': status, 'ok': True, 'local': saved})
+                local_deleted = {}
+                center_ok = not (isinstance(center_resp, dict) and center_resp.get('ok') is False)
+                if status in {'expired', 'review_failed'} and center_ok and delete_resp.get('state') is not False:
+                    # 失效/违规也是分享通道终态。中心已同步后删除本地缓存，避免下轮继续打 115 API。
+                    local_deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
+                items.append({
+                    'channel_id': channel_id,
+                    'source_id': source_id,
+                    'status': status,
+                    'ok': True,
+                    'deleted_local_channel': bool(local_deleted),
+                    'local': local_deleted or saved,
+                })
             except Exception as e:
                 shared_share_db.update_completed_season_share_channel(
                     channel_id,

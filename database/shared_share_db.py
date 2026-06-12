@@ -1879,6 +1879,34 @@ def list_completed_season_share_channels(statuses=None, limit: int = 100, need_c
             return _rows(cur.fetchall())
 
 
+
+def delete_completed_season_share_channel(channel_id: str) -> Dict[str, Any]:
+    """删除本地完结季 115 分享通道记录。
+
+    用于用户手动取消分享、115 后台已失效/违规等终态场景。
+    删除这里的本地 channel 缓存后，分享状态同步任务不会再反复拿同一个
+    share_code 调 115 API 做删除/取消。中心端状态更新应由调用方在删除前完成。
+    """
+    channel_id = str(channel_id or '').strip()
+    if not channel_id:
+        return {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM shared_completed_season_share_channels
+                WHERE channel_id=%s
+                RETURNING *
+                """,
+                (channel_id,),
+            )
+            row = _row(cur.fetchone())
+            conn.commit()
+            if row:
+                row['_deleted_channels'] = 1
+            return row or {}
+
+
 def update_completed_season_share_channel(channel_id: str, **fields) -> Dict[str, Any]:
     channel_id = str(channel_id or '').strip()
     if not channel_id:
