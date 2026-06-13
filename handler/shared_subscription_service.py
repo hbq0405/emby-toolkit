@@ -1113,7 +1113,7 @@ def _episode_transfer_disabled_guard(source_kind: str, source_id: str = '', payl
         return {'blocked': False, 'source_kind': normalized_kind}
     sid = str(source_id or payload.get('source_id') or payload.get('source_ref_id') or payload.get('hub_id') or payload.get('id') or '').strip()
     title = str(payload.get('title') or payload.get('name') or payload.get('file_name') or sid or '').strip()
-    message = f"已按配置 p115_shared_disable_episode_transfer 跳过单集共享秒传：{title or sid or normalized_kind}"
+    message = f"跳过单集秒传：{title or sid or normalized_kind}"
     return {
         'blocked': True,
         'source_kind': normalized_kind,
@@ -2520,7 +2520,7 @@ def _handle_pro_quota_auth_event(client: SharedCenterClient, event: Dict[str, An
                 client.ack_device_events([event_id], result='ok', message=message[:500])
             except Exception:
                 pass
-        logger.info(f"  ➜ [共享资源] {message}")
+        logger.debug(f"  ➜ [共享资源] {message}")
         return {'ok': True, 'event_id': event_id, 'event_type': 'pro_quota_auth_check', 'quota': quota, 'message': message}
     except Exception as e:
         msg = f"Pro额度认证上报失败：{e}"
@@ -2545,7 +2545,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
 
     episode_disabled = _event_episode_transfer_disabled_guard(event, payload)
     if episode_disabled.get('blocked'):
-        message = episode_disabled.get('message') or '已按配置跳过单集共享秒传'
+        message = episode_disabled.get('message') or '已按配置跳过单集秒传'
         if ack and event_id:
             try:
                 client.ack_device_events([event_id], result='ok', message=message[:500])
@@ -2569,7 +2569,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     source_kind, source_id, files = _event_sources(event, client)
     episode_disabled = _episode_transfer_disabled_guard(source_kind, source_id, payload)
     if episode_disabled.get('blocked'):
-        message = episode_disabled.get('message') or '已按配置跳过单集共享秒传'
+        message = episode_disabled.get('message') or '已按配置跳过单集秒传'
         if ack and event_id:
             try:
                 client.ack_device_events([event_id], result='ok', message=message[:500])
