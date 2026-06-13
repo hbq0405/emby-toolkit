@@ -353,7 +353,7 @@
                   </div>
                 </div>
               </div>
-              <div v-if="centerDetailSeasons.length > 1" class="detail-season-tabs">
+              <div v-if="centerShouldShowDetailSeasonTabs(activeCenterDetailRow)" class="detail-season-tabs">
                 <n-button
                   v-for="season in centerDetailSeasons"
                   :key="centerSeasonTabKey(season)"
@@ -2683,13 +2683,46 @@ const centerPosterWallPrimaryTitle = (row) => {
   }
   return base;
 };
-const centerSeasonCount = (row) => Number(row?.season_count || row?.number_of_seasons || (Array.isArray(row?.seasons) ? row.seasons.length : 0) || 0);
+const centerAvailableSeasonNumbers = (row) => {
+  const nums = [];
+  const push = (value) => {
+    const n = centerSeasonTabNumber(value);
+    if (n !== null && !nums.includes(n)) nums.push(n);
+  };
+  if (Array.isArray(row?.available_season_numbers)) row.available_season_numbers.forEach(push);
+  if (Array.isArray(row?.season_numbers)) row.season_numbers.forEach(push);
+  if (Array.isArray(row?.seasons)) row.seasons.forEach(push);
+  const direct = centerSeasonNumber(row);
+  if (!nums.length && direct !== null) push(direct);
+  return nums.sort((a, b) => (a === 0 ? -1 : a) - (b === 0 ? -1 : b));
+};
+const centerSingleSeasonNumber = (row) => {
+  const nums = centerAvailableSeasonNumbers(row);
+  return nums.length === 1 ? nums[0] : null;
+};
+const centerSingleSeasonLabel = (row) => {
+  const n = centerSingleSeasonNumber(row);
+  if (n === null || n === 1) return '';
+  return n === 0 ? '特别篇' : `第 ${n} 季`;
+};
+const centerShouldShowDetailSeasonTabs = (row) => {
+  const nums = centerAvailableSeasonNumbers(row);
+  // 只有“唯一一季且是第一季”才隐藏；只有特别篇或只有第 2/3 季也要显示出来。
+  return !(nums.length === 1 && nums[0] === 1) && nums.length > 0;
+};
+const centerSeasonCount = (row) => {
+  const explicit = Number(row?.season_count || row?.number_of_seasons || 0);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return centerAvailableSeasonNumbers(row).length;
+};
 const centerPosterWallYear = (row) => {
   const year = centerDisplayYear(row) || '';
   const seasonCount = centerIsSeriesGroup(row) ? centerSeasonCount(row) : 0;
+  const singleSeasonLabel = centerIsSeriesGroup(row) ? centerSingleSeasonLabel(row) : '';
   const parts = [];
   if (year) parts.push(year);
   if (seasonCount > 1) parts.push(`共 ${seasonCount} 季`);
+  else if (singleSeasonLabel) parts.push(singleSeasonLabel);
   return parts.join(' · ');
 };
 const centerPosterWallFullTitle = (row) => {
@@ -2793,7 +2826,9 @@ const centerCardMetaText = (row) => {
   const episode = Number(row?.episode_number || 0);
   if (typeLabel === '剧集') {
     const seasonCount = centerSeasonCount(row);
+    const singleSeasonLabel = centerSingleSeasonLabel(row);
     if (seasonCount > 1) parts.push(`共 ${seasonCount} 季`);
+    else if (singleSeasonLabel) parts.push(singleSeasonLabel);
   } else if (typeLabel === '季' && centerIsSpecialSeason(row)) {
     parts.push('特别篇');
   } else if (typeLabel === '季' && season > 0) {
@@ -2857,7 +2892,9 @@ const centerCardTags = (row) => {
   const progress = centerProgressText(row);
   if (progress) centerTagPush(tags, progress, 'info', 'progress');
   const seasonCount = centerIsSeriesGroup(row) ? centerSeasonCount(row) : 0;
+  const singleSeasonLabel = centerIsSeriesGroup(row) ? centerSingleSeasonLabel(row) : '';
   if (seasonCount > 1) centerTagPush(tags, `共 ${seasonCount} 季`, 'info', 'season-count');
+  else if (singleSeasonLabel) centerTagPush(tags, singleSeasonLabel, 'info', 'single-season');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
   else if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
@@ -2899,6 +2936,14 @@ const centerSeasonTabLabel = (season) => {
 const centerDetailSeasonListFromRow = (row) => {
   const raw = Array.isArray(row?.seasons) ? row.seasons.filter(Boolean) : [];
   let list = raw.length ? raw : [];
+  if (!list.length && centerIsSeriesGroup(row)) {
+    list = centerAvailableSeasonNumbers(row).map(n => ({
+      season_number: n,
+      season_label: n === 0 ? '特别篇' : `第 ${n} 季`,
+      season_title: n === 0 ? '特别篇' : `第 ${n} 季`,
+      display_season_title: n === 0 ? '特别篇' : `第 ${n} 季`,
+    }));
+  }
   if (!list.length && centerIsSeasonLike(row)) {
     const season = centerSeasonNumber(row);
     if (season !== null) list = [{ ...row, season_number: season }];
