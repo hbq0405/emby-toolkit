@@ -24,6 +24,17 @@ _LAST_ORGANIZE_KICK_AT = 0
 
 VIDEO_EXTS = {'.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.webm', '.iso'}
 
+# 中心转存结果上报重试队列：秒传/分享转存已经成功落盘时，中心 report
+# 如果遇到 TLS/反代瞬断，不能只打一条 warning 就丢失热度、扣点和 lease 释放。
+_PENDING_TRANSFER_REPORT_LOCK = threading.Lock()
+_PENDING_TRANSFER_REPORT_DRAIN_LOCK = threading.Lock()
+_PENDING_TRANSFER_REPORT_QUEUE_FILE = 'shared_transfer_report_retry_queue.jsonl'
+_PENDING_TRANSFER_REPORT_MAX_ITEMS = 1000
+_PENDING_TRANSFER_REPORT_RETRY_BASE_SECONDS = 30
+_PENDING_TRANSFER_REPORT_RETRY_MAX_SECONDS = 3600
+_PENDING_TRANSFER_REPORT_DEFAULT_DRAIN_LIMIT = 20
+
+
 
 class _MediainfoBuilder(P115MediaAnalyzerMixin):
     pass
@@ -513,6 +524,241 @@ def _client_report_transfer(
         ) or {}
 
 
+
+
+def _pending_transfer_report_queue_path() -> str:
+    """本地持久化队列路径。默认落在工作目录 data/ 下，不依赖额外建表。"""
+    configured = str(
+        os.environ.get('ETK_SHARED_TRANSFER_REPORT_QUEUE')
+        or _cfg('CONFIG_OPTION_115_SHARED_TRANSFER_REPORT_QUEUE', 'p115_shared_transfer_report_queue_path', '')
+        or ''
+    ).strip()
+    if configured:
+        path = os.path.abspath(os.path.expanduser(configured))
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        return path
+
+    app_cfg = config_manager.APP_CONFIG if isinstance(config_manager.APP_CONFIG, dict) else {}
+    for key in ('data_dir', 'DATA_DIR', 'config_dir', 'CONFIG_DIR', 'db_dir', 'DB_DIR'):
+        base = str(app_cfg.get(key) or '').strip()
+        if not base:
+            continue
+        try:
+            base = os.path.abspath(os.path.expanduser(base))
+            os.makedirs(base, exist_ok=True)
+            return os.path.join(base, _PENDING_TRANSFER_REPORT_QUEUE_FILE)
+        except Exception:
+            pass
+
+    for base in (os.path.join(os.getcwd(), 'data'), os.getcwd()):
+        try:
+            base = os.path.abspath(base)
+            os.makedirs(base, exist_ok=True)
+            return os.path.join(base, _PENDING_TRANSFER_REPORT_QUEUE_FILE)
+        except Exception:
+            pass
+    return os.path.join('/tmp', _PENDING_TRANSFER_REPORT_QUEUE_FILE)
+
+
+def _pending_transfer_report_key(payload: Dict[str, Any]) -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    parts = [
+        str(payload.get('source_kind') or ''),
+        str(payload.get('source_id') or ''),
+        str(payload.get('result') or ''),
+        str(payload.get('lease_id') or ''),
+        str(payload.get('transfer_mode') or ''),
+        str(payload.get('share_channel_id') or ''),
+        str(_safe_int(payload.get('success_count'), 0)),
+        str(_safe_int(payload.get('total_count'), 0)),
+        str(payload.get('message') or '')[:300],
+    ]
+    return '|'.join(parts)
+
+
+def _load_pending_transfer_reports_locked() -> List[Dict[str, Any]]:
+    path = _pending_transfer_report_queue_path()
+    if not os.path.exists(path):
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                    if isinstance(item, dict) and isinstance(item.get('payload'), dict):
+                        rows.append(item)
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 读取转存上报重试队列失败：{e}")
+        return []
+    return rows[-_PENDING_TRANSFER_REPORT_MAX_ITEMS:]
+
+
+def _write_pending_transfer_reports_locked(rows: List[Dict[str, Any]]) -> None:
+    path = _pending_transfer_report_queue_path()
+    rows = [r for r in (rows or []) if isinstance(r, dict) and isinstance(r.get('payload'), dict)]
+    rows = rows[-_PENDING_TRANSFER_REPORT_MAX_ITEMS:]
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    if not rows:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        return
+    tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        for item in rows:
+            f.write(json.dumps(item, ensure_ascii=False, default=str) + '\n')
+    os.replace(tmp_path, path)
+
+
+def _pending_transfer_report_next_delay(retry_count: int) -> int:
+    retry_count = max(0, int(retry_count or 0))
+    delay = _PENDING_TRANSFER_REPORT_RETRY_BASE_SECONDS * (2 ** min(retry_count, 6))
+    return max(_PENDING_TRANSFER_REPORT_RETRY_BASE_SECONDS, min(delay, _PENDING_TRANSFER_REPORT_RETRY_MAX_SECONDS))
+
+
+def _enqueue_pending_transfer_report(payload: Dict[str, Any], error: str = '') -> Dict[str, Any]:
+    payload = dict(payload or {})
+    key = _pending_transfer_report_key(payload)
+    now = time.time()
+    with _PENDING_TRANSFER_REPORT_LOCK:
+        rows = _load_pending_transfer_reports_locked()
+        found = None
+        for item in rows:
+            if item.get('key') == key:
+                found = item
+                break
+        if found is None:
+            found = {
+                'key': key,
+                'payload': payload,
+                'created_at': now,
+                'retry_count': 0,
+            }
+            rows.append(found)
+        else:
+            found['payload'] = payload
+        found['updated_at'] = now
+        found['next_retry_at'] = min(float(found.get('next_retry_at') or (now + 15)), now + 15)
+        found['last_error'] = str(error or '')[:1000]
+        _write_pending_transfer_reports_locked(rows)
+    logger.warning(
+        f"  ➜ [共享资源] 转存结果上报失败，已写入本地重试队列："
+        f"{payload.get('source_kind')}:{payload.get('source_id')}，result={payload.get('result')}，err={str(error)[:180]}"
+    )
+    return {'queued': True, 'queue_key': key, 'queue_path': _pending_transfer_report_queue_path()}
+
+
+def _client_report_transfer_with_retry_queue(
+    client: SharedCenterClient,
+    source_kind: str,
+    source_id: str,
+    result: str,
+    *,
+    success_count: int = 0,
+    total_count: int = 0,
+    message: str = '',
+    lease_id: str = '',
+    transfer_mode: str = '',
+    share_channel_id: str = '',
+) -> Dict[str, Any]:
+    payload = {
+        'source_kind': _normalize_source_kind(source_kind),
+        'source_id': str(source_id or '').strip(),
+        'result': str(result or '').strip(),
+        'success_count': max(0, _safe_int(success_count, 0)),
+        'total_count': max(0, _safe_int(total_count, 0)),
+        'message': str(message or '')[:1000],
+        'lease_id': str(lease_id or '').strip(),
+        'transfer_mode': str(transfer_mode or '').strip(),
+        'share_channel_id': str(share_channel_id or '').strip(),
+    }
+    try:
+        return _client_report_transfer(
+            client,
+            payload['source_kind'],
+            payload['source_id'],
+            payload['result'],
+            success_count=payload['success_count'],
+            total_count=payload['total_count'],
+            message=payload['message'],
+            lease_id=payload['lease_id'],
+            transfer_mode=payload['transfer_mode'],
+            share_channel_id=payload['share_channel_id'],
+        ) or {}
+    except Exception as e:
+        queued = _enqueue_pending_transfer_report(payload, error=str(e))
+        return {'ok': False, 'pending_report_queued': True, 'error': str(e), **queued}
+
+
+def _drain_pending_transfer_reports(client: SharedCenterClient = None, *, limit: int = None, force: bool = False) -> Dict[str, Any]:
+    """重放上次因网络/TLS 抖动失败的 /transfers/report。"""
+    if not shared_center_enabled():
+        return {'ok': False, 'skipped': True, 'reason': 'shared_center_disabled'}
+    if not _PENDING_TRANSFER_REPORT_DRAIN_LOCK.acquire(blocking=False):
+        return {'ok': True, 'skipped': True, 'reason': 'drain_already_running'}
+    try:
+        limit = max(1, int(limit or _PENDING_TRANSFER_REPORT_DEFAULT_DRAIN_LIMIT))
+        now = time.time()
+        with _PENDING_TRANSFER_REPORT_LOCK:
+            rows = _load_pending_transfer_reports_locked()
+            if not rows:
+                return {'ok': True, 'checked': 0, 'sent': 0, 'remaining': 0}
+            retry_client = client or SharedCenterClient()
+            due: List[Dict[str, Any]] = []
+            remaining: List[Dict[str, Any]] = []
+            for item in rows:
+                if len(due) < limit and (force or float(item.get('next_retry_at') or 0) <= now):
+                    due.append(item)
+                else:
+                    remaining.append(item)
+            if not due:
+                return {'ok': True, 'checked': len(rows), 'sent': 0, 'remaining': len(rows)}
+
+            sent = 0
+            failed = 0
+            for item in due:
+                payload = item.get('payload') if isinstance(item.get('payload'), dict) else {}
+                try:
+                    _client_report_transfer(
+                        retry_client,
+                        payload.get('source_kind'),
+                        payload.get('source_id'),
+                        payload.get('result'),
+                        success_count=payload.get('success_count') or 0,
+                        total_count=payload.get('total_count') or 0,
+                        message=payload.get('message') or '',
+                        lease_id=payload.get('lease_id') or '',
+                        transfer_mode=payload.get('transfer_mode') or '',
+                        share_channel_id=payload.get('share_channel_id') or '',
+                    )
+                    sent += 1
+                except Exception as e:
+                    retry_count = _safe_int(item.get('retry_count'), 0) + 1
+                    item['retry_count'] = retry_count
+                    item['updated_at'] = now
+                    item['next_retry_at'] = now + _pending_transfer_report_next_delay(retry_count)
+                    item['last_error'] = str(e)[:1000]
+                    remaining.append(item)
+                    failed += 1
+            _write_pending_transfer_reports_locked(remaining)
+        if sent:
+            logger.info(f"  ➜ [共享资源] 已补报历史转存结果：成功 {sent} 条，失败待重试 {failed} 条")
+        elif failed:
+            logger.debug(f"  ➜ [共享资源] 历史转存结果补报仍失败：{failed} 条待重试")
+        return {'ok': True, 'checked': len(due), 'sent': sent, 'failed': failed, 'remaining': len(remaining)}
+    finally:
+        _PENDING_TRANSFER_REPORT_DRAIN_LOCK.release()
+
 def _report_transfer_failed_safely(
     client: SharedCenterClient,
     *,
@@ -526,20 +772,19 @@ def _report_transfer_failed_safely(
     fail_kind = _normalize_source_kind(source_kind)
     if fail_kind not in ('movie', 'episode', 'completed_season') or not source_id:
         return {'ok': False, 'skipped': True, 'reason': 'unsupported_source_kind'}
-    try:
-        return _client_report_transfer(
-            client,
-            fail_kind,
-            source_id,
-            'failed',
-            success_count=0,
-            total_count=len(files or []),
-            message=(message or json.dumps(errors or [], ensure_ascii=False))[:1000],
-            lease_id=lease_id,
-        ) or {}
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 上报秒传失败失败：{fail_kind}:{source_id} -> {e}")
-        return {'ok': False, 'error': str(e)}
+    resp = _client_report_transfer_with_retry_queue(
+        client,
+        fail_kind,
+        source_id,
+        'failed',
+        success_count=0,
+        total_count=len(files or []),
+        message=(message or json.dumps(errors or [], ensure_ascii=False))[:1000],
+        lease_id=lease_id,
+    ) or {}
+    if resp.get('pending_report_queued'):
+        logger.debug(f"  ➜ [共享资源] 秒传失败结果已加入补报队列：{fail_kind}:{source_id} -> {resp.get('error')}")
+    return resp
 
 
 def _rapid_success(resp: Any) -> bool:
@@ -2685,7 +2930,7 @@ def _try_completed_season_share_transfer(
                 response=resp,
             )
             video_count = len(files or []) or int(channel.get('file_count') or 1)
-            report = _client_report_transfer(
+            report = _client_report_transfer_with_retry_queue(
                 client,
                 'completed_season',
                 source_id,
@@ -2699,6 +2944,11 @@ def _try_completed_season_share_transfer(
                 transfer_mode='share',
                 share_channel_id=channel_id,
             )
+            if report.get('pending_report_queued'):
+                logger.warning(
+                    f"  ➜ [共享资源] 分享转存已成功，但中心上报失败，已加入补报队列："
+                    f"source=completed_season:{source_id}, channel={channel_id or '-'}"
+                )
             _kick_115_organize_detached(reason=f'share:{source_id}', delay=1.0 if located_item else 3.0)
             return {
                 'ok': True,
@@ -2788,6 +3038,10 @@ def _handle_pro_quota_auth_event(client: SharedCenterClient, event: Dict[str, An
 
 def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
     client = SharedCenterClient()
+    try:
+        _drain_pending_transfer_reports(client, limit=5)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 补报历史转存结果失败，跳过本轮：{e}")
     event_id = str(event.get('event_id') or '')
     payload = _event_payload(event)
     lease_id = _event_transfer_lease_id(payload, event)
@@ -3175,24 +3429,23 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         for (report_kind, report_id), group in report_groups.items():
             report_file = group.get('file') or {}
             success_file_count = max(1, int(group.get('count') or 1))
-            try:
-                report_resp = _client_report_transfer(
-                    client,
-                    report_kind,
-                    report_id,
-                    'success',
-                    success_count=success_file_count,
-                    total_count=success_file_count,
-                    message=f'本机秒传成功：{success_file_count} 个视频；{report_file.get("file_name") or report_file.get("sha1") or report_id}',
-                    lease_id=lease_id,
-                )
-                report_results.append({'source_kind': report_kind, 'source_id': report_id, **(report_resp or {})})
-                if report_resp and report_resp.get('inserted') is False:
-                    logger.info(f"  ➜ [共享资源] 秒传成功已上报过，本次不重复增加热度：{report_kind}:{report_id}")
-            except Exception as e:
-                err = {'source_kind': report_kind, 'source_id': report_id, 'error': str(e)}
+            report_resp = _client_report_transfer_with_retry_queue(
+                client,
+                report_kind,
+                report_id,
+                'success',
+                success_count=success_file_count,
+                total_count=success_file_count,
+                message=f'本机秒传成功：{success_file_count} 个视频；{report_file.get("file_name") or report_file.get("sha1") or report_id}',
+                lease_id=lease_id,
+            )
+            report_results.append({'source_kind': report_kind, 'source_id': report_id, **(report_resp or {})})
+            if report_resp and report_resp.get('inserted') is False:
+                logger.info(f"  ➜ [共享资源] 秒传成功已上报过，本次不重复增加热度：{report_kind}:{report_id}")
+            if report_resp.get('pending_report_queued'):
+                err = {'source_kind': report_kind, 'source_id': report_id, 'queued': True, 'error': report_resp.get('error')}
                 report_errors.append(err)
-                logger.warning(f"  ➜ [共享资源] 上报秒传成功失败，热度不会增加: {err}")
+                logger.warning(f"  ➜ [共享资源] 上报秒传成功失败，已加入补报队列，热度/扣点稍后补齐: {err}")
         _kick_115_organize_detached(reason=f'rapid:{source_kind}:{source_id}')
     else:
         _report_transfer_failed_safely(
@@ -3230,6 +3483,10 @@ def poll_and_consume_once(timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
     client = SharedCenterClient()
     if not client.ready:
         return {'ok': False, 'message': '共享中心未配置'}
+    try:
+        _drain_pending_transfer_reports(client, limit=_PENDING_TRANSFER_REPORT_DEFAULT_DRAIN_LIMIT)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 补报历史转存结果失败，跳过本轮：{e}")
     resp = client.poll_device_events(timeout=timeout, limit=limit)
     events = resp.get('items') or resp.get('events') or []
     results = [consume_device_event(event) for event in events]
