@@ -617,26 +617,6 @@ def _rapid_sign_request_from_response(resp: Any) -> Dict[str, Any]:
     return {}
 
 
-def _register_local_rapid_holder(client: SharedCenterClient, *, source_kind: str, source_id: str, file_info: Dict[str, Any], message_prefix: str = '') -> None:
-    try:
-        meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
-        sha1 = _norm_sha1(file_info.get('sha1') or meta.get('sha1'))
-        if not sha1:
-            return
-        client.register_rapid_sign_holder({
-            'sha1': sha1,
-            'size': _rapid_size_to_int(file_info.get('size') or file_info.get('file_size') or meta.get('size'), 0) or None,
-            'source_kind': source_kind or file_info.get('source_kind') or '',
-            'source_id': source_id or file_info.get('source_id') or file_info.get('source_ref_id') or '',
-            'file_name': file_info.get('file_name') or file_info.get('name') or meta.get('file_name') or '',
-            'preid': file_info.get('preid') or meta.get('preid') or '',
-            'meta_json': {'from': 'rapid_transfer_success'},
-        })
-        logger.debug(f"  ➜ [负载均衡签名] 已登记本机为源客户端")
-    except Exception as e:
-        logger.debug(f"  ➜ [负载均衡签名] 登记本机 holder 失败: {e}")
-
-
 def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info: Dict[str, Any], target_cid: str, sha1: str, size: int, file_name: str, rapid_meta: Dict[str, Any], first_resp: Any) -> Dict[str, Any]:
     sign_req = _rapid_sign_request_from_response(first_resp)
     if not sign_req:
@@ -3275,21 +3255,6 @@ def _build_gap_query(item: Dict[str, Any], title: str = '', tmdb_id=None, item_t
     }
 
 
-def report_shared_gap(item: Dict[str, Any], title: str = '', tmdb_id=None, item_type: str = '', parent_tmdb_id=None, season_number=None, year='') -> bool:
-    """普通缺口登记已废弃。
-
-    Rapid v2 现在由中心端“有效资源入池广播”驱动消费端补缺/洗版，
-    客户端不再向中心写 wanted_gaps / wanted_gap_devices。保留函数只为兼容
-    旧导入，避免其他模块 import 失败。
-    """
-    logger.debug(
-        "  ➜ [共享资源] 普通缺口登记已废弃，跳过 report_shared_gap："
-        f"title={title or (item or {}).get('title') or '-'}, "
-        f"tmdb={tmdb_id or (item or {}).get('tmdb_id') or '-'}, item_type={item_type or (item or {}).get('item_type') or '-'}"
-    )
-    return False
-
-
 def _probe_subscriptions_batch_no_gap(client: SharedCenterClient, queries: List[Dict[str, Any]], limit_per_item: int = 200) -> Dict[str, Any]:
     """只查询共享池候选，不登记缺口。
 
@@ -3406,11 +3371,6 @@ def _flatten_sources_from_probe(resp_or_row: Dict[str, Any]) -> List[Dict[str, A
             if isinstance(src, dict):
                 out.append(src)
     return out
-
-
-def _reported_gap_from_probe(resp_or_row: Dict[str, Any]) -> bool:
-    """普通缺口登记已废弃，探测结果里的 gap 字段统一忽略。"""
-    return False
 
 
 def _consume_sources(
