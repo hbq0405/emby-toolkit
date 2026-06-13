@@ -1107,6 +1107,108 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
         _COMPLETED_SHARE_SYNC_LOCK.release()
 
 
+
+
+def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
+    payload = _event_source_payload(event)
+    source_kind = str(payload.get('source_kind') or (event or {}).get('source_kind') or '').strip()
+    source_id = str(
+        payload.get('source_id')
+        or payload.get('source_ref_id')
+        or (event or {}).get('source_ref_id')
+        or ''
+    ).strip()
+    sha1 = _norm_sha1(payload.get('sha1'))
+    event_type = str((event or {}).get('event_type') or payload.get('event_type') or '').strip()
+    if source_kind not in {'movie', 'episode', 'completed_season'} or not source_id:
+        return {}
+    if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE if 'PRO_QUOTA_AUTH_EVENT_TYPE' in globals() else 'pro_quota_auth_check'}:
+        return {}
+    return {'source_kind': source_kind, 'source_id': source_id, 'sha1': sha1}
+
+
+def _client_call_transfer_lease(client: SharedCenterClient, identity: Dict[str, str], event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        'source_kind': identity.get('source_kind'),
+        'source_id': identity.get('source_id'),
+        'sha1': identity.get('sha1') or None,
+        'transfer_mode': 'rapid',
+        'request_meta_json': {
+            'event_id': str((event or {}).get('event_id') or ''),
+            'event_type': str((event or {}).get('event_type') or ''),
+            'client_gate': 'shared_resource_tasks_transfer_lease_v1',
+        },
+    }
+    # 兼容不同版本 SharedCenterClient：优先走显式方法，其次走常见私有 request 方法。
+    method = getattr(client, 'acquire_transfer_lease', None)
+    if callable(method):
+        return method(payload)
+    for name in ('post', '_post'):
+        fn = getattr(client, name, None)
+        if callable(fn):
+            return fn('/api/v1/transfers/lease', payload)
+    for name in ('request', '_request'):
+        fn = getattr(client, name, None)
+        if callable(fn):
+            try:
+                return fn('POST', '/api/v1/transfers/lease', json=payload)
+            except TypeError:
+                return fn('POST', '/api/v1/transfers/lease', payload)
+    raise RuntimeError('SharedCenterClient 缺少 acquire_transfer_lease/post/request 方法')
+
+
+def _wait_transfer_lease_for_event(event: Dict[str, Any], *, max_wait_seconds: int = 600) -> Dict[str, Any]:
+    identity = _event_transfer_lease_identity(event)
+    if not identity:
+        return {'ok': True, 'skipped': True, 'reason': 'not_rapid_transfer_event'}
+    client = SharedCenterClient()
+    deadline = time.time() + max(30, int(max_wait_seconds or 600))
+    attempts = 0
+    last_resp: Dict[str, Any] = {}
+    while True:
+        attempts += 1
+        try:
+            resp = _client_call_transfer_lease(client, identity, event) or {}
+        except Exception as e:
+            # 中心未升级 lease 接口时，不阻断老链路；只记录 DEBUG，继续原消费流程。
+            logger.debug(f"  ➜ [共享资源] 秒传许可接口不可用，按旧流程继续：{identity}，err={e}")
+            return {'ok': True, 'skipped': True, 'reason': 'lease_api_unavailable', 'error': str(e)}
+        last_resp = resp if isinstance(resp, dict) else {'raw': resp}
+        if last_resp.get('allow') or (last_resp.get('ok') and not last_resp.get('deferred') and not last_resp.get('allow') is False):
+            lease_id = str(last_resp.get('lease_id') or '').strip()
+            if lease_id:
+                payload = _event_source_payload(event)
+                payload['rapid_transfer_lease_id'] = lease_id
+                payload['transfer_lease_id'] = lease_id
+                # 如果原消费端把 event.payload_json 作为 source 使用，这里把 lease_id 写回去；
+                # sign_job request_meta/report_transfer 新版可继续透传。
+                try:
+                    event['payload_json'] = payload
+                except Exception:
+                    pass
+            if attempts > 1:
+                logger.info(
+                    f"  ➜ [共享资源] 秒传许可已发放：{identity.get('source_kind')}:{identity.get('source_id')}，"
+                    f"尝试 {attempts} 次，lease={lease_id or '-'}"
+                )
+            return {'ok': True, 'lease': last_resp, 'attempts': attempts}
+        retry_after = _safe_int(last_resp.get('retry_after'), 30)
+        retry_after = max(5, min(retry_after, 120))
+        reason = str(last_resp.get('reason') or 'deferred')
+        if time.time() + retry_after > deadline:
+            # 不把事件消费成失败扣点；给原流程一个机会，中心签名并发阀仍会兜底。
+            logger.warning(
+                f"  ➜ [共享资源] 秒传许可等待超时，转入旧流程并交由中心签名阀兜底："
+                f"{identity}，reason={reason}，last={last_resp}"
+            )
+            return {'ok': True, 'lease_timeout': True, 'lease': last_resp, 'attempts': attempts}
+        logger.info(
+            f"  ➜ [共享资源] 中心秒传许可排队中：{identity.get('source_kind')}:{identity.get('source_id')}，"
+            f"{retry_after}s 后重试，reason={reason}"
+        )
+        time.sleep(retry_after)
+
+
 def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
     if _completed_share_event_type(event) == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
         return handle_create_completed_season_share_event(event, ack=bool(kwargs.get('ack', True)))
@@ -1123,6 +1225,9 @@ def _consume_device_event_with_transfer_gate(original_consume, event, *args, **k
             'total': 0,
             'message': gate.get('message') or '该资源已被共享资源配置拦截',
         }
+    lease_gate = _wait_transfer_lease_for_event(event)
+    if lease_gate.get('lease'):
+        logger.debug(f"  ➜ [共享资源] 秒传许可结果：{lease_gate}")
     return original_consume(event, *args, **kwargs)
 
 
