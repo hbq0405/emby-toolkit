@@ -1160,6 +1160,39 @@ def _direct_center_transfer_lease(payload: Dict[str, Any]) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {'data': data}
 
 
+
+def _event_transfer_lease_label(event: Dict[str, Any], identity: Dict[str, str] = None) -> str:
+    """生成秒传许可日志里给人看的资源名，不把 payload/source_id 整坨打出来。"""
+    identity = identity if isinstance(identity, dict) else {}
+    payload = _event_source_payload(event)
+    candidates = []
+    for obj in (payload, event if isinstance(event, dict) else {}):
+        if not isinstance(obj, dict):
+            continue
+        for key in ('file_name', 'name', 'title', 'share_title', 'root_name'):
+            value = str(obj.get(key) or '').strip()
+            if value:
+                candidates.append(value)
+    for key in ('files', 'items', 'pack_items', 'children'):
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            first = next((x for x in value if isinstance(x, dict)), {}) or {}
+            for sub_key in ('file_name', 'name', 'title'):
+                sub_value = str(first.get(sub_key) or '').strip()
+                if sub_value:
+                    if len(value) > 1:
+                        candidates.append(f"{sub_value} 等 {len(value)} 个文件")
+                    else:
+                        candidates.append(sub_value)
+                    break
+            if candidates:
+                break
+    label = next((x for x in candidates if x), '')
+    if not label:
+        label = f"{identity.get('source_kind') or '-'}:{identity.get('source_id') or '-'}"
+    label = label.replace('\r', ' ').replace('\n', ' ').strip()
+    return label[:180] + ('...' if len(label) > 180 else '')
+
 def _client_call_transfer_lease(client: SharedCenterClient, identity: Dict[str, str], event: Dict[str, Any]) -> Dict[str, Any]:
     payload = {
         'source_kind': identity.get('source_kind'),
@@ -1219,18 +1252,8 @@ def _wait_transfer_lease_for_event(event: Dict[str, Any], *, max_wait_seconds: i
                     event['payload_json'] = payload
                 except Exception:
                     pass
-            holder_count = last_resp.get('holder_count') or last_resp.get('available_holder_count')
-            active_count = last_resp.get('active_count') or last_resp.get('active_lease_count')
-            extra = []
-            if holder_count not in (None, ''):
-                extra.append(f"holders={holder_count}")
-            if active_count not in (None, ''):
-                extra.append(f"active={active_count}")
-            logger.info(
-                f"  ➜ [共享资源] 秒传许可已发放：{identity.get('source_kind')}:{identity.get('source_id')}，"
-                f"尝试 {attempts} 次，lease={lease_id or '-'}"
-                + (f"，{', '.join(extra)}" if extra else '')
-            )
+            label = _event_transfer_lease_label(event, identity)
+            logger.info(f"  ➜ [共享资源] 秒传许可已发放：{label}")
             return {'ok': True, 'lease': last_resp, 'attempts': attempts}
         retry_after = _safe_int(last_resp.get('retry_after'), 30)
         retry_after = max(5, min(retry_after, 120))
@@ -1243,7 +1266,7 @@ def _wait_transfer_lease_for_event(event: Dict[str, Any], *, max_wait_seconds: i
             )
             return {'ok': True, 'lease_timeout': True, 'lease': last_resp, 'attempts': attempts}
         logger.info(
-            f"  ➜ [共享资源] 中心秒传许可排队中：{identity.get('source_kind')}:{identity.get('source_id')}，"
+            f"  ➜ [共享资源] 中心秒传许可排队中：{_event_transfer_lease_label(event, identity)}，"
             f"{retry_after}s 后重试，reason={reason}"
         )
         time.sleep(retry_after)
@@ -1265,9 +1288,7 @@ def _consume_device_event_with_transfer_gate(original_consume, event, *args, **k
             'total': 0,
             'message': gate.get('message') or '该资源已被共享资源配置拦截',
         }
-    lease_gate = _wait_transfer_lease_for_event(event)
-    if lease_gate.get('lease'):
-        logger.info(f"  ➜ [共享资源] 秒传许可结果：{lease_gate}")
+    _wait_transfer_lease_for_event(event)
     return original_consume(event, *args, **kwargs)
 
 
