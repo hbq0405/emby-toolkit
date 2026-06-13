@@ -474,31 +474,43 @@ def _client_report_transfer(
     total_count: int = 0,
     message: str = '',
     lease_id: str = '',
+    transfer_mode: str = '',
+    share_channel_id: str = '',
 ) -> Dict[str, Any]:
-    """上报秒传结果；新版中心用 lease_id 释放秒传许可，旧客户端方法自动兼容。"""
+    """上报转存结果；新版中心用 lease_id/transfer_mode/share_channel_id 精确释放与结算。"""
+    extra = {}
     lease_id = str(lease_id or '').strip()
+    transfer_mode = str(transfer_mode or '').strip()
+    share_channel_id = str(share_channel_id or '').strip()
     if lease_id:
-        try:
-            return client.report_transfer(
-                source_kind,
-                source_id,
-                result,
-                success_count=success_count,
-                total_count=total_count,
-                message=message,
-                lease_id=lease_id,
-            ) or {}
-        except TypeError:
-            # 旧 SharedCenterClient.report_transfer 不认识 lease_id；中心端 15 分钟 TTL 仍会兜底释放。
-            pass
-    return client.report_transfer(
-        source_kind,
-        source_id,
-        result,
-        success_count=success_count,
-        total_count=total_count,
-        message=message,
-    ) or {}
+        extra['lease_id'] = lease_id
+    if transfer_mode:
+        extra['transfer_mode'] = transfer_mode
+    if share_channel_id:
+        extra['share_channel_id'] = share_channel_id
+
+    base_kwargs = {
+        'success_count': success_count,
+        'total_count': total_count,
+        'message': message,
+    }
+    try:
+        return client.report_transfer(
+            source_kind,
+            source_id,
+            result,
+            **base_kwargs,
+            **extra,
+        ) or {}
+    except TypeError:
+        # 旧 SharedCenterClient.report_transfer 不认识 lease_id/transfer_mode/share_channel_id；
+        # 中心端可通过 message 中的“115 分享/分享转存”兼容识别 share 模式。
+        return client.report_transfer(
+            source_kind,
+            source_id,
+            result,
+            **base_kwargs,
+        ) or {}
 
 
 def _report_transfer_failed_safely(
@@ -2471,6 +2483,168 @@ def _share_import_failed_status(resp: Any, error: str = '') -> str:
     return 'import_failed'
 
 
+def _share_import_receive_title(resp: Any) -> str:
+    if not isinstance(resp, dict):
+        return ''
+    data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
+    for item in (data, resp):
+        if not isinstance(item, dict):
+            continue
+        for key in ('receive_title', 'file_name', 'fileName', 'name', 'title'):
+            value = str(item.get(key) or '').strip()
+            if value:
+                return value
+    return ''
+
+
+def _p115_item_name(item: Dict[str, Any]) -> str:
+    item = item if isinstance(item, dict) else {}
+    return str(item.get('fn') or item.get('file_name') or item.get('n') or item.get('name') or '').strip()
+
+
+def _p115_item_id(item: Dict[str, Any]) -> str:
+    item = item if isinstance(item, dict) else {}
+    return str(item.get('fid') or item.get('file_id') or item.get('cid') or item.get('id') or '').strip()
+
+
+def _locate_share_imported_item(p115, *, parent_cid: str, receive_title: str, max_retries: int = 3) -> Dict[str, Any]:
+    """参考影巢逻辑：share_import 成功后按 receive_title 在待整理根目录定位真实 file_id。"""
+    parent_cid = str(parent_cid or '').strip()
+    receive_title = str(receive_title or '').strip()
+    if not parent_cid or not receive_title or not p115 or not hasattr(p115, 'fs_files'):
+        return {}
+    for attempt in range(1, max(1, int(max_retries or 3)) + 1):
+        wait_time = attempt * 2
+        logger.debug(
+            f"  ➜ [共享资源] 等待 {wait_time}s 后定位分享转存目录 "
+            f"({attempt}/{max_retries})：{receive_title}"
+        )
+        time.sleep(wait_time)
+        try:
+            resp = p115.fs_files({'cid': parent_cid, 'search_value': receive_title, 'limit': 10})
+            items = resp.get('data') if isinstance(resp, dict) else []
+            if not isinstance(items, list):
+                items = []
+            for item in items:
+                if isinstance(item, dict) and _p115_item_name(item) == receive_title:
+                    logger.info(f"  ➜ [共享资源] 已定位分享转存目录：{receive_title} (fid={_p115_item_id(item) or '-'})")
+                    return dict(item)
+            logger.debug(f"  ➜ [共享资源] 第 {attempt}/{max_retries} 次未定位到分享转存目录，等待 115 索引同步。")
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 定位分享转存目录失败({attempt}/{max_retries})：{e}")
+    logger.warning(f"  ➜ [共享资源] 未能定位分享转存目录：{receive_title}，交由全局待整理扫描兜底。")
+    return {}
+
+
+def _save_share_import_transfer_context(*, root_name: str, source_id: str, payload: Dict[str, Any], files: List[Dict[str, Any]], channel_id: str = '') -> Dict[str, Any]:
+    root_name = str(root_name or '').strip()
+    if not root_name:
+        return {'ok': False, 'skipped': True, 'reason': 'root_name_missing'}
+    try:
+        ctx = _season_package_context(payload or {}, files or [])
+        if not ctx.get('tmdb_id') or not ctx.get('title'):
+            return {'ok': False, 'skipped': True, 'reason': 'context_missing', 'context': ctx}
+        P115CacheManager.save_transfer_context(
+            root_name=root_name,
+            tmdb_id=ctx.get('tmdb_id'),
+            media_type='tv',
+            title=ctx.get('title'),
+            season_number=ctx.get('season_number'),
+            source='shared-share-import',
+            source_kind='completed_season',
+            source_kinds=['completed_season', 'shared_share_import', 'shared_transfer_context'],
+            confidence='high',
+            authority_role='expected',
+            evidence=[f'share:completed_season:{source_id}', f'channel:{channel_id or "-"}'],
+        )
+        logger.debug(f"  ➜ [共享资源] 已保存分享转存整理上下文：{root_name} -> tmdb={ctx.get('tmdb_id')}, season={ctx.get('season_number')}")
+        return {'ok': True, 'context': ctx, 'root_name': root_name}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 保存分享转存整理上下文失败：{root_name} -> {e}")
+        return {'ok': False, 'error': str(e), 'root_name': root_name}
+
+
+def _client_call_rapid_transfer_lease(client: SharedCenterClient, payload: Dict[str, Any]) -> Dict[str, Any]:
+    method = getattr(client, 'acquire_transfer_lease', None)
+    if callable(method):
+        return method(payload)
+    for name in ('post', '_post'):
+        fn = getattr(client, name, None)
+        if callable(fn):
+            return fn('/api/v1/transfers/lease', payload)
+    for name in ('request', '_request'):
+        fn = getattr(client, name, None)
+        if callable(fn):
+            try:
+                return fn('POST', '/api/v1/transfers/lease', json=payload)
+            except TypeError:
+                return fn('POST', '/api/v1/transfers/lease', payload)
+    return {'ok': True, 'skipped': True, 'reason': 'lease_client_method_missing'}
+
+
+def _wait_rapid_transfer_lease_for_fallback(
+    client: SharedCenterClient,
+    *,
+    source_kind: str,
+    source_id: str,
+    payload: Dict[str, Any],
+    event_id: str = '',
+    max_wait_seconds: int = 600,
+) -> Dict[str, Any]:
+    """分享转存失败回退 Rapid 前再申请秒传许可；纯分享路径不会提前等待。"""
+    existing = _event_transfer_lease_id(payload)
+    if existing:
+        return {'ok': True, 'skipped': True, 'reason': 'lease_already_present', 'lease_id': existing}
+    source_kind = _normalize_source_kind(source_kind)
+    source_id = str(source_id or '').strip()
+    if source_kind not in ('movie', 'episode', 'completed_season') or not source_id:
+        return {'ok': True, 'skipped': True, 'reason': 'unsupported_source'}
+
+    request_payload = {
+        'source_kind': source_kind,
+        'source_id': source_id,
+        'sha1': None,
+        'transfer_mode': 'rapid',
+        'request_meta_json': {
+            'event_id': str(event_id or ''),
+            'event_type': str((payload or {}).get('event_type') or ''),
+            'client_gate': 'shared_subscription_service_share_fallback_v1',
+            'reason': 'share_import_failed_before_rapid_fallback',
+        },
+    }
+    deadline = time.time() + max(30, int(max_wait_seconds or 600))
+    attempts = 0
+    last_resp: Dict[str, Any] = {}
+    label = str((payload or {}).get('title') or source_id)
+    while True:
+        attempts += 1
+        try:
+            resp = _client_call_rapid_transfer_lease(client, request_payload) or {}
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] Rapid 回退秒传许可接口不可用，按旧流程继续：{source_kind}:{source_id}, err={e}")
+            return {'ok': True, 'skipped': True, 'reason': 'lease_api_unavailable', 'error': str(e)}
+        last_resp = resp if isinstance(resp, dict) else {'raw': resp}
+        if last_resp.get('allow') or (last_resp.get('ok') and not last_resp.get('deferred') and last_resp.get('allow') is not False):
+            lease_id = str(last_resp.get('lease_id') or '').strip()
+            if lease_id:
+                payload['rapid_transfer_lease_id'] = lease_id
+                payload['transfer_lease_id'] = lease_id
+            logger.info(f"  ➜ [共享资源] 分享转存失败后 Rapid 回退许可已发放：{label}")
+            return {'ok': True, 'lease': last_resp, 'lease_id': lease_id, 'attempts': attempts}
+
+        retry_after = _safe_int(last_resp.get('retry_after'), 30)
+        retry_after = max(5, min(retry_after, 120))
+        reason = str(last_resp.get('reason') or 'deferred')
+        if time.time() + retry_after > deadline:
+            logger.warning(
+                f"  ➜ [共享资源] 分享转存失败后 Rapid 回退许可等待超时，转入旧流程："
+                f"{source_kind}:{source_id}, reason={reason}, last={last_resp}"
+            )
+            return {'ok': True, 'lease_timeout': True, 'lease': last_resp, 'attempts': attempts}
+        logger.debug(f"  ➜ [共享资源] Rapid 回退许可排队中：{label}，{retry_after}s 后重试，reason={reason}")
+        time.sleep(retry_after)
+
+
 def _try_completed_season_share_transfer(
     *,
     client: SharedCenterClient,
@@ -2479,6 +2653,12 @@ def _try_completed_season_share_transfer(
     files: List[Dict[str, Any]],
     target_cid: str,
 ) -> Dict[str, Any]:
+    """完结季优先走 115 分享转存。
+
+    与 Rapid 秒传不同，分享转存直接落到“待整理根目录”，不提前申请秒传许可，
+    也不预创建 Rapid 临时目录。成功后参考影巢逻辑按 receive_title 定位真实
+    file_id，并给待整理扫描补上下文。
+    """
     if _normalize_source_kind(payload.get('source_kind') or 'completed_season') != 'completed_season':
         return {'ok': False, 'skipped': True, 'reason': 'not_completed_season'}
     channel = _completed_share_channel_for_transfer(client, source_id, payload)
@@ -2494,28 +2674,67 @@ def _try_completed_season_share_transfer(
         if not p115:
             raise RuntimeError('115 客户端未初始化')
         title = payload.get('title') or payload.get('share_title') or source_id
-        logger.info(f"  ➜ [共享资源] 完结季优先走 115 分享转存：《{title}》，channel={channel_id or '-'}，target_cid={target_cid}")
+        target_cid = str(target_cid or '').strip()
+        logger.info(
+            f"  ➜ [共享资源] 完结季优先走 115 分享转存：《{title}》，"
+            f"channel={channel_id or '-'}，target_cid={target_cid}（待整理根目录）"
+        )
         resp = p115.share_import(share_code, receive_code, target_cid)
         if _share_import_success(resp):
+            receive_title = _share_import_receive_title(resp)
+            located_item = _locate_share_imported_item(
+                p115,
+                parent_cid=target_cid,
+                receive_title=receive_title,
+                max_retries=3,
+            ) if receive_title else {}
+            located_cid = _p115_item_id(located_item)
+            hint_parent_cid = located_cid or target_cid
+            context_result = _save_share_import_transfer_context(
+                root_name=receive_title or str(payload.get('title') or title or ''),
+                source_id=source_id,
+                payload=payload,
+                files=files,
+                channel_id=channel_id,
+            )
             preid_hint_count = _remember_share_preid_hints(
                 files,
-                target_cid=target_cid,
+                target_cid=hint_parent_cid,
                 source_kind='completed_season',
                 source_id=source_id,
                 response=resp,
             )
+            video_count = len(files or []) or int(channel.get('file_count') or 1)
             report = _client_report_transfer(
                 client,
                 'completed_season',
                 source_id,
                 'success',
-                success_count=len(files or []) or int(channel.get('file_count') or 1),
-                total_count=len(files or []) or int(channel.get('file_count') or 1),
-                message=f"本机通过 115 分享转存成功：{len(files or []) or int(channel.get('file_count') or 1)} 个视频；channel={channel_id or '-'}",
-                lease_id=_event_transfer_lease_id(payload),
+                success_count=video_count,
+                total_count=video_count,
+                message=(
+                    f"本机通过 115 分享转存成功：{video_count} 个视频；"
+                    f"channel={channel_id or '-'}；share_import；receive_title={receive_title or '-'}"
+                ),
+                transfer_mode='share',
+                share_channel_id=channel_id,
             )
-            _kick_115_organize_detached(reason=f'share:{source_id}')
-            return {'ok': True, 'transfer_mode': 'share', 'channel': channel, 'response': resp, 'report': report, 'preid_hint_count': preid_hint_count}
+            _kick_115_organize_detached(reason=f'share:{source_id}', delay=1.0 if located_item else 3.0)
+            return {
+                'ok': True,
+                'transfer_mode': 'share',
+                'channel': channel,
+                'channel_id': channel_id,
+                'response': resp,
+                'receive_title': receive_title,
+                'located_item': located_item,
+                'target_cid': target_cid,
+                'imported_cid': located_cid,
+                'preid_hint_parent_cid': hint_parent_cid,
+                'report': report,
+                'preid_hint_count': preid_hint_count,
+                'context_result': context_result,
+            }
 
         status = _share_import_failed_status(resp)
         msg = f"115 分享转存失败，准备回退 Rapid：{resp}"
@@ -2751,39 +2970,11 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'washing_rejected': bool(preflight.get('washing_rejected')),
         }
 
-    rapid_target = _prepare_rapid_target_dir_for_source(
-        base_target_cid=base_target_cid,
-        source_kind=source_kind,
-        source_id=source_id,
-        payload=payload,
-        files=files,
-    )
-    target_cid = str(rapid_target.get('target_cid') or base_target_cid)
-
     is_package_transfer = source_kind in ('completed_season', 'season_hub') and len(files) > 1
     payload.setdefault('source_kind', source_kind)
-    if is_package_transfer and rapid_target.get('temp_dir_required') and not rapid_target.get('season_package_temp_dir'):
-        message = f"季包临时接收目录创建失败，放弃本次整季入库：{rapid_target.get('temp_dir_error') or 'unknown'}"
-        _report_transfer_failed_safely(client, source_kind=source_kind, source_id=source_id, files=files, errors=[message], message=message, lease_id=lease_id)
-        if ack and event_id:
-            try:
-                client.ack_device_events([event_id], result='failed', message=message[:500])
-            except Exception:
-                pass
-        return {
-            'ok': False,
-            'message': message,
-            'event_id': event_id,
-            'source_kind': source_kind,
-            'source_id': source_id,
-            'success_count': 0,
-            'total': len(files),
-            'errors': [{'error': message}],
-            'preflight': locals().get('preflight', {}),
-            'rapid_target': rapid_target,
-            'aborted_season_package': True,
-        }
 
+    # 完结季如果已有可用 115 分享通道，先直接转存到待整理根目录；
+    # 不等 Rapid 秒传许可，也不提前创建 Rapid 临时目录。
     share_transfer = {}
     if source_kind == 'completed_season':
         share_transfer = _try_completed_season_share_transfer(
@@ -2791,7 +2982,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             source_id=source_id,
             payload=payload,
             files=files,
-            target_cid=target_cid,
+            target_cid=base_target_cid,
         )
         if share_transfer.get('ok'):
             if ack and event_id:
@@ -2811,52 +3002,56 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                 'transfer_mode': 'share',
                 'share_transfer': share_transfer,
                 'preflight': locals().get('preflight', {}),
-                'rapid_target': locals().get('rapid_target', {}),
+                'rapid_target': {},
             }
         if share_transfer.get('attempted'):
             logger.warning(
                 f"  ➜ [共享资源] 完结季分享转存未成功，自动回退 Rapid 秒传："
                 f"source={source_kind}:{source_id}, reason={share_transfer.get('status') or share_transfer.get('reason') or '-'}"
             )
-            # 分享转存失败后，目标临时目录里可能已经被 115 写入了部分内容；
-            # Rapid 兜底必须换一个干净临时目录，避免半季/重复目录污染整理扫描。
-            if is_package_transfer and rapid_target.get('season_package_temp_dir'):
-                cleanup_after_share = _cleanup_rapid_temp_dir(
-                    rapid_target,
-                    reason=f"share_import_failed_before_rapid_fallback:{share_transfer.get('status') or share_transfer.get('reason') or 'unknown'}",
-                )
-                rapid_target = _prepare_rapid_target_dir_for_source(
-                    base_target_cid=base_target_cid,
-                    source_kind=source_kind,
-                    source_id=source_id,
-                    payload=payload,
-                    files=files,
-                )
-                target_cid = str(rapid_target.get('target_cid') or base_target_cid)
-                share_transfer['rapid_fallback_cleanup'] = cleanup_after_share
-                share_transfer['rapid_fallback_target'] = rapid_target
-                if rapid_target.get('temp_dir_required') and not rapid_target.get('season_package_temp_dir'):
-                    message = f"分享转存失败后重建 Rapid 临时目录也失败，放弃本次整季入库：{rapid_target.get('temp_dir_error') or 'unknown'}"
-                    _report_transfer_failed_safely(client, source_kind=source_kind, source_id=source_id, files=files, errors=[message], message=message, lease_id=lease_id)
-                    if ack and event_id:
-                        try:
-                            client.ack_device_events([event_id], result='failed', message=message[:500])
-                        except Exception:
-                            pass
-                    return {
-                        'ok': False,
-                        'message': message,
-                        'event_id': event_id,
-                        'source_kind': source_kind,
-                        'source_id': source_id,
-                        'success_count': 0,
-                        'total': len(files),
-                        'errors': [{'error': message}],
-                        'share_transfer': share_transfer,
-                        'preflight': locals().get('preflight', {}),
-                        'rapid_target': rapid_target,
-                        'aborted_season_package': True,
-                    }
+            # 只有回退 Rapid 时才等待秒传许可；纯分享转存不占用许可队列。
+            fallback_lease = _wait_rapid_transfer_lease_for_fallback(
+                client,
+                source_kind=source_kind,
+                source_id=source_id,
+                payload=payload,
+                event_id=event_id,
+            )
+            share_transfer['rapid_fallback_lease'] = fallback_lease
+            lease_id = _event_transfer_lease_id(payload, event)
+
+    # 到这里才进入 Rapid 秒传分支；季包秒传必须先创建标准临时剧目录。
+    rapid_target = _prepare_rapid_target_dir_for_source(
+        base_target_cid=base_target_cid,
+        source_kind=source_kind,
+        source_id=source_id,
+        payload=payload,
+        files=files,
+    )
+    target_cid = str(rapid_target.get('target_cid') or base_target_cid)
+
+    if is_package_transfer and rapid_target.get('temp_dir_required') and not rapid_target.get('season_package_temp_dir'):
+        message = f"季包临时接收目录创建失败，放弃本次整季入库：{rapid_target.get('temp_dir_error') or 'unknown'}"
+        _report_transfer_failed_safely(client, source_kind=source_kind, source_id=source_id, files=files, errors=[message], message=message, lease_id=lease_id)
+        if ack and event_id:
+            try:
+                client.ack_device_events([event_id], result='failed', message=message[:500])
+            except Exception:
+                pass
+        return {
+            'ok': False,
+            'message': message,
+            'event_id': event_id,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'success_count': 0,
+            'total': len(files),
+            'errors': [{'error': message}],
+            'share_transfer': share_transfer,
+            'preflight': locals().get('preflight', {}),
+            'rapid_target': rapid_target,
+            'aborted_season_package': True,
+        }
 
     ok_count = 0
     errors = []

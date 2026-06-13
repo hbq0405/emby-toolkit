@@ -1332,6 +1332,61 @@ def _local_event_should_bypass_transfer_lease(event: Dict[str, Any], source: Dic
     return {'bypass': False}
 
 
+def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    """完结季已有有效 115 分享通道时，不提前排 Rapid 秒传许可。
+
+    分享转存不需要签名 holder，也不应该被 Rapid lease 的短窗口节流挡住；
+    如果后续 share_import 失败，消费端会在回退 Rapid 前再单独申请 lease。
+    """
+    payload = _event_source_payload(event)
+    source = source if isinstance(source, dict) else {}
+    source_kind = str(
+        payload.get('source_kind')
+        or source.get('source_kind')
+        or (event or {}).get('source_kind')
+        or ''
+    ).strip()
+    source_id = str(
+        payload.get('source_id')
+        or payload.get('source_ref_id')
+        or source.get('source_id')
+        or source.get('source_ref_id')
+        or (event or {}).get('source_ref_id')
+        or ''
+    ).strip()
+    if source_kind != 'completed_season' or not source_id:
+        return {'bypass': False}
+
+    try:
+        from_payload = getattr(shared_subscription_service, '_completed_share_channel_from_payload', None)
+        if callable(from_payload):
+            channel = from_payload(payload) or {}
+            if str(channel.get('status') or '').strip().lower() == 'valid' and channel.get('share_code'):
+                return {
+                    'bypass': True,
+                    'reason': 'valid_completed_season_share_channel_in_payload',
+                    'channel_id': str(channel.get('channel_id') or ''),
+                }
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 预判 payload 分享通道失败，交给消费端兜底：{e}")
+
+    try:
+        channel_for_transfer = getattr(shared_subscription_service, '_completed_share_channel_for_transfer', None)
+        if callable(channel_for_transfer):
+            client = SharedCenterClient()
+            channel = channel_for_transfer(client, source_id, payload) or {}
+            if str(channel.get('status') or '').strip().lower() == 'valid' and channel.get('share_code'):
+                return {
+                    'bypass': True,
+                    'reason': 'valid_completed_season_share_channel',
+                    'channel_id': str(channel.get('channel_id') or ''),
+                }
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询完结季分享通道失败，仍按 Rapid 许可门禁处理：{e}")
+
+    return {'bypass': False}
+
+
 def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
     if _completed_share_event_type(event) == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
         return handle_create_completed_season_share_event(event, ack=bool(kwargs.get('ack', True)))
@@ -1352,6 +1407,13 @@ def _consume_device_event_with_transfer_gate(original_consume, event, *args, **k
             'total': 0,
             'message': gate.get('message') or '该资源已被共享资源配置拦截',
         }
+    share_bypass = _completed_season_share_lease_bypass(event, source)
+    if share_bypass.get('bypass'):
+        logger.info(
+            f"  ➜ [共享资源] 跳过中心秒传许可：完结季存在有效 115 分享通道，"
+            f"直接尝试分享转存，channel={share_bypass.get('channel_id') or '-'}"
+        )
+        return original_consume(event, *args, **kwargs)
     _wait_transfer_lease_for_event(event)
     return original_consume(event, *args, **kwargs)
 
