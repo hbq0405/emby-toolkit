@@ -2144,8 +2144,6 @@ def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -
     }
 
 
-
-
 def _raw_batch_missing_for_files(files: List[Dict[str, Any]], uploaded_sha1s: Dict[str, bool]) -> List[Dict[str, Any]]:
     missing = []
     seen = set()
@@ -2158,47 +2156,6 @@ def _raw_batch_missing_for_files(files: List[Dict[str, Any]], uploaded_sha1s: Di
         if not uploaded_sha1s.get(sha1):
             missing.append({'sha1': sha1, 'file_name': (f or {}).get('file_name') or (f or {}).get('name') or sha1})
     return missing
-
-
-def _center_raw_need_repair(client: SharedCenterClient, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    sha1s = []
-    by_sha1 = {}
-    for f in files or []:
-        sha1 = _norm_sha1((f or {}).get('sha1'))
-        if sha1 and sha1 not in by_sha1:
-            by_sha1[sha1] = f
-            sha1s.append(sha1)
-    if not sha1s:
-        return []
-    try:
-        resp = client.raw_batch(sha1s)
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源维护] 查询中心 RAW 状态失败: {e}")
-        return []
-    need = []
-    missing = set(_norm_sha1(x) for x in (resp.get('missing') or []) if _norm_sha1(x))
-    for sha1 in missing:
-        f = by_sha1.get(sha1) or {}
-        need.append({'sha1': sha1, 'file_name': f.get('file_name') or f.get('name') or sha1, 'reason': 'center_raw_missing'})
-    for item in resp.get('items') or []:
-        sha1 = _norm_sha1((item or {}).get('sha1'))
-        if not sha1:
-            continue
-        if item.get('raw_ready') is False:
-            f = by_sha1.get(sha1) or {}
-            need.append({'sha1': sha1, 'file_name': f.get('file_name') or f.get('name') or sha1, 'reason': item.get('raw_ready_reason') or 'center_raw_not_ready'})
-            continue
-        if not _summary_json_usable_for_center((item or {}).get('summary_json') or {}):
-            f = by_sha1.get(sha1) or {}
-            need.append({'sha1': sha1, 'file_name': f.get('file_name') or f.get('name') or sha1, 'reason': 'center_summary_missing'})
-    return need
-
-def _upload_raw_if_needed(client: SharedCenterClient, file_info: Dict[str, Any]) -> bool:
-    entry = _prepare_raw_upload_entry(file_info)
-    if not entry:
-        return False
-    client.upload_raw_ffprobe(entry['sha1'], entry['raw_ffprobe_json'], size=entry.get('size'), summary_json=entry.get('summary_json'))
-    return True
 
 
 def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, animation_meta: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -2995,19 +2952,6 @@ def _disable_local_episode_sources_for_completed_season(parent_series_tmdb_id: s
     return disabled
 
 
-def _candidate_bool(candidate: Dict[str, Any], *keys: str) -> bool:
-    for key in keys:
-        value = (candidate or {}).get(key)
-        if isinstance(value, bool):
-            if value:
-                return True
-            continue
-        text = str(value or '').strip().lower()
-        if text in ('1', 'true', 'yes', 'y', 'on', 'completed', 'complete', 'ended', 'end', '完结', '已完结'):
-            return True
-    return False
-
-
 def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider: str = '', files: List[Dict[str, Any]] = None) -> bool:
     """判断 Season 是否应该登记为“客户端完结季包”。
 
@@ -3027,7 +2971,6 @@ def _candidate_is_completed_season(candidate: Dict[str, Any], *, source_provider
         return True
     watching_status = str(candidate.get('watching_status') or '').strip().lower()
     return watching_status == 'completed'
-
 
 
 def _title_looks_invalid_for_center(title: Any, tmdb_id: str = '') -> bool:
@@ -3173,18 +3116,6 @@ def _safe_json_list(value: Any) -> List[Any]:
         except Exception:
             return []
     return []
-
-
-def _safe_json_dict(value: Any) -> Dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-    return {}
 
 
 def _first_display_text(*values: Any) -> str:
@@ -3446,14 +3377,6 @@ def _local_display_meta_rows_for_candidate(candidate: Dict[str, Any]) -> Dict[st
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 查询本地展示元数据失败: {e}")
     return out
-
-
-def _local_display_meta_row_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    rows = _local_display_meta_rows_for_candidate(candidate)
-    item_type = str((candidate or {}).get('item_type') or '').strip()
-    if item_type == 'Movie':
-        return rows.get('movie') or {}
-    return rows.get('season') or rows.get('series') or {}
 
 
 def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
