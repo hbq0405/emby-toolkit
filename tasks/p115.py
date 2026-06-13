@@ -386,6 +386,150 @@ def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=N
     return list(grouped.values()), unresolved
 
 
+
+
+def _manual_correct_as_list(value):
+    """把前端传入的 record_ids/ids 宽松归一成列表。"""
+    if value in (None, '', [], {}):
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, (list, tuple, set)):
+                return list(parsed)
+        except Exception:
+            pass
+        return [x.strip() for x in text.split(',') if x.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _manual_correct_normalize_season(value):
+    if value in (None, '', [], {}):
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return value
+
+
+def _manual_correct_task_update(progress, message):
+    try:
+        import task_manager
+        task_manager.update_status_from_thread(progress, message)
+    except Exception:
+        pass
+    logger.info(message)
+
+
+def task_manual_correct_organize_records(
+    processor=None,
+    record_ids=None,
+    ids=None,
+    items=None,
+    tmdb_id=None,
+    media_type=None,
+    target_cid=None,
+    season_num=None,
+    **kwargs,
+):
+    """通用任务入口：批量手动重组整理记录。
+
+    该任务专门给 /api/tasks/run 调用，必须走 media 处理器队列，避免手动重组
+    与 Webhook 入库、高频刷新、网盘扫描等整理链路并发串门。
+    """
+    normalized_items = []
+
+    if isinstance(items, str):
+        text = items.strip()
+        if text:
+            try:
+                items = json.loads(text)
+            except Exception as e:
+                raise ValueError(f"items 不是合法 JSON: {e}")
+        else:
+            items = []
+
+    if items:
+        if not isinstance(items, (list, tuple)):
+            raise ValueError("items 必须是数组")
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            record_id = item.get('id') or item.get('record_id')
+            if not record_id:
+                continue
+            normalized_items.append({
+                'id': record_id,
+                'tmdb_id': str(item.get('tmdb_id') or '').strip(),
+                'media_type': str(item.get('media_type') or 'movie').strip(),
+                'target_cid': str(item.get('target_cid') or '').strip(),
+                'season_num': _manual_correct_normalize_season(item.get('season_num')),
+            })
+    else:
+        rid_list = _manual_correct_as_list(record_ids if record_ids not in (None, '', [], {}) else ids)
+        if not rid_list and kwargs.get('record_id'):
+            rid_list = [kwargs.get('record_id')]
+        for record_id in rid_list:
+            normalized_items.append({
+                'id': record_id,
+                'tmdb_id': str(tmdb_id or '').strip(),
+                'media_type': str(media_type or 'movie').strip(),
+                'target_cid': str(target_cid or '').strip(),
+                'season_num': _manual_correct_normalize_season(season_num),
+            })
+
+    if not normalized_items:
+        raise ValueError("没有可重组的整理记录")
+
+    grouped = {}
+    group_order = []
+    for item in normalized_items:
+        if not item.get('tmdb_id') or not item.get('media_type') or not item.get('target_cid'):
+            raise ValueError(f"重组参数不完整: record_id={item.get('id')}")
+        key = (item['tmdb_id'], item['media_type'], item['target_cid'], item.get('season_num'))
+        if key not in grouped:
+            grouped[key] = []
+            group_order.append(key)
+        grouped[key].append(item['id'])
+
+    total = sum(len(grouped[k]) for k in group_order)
+    done = 0
+    _manual_correct_task_update(0, f"  ➜ [手动重组任务] 已进入媒体任务队列，待处理 {total} 条记录 / {len(group_order)} 个分组")
+
+    # 延迟导入，避免 tasks.p115 与 handler.p115_service 顶层互相导入形成循环。
+    from handler.p115_service import _batch_manual_correct
+
+    for index, key in enumerate(group_order, start=1):
+        if processor and getattr(processor, 'is_stop_requested', lambda: False)():
+            raise InterruptedError("手动重组任务已被用户中止")
+
+        group_record_ids = grouped[key]
+        group_tmdb_id, group_media_type, group_target_cid, group_season_num = key
+        progress = int((done / max(total, 1)) * 90)
+        _manual_correct_task_update(
+            progress,
+            f"  ➜ [手动重组任务] ({index}/{len(group_order)}) 开始重组 {len(group_record_ids)} 条记录 -> TMDb {group_tmdb_id}"
+        )
+
+        _batch_manual_correct(
+            group_record_ids,
+            group_tmdb_id,
+            group_media_type,
+            group_target_cid,
+            group_season_num,
+        )
+        done += len(group_record_ids)
+
+    result = {'groups': len(group_order), 'records': total}
+    _manual_correct_task_update(100, f"  ➜ [手动重组任务] 完成：共处理 {total} 条记录 / {len(group_order)} 个分组")
+    return result
+
+
 # ★ 构建一个轻量级的独立探测器，供增量/全量同步任务生成 mediainfo 使用
 class _StandaloneProber(P115MediaAnalyzerMixin):
     def __init__(self, client):

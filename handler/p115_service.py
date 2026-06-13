@@ -8933,15 +8933,39 @@ class ManualCorrectTaskQueue:
 
     @classmethod
     def _process_batch(cls, key, record_ids):
+        """旧接口兼容层：收集到同批请求后，提交给统一 media 任务队列执行。"""
         tmdb_id, media_type, target_cid, season_num = key
+        record_ids = list(record_ids or [])
+        if not record_ids:
+            return
+
         try:
-            _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num)
+            import task_manager
+
+            def _queued_manual_correct_task(processor=None):
+                return _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num)
+
+            success = task_manager.submit_task(
+                task_function=_queued_manual_correct_task,
+                task_name=f"手动重组整理记录({len(record_ids)}条)",
+                processor_type='media',
+            )
+            if success:
+                logger.info(
+                    f"  ➜ [批量重组] 已提交到媒体任务队列：{len(record_ids)} 条记录 -> "
+                    f"ID:{tmdb_id}, type={media_type}, target={target_cid}, season={season_num or '-'}"
+                )
+            else:
+                logger.warning(
+                    f"  ➜ [批量重组] 提交媒体任务队列失败，可能已有任务正在运行："
+                    f"{len(record_ids)} 条记录 -> ID:{tmdb_id}"
+                )
         except Exception as e:
-            logger.error(f"  ➜ 批量重组失败: {e}", exc_info=True)
+            logger.error(f"  ➜ 批量重组提交任务队列失败: {e}", exc_info=True)
 
 
 def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
-    """手动纠错入口：将任务加入缓冲队列，实现批量重组"""
+    """手动纠错兼容入口：保留旧 API 的 2 秒合批，但最终必须进入媒体任务队列。"""
     ManualCorrectTaskQueue.add(record_id, tmdb_id, media_type, target_cid, season_num)
     return True
 

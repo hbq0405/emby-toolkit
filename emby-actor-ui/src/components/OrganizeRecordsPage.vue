@@ -486,36 +486,57 @@ const openBatchEditModal = () => {
   showEditModal.value = true;
 };
 
+const findRecordRowById = (id) => {
+  for (const row of tableData.value) {
+    if (row.id === id) return row;
+    if (Array.isArray(row.children)) {
+      const child = row.children.find(c => c.id === id);
+      if (child) return child;
+    }
+  }
+  return null;
+};
+
 const submitCorrection = async () => {
   const isBatchReclassify = editForm.value.ids.length > 1 && editForm.value.batch_mode === 'reclassify';
 
   if (!isBatchReclassify && !editForm.value.tmdb_id) { message.warning('TMDb ID 不能为空！'); return; }
   if (!editForm.value.target_cid) { message.warning('目标分类不能为空！'); return; }
 
+  const items = editForm.value.ids.map(id => {
+    const payload = { id: id, target_cid: editForm.value.target_cid };
+    if (isBatchReclassify) {
+      const row = findRecordRowById(id);
+      payload.tmdb_id = row?.tmdb_id || '';
+      payload.media_type = row?.media_type || 'movie';
+      payload.season_num = row?.season_number ?? null;
+    } else {
+      payload.tmdb_id = editForm.value.tmdb_id;
+      payload.media_type = editForm.value.media_type;
+      payload.season_num = editForm.value.season_num;
+    }
+    return payload;
+  });
+
+  if (items.some(item => !item.tmdb_id || !item.media_type || !item.target_cid)) {
+    message.warning('存在缺少 TMDb ID、媒体类型或目标分类的记录，无法提交重组任务。');
+    return;
+  }
+
   submitting.value = true;
   try {
-    const promises = editForm.value.ids.map(id => {
-      let payload = { id: id, target_cid: editForm.value.target_cid };
-      if (isBatchReclassify) {
-        const row = tableData.value.find(r => r.id === id);
-        payload.tmdb_id = row.tmdb_id;
-        payload.media_type = row.media_type || 'movie';
-        payload.season_num = row.season_number || null; 
-      } else {
-        payload.tmdb_id = editForm.value.tmdb_id;
-        payload.media_type = editForm.value.media_type;
-        payload.season_num = editForm.value.season_num;
-      }
-      return axios.post('/api/p115/records/correct', payload);
+    await axios.post('/api/tasks/run', {
+      task_name: 'manual-correct-organize-records',
+      items
     });
-    
-    await Promise.all(promises);
-    message.success(`成功发送 ${promises.length} 个重组指令！`);
+
+    message.success(`已提交 ${items.length} 条记录的手动重组任务，请在顶部任务进度查看。`);
     showEditModal.value = false;
     checkedRowKeys.value = [];
     fetchRecords();
   } catch (error) {
-    message.error(error.message || '部分或全部操作失败，请检查后端日志');
+    const msg = error.response?.data?.error || error.response?.data?.message || error.message || '手动重组任务提交失败，请检查后端日志';
+    message.error(msg);
   } finally { submitting.value = false; }
 };
 
