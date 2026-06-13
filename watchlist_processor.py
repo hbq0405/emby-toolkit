@@ -438,27 +438,45 @@ class WatchlistProcessor:
 
                 # --- 4. 复活判定逻辑 ---
                 
-                # 计算本地已有的最大季号
+                # 计算本地已有的最大季号，以及该季的本地集数
                 local_max_season = 0
+                local_max_season_episodes = 0
                 if emby_seasons_state:
                     valid_local_seasons = [s for s in emby_seasons_state.keys() if s > 0]
                     if valid_local_seasons:
                         local_max_season = max(valid_local_seasons)
+                        local_max_season_episodes = len(emby_seasons_state[local_max_season])
 
                 # 获取 TMDb 上的总季数
                 tmdb_seasons = tmdb_details.get('seasons', [])
                 valid_tmdb_seasons = [s for s in tmdb_seasons if s.get('season_number', 0) > 0]
                 if not valid_tmdb_seasons: continue
-                
-                tmdb_max_season = max((s.get('season_number', 0) for s in valid_tmdb_seasons), default=0)
 
-                # 核心判断：如果有比本地更新的季
-                if tmdb_max_season > local_max_season:
-                    for season_info in valid_tmdb_seasons:
-                        new_season_num = season_info.get('season_number')
-                        if new_season_num <= local_max_season: continue
+                # 核心判断：遍历所有季，寻找“新季”或“集数增加的老季”
+                for season_info in valid_tmdb_seasons:
+                    new_season_num = season_info.get('season_number')
+                    
+                    # 条件1：这是全新的季
+                    is_new_season = new_season_num > local_max_season
+                    
+                    # 条件2：这是一季打天下的老季，但 TMDb 的总集数 > 本地已有的集数
+                    tmdb_ep_count = season_info.get('episode_count', 0)
+                    is_updated_old_season = (new_season_num == local_max_season) and (tmdb_ep_count > local_max_season_episodes)
 
-                        air_date_str = season_info.get('air_date')
+                    # 如果既不是新季，老季也没更新，直接跳过
+                    if not (is_new_season or is_updated_old_season): 
+                        continue
+
+                    air_date_str = season_info.get('air_date')
+                    
+                    # ★ 关键修复：如果是老季更新，季的 air_date 可能是几年前，会被下方的时间锁拦截。
+                    # 我们需要用最新一集的播出时间，或者强制设为今天以放行。
+                    if is_updated_old_season:
+                        last_ep = tmdb_details.get('last_episode_to_air')
+                        if last_ep and last_ep.get('air_date'):
+                            air_date_str = last_ep.get('air_date')
+                        else:
+                            air_date_str = today.strftime('%Y-%m-%d') # 兜底放行
                         # ... (日期推断逻辑保持不变) ...
                         if not air_date_str:
                             # 尝试深层查询
