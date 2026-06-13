@@ -558,16 +558,25 @@ def _register_local_rapid_holder(client: SharedCenterClient, *, source_kind: str
         sha1 = _norm_sha1(file_info.get('sha1') or meta.get('sha1'))
         if not sha1:
             return
-        client.register_rapid_sign_holder({
+        normalized_kind = _normalize_source_kind(source_kind or file_info.get('source_kind') or '')
+        holder_payload = {
             'sha1': sha1,
             'size': _rapid_size_to_int(file_info.get('size') or file_info.get('file_size') or meta.get('size'), 0) or None,
-            'source_kind': source_kind or file_info.get('source_kind') or '',
-            'source_id': source_id or file_info.get('source_id') or file_info.get('source_ref_id') or '',
             'file_name': file_info.get('file_name') or file_info.get('name') or meta.get('file_name') or '',
             'preid': file_info.get('preid') or meta.get('preid') or '',
-            'meta_json': {'from': 'rapid_transfer_success'},
-        })
-        logger.debug(f"  ➜ [负载均衡签名] 已登记本机为源客户端")
+            'meta_json': {
+                'from': 'rapid_transfer_success',
+                **(file_info.get('_rapid_holder_meta') if isinstance(file_info.get('_rapid_holder_meta'), dict) else {}),
+            },
+        }
+        if normalized_kind in ('movie', 'episode', 'completed_season'):
+            holder_payload['source_kind'] = normalized_kind
+        source_ref = str(source_id or file_info.get('source_id') or file_info.get('source_ref_id') or '').strip()
+        if source_ref:
+            holder_payload['source_id'] = source_ref
+        client.register_rapid_sign_holder(holder_payload)
+        suffix = f"：{message_prefix}" if message_prefix else ""
+        logger.debug(f"  ➜ [负载均衡签名] 已登记本机为临时可签名 holder{suffix}")
     except Exception as e:
         logger.debug(f"  ➜ [负载均衡签名] 登记本机 holder 失败: {e}")
 
@@ -721,6 +730,187 @@ def _remember_rapid_preid_hint(
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 缓存共享秒传 preid 提示失败：{file_name} -> {e}")
         return ''
+
+
+def _rapid_resp_first_value(response: Any, *keys: str) -> str:
+    """从 115 秒传响应顶层/data/嵌套 file_info 中提取字段。"""
+    candidates = []
+    if isinstance(response, dict):
+        candidates.append(response)
+        data = response.get('data')
+        if isinstance(data, dict):
+            candidates.append(data)
+            for nested_key in ('file_info', 'info', 'file', 'item'):
+                nested = data.get(nested_key)
+                if isinstance(nested, dict):
+                    candidates.append(nested)
+        for nested_key in ('file_info', 'info', 'file', 'item'):
+            nested = response.get(nested_key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+    for box in candidates:
+        for key in keys:
+            value = box.get(key)
+            if value not in (None, '', [], {}):
+                return str(value).strip()
+    return ''
+
+
+def _rapid_list_items(resp: Any) -> List[Dict[str, Any]]:
+    if not isinstance(resp, dict):
+        return []
+    data = resp.get('data')
+    if isinstance(data, list):
+        return [dict(x) for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        for key in ('list', 'items', 'files', 'data'):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [dict(x) for x in value if isinstance(x, dict)]
+    for key in ('list', 'items', 'files'):
+        value = resp.get(key)
+        if isinstance(value, list):
+            return [dict(x) for x in value if isinstance(x, dict)]
+    return []
+
+
+def _rapid_file_identity_from_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    item = item if isinstance(item, dict) else {}
+    return {
+        'fid': str(item.get('fid') or item.get('file_id') or item.get('id') or item.get('cid') or '').strip(),
+        'parent_id': str(item.get('parent_id') or item.get('pid') or item.get('cid_parent') or '').strip(),
+        'pick_code': str(item.get('pick_code') or item.get('pickcode') or item.get('pc') or '').strip(),
+        'sha1': _norm_sha1(item.get('sha1') or item.get('sha') or item.get('file_sha1')),
+        'file_name': str(item.get('file_name') or item.get('name') or item.get('n') or item.get('fn') or '').strip(),
+        'size': _rapid_size_to_int(item.get('size') or item.get('fs') or item.get('file_size') or item.get('size_byte'), 0),
+    }
+
+
+def _prime_rapid_saved_file_cache(
+    *,
+    p115,
+    file_info: Dict[str, Any],
+    response: Any,
+    target_cid: str,
+    sha1: str,
+    size: int,
+    file_name: str,
+    rapid_meta: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    """秒传成功后尽快把新文件写入 p115_filesystem_cache。
+
+    中心端只知道“这个设备持有 sha1”，真正签名时客户端还需要本地 pick_code。
+    追更新集广播后的几秒窗口里，入库扫描还没跑完；这里先从秒传响应或目标目录
+    反查新文件并落缓存，随后才能安全上报 signable pending holder。
+    """
+    rapid_meta = dict(rapid_meta or {})
+    target_cid = str(target_cid or '').strip()
+    sha1 = _norm_sha1(sha1)
+    file_name = str(file_name or '').strip()
+    size = _rapid_size_to_int(size, 0)
+    preid = _norm_sha1((file_info or {}).get('preid') or rapid_meta.get('preid') or rapid_meta.get('pre_sha1') or rapid_meta.get('pre_sha1_128k'))
+
+    found = {
+        'fid': _rapid_resp_first_value(response, 'fid', 'file_id', 'id'),
+        'parent_id': _rapid_resp_first_value(response, 'parent_id', 'pid') or target_cid,
+        'pick_code': _rapid_resp_first_value(response, 'pick_code', 'pickcode', 'pc'),
+        'sha1': sha1,
+        'file_name': file_name,
+        'size': size,
+        'preid': preid,
+    }
+
+    def _usable_identity(value: Dict[str, Any]) -> bool:
+        return bool(value.get('fid') and value.get('pick_code') and value.get('file_name'))
+
+    if not _usable_identity(found) and p115 and target_cid:
+        # 秒传响应经常不带 pick_code，目录列表一般会在 115 完成写入后立即可见。
+        for attempt in range(3):
+            try:
+                if attempt:
+                    time.sleep(0.6)
+                resp = p115.fs_files({'cid': target_cid, 'limit': 1000, 'offset': 0, 'show_dir': 1})
+                for item in _rapid_list_items(resp):
+                    ident = _rapid_file_identity_from_item(item)
+                    if not ident.get('fid'):
+                        continue
+                    same_sha1 = bool(sha1 and ident.get('sha1') == sha1)
+                    same_name_size = bool(file_name and ident.get('file_name') == file_name and (not size or ident.get('size') in (0, size)))
+                    if same_sha1 or same_name_size:
+                        for key, value in ident.items():
+                            if value not in (None, '', 0, [], {}):
+                                found[key] = value
+                        found['parent_id'] = found.get('parent_id') or target_cid
+                        break
+                if _usable_identity(found):
+                    break
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源] 秒传成功后反查 115 新文件失败：{file_name or sha1[:12]} -> {e}")
+
+    if _usable_identity(found):
+        try:
+            P115CacheManager.save_file_cache(
+                fid=found.get('fid'),
+                parent_id=found.get('parent_id') or target_cid,
+                name=found.get('file_name') or file_name,
+                sha1=sha1,
+                pick_code=found.get('pick_code'),
+                size=size or found.get('size') or 0,
+                preid=preid or None,
+            )
+            logger.debug(
+                f"  ➜ [共享资源] 已预热秒传新文件缓存：{found.get('file_name') or file_name}, "
+                f"sha1={sha1[:12]}..., pc={(found.get('pick_code') or '')[:8]}..., cid={found.get('parent_id') or target_cid}"
+            )
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 写入秒传新文件缓存失败：{file_name or sha1[:12]} -> {e}")
+
+    return {k: v for k, v in found.items() if v not in (None, '', [], {})}
+
+
+def _register_pending_rapid_holder_after_success(
+    client: SharedCenterClient,
+    *,
+    source_kind: str,
+    source_id: str,
+    file_info: Dict[str, Any],
+    result: Dict[str, Any],
+) -> bool:
+    """秒传成功后立即上报临时可签名 holder，不等待整理入库/正式共享登记。"""
+    try:
+        info = dict(file_info or {})
+        holder_file = result.get('holder_file') if isinstance(result.get('holder_file'), dict) else {}
+        if holder_file:
+            info.update({k: v for k, v in holder_file.items() if v not in (None, '', [], {})})
+        meta = info.get('rapid_meta_json') if isinstance(info.get('rapid_meta_json'), dict) else {}
+        sha1 = _norm_sha1(info.get('sha1') or meta.get('sha1'))
+        if not sha1:
+            return False
+        # 没有 pick_code 的 holder 未来无法真的签名；宁可不上报，避免被中心派单后失败扣分。
+        cache_row = _lookup_p115_cache_for_file(info)
+        if not str((cache_row or {}).get('pick_code') or info.get('pick_code') or info.get('pc') or '').strip():
+            logger.debug(f"  ➜ [负载均衡签名] 跳过临时 holder 上报：本地尚无 pick_code，sha1={sha1[:12]}...")
+            return False
+        info['_rapid_holder_meta'] = {
+            'role': 'signable_pending',
+            'signable_pending': True,
+            'pending_reason': 'rapid_transfer_success_before_library_share',
+            'formal_source_pending': True,
+            'source_kind_at_transfer': _normalize_source_kind(source_kind),
+            'source_id_at_transfer': str(source_id or ''),
+            'registered_at_epoch': time.time(),
+        }
+        _register_local_rapid_holder(
+            client,
+            source_kind=source_kind,
+            source_id=source_id,
+            file_info=info,
+            message_prefix='秒传成功后临时可签名',
+        )
+        return True
+    except Exception as e:
+        logger.debug(f"  ➜ [负载均衡签名] 临时 holder 上报失败：{e}")
+        return False
 
 
 def _remember_share_preid_hints(
@@ -1588,7 +1778,17 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
             rapid_meta=rapid_meta,
             response=resp,
         )
-        return {'ok': True, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
+        holder_file = _prime_rapid_saved_file_cache(
+            p115=p115,
+            file_info=file_info,
+            response=resp,
+            target_cid=target_cid,
+            sha1=sha1,
+            size=size,
+            file_name=file_name,
+            rapid_meta=rapid_meta,
+        )
+        return {'ok': True, 'response': resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid, 'holder_file': holder_file}
 
     sign_req = _rapid_sign_request_from_response(resp)
     if sign_req and shared_center_enabled():
@@ -1607,6 +1807,16 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
                     file_name=file_name,
                     rapid_meta=rapid_meta,
                     response=retry.get('response'),
+                )
+                retry['holder_file'] = _prime_rapid_saved_file_cache(
+                    p115=p115,
+                    file_info=file_info,
+                    response=retry.get('response'),
+                    target_cid=target_cid,
+                    sha1=sha1,
+                    size=size,
+                    file_name=file_name,
+                    rapid_meta=rapid_meta,
                 )
                 return retry
             return {
@@ -2805,6 +3015,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     ok_count = 0
     errors = []
     success_sources = []
+    pending_holder_registered = 0
     transfer_token = f"rapid:{event_id or source_id}:{int(time.time() * 1000)}"
     abort_event = threading.Event()
 
@@ -2828,7 +3039,20 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             result = rapid_save_file(f, target_cid=target_cid)
             if result.get('ok'):
                 result['attempt'] = 1
-                return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
+                if isinstance(result.get('holder_file'), dict) and result.get('holder_file'):
+                    f['_rapid_holder_file'] = result.get('holder_file')
+                # 单文件追更场景：秒传成功后立即上报临时可签名 holder，
+                # 不再等待整理入库/自动共享，避免广播热启动窗口内所有签名都打到最早源端。
+                pending_registered = False
+                if not is_package_transfer:
+                    pending_registered = _register_pending_rapid_holder_after_success(
+                        client,
+                        source_kind=file_source_kind,
+                        source_id=file_source_id,
+                        file_info=f,
+                        result=result,
+                    )
+                return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result, 'pending_holder_registered': bool(pending_registered)}
             error = {
                 'file': file_label,
                 'response': result.get('response'),
@@ -2860,6 +3084,8 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                     continue
                 if item.get('ok'):
                     ok_count += 1
+                    if item.get('pending_holder_registered'):
+                        pending_holder_registered += 1
                     success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
                 else:
                     errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
@@ -2875,6 +3101,8 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             item = _rapid_transfer_one(f)
             if item.get('ok'):
                 ok_count += 1
+                if item.get('pending_holder_registered'):
+                    pending_holder_registered += 1
                 success_sources.append((item.get('kind'), item.get('id'), item.get('file') or {}))
             else:
                 errors.append(item.get('error') or {'file': (item.get('file') or {}).get('sha1'), 'error': 'unknown'})
@@ -2923,9 +3151,21 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'aborted_season_package': True,
         }
 
-    # 不在“秒传成功”阶段登记 holder。文件只是落入待整理目录，尚未完成整理入库；
-    # 只有 webhook 入库后触发自动共享登记，才代表本机真正具备可签名能力。
+    # 秒传成功即可先登记为 signable pending holder：只参与中心签名调度，
+    # 不进入共享资源展示；后续整理入库/正式共享成功后会被正式源登记覆盖。
     if ok_count:
+        if is_package_transfer:
+            # 季包只有全量成功后才批量上报临时 holder；否则失败清理临时目录后，
+            # 已删除的半季文件会变成僵尸签名源。
+            for report_kind, report_id, report_file in success_sources:
+                if _register_pending_rapid_holder_after_success(
+                    client,
+                    source_kind=report_kind,
+                    source_id=report_id,
+                    file_info=report_file or {},
+                    result={'holder_file': (report_file or {}).get('_rapid_holder_file') or {}},
+                ):
+                    pending_holder_registered += 1
         report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for report_kind, report_id, report_file in success_sources:
             report_kind = _normalize_source_kind(report_kind)
@@ -2982,6 +3222,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         'source_kind': source_kind, 'source_id': source_id,
         'success_count': ok_count, 'total': len(files), 'errors': errors,
         'report_results': report_results, 'report_errors': report_errors,
+        'pending_holder_registered': pending_holder_registered,
         'skipped_report_sources': skipped_report_sources,
         'preflight': locals().get('preflight', {}),
         'rapid_target': locals().get('rapid_target', {}),
