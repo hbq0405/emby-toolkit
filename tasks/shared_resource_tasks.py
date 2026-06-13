@@ -510,6 +510,7 @@ def _event_source_payload(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_completed_season_share'
+PRO_QUOTA_AUTH_EVENT_TYPE = 'pro_quota_auth_check'
 _COMPLETED_SHARE_SYNC_LOCK = threading.Lock()
 
 
@@ -1122,9 +1123,41 @@ def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
     event_type = str((event or {}).get('event_type') or payload.get('event_type') or '').strip()
     if source_kind not in {'movie', 'episode', 'completed_season'} or not source_id:
         return {}
-    if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE if 'PRO_QUOTA_AUTH_EVENT_TYPE' in globals() else 'pro_quota_auth_check'}:
+    if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE}:
         return {}
     return {'source_kind': source_kind, 'source_id': source_id, 'sha1': sha1}
+
+
+def _direct_center_transfer_lease(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """SharedCenterClient 未升级 acquire_transfer_lease 时，直接 POST 中心 lease 接口。
+
+    前端手动秒传和后台监听都走这里兜底，避免客户端文件已打补丁，
+    但 handler.shared_center_client 还没新增方法时静默退回旧链路。
+    """
+    cfg = settings_db.get_shared_resource_config() or {}
+    base_url = str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
+    token = str(cfg.get('p115_shared_device_token') or '').strip()
+    if not base_url or not token:
+        raise RuntimeError('共享中心地址或设备 Token 未配置')
+    headers = {
+        'X-Device-Token': token,
+        'Content-Type': 'application/json',
+        'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
+    }
+    kwargs = {'timeout': 30}
+    getter = getattr(config_manager, 'get_proxies_for_requests', None)
+    if callable(getter):
+        proxies = getter()
+        if proxies:
+            kwargs['proxies'] = proxies
+    resp = requests.post(f'{base_url}/api/v1/transfers/lease', headers=headers, json=payload, **kwargs)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {'raw_text': resp.text[:1000]}
+    if resp.status_code >= 400:
+        raise RuntimeError(f'中心秒传许可接口 HTTP {resp.status_code}: {data}')
+    return data if isinstance(data, dict) else {'data': data}
 
 
 def _client_call_transfer_lease(client: SharedCenterClient, identity: Dict[str, str], event: Dict[str, Any]) -> Dict[str, Any]:
@@ -1139,7 +1172,7 @@ def _client_call_transfer_lease(client: SharedCenterClient, identity: Dict[str, 
             'client_gate': 'shared_resource_tasks_transfer_lease_v1',
         },
     }
-    # 兼容不同版本 SharedCenterClient：优先走显式方法，其次走常见私有 request 方法。
+    # 兼容不同版本 SharedCenterClient：优先走显式方法，其次走常见私有 request 方法，最后直连中心。
     method = getattr(client, 'acquire_transfer_lease', None)
     if callable(method):
         return method(payload)
@@ -1154,7 +1187,7 @@ def _client_call_transfer_lease(client: SharedCenterClient, identity: Dict[str, 
                 return fn('POST', '/api/v1/transfers/lease', json=payload)
             except TypeError:
                 return fn('POST', '/api/v1/transfers/lease', payload)
-    raise RuntimeError('SharedCenterClient 缺少 acquire_transfer_lease/post/request 方法')
+    return _direct_center_transfer_lease(payload)
 
 
 def _wait_transfer_lease_for_event(event: Dict[str, Any], *, max_wait_seconds: int = 600) -> Dict[str, Any]:
@@ -1186,11 +1219,18 @@ def _wait_transfer_lease_for_event(event: Dict[str, Any], *, max_wait_seconds: i
                     event['payload_json'] = payload
                 except Exception:
                     pass
-            if attempts > 1:
-                logger.info(
-                    f"  ➜ [共享资源] 秒传许可已发放：{identity.get('source_kind')}:{identity.get('source_id')}，"
-                    f"尝试 {attempts} 次，lease={lease_id or '-'}"
-                )
+            holder_count = last_resp.get('holder_count') or last_resp.get('available_holder_count')
+            active_count = last_resp.get('active_count') or last_resp.get('active_lease_count')
+            extra = []
+            if holder_count not in (None, ''):
+                extra.append(f"holders={holder_count}")
+            if active_count not in (None, ''):
+                extra.append(f"active={active_count}")
+            logger.info(
+                f"  ➜ [共享资源] 秒传许可已发放：{identity.get('source_kind')}:{identity.get('source_id')}，"
+                f"尝试 {attempts} 次，lease={lease_id or '-'}"
+                + (f"，{', '.join(extra)}" if extra else '')
+            )
             return {'ok': True, 'lease': last_resp, 'attempts': attempts}
         retry_after = _safe_int(last_resp.get('retry_after'), 30)
         retry_after = max(5, min(retry_after, 120))
@@ -1227,8 +1267,23 @@ def _consume_device_event_with_transfer_gate(original_consume, event, *args, **k
         }
     lease_gate = _wait_transfer_lease_for_event(event)
     if lease_gate.get('lease'):
-        logger.debug(f"  ➜ [共享资源] 秒传许可结果：{lease_gate}")
+        logger.info(f"  ➜ [共享资源] 秒传许可结果：{lease_gate}")
     return original_consume(event, *args, **kwargs)
+
+
+def consume_device_event_with_transfer_gate(event, *args, **kwargs):
+    """公开给前端手动秒传路由使用的消费入口。
+
+    后台监听通过 poll_and_consume_once 临时包装 consume_device_event；
+    前端手动秒传是 Flask 路由直接调用消费函数，不经过长轮询包装，
+    所以必须显式走同一层秒传许可/本地门禁。
+    """
+    original = getattr(shared_subscription_service, 'consume_device_event', None)
+    if not callable(original):
+        return {'ok': False, 'message': 'consume_device_event 不可用', 'success_count': 0, 'total': 0, 'errors': []}
+    if getattr(original, '_etk_transfer_gate_wrapped', False):
+        return original(event, *args, **kwargs)
+    return _consume_device_event_with_transfer_gate(original, event, *args, **kwargs)
 
 
 def poll_and_consume_once(*args, **kwargs):

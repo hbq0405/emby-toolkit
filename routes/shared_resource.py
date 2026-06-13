@@ -1680,7 +1680,9 @@ def api_center_import():
         return jsonify({'success': False, 'message': preflight.get('message') or '该资源已被配置拦截', 'data': preflight}), 400
 
     event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
-    result = consume_device_event(event, ack=False)
+    # 前端手动秒传不经过后台长轮询 poll_and_consume_once，不能直接调用
+    # handler.shared_subscription_service.consume_device_event；否则会绕过秒传许可 lease。
+    result = shared_tasks.consume_device_event_with_transfer_gate(event, ack=False)
     status = 200 if result.get('ok') else 400
     message = result.get('message') or f"秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}"
     return jsonify({'success': bool(result.get('ok')), 'message': message, 'data': result}), status
