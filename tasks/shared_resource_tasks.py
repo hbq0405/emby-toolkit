@@ -1288,17 +1288,58 @@ def _wait_transfer_lease_for_event(event: Dict[str, Any], *, max_wait_seconds: i
                 f"{identity}，reason={reason}，last={last_resp}"
             )
             return {'ok': True, 'lease_timeout': True, 'lease': last_resp, 'attempts': attempts}
-        logger.info(
+        logger.debug(
             f"  ➜ [共享资源] 中心秒传许可排队中：{_event_transfer_lease_label(event, identity)}，"
             f"{retry_after}s 后重试，reason={reason}"
         )
         time.sleep(retry_after)
 
 
+def _local_event_should_bypass_transfer_lease(event: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    """本地必跳过的事件不要先去中心排 lease。
+
+    consume_device_event 自己已经会 ACK 并返回跳过；这里仅提前识别，
+    让禁止单集/本机源这类本地跳过不参与中心许可证排队。
+    """
+    source = source if isinstance(source, dict) else {}
+    try:
+        episode_guard = getattr(shared_subscription_service, '_event_episode_transfer_disabled_guard', None)
+        if callable(episode_guard):
+            blocked = episode_guard(event if isinstance(event, dict) else {}, source) or {}
+            if blocked.get('blocked'):
+                return {
+                    'bypass': True,
+                    'reason': 'episode_transfer_disabled',
+                    'message': blocked.get('message') or '已按配置跳过单集秒传',
+                    'details': blocked,
+                }
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 预判单集秒传禁用失败，交给消费端兜底：{e}")
+
+    try:
+        own_checker = getattr(shared_subscription_service, '_file_is_own_center_source', None)
+        if callable(own_checker):
+            client = SharedCenterClient()
+            if own_checker(source, source, client):
+                return {
+                    'bypass': True,
+                    'reason': 'self_owned_source',
+                    'message': '本机共享源事件，跳过中心秒传许可排队，交给消费端直接 ACK 跳过。',
+                }
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 预判本机源失败，交给消费端兜底：{e}")
+
+    return {'bypass': False}
+
+
 def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
     if _completed_share_event_type(event) == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
         return handle_create_completed_season_share_event(event, ack=bool(kwargs.get('ack', True)))
     source = _event_source_payload(event)
+    bypass = _local_event_should_bypass_transfer_lease(event, source)
+    if bypass.get('bypass'):
+        logger.info(f"  ➜ [共享资源] 跳过中心秒传许可：{bypass.get('message') or bypass.get('reason')}")
+        return original_consume(event, *args, **kwargs)
     gate = _shared_transfer_gate(source)
     if not gate.get('ok'):
         logger.info(f"  ➜ [共享资源] 秒传拦截：{gate.get('message') or gate.get('reason')}")
