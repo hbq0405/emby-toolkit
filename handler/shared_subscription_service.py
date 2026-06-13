@@ -723,6 +723,56 @@ def _remember_rapid_preid_hint(
         return ''
 
 
+def _remember_share_preid_hints(
+    files: List[Dict[str, Any]],
+    *,
+    target_cid: str,
+    source_kind: str = 'completed_season',
+    source_id: str = '',
+    response: Any = None,
+) -> int:
+    """分享转存成功后，把中心 manifest 里的 preid 预登记给整理扫描。
+
+    115 分享转存不会返回每个文件的 preid，后续待整理扫描从 /files 也拿不到 preid；
+    但中心 manifest 已经有 sha1/size/preid。这里复用 Rapid 的 preid hint 机制，
+    让 P115CacheManager.save_file_cache / ensure_file_preid 在扫描新文件时直接命中，
+    避免再取直链 Range 0-131071 在线计算。
+    """
+    count = 0
+    target_cid = str(target_cid or '').strip()
+    for item in files or []:
+        if not isinstance(item, dict):
+            continue
+        info = _normalize_rapid_file_info(item)
+        meta = info.get('rapid_meta_json') if isinstance(info.get('rapid_meta_json'), dict) else {}
+        sha1 = _norm_sha1(info.get('sha1') or meta.get('sha1'))
+        preid = _norm_sha1(info.get('preid') or meta.get('preid') or meta.get('pre_sha1') or meta.get('pre_sha1_128k'))
+        if not sha1 or not preid:
+            continue
+        file_name = str(info.get('file_name') or info.get('name') or meta.get('file_name') or meta.get('name') or sha1).strip()
+        size = _rapid_size_to_int(info.get('size') or info.get('file_size') or meta.get('size'), 0)
+        hint_meta = dict(meta or {})
+        hint_meta.setdefault('preid', preid)
+        hint_meta.setdefault('source_kind', source_kind or info.get('source_kind') or '')
+        hint_meta.setdefault('source_id', source_id or info.get('source_id') or info.get('source_ref_id') or '')
+        if _remember_rapid_preid_hint(
+            info,
+            target_cid=target_cid,
+            sha1=sha1,
+            size=size,
+            file_name=file_name,
+            rapid_meta=hint_meta,
+            response=response,
+        ):
+            count += 1
+    if count:
+        logger.info(
+            f"  ➜ [共享资源] 分享转存已预登记中心 preid 提示："
+            f"{count}/{len(files or [])}，target_cid={target_cid or '-'}"
+        )
+    return count
+
+
 def _json_obj(value) -> Dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -2394,6 +2444,13 @@ def _try_completed_season_share_transfer(
         logger.info(f"  ➜ [共享资源] 完结季优先走 115 分享转存：《{title}》，channel={channel_id or '-'}，target_cid={target_cid}")
         resp = p115.share_import(share_code, receive_code, target_cid)
         if _share_import_success(resp):
+            preid_hint_count = _remember_share_preid_hints(
+                files,
+                target_cid=target_cid,
+                source_kind='completed_season',
+                source_id=source_id,
+                response=resp,
+            )
             report = client.report_transfer(
                 'completed_season',
                 source_id,
@@ -2403,7 +2460,7 @@ def _try_completed_season_share_transfer(
                 message=f"本机通过 115 分享转存成功：{len(files or []) or int(channel.get('file_count') or 1)} 个视频；channel={channel_id or '-'}",
             )
             _kick_115_organize_detached(reason=f'share:{source_id}')
-            return {'ok': True, 'transfer_mode': 'share', 'channel': channel, 'response': resp, 'report': report}
+            return {'ok': True, 'transfer_mode': 'share', 'channel': channel, 'response': resp, 'report': report, 'preid_hint_count': preid_hint_count}
 
         status = _share_import_failed_status(resp)
         msg = f"115 分享转存失败，准备回退 Rapid：{resp}"
