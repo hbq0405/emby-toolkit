@@ -80,25 +80,6 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     return settings_db.save_shared_resource_config(data)
 
 
-def _center_request_kwargs(timeout: int) -> Dict[str, Any]:
-    import config_manager
-    kwargs = {'timeout': timeout}
-    getter = getattr(config_manager, 'get_proxies_for_requests', None)
-    if callable(getter):
-        proxies = getter()
-        if proxies:
-            kwargs['proxies'] = proxies
-    return kwargs
-
-
-def _center_headers_for_cfg(cfg: Dict[str, Any]) -> Dict[str, str]:
-    return {
-        'X-Device-Token': str((cfg or {}).get('p115_shared_device_token') or '').strip(),
-        'Content-Type': 'application/json',
-        'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
-    }
-
-
 def _fetch_center_credit() -> Dict[str, Any]:
     client = SharedCenterClient()
     pro_report = {}
@@ -1263,10 +1244,6 @@ def _center_flag_meta(row: Dict[str, Any], flag_key: str, meta_key: str) -> Dict
                 meta.setdefault(flag_key, True)
                 return meta
     return {}
-
-
-def _center_source_is_animation(row: Dict[str, Any]) -> bool:
-    return bool(_center_flag_meta(row, 'is_animation', 'animation_meta_json'))
 
 
 def _center_source_is_completed_certified(row: Dict[str, Any]) -> bool:
