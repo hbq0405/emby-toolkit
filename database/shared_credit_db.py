@@ -113,6 +113,7 @@ def add_credit_ledger(event_type, delta=0, reason='', ref_id='', source_id='', v
 def _center_reason_label(reason: str) -> str:
     mapping = {
         'initial_credit': '设备注册基础贡献值',
+        'center_initial_credit': '基础贡献点',
         'source_registered': '共享资源首次被验证入池',
         'rapid_source_served': '共享资源被其他设备秒传',
         'rapid_source_consumed': '从共享中心秒传资源',
@@ -128,12 +129,9 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
     items = list(items or [])
     device_snapshot = device_snapshot or {}
     device_id = device_snapshot.get('device_id') or device_snapshot.get('id') or ''
-    if device_id:
-        items.append({
-            'id': f'base:{device_id}', 'device_id': device_id, 'delta': 20, 'reason': 'initial_credit',
-            'ref_id': device_id, 'source_id': '', 'tmdb_id': '', 'item_type': '', 'title': '基础贡献值',
-            'file_name': '', 'created_at': device_snapshot.get('created_at') or device_snapshot.get('last_seen_at'),
-        })
+    # 不再本地伪造“基础贡献点 +20”。
+    # 中心端 /credit/ledger 会返回真实 center_initial_credit 流水；
+    # 本地额外 append 会让“未真正发放/已被幂等拦截”的场景也显示 +20，造成刷点错觉。
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM shared_credit_ledger_local WHERE event_type LIKE 'center_%'")

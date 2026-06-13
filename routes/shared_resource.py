@@ -1693,6 +1693,19 @@ def api_center_import():
 def api_register_center_device():
     cfg = _shared_resource_config_payload()
     install_id = str(cfg.get('p115_shared_install_id') or '').strip() or uuid.uuid4().hex
+    existing_token = str(cfg.get('p115_shared_device_token') or '').strip()
+    if existing_token:
+        # 这个接口只负责“首次注册”。已注册设备不要再从页面或脚本反复申请 token，
+        # 避免把“重置设备”当成刷基础贡献点入口。token 真损坏时，先在配置里清空 token 再注册。
+        cfg['p115_shared_install_id'] = install_id
+        cfg['p115_shared_resource_enabled'] = True
+        saved = _save_shared_config(cfg)
+        return jsonify({
+            'success': True,
+            'message': '共享中心设备已注册，无需重复注册；如设备 Token 已损坏，请先在配置中清空 Token 后重新注册。',
+            'data': saved,
+            'device': {'device_token': existing_token, 'install_id': install_id, 'already_registered': True},
+        })
     name = socket.gethostname() or 'ETK Device'
     try:
         client = SharedCenterClient()

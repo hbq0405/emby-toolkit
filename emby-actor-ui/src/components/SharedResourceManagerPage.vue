@@ -14,9 +14,9 @@
                 <template #icon><n-icon :component="SettingsIcon" /></template>
                 配置
               </n-button>
-              <n-button :type="hasCenterDevice ? 'default' : 'warning'" ghost :loading="registeringDevice" @click="registerCenterDevice">
+              <n-button v-if="!hasCenterDevice" type="warning" ghost :loading="registeringDevice" @click="registerCenterDevice">
                 <template #icon><n-icon :component="SyncIcon" /></template>
-                {{ hasCenterDevice ? '重置设备' : '注册设备' }}
+                注册设备
               </n-button>
               <n-button :loading="refreshingCredit" @click="refreshCredit">
                 <template #icon><n-icon :component="RefreshIcon" /></template>
@@ -3674,30 +3674,17 @@ const setupCenterInfiniteObserver = () => {
 };
 
 const registerCenterDevice = async () => {
-  const doRegister = async () => {
-    registeringDevice.value = true;
-    try {
-      const res = await axios.post('/api/shared/resources/center/device/register', {});
-      message.success(res.data?.message || '中心设备已注册');
-      await Promise.allSettled([loadSummary(), loadLedger(), loadCenterSources()]);
-    } catch (e) {
-      message.error(e.response?.data?.message || '注册中心设备失败');
-    } finally {
-      registeringDevice.value = false;
-    }
-  };
-
-  if (hasCenterDevice.value) {
-    dialog.warning({
-      title: '重置中心设备令牌',
-      content: '这会重新向共享中心申请 device_token，并覆盖共享资源独立配置中的设备 Token。通常只在 token 失效或迁移中心后使用。确定继续吗？',
-      positiveText: '重置',
-      negativeText: '取消',
-      onPositiveClick: doRegister,
-    });
-    return;
+  if (hasCenterDevice.value) return;
+  registeringDevice.value = true;
+  try {
+    const res = await axios.post('/api/shared/resources/center/device/register', {});
+    message.success(res.data?.message || '中心设备已注册');
+    await Promise.allSettled([loadSummary(), loadLedger(), loadCenterSources()]);
+  } catch (e) {
+    message.error(e.response?.data?.message || '注册中心设备失败');
+  } finally {
+    registeringDevice.value = false;
   }
-  await doRegister();
 };
 
 const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献点已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献点失败'); } finally { refreshingCredit.value = false; } };
