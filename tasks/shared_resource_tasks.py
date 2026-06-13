@@ -942,8 +942,10 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
         return {'ok': True, 'skipped': True, 'message': '已有分享状态同步正在运行', 'checked': 0}
     try:
         rows = shared_share_db.list_completed_season_share_channels(
-            # active 状态用于正常审核同步；bad/disabled 状态用于清理历史“已取消”分享记录。
-            statuses=['pending_review', 'valid', 'creating', 'expired', 'review_failed', 'disabled'],
+            # 只同步“未定态/异常态/本地取消态”。
+            # valid 分享不再进入高频维护轮询：正常通道不向中心反复上报，
+            # 失效漏网时由消费端 share_import 失败被动下架对应 channel。
+            statuses=['pending_review', 'creating', 'expired', 'review_failed', 'disabled'],
             limit=limit,
             need_check=True,
         )
@@ -1068,24 +1070,43 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                     elif delete_resp.get('cancelled_only'):
                         msg = (msg + '；已取消分享但删除记录失败')[:1000]
 
-                center_resp = client.update_completed_season_share_status(channel_id, {
-                    'status': status,
-                    'review_status': status_info.get('review_status') or '',
-                    'status_message': msg,
-                    'raw_json': raw_status_json,
-                })
-                saved = shared_share_db.update_completed_season_share_channel(
-                    channel_id,
-                    status=status,
-                    review_status=status_info.get('review_status') or '',
-                    status_message=msg,
-                    raw_json={**raw_status_json, 'center_status_response': center_resp},
-                    last_checked_at='NOW()',
-                    last_reported_at='NOW()',
-                )
+                # 增量上报：只有状态发生变化，或命中失效/违规终态时，才写中心事件。
+                # 典型噪音是 valid -> valid / pending_review -> pending_review，
+                # 这些只更新本地 last_checked_at，不再制造 completed_season_share_status_update。
+                terminal_status = status in {'expired', 'review_failed'}
+                status_changed = bool(row_status and row_status != status)
+                should_report_center = bool(terminal_status or status_changed)
+
+                if should_report_center:
+                    center_resp = client.update_completed_season_share_status(channel_id, {
+                        'status': status,
+                        'review_status': status_info.get('review_status') or '',
+                        'status_message': msg,
+                        'raw_json': raw_status_json,
+                    })
+                    saved = shared_share_db.update_completed_season_share_channel(
+                        channel_id,
+                        status=status,
+                        review_status=status_info.get('review_status') or '',
+                        status_message=msg,
+                        raw_json={**raw_status_json, 'center_status_response': center_resp},
+                        last_checked_at='NOW()',
+                        last_reported_at='NOW()',
+                    )
+                else:
+                    center_resp = {'ok': True, 'skipped': True, 'reason': 'status_unchanged'}
+                    saved = shared_share_db.update_completed_season_share_channel(
+                        channel_id,
+                        status=status,
+                        review_status=status_info.get('review_status') or '',
+                        status_message=msg,
+                        raw_json={**raw_status_json, 'center_status_skipped': True, 'reason': 'status_unchanged'},
+                        last_checked_at='NOW()',
+                    )
+
                 local_deleted = {}
                 center_ok = not (isinstance(center_resp, dict) and center_resp.get('ok') is False)
-                if status in {'expired', 'review_failed'} and center_ok and delete_resp.get('state') is not False:
+                if terminal_status and should_report_center and center_ok and delete_resp.get('state') is not False:
                     # 失效/违规也是分享通道终态。中心已同步后删除本地缓存，避免下轮继续打 115 API。
                     local_deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
                 items.append({
@@ -1093,6 +1114,8 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                     'source_id': source_id,
                     'status': status,
                     'ok': True,
+                    'reported_center': bool(should_report_center),
+                    'skipped_center_update': not should_report_center,
                     'deleted_local_channel': bool(local_deleted),
                     'local': local_deleted or saved,
                 })
