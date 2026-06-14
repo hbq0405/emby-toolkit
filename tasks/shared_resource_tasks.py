@@ -669,116 +669,6 @@ def _extract_completed_share_payload(resp: Dict[str, Any], *, receive_code: str 
     }
 
 
-def _p115_cookie_headers_for_share() -> Dict[str, str]:
-    """共享任务内置 115 分享 HTTP 调用头。只读现有 Cookie，不改 p115_service。"""
-    try:
-        from handler.p115_service import get_115_tokens, get_115_ua
-        _, _, cookie, app_type = get_115_tokens()
-        cookie = str(cookie or '').strip()
-        if not cookie:
-            raise RuntimeError('未配置 115 Cookie，无法创建分享')
-        return {
-            'Cookie': cookie,
-            'User-Agent': get_115_ua(app_type or 'web'),
-            'Accept': 'application/json, text/plain, */*',
-            'Origin': 'https://115.com',
-            'Referer': 'https://115.com/',
-        }
-    except Exception as e:
-        raise RuntimeError(str(e))
-
-
-def _p115_share_json_request(method: str, url: str, *, data: Dict[str, Any] | None = None,
-                            params: Dict[str, Any] | None = None, timeout: int = 30) -> Dict[str, Any]:
-    """在 shared_resource_tasks 内直接调用 115 分享接口，避免 p115.share_create 内部二段调用卡死。"""
-    resp = requests.request(
-        method,
-        url,
-        headers=_p115_cookie_headers_for_share(),
-        data=data or None,
-        params=params or None,
-        timeout=timeout,
-    )
-    try:
-        payload = resp.json()
-    except Exception:
-        payload = {'state': False, 'error_msg': f'115 分享接口返回非 JSON: HTTP {resp.status_code}; {resp.text[:300]}'}
-    if isinstance(payload, dict):
-        payload.setdefault('http_status', resp.status_code)
-        # 115 有些接口只给 errno/code；复用本文件已有判断口径。
-        payload['state'] = _p115_ok(payload)
-        return payload
-    return {'state': False, 'http_status': resp.status_code, 'error_msg': str(payload)[:500]}
-
-
-def _create_115_filelist_share_native(file_ids: List[str], *, receive_code: str = '', share_duration: int = -1,
-                                      title: str = '') -> Dict[str, Any]:
-    """只在共享任务里创建文件列表分享，不改 p115_service。
-
-    旧 p115.share_create = share_send + updateshare。现在卡在这条链路时，任务线程会一直不返回。
-    这里拆成两步：share/send 成功拿到 share_code 后马上落本地/上报中心；updateshare 只做
-    有超时的 best-effort，失败不吞掉已经创建成功的 share_code。
-    """
-    ids = [str(x or '').strip() for x in (file_ids or []) if str(x or '').strip()]
-    if not ids:
-        return {'state': False, 'error_msg': '缺少 file_id，无法创建分享'}
-
-    send_payload = {
-        'file_ids': ','.join(ids),
-        'ignore_warn': 1,
-        'is_asc': 0,
-        'order': 'user_ptime',
-    }
-    logger.info(f"  ➜ [共享资源] 调用 115 原生 share/send 创建文件列表分享：items={len(ids)}{('，' + title) if title else ''}")
-    send_resp = _p115_share_json_request('POST', 'https://webapi.115.com/share/send', data=send_payload, timeout=30)
-    share_payload = _extract_completed_share_payload(send_resp, receive_code='')
-    share_code = share_payload.get('share_code') or ''
-    if not _p115_ok(send_resp) or not share_code:
-        return send_resp
-
-    update_payload = {
-        'share_code': share_code,
-        'auto_fill_recvcode': 0,
-        'receive_user_limit': '',
-        'share_duration': share_duration,
-    }
-    if receive_code:
-        update_payload['receive_code'] = str(receive_code).strip()
-        update_payload['is_custom_code'] = 1
-
-    update_resp: Dict[str, Any]
-    try:
-        logger.info(f"  ➜ [共享资源] 调用 115 原生 updateshare 更新分享设置：share_code={share_code}, duration={share_duration}")
-        update_resp = _p115_share_json_request('POST', 'https://webapi.115.com/share/updateshare', data=update_payload, timeout=20)
-    except Exception as e:
-        update_resp = {'state': False, 'error_msg': str(e), '_stage': 'share_update'}
-
-    out = dict(send_resp or {})
-    data = out.get('data') if isinstance(out.get('data'), dict) else {}
-    data = dict(data or {})
-    data.setdefault('share_code', share_code)
-    data.setdefault('share_url', share_payload.get('share_url') or f'https://115.com/s/{share_code}')
-    data['share_duration'] = share_duration
-    data['update_response'] = update_resp
-    if receive_code:
-        # 保持旧 share_create 的返回兼容：调用方会把 receive_code 写本地/中心。
-        # 若 updateshare 失败，raw_json 里会保留 update_response，后续排查不丢信息。
-        data['receive_code'] = str(receive_code).strip()
-    elif share_payload.get('receive_code'):
-        data['receive_code'] = share_payload.get('receive_code')
-    out['data'] = data
-    out['share_code'] = data.get('share_code')
-    out['share_url'] = data.get('share_url')
-    if data.get('receive_code'):
-        out['receive_code'] = data.get('receive_code')
-    out['state'] = True
-    if not _p115_ok(update_resp):
-        out['_share_update_failed'] = True
-        out['_share_update_error'] = _p115_error(update_resp)
-        logger.warning(f"  ➜ [共享资源] 115 分享已创建但更新设置失败：share_code={share_code}, err={out['_share_update_error']}")
-    return out
-
-
 def _completed_share_status_from_info(resp: Dict[str, Any], *, allow_implicit_valid: bool = True) -> Dict[str, str]:
     """把 115 分享状态响应映射为中心状态。
 
@@ -921,47 +811,36 @@ def _share_channel_is_logical(row: Dict[str, Any] = None, source_id: str = '') -
     )
 
 
-def _logical_share_report_payload_from_row(row: Dict[str, Any], channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """把本地 logical channel 的完整分享字段拼成中心 report payload。
-
-    逻辑季分享不能再走 status-only 接口：旧 status 接口没有 share_code/share_url
-    字段，中心会知道“115 审核通过”却拿不到转存凭证，最终前端只能显示秒传。
-    """
-    row = row if isinstance(row, dict) else {}
-    report_payload = dict(payload or {})
-    report_payload.update({
-        'channel_id': channel_id,
-        'share_code': row.get('share_code') or report_payload.get('share_code') or '',
-        'receive_code': row.get('receive_code') or report_payload.get('receive_code') or '',
-        'share_url': row.get('share_url') or report_payload.get('share_url') or '',
-        'share_title': row.get('share_title') or row.get('root_name') or report_payload.get('share_title') or '',
-        'root_fid': row.get('root_fid') or report_payload.get('root_fid') or '',
-        'root_cid': row.get('root_cid') or report_payload.get('root_cid') or '',
-        'root_name': row.get('root_name') or report_payload.get('root_name') or '',
-        'file_count': row.get('file_count') or report_payload.get('file_count') or 0,
-        'total_size': row.get('total_size') or report_payload.get('total_size') or 0,
-    })
-    raw = report_payload.get('raw_json') if isinstance(report_payload.get('raw_json'), dict) else {}
-    raw = dict(raw or {})
-    raw.setdefault('share_kind', 'logical_season')
-    raw.setdefault('report_source', 'local_share_status_sync')
-    report_payload['raw_json'] = raw
-    return report_payload
-
-
 def _update_center_share_channel_status(client: SharedCenterClient, row: Dict[str, Any], channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if _share_channel_is_logical(row):
-        group_id = str((row or {}).get('center_source_id') or '').strip()
-        if not group_id:
-            return {'ok': False, 'message': '逻辑季分享本地记录缺少 group_id(center_source_id)'}
-        if not hasattr(client, 'report_logical_season_share'):
-            return {'ok': False, 'message': 'SharedCenterClient 缺少 report_logical_season_share'}
-        # 逻辑季一律走 report 接口，携带 share_code / receive_code / share_url。
-        # 不再调用 status-only 接口，避免中心只收到“审核通过”状态却没有转存凭证。
-        return client.report_logical_season_share(
-            group_id,
-            _logical_share_report_payload_from_row(row, channel_id, payload),
-        )
+    if _share_channel_is_logical(row) and hasattr(client, 'update_logical_season_share_status'):
+        try:
+            return client.update_logical_season_share_status(channel_id, payload)
+        except Exception as e:
+            # 兼容旧逻辑季分享：本地 channel 已存在且 115 后台正常，但中心端当时未落
+            # logical_season_share_channels，/status 会 404。这里用 group_id 走 report 接口
+            # 补建中心 channel，并带上 share_code，否则中心会继续认为没有可转存通道。
+            group_id = str((row or {}).get('center_source_id') or '').strip()
+            if group_id and hasattr(client, 'report_logical_season_share'):
+                report_payload = dict(payload or {})
+                report_payload.update({
+                    'channel_id': channel_id,
+                    'share_code': (row or {}).get('share_code') or report_payload.get('share_code') or '',
+                    'receive_code': (row or {}).get('receive_code') or report_payload.get('receive_code') or '',
+                    'share_url': (row or {}).get('share_url') or report_payload.get('share_url') or '',
+                    'share_title': (row or {}).get('share_title') or (row or {}).get('root_name') or report_payload.get('share_title') or '',
+                    'root_fid': (row or {}).get('root_fid') or report_payload.get('root_fid') or '',
+                    'root_cid': (row or {}).get('root_cid') or report_payload.get('root_cid') or '',
+                    'root_name': (row or {}).get('root_name') or report_payload.get('root_name') or '',
+                    'file_count': (row or {}).get('file_count') or report_payload.get('file_count') or 0,
+                    'total_size': (row or {}).get('total_size') or report_payload.get('total_size') or 0,
+                })
+                raw = report_payload.get('raw_json') if isinstance(report_payload.get('raw_json'), dict) else {}
+                raw = dict(raw or {})
+                raw.setdefault('status_update_fallback_error', str(e))
+                raw.setdefault('share_kind', 'logical_season')
+                report_payload['raw_json'] = raw
+                return client.report_logical_season_share(group_id, report_payload)
+            raise
     return {'ok': True, 'skipped': True, 'message': '旧 completed_season 分享通道本地跳过，中心只维护 logical_season_share_channels。'}
 
 
@@ -1115,8 +994,12 @@ def handle_create_completed_season_share_event(event: Dict[str, Any], *, ack: bo
     })
 
     try:
+        from handler.p115_service import P115Service
+        p115 = P115Service.get_client()
+        if not p115:
+            raise RuntimeError('115 客户端未初始化')
         logger.info(f"  ➜ [完结季分享] 开始创建 115 分享：{title}，items={len(share_ids)}，channel={channel_id}")
-        create_resp = _create_115_filelist_share_native(share_ids, receive_code=receive_code, share_duration=-1, title=title)
+        create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
     except Exception as e:
         message = f'创建 115 分享异常：{e}'
         report = _report_completed_share_failure(client, source_id=source_id, channel_id=channel_id, local_source=local_source, status='failed', message=message, raw_json={'exception': str(e)}, event_id=event_id)
@@ -1132,11 +1015,16 @@ def handle_create_completed_season_share_event(event: Dict[str, Any], *, ack: bo
             client.ack_device_events([event_id], result='ok', message=message[:500])
         return {'ok': False, 'event_id': event_id, 'message': message, 'report': report, 'create_response': create_resp}
 
-    # 创建分享后不再立刻逐条调用 /share/shareinfo。
-    # 115 Web 后台审核状态由后续批量 /share/slist 同步；这里先把 share_code
-    # 上报中心，避免创建任务卡在单条 shareinfo 或第三方库无 timeout 调用上。
-    info_resp = {'state': True, 'skipped': True, 'stage': 'share_info_after_create_skipped'}
-    status_info = {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
+    info_resp = {}
+    try:
+        # 创建后查询“本账号自己的分享信息”，不要走 /share/snap。
+        # snap 即使 state=True 也不代表 115 审核已通过。
+        info_resp = p115.share_info(share_payload.get('share_code'))
+    except Exception as e:
+        info_resp = {'state': False, 'error_msg': str(e), 'stage': 'share_info_after_create'}
+    status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=False)
+    if status_info.get('status') == 'failed':
+        status_info = {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
     report_payload = {
         'channel_id': channel_id,
         'status': status_info.get('status') or 'pending_review',
@@ -1274,8 +1162,12 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
     })
 
     try:
+        from handler.p115_service import P115Service
+        p115 = P115Service.get_client()
+        if not p115:
+            raise RuntimeError('115 客户端未初始化')
         logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：{title}，items={len(share_ids)}，channel={channel_id}")
-        create_resp = _create_115_filelist_share_native(share_ids, receive_code=receive_code, share_duration=-1, title=title)
+        create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
     except Exception as e:
         message = f'创建逻辑季 115 分享异常：{e}'
         report = _report_logical_share_failure(client, group_id=group_id, channel_id=channel_id, status='failed', message=message,
@@ -1293,10 +1185,14 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
             client.ack_device_events([event_id], result='ok', message=message[:500])
         return {'ok': False, 'event_id': event_id, 'message': message, 'report': report, 'create_response': create_resp}
 
-    # 创建分享后不再立刻逐条调用 /share/shareinfo。
-    # 逻辑季分享只要拿到 share_code 就先完整上报；审核状态由批量 /share/slist 同步修正。
-    info_resp = {'state': True, 'skipped': True, 'stage': 'share_info_after_create_skipped'}
-    status_info = {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
+    info_resp = {}
+    try:
+        info_resp = p115.share_info(share_payload.get('share_code'))
+    except Exception as e:
+        info_resp = {'state': False, 'error_msg': str(e), 'stage': 'share_info_after_create'}
+    status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=False)
+    if status_info.get('status') == 'failed':
+        status_info = {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
 
     report_payload = {
         'channel_id': channel_id,
@@ -1373,10 +1269,7 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
             # 只同步“未定态/异常态/本地取消态”。
             # valid 分享不再进入高频维护轮询：正常通道不向中心反复上报，
             # 失效漏网时由消费端 share_import 失败被动下架对应 channel。
-            # 逻辑季切换期需要把本地 valid 也周期性补报一次：
-            # 之前 status-only 上报可能把中心写成 failed，只有重新 report 完整
-            # share_code/share_url 才能恢复前端“转存”按钮。
-            statuses=['pending_review', 'creating', 'valid', 'failed', 'expired', 'review_failed', 'import_failed', 'source_unavailable', 'disabled'],
+            statuses=['pending_review', 'creating', 'expired', 'review_failed', 'disabled'],
             limit=limit,
             need_check=True,
         )
@@ -1506,10 +1399,7 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                 # 这些只更新本地 last_checked_at，不再制造 completed_season_share_status_update。
                 terminal_status = status in {'expired', 'review_failed'}
                 status_changed = bool(row_status and row_status != status)
-                is_logical_channel = _share_channel_is_logical(row)
-                # 逻辑季 valid 即使本地状态没变化，也要补报完整分享字段，
-                # 用来修复中心端已有 failed/空 share_code 的历史通道。
-                should_report_center = bool(terminal_status or status_changed or (is_logical_channel and status == 'valid'))
+                should_report_center = bool(terminal_status or status_changed)
 
                 if should_report_center:
                     center_resp = _update_center_share_channel_status(client, row, channel_id, {
