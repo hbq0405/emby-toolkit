@@ -740,11 +740,11 @@ const shareSourceText = (row) => {
   const rawAuto = Boolean(raw?.auto_gap || raw?.auto_payload || raw?.auto_task || raw?.maintenance_payload || raw?.maintenance_task || raw?.auto_share_payload || raw?.auto_context);
   const providerBackup = /(backup_mirror|backup_share|auto_backup_share|backup)/i.test(providerText) || /(备份共享|备份源|镜像共享)/.test(labelText);
   const providerAuto = /(rapid_auto_library|rapid_all_library|auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /(自动共享|自动登记|入库自动|一键全库)/.test(labelText);
-  const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created|rapid_completed_season)/i.test(providerText) || /(手动共享|完结季源|完结季收藏)/.test(labelText);
+  const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created|logical_season)/i.test(providerText) || /(手动共享|完结季源|完结季收藏)/.test(labelText);
 
   // 备份共享是中心下发的特殊来源，必须优先于自动/手动兜底判断。
   if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || rawBackup || providerBackup) return '备份共享';
-  // Rapid v2 入库自动登记/一键全库优先于 manual 兜底；rapid_completed_season 只是完结季源类型，不等于自动共享。
+  // Rapid v2 入库自动登记/一键全库优先于 manual 兜底；logical_season 只是完结季源类型，不等于自动共享。
   if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance || rawAuto || providerAuto) return '自动共享';
   if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动共享';
 
@@ -759,8 +759,8 @@ const shareRemarkNode = (row) => {
   const type = source === '自动共享' ? 'warning' : (source === '备份共享' ? 'info' : 'default');
   return h(NTag, { type, size: 'small', round: true }, { default: () => source });
 };
-const localCompletedShareChannel = (row) => row?.completed_share_channel || row?.completed_season_share_channel || {};
-const localShareChannelStatus = (row) => String(row?.share_channel_status || localCompletedShareChannel(row)?.status || 'none').toLowerCase();
+const localLogicalShareChannel = (row) => row?.completed_share_channel || {};
+const localShareChannelStatus = (row) => String(row?.share_channel_status || localLogicalShareChannel(row)?.status || 'none').toLowerCase();
 const localShareChannelTag = (row) => {
   const status = localShareChannelStatus(row);
   const meta = {
@@ -777,11 +777,7 @@ const localShareChannelTag = (row) => {
   }[status] || [status || '无', 'default'];
   return h(NTag, { type: meta[1], size: 'small', round: true }, { default: () => meta[0] });
 };
-const canCancelCompletedShare = (row) => Boolean(
-  String(row?.source_kind || '').toLowerCase() === 'completed_season'
-  && row?.has_share_channel
-  && !['disabled', 'expired', 'review_failed', 'failed'].includes(localShareChannelStatus(row))
-);
+const canCancelLogicalShare = () => false;
 const isAutoShareRow = (row) => shareSourceText(row) === '自动共享';
 const normalizedShareStatuses = (row) => [
   row?.status,
@@ -918,7 +914,7 @@ const centerResourceStats = computed(() => {
     return 0;
   };
   const movieCount = numberValue(credit.display_movie_count, credit.center_movie_count, mediaStats.movie_count, rawStats.display_movie_count, rawStats.movie_sources);
-  const seasonCount = numberValue(credit.display_season_count, credit.center_season_count, mediaStats.season_count, rawStats.display_season_count, rawStats.completed_season_sources);
+  const seasonCount = numberValue(credit.display_season_count, credit.center_season_count, mediaStats.season_count, rawStats.display_season_count, 0);
   const videoCount = numberValue(credit.video_count, mediaStats.video_count, rawStats.video_count, credit.raw_ffprobe, rawStats.raw_ffprobe);
   return { movieCount, seasonCount, videoCount };
 });
@@ -1005,9 +1001,9 @@ const shareColumns = [
       size: 'small',
       type: 'warning',
       secondary: true,
-      disabled: !canCancelCompletedShare(row),
-      title: canCancelCompletedShare(row) ? '仅取消本机托管的完结季 115 分享，不扫描或影响账号其它私人分享' : '没有可取消的完结季 115 分享',
-      onClick: () => cancelCompletedSeasonShare(row),
+      disabled: !canCancelLogicalShare(row),
+      title: canCancelLogicalShare(row) ? '逻辑季分享由中心端维护' : '逻辑季分享由中心端维护',
+      onClick: () => cancelLogicalSeasonShare(row),
     }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '取消分享' }),
     h(NButton, {
       size: 'small',
@@ -1296,7 +1292,7 @@ const appendLedgerSeasonEpisode = (base, row, { aggregate = false } = {}) => {
   if (aggregate && isLedgerConsumedRow(row) && sxx) return `${base} ${sxx}`;
   if (isLedgerSignRow(row) && sxx && exx) return `${base} ${sxx}${exx}`;
   if ((String(ctx.item_type || '').toLowerCase() === 'episode' || String(ctx.source_kind || '').toLowerCase() === 'episode') && sxx && exx) return `${base} ${sxx}${exx}`;
-  if ((String(ctx.item_type || '').toLowerCase() === 'season' || String(ctx.source_kind || '').toLowerCase() === 'completed_season') && sxx) return `${base} ${sxx}`;
+  if ((String(ctx.item_type || '').toLowerCase() === 'season' || String(ctx.source_kind || '').toLowerCase() === 'logical_season') && sxx) return `${base} ${sxx}`;
   return base;
 };
 const ledgerCreditText = (row, rows = null) => {
@@ -1844,10 +1840,10 @@ const centerStatusTag = (row) => {
 };
 const centerShareChannel = (row) => row?.share_channel
   || row?.logical_season_share_channel
-  || row?.completed_season_share_channel
+ 
   || row?.logical_group?.share_channel
   || row?.logical_group?.logical_season_share_channel
-  || row?.logical_group?.completed_season_share_channel
+ 
   || {};
 const centerLooksLogicalGroupId = (value) => /^(svg_|lsg_|logical_season_)/i.test(String(value || '').trim());
 const centerLogicalGroupId = (row) => {
@@ -1876,7 +1872,7 @@ const centerIsLogicalSeasonRow = (row) => {
     || row?.group_id
     || row?.logical_group
     || row?.best_asset_map
-    || (kind === 'completed_season' && centerLooksLogicalGroupId(groupId))
+    || false
   );
 };
 const centerIsLogicalShadowOnly = (row) => centerIsLogicalSeasonRow(row) && !row?.logical_import_available;
@@ -1933,7 +1929,7 @@ const centerSourceText = (row) => {
   if (/(rapid_auto_library|rapid_all_library|auto|自动|入库自动|一键全库|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动共享';
   if (/(hdhive|影巢)/i.test(allText)) return '影巢';
   if (/(tg_channel|telegram|频道)/i.test(allText)) return '频道';
-  if (/(manual|user_share|rapid_completed_season|手动|人工|完结季源|完结季收藏)/i.test(allText) || row?.is_manual_share) return '手动共享';
+  if (/(manual|user_share|logical_season|手动|人工|完结季源|完结季收藏)/i.test(allText) || row?.is_manual_share) return '手动共享';
 
   const label = labelParts.join(' ').trim();
   return label || '本机共享';
@@ -2221,7 +2217,7 @@ const groupCenterSources = (items, orderBy = 'latest') => {
     // 中心端 v7 会下发“集号 + SHA1 清单”的物理版本 key。优先使用它，
     // 避免旧 manifest_hash 因文件名/目录名不同，把完全相同 SHA1 的季包拆成多版本。
     const physicalKey = String(row?.physical_version_key || row?.manifest_sha1_hash || row?.sha1_manifest_hash || row?.pack_manifest_sha1_hash || '').trim();
-    if (physicalKey) return physicalKey.startsWith('completed_sha1:') || physicalKey.startsWith('pack:') ? physicalKey : `completed_sha1:${physicalKey}`;
+    if (physicalKey) return physicalKey.startsWith('pack:') ? physicalKey : `logical:${physicalKey}`;
 
     const parts = [];
     for (const child of childRowsForSignature(row)) {
@@ -4177,27 +4173,7 @@ const reregisterShare = (row) => {
   });
 };
 
-const cancelCompletedSeasonShare = (row) => {
-  if (!canCancelCompletedShare(row)) {
-    return message.warning('没有可取消的完结季 115 分享');
-  }
-  const title = row.title || row.root_name || row.file_name || '该资源';
-  dialog.warning({
-    title: '取消 115 分享',
-    content: `确定取消《${title}》当前托管的 115 分享吗？只会取消 ETK 为共享池创建的这条分享，不会扫描或影响你账号里的其它私人分享。`,
-    positiveText: '取消分享',
-    negativeText: '保留',
-    onPositiveClick: async () => {
-      try {
-        await axios.post(`/api/shared/resources/shares/${row.id}/share/cancel`, {});
-        message.success('已取消 115 分享');
-        await Promise.allSettled([loadShares(), loadCenterSources(), loadSummary(), loadLedger()]);
-      } catch (e) {
-        message.error(e.response?.data?.message || '取消分享失败');
-      }
-    }
-  });
-};
+const cancelLogicalSeasonShare = () => message.warning('逻辑季分享由中心端维护');
 
 
 const cancelShare = (row) => {

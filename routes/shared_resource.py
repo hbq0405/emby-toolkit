@@ -100,7 +100,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
         # Rapid v2 入库即共享后，普通缺口数量不再作为首页统计；首页展示主动“求共享”数量。
         'wanted_gaps': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
         'share_requests': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
-        'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0) + int(stats.get('completed_season_sources') or 0),
+        'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0),
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
         'display_movie_count': int(stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or stats.get('movie_sources') or 0),
         'display_season_count': int(stats.get('display_season_count') or (stats.get('media_stats') or {}).get('season_count') or 0),
@@ -128,7 +128,7 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
     row.setdefault('share_url', '')
     row['share_type'] = row.get('share_type') or row.get('source_kind')
     row['review_status'] = row.get('status')
-    row['root_is_dir'] = row.get('source_kind') == 'completed_season' or row.get('is_aggregated_season')
+    row['root_is_dir'] = row.get('source_kind') == 'logical_season' or row.get('is_aggregated_season')
     item_count = _safe_int(row.get('item_count') or row.get('file_count'), 0)
     if item_count <= 0:
         item_count = 1 if row.get('center_status') == 'reported' else 0
@@ -157,7 +157,6 @@ def _decorate_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         'manual_rapid': '手动登记',
         'rapid_auto_library': '入库自动登记',
         'rapid_all_library': '一键全库登记',
-        'rapid_completed_season': '完结季源',
     }.get(provider, provider or '本地秒传源')
     return row
 
@@ -316,7 +315,7 @@ def _batch_lookup_local_season_meta(rows: List[Dict[str, Any]]) -> Dict[tuple, D
             return
         item_type = str(value.get('item_type') or value.get('display_type') or '').strip().lower()
         source_kind = str(value.get('source_kind') or '').strip().lower()
-        if item_type in ('season', 'pack') or source_kind in ('season_hub', 'completed_season'):
+        if item_type in ('season', 'pack') or source_kind in ('season_hub', 'logical_season'):
             tmdb_id = str(value.get('tmdb_id') or '').strip()
             raw_season = value.get('season_number')
             season_no = _safe_int(raw_season, -1)
@@ -371,7 +370,7 @@ def _apply_local_season_meta(row: Dict[str, Any], meta_map: Dict[tuple, Dict[str
     row = dict(row or {})
     item_type = str(row.get('item_type') or row.get('display_type') or '').strip().lower()
     source_kind = str(row.get('source_kind') or '').strip().lower()
-    if item_type not in ('season', 'pack') and source_kind not in ('season_hub', 'completed_season'):
+    if item_type not in ('season', 'pack') and source_kind not in ('season_hub', 'logical_season'):
         return row
     tmdb_id = str(row.get('tmdb_id') or '').strip()
     raw_season = row.get('season_number')
@@ -425,7 +424,7 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
     center_ids = []
     for row in rows:
         kind = str(row.get('source_kind') or '').strip().lower()
-        if kind != 'completed_season':
+        if not _share_channel_is_logical(row):
             continue
         try:
             rid = int(row.get('id') or 0)
@@ -486,7 +485,6 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
         public = _local_completed_share_public(channel)
         status = str(channel.get('status') or '').strip().lower()
         row['completed_share_channel'] = public
-        row['completed_season_share_channel'] = public
         row['has_share_channel'] = True
         row['share_channel_status'] = status
         row['share_review_status'] = channel.get('review_status') or ''
@@ -845,68 +843,7 @@ def _delete_p115_share_record(p115, share_code: str) -> Dict[str, Any]:
 @shared_resource_bp.route('/shares/<int:source_id>/share/cancel', methods=['POST'])
 @admin_required
 def api_cancel_completed_season_share_channel(source_id: int):
-    """取消本机托管的完结季 115 分享；不扫描/影响用户其它 115 私人分享。"""
-    row = shared_share_db.get_local_source(source_id)
-    if not row:
-        return jsonify({'success': False, 'message': '本地共享源不存在'}), 404
-    if str(row.get('source_kind') or '').strip().lower() != 'completed_season':
-        return jsonify({'success': False, 'message': '只有完结季源才有 115 分享通道'}), 400
-    channel = shared_share_db.get_completed_season_share_channel_by_local_source(source_id) or {}
-    if not channel and row.get('center_source_id'):
-        channel = shared_share_db.get_completed_season_share_channel_by_source(row.get('center_source_id')) or {}
-    if not channel:
-        return jsonify({'success': False, 'message': '该本地完结季没有可取消的分享通道'}), 404
-    share_code = str(channel.get('share_code') or '').strip()
-    p115_resp = {'state': True, 'skipped': True, 'message': '无 share_code，仅更新本地/中心状态'}
-    if share_code:
-        try:
-            from handler.p115_service import P115Service
-            p115 = P115Service.get_client()
-            if not p115:
-                raise RuntimeError('115 客户端未初始化')
-            p115_resp = _delete_p115_share_record(p115, share_code)
-        except Exception as e:
-            return jsonify({'success': False, 'message': f'删除 115 分享记录失败：{e}', 'channel': _local_completed_share_public(channel)}), 400
-        if not _p115_share_deleted_ok(p115_resp):
-            text = _p115_response_text(p115_resp)
-            return jsonify({'success': False, 'message': f'删除 115 分享记录失败：{text[:300]}', 'channel': _local_completed_share_public(channel)}), 400
-    status = 'disabled'
-    message = '用户手动删除完结季 115 分享记录'
-    center_resp = {}
-    try:
-        center_resp = SharedCenterClient().update_completed_season_share_status(channel.get('channel_id'), {
-            'status': status,
-            'review_status': 'disabled',
-            'status_message': message,
-            'raw_json': {'p115_delete_response': p115_resp, 'local_source_id': source_id},
-        })
-    except Exception as e:
-        center_resp = {'ok': False, 'message': str(e)}
-    saved = shared_share_db.update_completed_season_share_channel(
-        channel.get('channel_id'),
-        status=status,
-        review_status='disabled',
-        status_message=message,
-        raw_json={'p115_delete_response': p115_resp, 'center_response': center_resp},
-        last_checked_at='NOW()',
-        last_reported_at='NOW()',
-    )
-    local_deleted = {}
-    center_ok = not (isinstance(center_resp, dict) and center_resp.get('ok') is False)
-    if center_ok:
-        # 分享已取消/删除且中心已收到终态后，直接删除本地 channel 缓存。
-        # 否则同步任务会把 disabled 记录反复捞出来，继续调 115 API 删除同一个 share_code。
-        local_deleted = shared_share_db.delete_completed_season_share_channel(channel.get('channel_id'))
-        saved = local_deleted or saved
-
-    return jsonify({
-        'success': True,
-        'message': '已删除完结季 115 分享记录' + ('' if center_ok else '；中心状态上报失败，已保留本地记录等待下轮同步'),
-        'item': {} if local_deleted else _local_completed_share_public(saved),
-        'deleted_local_channel': bool(local_deleted),
-        'center': center_resp,
-        'p115': p115_resp,
-    })
+    return jsonify({'success': False, 'message': '旧 completed_season 分享取消接口已停用；逻辑季分享由中心 logical_season_share_channels 管理。'}), 410
 
 
 @shared_resource_bp.route('/shares/<int:source_id>/cancel', methods=['POST'])
@@ -1261,39 +1198,10 @@ def _center_import_logical_group_id(source: Dict[str, Any], fallback: Any = '') 
 
 
 def _center_import_normalize_source(source: Dict[str, Any]) -> Dict[str, Any]:
-    """手动转存入口兜底：旧前端/旧缓存把逻辑季提交成 completed_season 时，改为 logical_season。"""
     source = dict(source or {})
     source_kind = str(source.get('source_kind') or source.get('kind') or '').strip().lower().replace('-', '_')
-    source_id = str(source.get('source_id') or source.get('source_ref_id') or '').strip()
-    logical_group = source.get('logical_group') if isinstance(source.get('logical_group'), dict) else {}
-    channel = (
-        source.get('share_channel')
-        or source.get('logical_season_share_channel')
-        or source.get('completed_season_share_channel')
-        or {}
-    )
-    channel = channel if isinstance(channel, dict) else {}
-    raw_channel = channel.get('raw_json') if isinstance(channel.get('raw_json'), dict) else {}
-    logical_group_id = _center_import_logical_group_id(source, source_id)
-    logical_marker = bool(
-        logical_group_id and (
-            _center_import_looks_like_logical_group_id(logical_group_id)
-            or source.get('logical_pool_complete')
-            or source.get('pool_complete')
-            or source.get('logical_shadow_only')
-            or source.get('logical_import_available')
-            or source.get('logical_group_id')
-            or source.get('group_id')
-            or logical_group
-            or isinstance(source.get('best_asset_map'), dict)
-            or str((channel or {}).get('share_kind') or raw_channel.get('share_kind') or '').strip() == 'logical_season'
-        )
-    )
-    if source_kind == 'completed_season' and logical_marker:
-        source['source_kind'] = 'logical_season'
-        source['source_id'] = logical_group_id
-        source['source_ref_id'] = logical_group_id
-        source['_normalized_from_source_kind'] = 'completed_season'
+    if source_kind == 'completed_season':
+        source['_legacy_completed_season_rejected'] = True
     return source
 
 
@@ -1435,7 +1343,7 @@ def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
             row['pack_item_count'] = row.get('children_count')
         if not row.get('lazy_children_kind'):
             kind = str(row.get('source_kind') or '').strip().lower()
-            row['lazy_children_kind'] = 'season_hub' if kind == 'season_hub' else 'completed_season'
+            row['lazy_children_kind'] = 'season_hub' if kind == 'season_hub' else 'logical_season'
     return row
 
 @shared_resource_bp.route('/center/sources', methods=['GET'])
@@ -1677,6 +1585,8 @@ def api_center_import():
     if not isinstance(source, dict):
         source = {}
     source = _center_import_normalize_source(source)
+    if source.get('_legacy_completed_season_rejected'):
+        return jsonify({'success': False, 'message': '旧 completed_season 已停用，请刷新中心资源库后使用 logical_season。', 'data': {'ok': False}}), 400
     source_kind = source.get('source_kind') or source.get('kind') or ''
     source_id = source.get('source_id') or source.get('source_ref_id') or ''
     if (not source_kind or not source_id) and data.get('source_ids'):

@@ -568,20 +568,6 @@ class SharedCenterClient:
     def register_episode_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post('/api/v1/sources/episode/register', payload or {}, timeout=35)
 
-    def register_completed_season_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        raise RuntimeError('旧 completed-season/register 已停用：客户端只登记电影/分集资产，完结季由中心逻辑季包接口管理。')
-
-    def update_completed_season_status(self, source_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return {'ok': False, 'skipped': True, 'message': '旧 completed_season_source 状态接口已停用，中心只认逻辑季包。'}
-
-    def disable_source(self, source_kind: str, source_id: str, message: str = '') -> Dict[str, Any]:
-        source_kind = str(source_kind or '').strip()
-        source_id = str(source_id or '').strip()
-        return self._post(f"/api/v1/sources/{urllib.parse.quote(source_kind)}/{urllib.parse.quote(source_id)}/disable", {'message': message}, timeout=25)
-
-    def completed_season_manifest(self, source_id: str) -> Dict[str, Any]:
-        raise RuntimeError('旧 completed-season manifest 已停用，请使用 logical_season_manifest(group_id)。')
-
     def logical_season_manifest(self, group_id: str) -> Dict[str, Any]:
         return self._get(f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/manifest", timeout=30)
 
@@ -612,20 +598,6 @@ class SharedCenterClient:
             timeout=15,
         )
 
-    def dispatch_completed_season_share(self, source_id: str, *, force: bool = False, reason: str = '') -> Dict[str, Any]:
-        return {'ok': False, 'skipped': True, 'message': '旧 completed-season 分享派发接口已停用，改用 dispatch_logical_season_share。'}
-
-    def report_completed_season_share(self, source_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return {'ok': False, 'skipped': True, 'message': '旧 completed-season 分享上报接口已停用，改用 report_logical_season_share。'}
-
-    def update_completed_season_share_status(self, channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return {'ok': False, 'skipped': True, 'message': '旧 completed-season 分享状态接口已停用，改用 update_logical_season_share_status。'}
-
-    def get_completed_season_share_channel(self, source_id: str) -> Dict[str, Any]:
-        return {'ok': True, 'item': {}, 'skipped': True, 'message': '旧 completed-season 分享通道查询已停用，改用 get_logical_season_share_channel。'}
-
-    def list_completed_season_share_channels(self, *, status: str = '', source_id: str = '', limit: int = 100, offset: int = 0) -> Dict[str, Any]:
-        return {'ok': True, 'items': [], 'total': 0, 'skipped': True, 'message': '旧 completed-season 分享通道列表已停用。'}
 
     def acquire_transfer_lease(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post('/api/v1/transfers/lease', payload or {}, timeout=30)
@@ -634,11 +606,9 @@ class SharedCenterClient:
         payload = {'source_kind': source_kind, 'source_id': source_id, 'result': result}
         payload.update({k: v for k, v in kwargs.items() if v is not None})
 
-        # 兼容旧的第 4 步客户端：分享转存成功上报里只有 message="本机通过 115 分享转存成功..."，
-        # 没有显式 transfer_mode。中心端第 5 步按 transfer_mode=share 才会启用 10 点封顶结算。
         if not payload.get('transfer_mode'):
             msg = str(payload.get('message') or '')
-            if str(source_kind or '').strip() in ('completed_season', 'logical_season') and result == 'success' and (
+            if str(source_kind or '').strip() in ('logical_season',) and result == 'success' and (
                 '分享转存' in msg or '115 分享' in msg or 'share_import' in msg or 'transfer_mode=share' in msg
             ):
                 payload['transfer_mode'] = 'share'

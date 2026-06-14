@@ -101,7 +101,9 @@ def _normalize_source_kind(value: str) -> str:
         return 'logical_episode'
     if text in ('logical_season', 'season_version_group'):
         return 'logical_season'
-    if text in ('completed_season', 'season', 'season_pack', 'tv_pack', 'pack'):
+    if text in ('season', 'season_pack', 'tv_pack', 'pack', 'logical_season'):
+        return 'logical_season'
+    if text == 'completed_season':
         return 'completed_season'
     if text in ('season_hub', 'hub', 'ongoing_hub'):
         return 'season_hub'
@@ -351,7 +353,7 @@ def _prepare_rapid_target_dir_for_source(
     files = [f for f in (files or []) if isinstance(f, dict)]
 
     # 单集/电影仍保持原逻辑：直接秒传到待整理根目录。
-    if normalized_kind not in ('completed_season', 'season_hub', 'logical_season') or len(files) <= 1:
+    if normalized_kind not in ('season_hub', 'logical_season') or len(files) <= 1:
         return {
             'target_cid': str(base_target_cid),
             'base_target_cid': str(base_target_cid),
@@ -774,7 +776,7 @@ def _report_transfer_failed_safely(
     lease_id: str = '',
 ) -> Dict[str, Any]:
     fail_kind = _normalize_source_kind(source_kind)
-    if fail_kind not in ('movie', 'episode', 'completed_season', 'logical_episode', 'logical_season') or not source_id:
+    if fail_kind not in ('movie', 'episode', 'logical_episode', 'logical_season') or not source_id:
         return {'ok': False, 'skipped': True, 'reason': 'unsupported_source_kind'}
     resp = _client_report_transfer_with_retry_queue(
         client,
@@ -1021,7 +1023,7 @@ def _remember_share_preid_hints(
     files: List[Dict[str, Any]],
     *,
     target_cid: str,
-    source_kind: str = 'completed_season',
+    source_kind: str = 'logical_season',
     source_id: str = '',
     response: Any = None,
 ) -> int:
@@ -1377,7 +1379,7 @@ def _episode_transfer_disabled_enabled() -> bool:
 
     优先使用 shared_resource_config，兼容后续如果把同名 key 放进 APP_CONFIG。
     启用后只跳过 episode / season_hub 这类按集消费的共享源，
-    不影响 movie 和 completed_season 完结季包。
+    不影响 movie 和 logical_season 逻辑季包。
     """
     key = 'p115_shared_disable_episode_transfer'
     try:
@@ -1393,13 +1395,13 @@ def _episode_transfer_disabled_guard(source_kind: str, source_id: str = '', payl
     """启用 p115_shared_disable_episode_transfer 时，跳过单集/连载集消费。
 
     season_hub 是公共连载季壳，但实际消费的是 episode 源；因此也归为
-    “单集秒传”并跳过。completed_season 是整季收藏包，不在此处拦截。
+    “单集秒传”并跳过。logical_season 是整季逻辑包，不在此处拦截。
     """
     if not _episode_transfer_disabled_enabled():
         return {'blocked': False}
     payload = payload if isinstance(payload, dict) else {}
     normalized_kind = _normalize_source_kind(source_kind)
-    if normalized_kind == 'completed_season' and payload.get('hub_id') and not payload.get('source_id'):
+    if normalized_kind == 'logical_season' and payload.get('hub_id') and not payload.get('source_id'):
         normalized_kind = 'season_hub'
     if not normalized_kind and payload.get('hub_id'):
         normalized_kind = 'season_hub'
@@ -1441,7 +1443,7 @@ def _event_episode_transfer_disabled_guard(event: Dict[str, Any], payload: Dict[
 
 def _center_clean_version_flagged(source_kind: str, payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
     """消费端只信中心端标签，不再根据 RAW/TMDb 现场识别纯净版。"""
-    if str(source_kind or '').strip() != 'completed_season':
+    if str(source_kind or '').strip() != 'logical_season':
         return {'blocked': False}
     candidates = [payload] + [f for f in (files or []) if isinstance(f, dict)]
     for item in candidates:
@@ -1610,7 +1612,7 @@ def _prepare_files_before_rapid_transfer(
     candidates = []
     errors = []
     hard_reject = False
-    is_completed_pack = str(source_kind or '') == 'completed_season'
+    is_completed_pack = str(source_kind or '') == 'logical_season'
     is_ongoing_hub = str(source_kind or '') == 'season_hub'
     target_cache: Dict[Tuple[str, str, Any], Dict[str, Any]] = {}
 
@@ -1946,12 +1948,7 @@ def _looks_like_logical_season_group_id(value: Any) -> bool:
 
 
 def _logical_season_group_id_from_payload(payload: Dict[str, Any], fallback: Any = '') -> str:
-    """从中心资源行里提取逻辑季 group_id。
-
-    切到逻辑季包后，前端/旧缓存偶尔仍把资源行标成 completed_season。
-    这里统一把 logical_group_id/group_id/logical_group.group_id/source_id(svg_) 归一成
-    logical_season，避免再调用已经停用的 completed_season_manifest。
-    """
+    """从中心资源行里提取逻辑季 group_id。"""
     payload = payload if isinstance(payload, dict) else {}
     logical_group = payload.get('logical_group') if isinstance(payload.get('logical_group'), dict) else {}
     candidates = (
@@ -1977,28 +1974,7 @@ def _logical_season_group_id_from_payload(payload: Dict[str, Any], fallback: Any
 
 
 def _legacy_completed_source_should_use_logical(payload: Dict[str, Any], source_id: str = '') -> str:
-    payload = payload if isinstance(payload, dict) else {}
-    group_id = _logical_season_group_id_from_payload(payload, source_id)
-    if not group_id:
-        return ''
-    if _looks_like_logical_season_group_id(group_id):
-        return group_id
-    logical_group = payload.get('logical_group') if isinstance(payload.get('logical_group'), dict) else {}
-    channel = _completed_share_channel_from_payload(payload) if '_completed_share_channel_from_payload' in globals() else {}
-    channel = channel if isinstance(channel, dict) else {}
-    raw_channel = channel.get('raw_json') if isinstance(channel.get('raw_json'), dict) else {}
-    has_logical_marker = bool(
-        payload.get('logical_pool_complete')
-        or payload.get('pool_complete')
-        or payload.get('logical_shadow_only')
-        or payload.get('logical_import_available')
-        or payload.get('logical_group_id')
-        or payload.get('group_id')
-        or logical_group
-        or isinstance(payload.get('best_asset_map'), dict)
-        or str(channel.get('share_kind') or raw_channel.get('share_kind') or '').strip() == 'logical_season'
-    )
-    return group_id if has_logical_marker else ''
+    return ''
 
 
 def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[str, str, List[Dict[str, Any]]]:
@@ -2020,26 +1996,8 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
                 payload.get('kind') or payload.get('item_type') or payload.get('display_type') or ''
             )
 
-    logical_group_id = ''
     if source_kind == 'completed_season':
-        logical_group_id = _legacy_completed_source_should_use_logical(payload, source_id)
-        if logical_group_id:
-            old_source_id = source_id
-            source_kind = 'logical_season'
-            source_id = logical_group_id
-            payload['source_kind'] = 'logical_season'
-            payload['source_id'] = source_id
-            payload['source_ref_id'] = source_id
-            try:
-                event['source_kind'] = 'logical_season'
-                event['source_ref_id'] = source_id
-                event['payload_json'] = payload
-            except Exception:
-                pass
-            logger.info(
-                f"  ➜ [共享资源] 已将旧 completed_season 转存事件改道为逻辑季包："
-                f"{old_source_id or '-'} -> {source_id}"
-            )
+        raise RuntimeError('旧 completed_season 已停用：只接受 logical_season。请刷新中心资源库后重试。')
 
     # 逻辑季包展开出来的单集资产：前端直接提交 logical_episode + asset_id + rapid 参数，
     # 中心端 lease/sign/report 均按 shared_episode_assets.asset_id 结算；本机只负责执行单文件秒传。
@@ -2111,47 +2069,6 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
                 rapid_meta['pick_code'] = f.get('pick_code')
             f['rapid_meta_json'] = rapid_meta
             files.append(f)
-        return source_kind, source_id, files
-
-    # display-list 里的 Pack 如果是公共连载季壳，通常只有 hub_id，没有 completed source_id。
-    # 这种壳不能走 completed_season_manifest，否则会拿不到 7-8 这类 children 分集。
-    if source_kind == 'completed_season' and payload.get('hub_id') and not payload.get('source_id'):
-        source_kind = 'season_hub'
-        source_id = str(payload.get('hub_id') or source_id or '').strip()
-
-    # 兼容中心返回的 completed season 包：列表接口只给源摘要，真正文件清单要再取 manifest。
-    # 如果 manifest 为空，不能再显示“秒传完成 0/0”，这属于 manifest 缺失/旧数据，需要重新登记该季。
-    if source_kind == 'completed_season':
-        # 新中心已停用旧 completed-season manifest。能识别为逻辑季的旧事件必须在上面改道；
-        # 到这里仍是 completed_season，直接给业务错误，避免抛 RuntimeError 打 500。
-        method = getattr(client, 'completed_season_manifest', None)
-        if not callable(method):
-            raise RuntimeError('旧 completed-season manifest 已停用，当前资源缺少 logical_season group_id，请刷新中心资源库后重试。')
-        try:
-            manifest = method(source_id)
-        except RuntimeError as e:
-            raise RuntimeError('旧 completed-season manifest 已停用，当前资源没有可识别的 logical_season group_id，请刷新中心资源库后重试。') from e
-        manifest_item = (manifest.get('item') if isinstance(manifest, dict) and isinstance(manifest.get('item'), dict) else {}) or {}
-        source_payload = {**manifest_item, **payload}
-        files = (manifest.get('files') or manifest.get('items') or []) if isinstance(manifest, dict) else []
-        if not files and isinstance(manifest, dict):
-            data = manifest.get('data') if isinstance(manifest.get('data'), dict) else {}
-            files = data.get('files') or data.get('items') or []
-        if not files and isinstance(payload.get('files'), list):
-            files = payload.get('files') or []
-        files = [dict(f or {}) for f in files if isinstance(f, dict)]
-        for f in files:
-            f.setdefault('tmdb_id', source_payload.get('tmdb_id'))
-            f.setdefault('item_type', 'Episode')
-            f.setdefault('season_number', source_payload.get('season_number'))
-            f.setdefault('title', source_payload.get('title'))
-            f.setdefault('release_year', source_payload.get('release_year'))
-            f.setdefault('is_clean_version', bool(source_payload.get('is_clean_version')))
-            f.setdefault('clean_version_confidence', source_payload.get('clean_version_confidence'))
-            f.setdefault('clean_version_meta_json', source_payload.get('clean_version_meta_json') or {})
-            f.setdefault('source_kind', 'completed_season')
-            f.setdefault('source_id', source_id)
-            f.setdefault('source_ref_id', source_id)
         return source_kind, source_id, files
 
     # 公共连载季包：中心 display-list 返回 season_hub 壳，真正可秒传文件在 pack_items/children 中。
@@ -2494,7 +2411,7 @@ def _replace_mode_short_circuit_best_inventory(
         item_type = str(f.get('item_type') or context.get('item_type') or payload.get('item_type') or '').strip()
         file_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
         is_movie = file_kind == 'movie' or item_type == 'Movie'
-        is_episode_like = file_kind in ('episode', 'season_hub', 'completed_season') or item_type in ('Episode', 'Season')
+        is_episode_like = file_kind in ('episode', 'season_hub', 'logical_season') or item_type in ('Episode', 'Season')
 
         if is_movie:
             movie_tmdb = f.get('tmdb_id') or payload.get('tmdb_id') or context.get('tmdb_id')
@@ -2510,7 +2427,7 @@ def _replace_mode_short_circuit_best_inventory(
             parent_tmdb = _source_parent_series_tmdb_id(f, context)
             snap = _local_episode_washing_snapshot(parent_tmdb, s_num, e_num)
             is_best = _is_inventory_best_washing_level(snap)
-            if normalized_source_kind == 'completed_season':
+            if normalized_source_kind == 'logical_season':
                 completed_video_checks.append({
                     'file': f,
                     'file_name': file_name,
@@ -2528,7 +2445,7 @@ def _replace_mode_short_circuit_best_inventory(
 
         kept.append(f)
 
-    if normalized_source_kind == 'completed_season' and completed_video_checks:
+    if normalized_source_kind == 'logical_season' and completed_video_checks:
         # 完结季不能单集洗。只有整季所有视频都已在库内达到优先级 1，才整包短路。
         if all(x.get('known') and x.get('best') for x in completed_video_checks):
             message = f"本地完结季库存所有分集均已是最佳版本，跳过整季秒传：{payload.get('title') or source_id}"
@@ -2589,7 +2506,7 @@ def _filter_files_before_transfer(
     missing_set = set(_normalize_episode_numbers(requested_missing_episode_numbers))
     conflict_mode = _current_organize_conflict_mode(default='skip')
     normalized_source_kind = _normalize_source_kind(source_kind)
-    is_completed_pack_source = normalized_source_kind == 'completed_season'
+    is_completed_pack_source = normalized_source_kind == 'logical_season'
 
     kept: List[Dict[str, Any]] = []
     skipped = {
@@ -2652,7 +2569,7 @@ def _filter_files_before_transfer(
         item_type = str(f.get('item_type') or context.get('item_type') or payload.get('item_type') or '').strip()
         file_kind = _normalize_source_kind(f.get('source_kind') or source_kind or '')
         is_movie = file_kind == 'movie' or item_type == 'Movie'
-        is_episode_like = file_kind in ('episode', 'season_hub', 'completed_season') or item_type in ('Episode', 'Season')
+        is_episode_like = file_kind in ('episode', 'season_hub', 'logical_season') or item_type in ('Episode', 'Season')
 
         if is_movie:
             movie_tmdb = f.get('tmdb_id') or payload.get('tmdb_id') or context.get('tmdb_id')
@@ -2748,7 +2665,7 @@ def _filter_files_before_transfer(
 
 def _completed_share_channel_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
-    for key in ('share_channel', 'completed_season_share_channel', 'completed_share_channel', 'logical_season_share_channel', 'logical_share_channel'):
+    for key in ('share_channel', 'logical_season_share_channel', 'logical_share_channel'):
         value = payload.get(key)
         if isinstance(value, dict) and value:
             return dict(value)
@@ -2756,184 +2673,19 @@ def _completed_share_channel_from_payload(payload: Dict[str, Any]) -> Dict[str, 
 
 
 def _completed_share_channel_for_transfer(client: SharedCenterClient, source_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """读取完结季/逻辑季包可转存分享通道。只信中心托管 channel，不扫描 115 全量分享列表。"""
-    source_id = str(source_id or '').strip()
-    payload = payload if isinstance(payload, dict) else {}
-    source_kind = _normalize_source_kind(payload.get('source_kind') or '')
     channel = _completed_share_channel_from_payload(payload)
-    if str((channel or {}).get('status') or '').lower() == 'valid' and channel.get('share_code'):
+    if channel:
         return channel
-    if not source_id:
-        return {}
-    try:
-        if source_kind == 'logical_season' and hasattr(client, 'get_logical_season_share_channel'):
-            resp = client.get_logical_season_share_channel(source_id) or {}
-        else:
-            resp = client.get_completed_season_share_channel(source_id) or {}
-        item = resp.get('item') if isinstance(resp.get('item'), dict) else {}
-        if str((item or {}).get('status') or '').lower() == 'valid' and item.get('share_code'):
-            return dict(item)
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 查询分享通道失败：source={source_kind or '-'}:{source_id}, err={e}")
-    return {}
-
-
-def _share_import_resp_text(resp: Any, error: str = '') -> str:
-    try:
-        base = json.dumps(resp, ensure_ascii=False, default=str) if isinstance(resp, (dict, list)) else str(resp or '')
-    except Exception:
-        base = str(resp or '')
-    return (base + ' ' + str(error or '')).strip()
-
-
-def _share_import_resp_code(resp: Any) -> str:
-    if isinstance(resp, dict):
-        for key in ('errno', 'code', 'errNo', 'err_no'):
-            value = resp.get(key)
-            if value not in (None, ''):
-                return str(value)
-    return ''
-
-
-def _is_share_import_already_saved(resp: Any) -> bool:
-    """115 返回“已经转存/接收过”只代表本账号幂等限制，不代表共享源失效。
-
-    融合版要求文件进入待整理目录；因此这里不能直接当作转存成功，
-    只能归为本机账号侧问题，后续自动回退 Rapid。
-    """
-    code = _share_import_resp_code(resp)
-    text = _share_import_resp_text(resp).lower()
-    return (
-        code == '4100024'
-        or '4100024' in text
-        or '你已经转存过' in text
-        or '已经转存过' in text
-        or '转存过该文件' in text
-        or '已接收过' in text
-        or '已经接收过' in text
-        or '重复接收' in text
-        or '无需重复' in text
-        or 'already received' in text
-        or 'already saved' in text
-    )
-
-
-def _is_share_import_local_account_issue(resp: Any, error: str = '') -> bool:
-    """本机账号/频率/空间/幂等问题，不应污染中心 share_channel 状态。"""
-    if _is_share_import_already_saved(resp):
-        return True
-    code = _share_import_resp_code(resp)
-    if code in ('4200041',):
-        return True
-    text = _share_import_resp_text(resp, error).lower()
-    return any(k in text for k in (
-        '空间不足', '超过限制', '转存超限', '任务上限', '频繁',
-        '你已被限制接收', '限制接收', '被限制接收', '接收功能受限', '接收功能被限制',
-        '你已被限制转存', '限制转存', '被限制转存', '转存功能受限', '转存功能被限制',
-        '770004', '990001', '4100010', '4100025', '4200041',
-        'quota', 'limit', 'too many', 'rate', 'account', 'permission',
-    ))
-
-
-def _is_share_import_source_dead(resp: Any, error: str = '') -> bool:
-    """只有明确死链/提取码错误/源文件删除，才允许把中心通道置为异常。"""
-    if _is_share_import_local_account_issue(resp, error):
-        return False
-    code = _share_import_resp_code(resp)
-    if code in ('4100005',):
-        return True
-    text = _share_import_resp_text(resp, error).lower()
-    return any(k in text for k in (
-        '分享已取消', '分享已失效', '分享不存在', '取消分享', '已取消', '已失效',
-        '提取码错误', '访问码错误', '密码错误',
-        '文件(夹)已被移动或删除', '已被移动或删除', '源文件不存在',
-        'share not found', 'expired', 'cancelled', 'canceled', 'not found', 'deleted',
-    ))
-
-
-def _share_import_success(resp: Any) -> bool:
-    """分享转存成功判定。
-
-    注意：4100024/已经转存过不能算成功；融合版要把资源放进待整理目录，
-    这种幂等限制只能走 Rapid 兜底。
-    """
-    if _is_share_import_already_saved(resp):
-        return False
-    text = _share_import_resp_text(resp).lower()
-    if isinstance(resp, dict):
-        if resp.get('state') is True or resp.get('success') is True:
-            return True
-        code = _share_import_resp_code(resp)
-        if code in ('0', '200'):
-            return True
-    return any(k in text for k in ('转存成功', '接收成功', '保存成功', 'receive success', 'successfully'))
-
-
-def _share_import_failed_status(resp: Any, error: str = '') -> str:
-    if _is_share_import_source_dead(resp, error):
-        return 'expired'
-    text = _share_import_resp_text(resp, error).lower()
-    if any(x in text for x in ('审核', '处理中', 'pending', 'review', 'processing')):
-        return 'pending_review'
-    if _is_share_import_local_account_issue(resp, error):
-        return 'local_account_issue'
-    return 'import_failed'
-
-
-def _share_import_receive_title(resp: Any) -> str:
-    if not isinstance(resp, dict):
-        return ''
-    data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
-    for item in (data, resp):
-        if not isinstance(item, dict):
-            continue
-        for key in ('receive_title', 'file_name', 'fileName', 'name', 'title'):
-            value = str(item.get(key) or '').strip()
-            if value:
-                return value
-    return ''
-
-
-def _p115_item_name(item: Dict[str, Any]) -> str:
-    item = item if isinstance(item, dict) else {}
-    return str(item.get('fn') or item.get('file_name') or item.get('n') or item.get('name') or '').strip()
-
-
-def _p115_item_id(item: Dict[str, Any]) -> str:
-    item = item if isinstance(item, dict) else {}
-    return str(item.get('fid') or item.get('file_id') or item.get('cid') or item.get('id') or '').strip()
-
-
-def _locate_share_imported_item(p115, *, parent_cid: str, receive_title: str, max_retries: int = 3) -> Dict[str, Any]:
-    """参考影巢逻辑：share_import 成功后按 receive_title 在待整理根目录定位真实 file_id。"""
-    parent_cid = str(parent_cid or '').strip()
-    receive_title = str(receive_title or '').strip()
-    if not parent_cid or not receive_title or not p115 or not hasattr(p115, 'fs_files'):
-        return {}
-    for attempt in range(1, max(1, int(max_retries or 3)) + 1):
-        wait_time = attempt * 2
-        logger.debug(
-            f"  ➜ [共享资源] 等待 {wait_time}s 后定位分享转存目录 "
-            f"({attempt}/{max_retries})：{receive_title}"
-        )
-        time.sleep(wait_time)
+    if hasattr(client, 'get_logical_season_share_channel'):
         try:
-            resp = p115.fs_files({'cid': parent_cid, 'search_value': receive_title, 'limit': 10})
-            items = resp.get('data') if isinstance(resp, dict) else []
-            if not isinstance(items, list):
-                items = []
-            for item in items:
-                if isinstance(item, dict) and _p115_item_name(item) == receive_title:
-                    logger.info(f"  ➜ [共享资源] 已定位分享转存目录：{receive_title} (fid={_p115_item_id(item) or '-'})")
-                    return dict(item)
-            logger.debug(f"  ➜ [共享资源] 第 {attempt}/{max_retries} 次未定位到分享转存目录，等待 115 索引同步。")
-        except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 定位分享转存目录失败({attempt}/{max_retries})：{e}")
-    logger.warning(f"  ➜ [共享资源] 未能定位分享转存目录：{receive_title}，交由全局待整理扫描兜底。")
+            resp = client.get_logical_season_share_channel(source_id) or {}
+            return resp.get('item') if isinstance(resp.get('item'), dict) else resp
+        except Exception:
+            return {}
     return {}
 
 
-def _save_share_import_transfer_context(*, root_name: str, source_id: str, payload: Dict[str, Any], files: List[Dict[str, Any]], channel_id: str = '', source_kind: str = 'completed_season') -> Dict[str, Any]:
+def _save_share_import_transfer_context(*, root_name: str, source_id: str, payload: Dict[str, Any], files: List[Dict[str, Any]], channel_id: str = '', source_kind: str = 'logical_season') -> Dict[str, Any]:
     root_name = str(root_name or '').strip()
     if not root_name:
         return {'ok': False, 'skipped': True, 'reason': 'root_name_missing'}
@@ -2941,9 +2693,9 @@ def _save_share_import_transfer_context(*, root_name: str, source_id: str, paylo
         ctx = _season_package_context(payload or {}, files or [])
         if not ctx.get('tmdb_id') or not ctx.get('title'):
             return {'ok': False, 'skipped': True, 'reason': 'context_missing', 'context': ctx}
-        normalized_kind = _normalize_source_kind(source_kind or 'completed_season')
-        if normalized_kind not in ('completed_season', 'logical_season'):
-            normalized_kind = 'completed_season'
+        normalized_kind = _normalize_source_kind(source_kind or 'logical_season')
+        if normalized_kind != 'logical_season':
+            normalized_kind = 'logical_season'
         P115CacheManager.save_transfer_context(
             root_name=root_name,
             tmdb_id=ctx.get('tmdb_id'),
@@ -2984,7 +2736,7 @@ def _prepare_share_import_target_dir(
     直接丢根目录，只能让外层走 Rapid 回退或报错。
     """
     normalized_kind = _normalize_source_kind(source_kind)
-    if normalized_kind not in ('completed_season', 'logical_season'):
+    if normalized_kind != 'logical_season':
         return {
             'target_cid': str(base_target_cid or ''),
             'base_target_cid': str(base_target_cid or ''),
@@ -3113,7 +2865,7 @@ def _wait_rapid_transfer_lease_for_fallback(
         return {'ok': True, 'skipped': True, 'reason': 'lease_already_present', 'lease_id': existing}
     source_kind = _normalize_source_kind(source_kind)
     source_id = str(source_id or '').strip()
-    if source_kind not in ('movie', 'episode', 'completed_season', 'logical_season') or not source_id:
+    if source_kind not in ('movie', 'episode', 'logical_season') or not source_id:
         return {'ok': True, 'skipped': True, 'reason': 'unsupported_source'}
 
     request_payload = {
@@ -3161,7 +2913,7 @@ def _wait_rapid_transfer_lease_for_fallback(
         time.sleep(retry_after)
 
 
-def _try_completed_season_share_transfer(
+def _try_logical_season_share_transfer(
     *,
     client: SharedCenterClient,
     source_id: str,
@@ -3175,8 +2927,8 @@ def _try_completed_season_share_transfer(
     必须先在待整理下创建标准剧/季目录，再把 share_import 目标指向该目录，
     这样整理扫描才能按一个项目聚合处理。
     """
-    transfer_source_kind = _normalize_source_kind(payload.get('source_kind') or 'completed_season')
-    if transfer_source_kind not in ('completed_season', 'logical_season'):
+    transfer_source_kind = _normalize_source_kind(payload.get('source_kind') or 'logical_season')
+    if transfer_source_kind != 'logical_season':
         return {'ok': False, 'skipped': True, 'reason': 'not_season_share_source'}
     channel = _completed_share_channel_for_transfer(client, source_id, payload)
     if not channel:
@@ -3294,7 +3046,7 @@ def _try_completed_season_share_transfer(
         should_update_center = channel_id and status in {'expired', 'pending_review'}
         if should_update_center:
             try:
-                (client.update_logical_season_share_status if transfer_source_kind == 'logical_season' and hasattr(client, 'update_logical_season_share_status') else client.update_completed_season_share_status)(channel_id, {
+                (client.update_logical_season_share_status if transfer_source_kind == 'logical_season' and hasattr(client, 'update_logical_season_share_status') else client.update_logical_season_share_status)(channel_id, {
                     'status': status,
                     'review_status': 'expired' if status == 'expired' else 'pending',
                     'status_message': str(msg)[:1000],
@@ -3320,7 +3072,7 @@ def _try_completed_season_share_transfer(
         status = _share_import_failed_status({}, str(e))
         if channel_id and status in {'expired', 'pending_review'}:
             try:
-                (client.update_logical_season_share_status if transfer_source_kind == 'logical_season' and hasattr(client, 'update_logical_season_share_status') else client.update_completed_season_share_status)(channel_id, {
+                (client.update_logical_season_share_status if transfer_source_kind == 'logical_season' and hasattr(client, 'update_logical_season_share_status') else client.update_logical_season_share_status)(channel_id, {
                     'status': status,
                     'review_status': 'expired' if status == 'expired' else 'pending',
                     'status_message': f'115 分享转存异常，准备回退 Rapid：{e}'[:1000],
@@ -3526,7 +3278,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
             'washing_rejected': bool(preflight.get('washing_rejected')),
         }
 
-    is_package_transfer = source_kind in ('completed_season', 'season_hub', 'logical_season') and len(files) > 1
+    is_package_transfer = source_kind in ('season_hub', 'logical_season') and len(files) > 1
     payload['source_kind'] = source_kind
     payload['source_id'] = source_id
     payload['source_ref_id'] = source_id
@@ -3534,8 +3286,8 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
     # 完结季如果已有可用 115 分享通道，先直接转存到待整理根目录；
     # 不等 Rapid 秒传许可，也不提前创建 Rapid 临时目录。
     share_transfer = {}
-    if source_kind in ('completed_season', 'logical_season'):
-        share_transfer = _try_completed_season_share_transfer(
+    if source_kind == 'logical_season':
+        share_transfer = _try_logical_season_share_transfer(
             client=client,
             source_id=source_id,
             payload=payload,
@@ -3742,7 +3494,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         else:
             for report_kind, report_id, report_file in success_sources:
                 report_kind = _normalize_source_kind(report_kind)
-                if report_kind not in ('movie', 'episode', 'completed_season', 'logical_episode', 'logical_season') or not report_id:
+                if report_kind not in ('movie', 'episode', 'logical_episode', 'logical_season') or not report_id:
                     skipped_report_sources.append({'source_kind': report_kind, 'source_id': report_id, 'file': (report_file or {}).get('file_name') or (report_file or {}).get('sha1')})
                     continue
                 key = (report_kind, report_id)
@@ -3982,7 +3734,7 @@ def _consume_sources(
             payload['_consume_context'] = consume_context
         if missing_episode_numbers:
             # 统一订阅已经知道缺集时，必须把缺集号透传到消费层；
-            # season_hub / completed_season 会在 RAW/洗版预检前按集号裁剪。
+            # season_hub / logical_season 会在 RAW/洗版预检前按集号裁剪。
             payload['_requested_missing_episode_numbers'] = missing_episode_numbers
         event_source_kind = payload.get('source_kind') or payload.get('kind')
         if not event_source_kind and (payload.get('hub_id') or payload.get('is_season_hub')):
@@ -3990,7 +3742,7 @@ def _consume_sources(
         if not event_source_kind:
             event_source_kind = payload.get('item_type') or payload.get('display_type')
         event_source_kind = _normalize_source_kind(event_source_kind)
-        if event_source_kind == 'completed_season' and payload.get('hub_id') and not payload.get('source_id'):
+        if event_source_kind == 'logical_season' and payload.get('hub_id') and not payload.get('source_id'):
             event_source_kind = 'season_hub'
 
         event = {
