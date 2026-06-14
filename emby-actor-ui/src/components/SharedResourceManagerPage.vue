@@ -1843,9 +1843,27 @@ const centerStatusTag = (row) => {
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
 const centerShareChannel = (row) => row?.share_channel || row?.completed_season_share_channel || {};
+const centerLogicalGroupId = (row) => {
+  const direct = String(
+    row?.logical_group_id
+    || row?.logical_group?.group_id
+    || row?.group_id
+    || ''
+  ).trim();
+  if (direct) return direct;
+  for (const value of [row?.source_id, row?.source_ref_id]) {
+    const text = String(value || '').trim();
+    if (text.startsWith('svg_')) return text;
+  }
+  return '';
+};
 const centerIsLogicalSeasonRow = (row) => {
-  const kind = String(row?.source_kind || row?.resource_type || '').trim().toLowerCase();
-  return kind === 'logical_season' || Boolean(row?.logical_shadow_only && row?.logical_group_id);
+  if (!row || typeof row !== 'object') return false;
+  const kind = String(row.source_kind || row.kind || row.resource_type || '').trim().toLowerCase();
+  if (kind === 'logical_season') return true;
+  if (centerLogicalGroupId(row).startsWith('svg_')) return true;
+  if (row.logical_group && typeof row.logical_group === 'object') return true;
+  return false;
 };
 const centerIsLogicalShadowOnly = (row) => centerIsLogicalSeasonRow(row) && !row?.logical_import_available;
 const centerHasLogicalGroup = (row) => Boolean(row?.logical_group_id || row?.logical_group?.group_id || row?.pool_complete || row?.logical_pool_complete);
@@ -1956,30 +1974,6 @@ const centerReplenishActionNode = () => h(NTooltip, { trigger: 'hover', placemen
   trigger: () => h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '等待补充' }),
   default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源；本机没有完整相同资源时不能补充。'
 });
-
-const centerLogicalGroupId = (row) => {
-  const direct = String(
-    row?.logical_group_id
-    || row?.logical_group?.group_id
-    || row?.group_id
-    || ''
-  ).trim();
-  if (direct) return direct;
-  for (const value of [row?.source_id, row?.source_ref_id]) {
-    const text = String(value || '').trim();
-    if (text.startsWith('svg_')) return text;
-  }
-  return '';
-};
-
-const centerIsLogicalSeasonRow = (row) => {
-  if (!row || typeof row !== 'object') return false;
-  const kind = String(row.source_kind || row.kind || row.resource_type || '').trim().toLowerCase();
-  if (kind === 'logical_season') return true;
-  if (centerLogicalGroupId(row).startsWith('svg_')) return true;
-  if (row.logical_group && typeof row.logical_group === 'object') return true;
-  return false;
-};
 
 const inferRapidSourceKind = (row) => {
   if (centerIsLogicalSeasonRow(row)) return 'logical_season';
