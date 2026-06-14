@@ -306,13 +306,14 @@ def get_task_registry(context: str = 'all'):
         'hdhive-auto-checkin': (task_hdhive_auto_checkin, "影巢自动签到", 'media', True),
         'restore-nfo-and-images': (task_restore_nfo_and_images, "还原NFO和封面", 'media', True),
         'shared-resource-maintenance': (task_shared_resource_maintenance, "共享资源维护", 'media', True),
-        'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', True),
+        'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "扫描全库剧集", 'watchlist', False),
+        'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (process_single_custom_collection, "生成单个自建合集", 'media', False),
         'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描重复媒体", 'media', False),
         'resubscribe-library': (task_resubscribe_library, "媒体订阅删除", 'media', False),
@@ -323,7 +324,6 @@ def get_task_registry(context: str = 'all'):
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', False),
         'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新媒体整理", 'media', False),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', False),
-        'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', False),
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', False),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
         'fill-studio-images': (task_fill_studio_images, "补全工作室图标", 'media', False),
