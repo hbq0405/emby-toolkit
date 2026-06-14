@@ -813,7 +813,34 @@ def _share_channel_is_logical(row: Dict[str, Any] = None, source_id: str = '') -
 
 def _update_center_share_channel_status(client: SharedCenterClient, row: Dict[str, Any], channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if _share_channel_is_logical(row) and hasattr(client, 'update_logical_season_share_status'):
-        return client.update_logical_season_share_status(channel_id, payload)
+        try:
+            return client.update_logical_season_share_status(channel_id, payload)
+        except Exception as e:
+            # 兼容旧逻辑季分享：本地 channel 已存在且 115 后台正常，但中心端当时未落
+            # logical_season_share_channels，/status 会 404。这里用 group_id 走 report 接口
+            # 补建中心 channel，并带上 share_code，否则中心会继续认为没有可转存通道。
+            group_id = str((row or {}).get('center_source_id') or '').strip()
+            if group_id and hasattr(client, 'report_logical_season_share'):
+                report_payload = dict(payload or {})
+                report_payload.update({
+                    'channel_id': channel_id,
+                    'share_code': (row or {}).get('share_code') or report_payload.get('share_code') or '',
+                    'receive_code': (row or {}).get('receive_code') or report_payload.get('receive_code') or '',
+                    'share_url': (row or {}).get('share_url') or report_payload.get('share_url') or '',
+                    'share_title': (row or {}).get('share_title') or (row or {}).get('root_name') or report_payload.get('share_title') or '',
+                    'root_fid': (row or {}).get('root_fid') or report_payload.get('root_fid') or '',
+                    'root_cid': (row or {}).get('root_cid') or report_payload.get('root_cid') or '',
+                    'root_name': (row or {}).get('root_name') or report_payload.get('root_name') or '',
+                    'file_count': (row or {}).get('file_count') or report_payload.get('file_count') or 0,
+                    'total_size': (row or {}).get('total_size') or report_payload.get('total_size') or 0,
+                })
+                raw = report_payload.get('raw_json') if isinstance(report_payload.get('raw_json'), dict) else {}
+                raw = dict(raw or {})
+                raw.setdefault('status_update_fallback_error', str(e))
+                raw.setdefault('share_kind', 'logical_season')
+                report_payload['raw_json'] = raw
+                return client.report_logical_season_share(group_id, report_payload)
+            raise
     return {'ok': True, 'skipped': True, 'message': '旧 completed_season 分享通道本地跳过，中心只维护 logical_season_share_channels。'}
 
 
