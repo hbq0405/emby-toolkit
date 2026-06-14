@@ -400,6 +400,49 @@ def _apply_local_season_meta(row: Dict[str, Any], meta_map: Dict[tuple, Dict[str
 
 
 
+def _share_channel_raw_json(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = (row or {}).get('raw_json') if isinstance(row, dict) else {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _share_channel_is_logical(row: Dict[str, Any] | None = None, source_id: str = '') -> bool:
+    """判断本地 channel/source 行是否属于逻辑完结季文件列表分享。
+
+    本地表名还沿用历史 completed_season 命名，但业务主线只允许 logical_season：
+    - center_source_id/group_id 以 svg_ 开头；
+    - raw_json.share_kind == logical_season；
+    - raw_json.event/command 是 create_logical_season_filelist_share。
+    """
+    row = row if isinstance(row, dict) else {}
+    raw = _share_channel_raw_json(row)
+    sid = str(source_id or row.get('center_source_id') or row.get('source_id') or row.get('group_id') or '').strip()
+    event_text = ' '.join(
+        str(raw.get(k) or '')
+        for k in ('event', 'event_type', 'command', 'share_kind', 'source_kind')
+    )
+    nested_event = raw.get('event') if isinstance(raw.get('event'), dict) else {}
+    if nested_event:
+        event_text += ' ' + ' '.join(
+            str(nested_event.get(k) or '')
+            for k in ('event_type', 'command', 'share_kind', 'source_kind')
+        )
+    return (
+        sid.startswith('svg_')
+        or str(row.get('source_kind') or '').strip().lower() == 'logical_season'
+        or str(raw.get('share_kind') or '').strip() == 'logical_season'
+        or 'create_logical_season_filelist_share' in event_text
+        or 'logical_season' in event_text
+    )
+
+
 def _local_completed_share_public(channel: Dict[str, Any]) -> Dict[str, Any]:
     channel = dict(channel or {})
     if not channel:

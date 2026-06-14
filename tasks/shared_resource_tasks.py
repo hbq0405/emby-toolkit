@@ -556,6 +556,8 @@ def _event_source_payload(event: Dict[str, Any]) -> Dict[str, Any]:
     return event
 
 
+# 只用于识别并拒绝中心端遗留事件；客户端不再实现 completed_season 创建分享。
+COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_completed_season_share'
 LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_logical_season_filelist_share'
 PRO_QUOTA_AUTH_EVENT_TYPE = 'pro_quota_auth_check'
 _COMPLETED_SHARE_SYNC_LOCK = threading.Lock()
@@ -825,17 +827,7 @@ def _completed_share_status_from_list_item(item: Dict[str, Any], *, current_stat
     return {'status': current or 'pending_review', 'review_status': 'pending', 'message': '115 未返回明确审核状态，保持本地状态', 'explicit': False}
 
 
-def _completed_share_file_ids_for_local_source(local_source: Dict[str, Any]) -> List[str]:
-    local_source = dict(local_source or {})
-    root_fid = str(local_source.get('root_fid') or '').strip()
-    if root_fid:
-        return [root_fid]
-    ids: List[str] = []
-    for row in shared_share_db.list_source_files(int(local_source.get('id') or 0)) if local_source.get('id') else []:
-        fid = str(row.get('fid') or row.get('file_id') or '').strip()
-        if fid and fid not in ids:
-            ids.append(fid)
-    return ids
+
 
 
 
@@ -955,6 +947,22 @@ def _report_logical_share_failure(client: SharedCenterClient, *, group_id: str, 
             'raw_json': {'share_kind': 'logical_season', 'event_id': event_id, **raw_json},
         })
         return {'ok': False, 'error': str(e)}
+
+
+def _reject_legacy_completed_share_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
+    """硬切逻辑季后，旧 create_completed_season_share 事件不再创建任何 115 分享。"""
+    client = SharedCenterClient()
+    event_id = str((event or {}).get('event_id') or '')
+    message = '旧 create_completed_season_share 已删除：请由中心派发 create_logical_season_filelist_share。'
+    if ack and event_id:
+        try:
+            client.ack_device_events([event_id], result='failed', message=message[:500])
+        except Exception:
+            pass
+    logger.warning(f"  ➜ [共享资源] {message}")
+    return {'ok': False, 'skipped': True, 'deprecated': True, 'event_id': event_id, 'message': message}
+
+
 
 
 def _logical_share_file_ids_from_payload(client: SharedCenterClient, group_id: str, payload: Dict[str, Any]) -> List[str]:
@@ -1125,89 +1133,26 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
     }
 
 
-
-def _direct_center_share_sync_heartbeat(payload: Dict[str, Any]) -> Dict[str, Any]:
-    cfg = settings_db.get_shared_resource_config() or {}
-    base_url = str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
-    token = str(cfg.get('p115_shared_device_token') or '').strip()
-    if not base_url or not token:
-        raise RuntimeError('共享中心地址或设备 Token 未配置')
-    headers = {
-        'X-Device-Token': token,
-        'Content-Type': 'application/json',
-        'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
-    }
-    kwargs = {'timeout': 20}
-    getter = getattr(config_manager, 'get_proxies_for_requests', None)
-    if callable(getter):
-        try:
-            proxies = getter()
-            if proxies:
-                kwargs['proxies'] = proxies
-        except Exception:
-            pass
-    resp = requests.post(f'{base_url}/api/v1/devices/share-sync/heartbeat', headers=headers, json=payload, **kwargs)
-    try:
-        data = resp.json()
-    except Exception:
-        data = {'raw_text': resp.text[:1000]}
-    if resp.status_code >= 400:
-        raise RuntimeError(f'中心分享同步签到接口 HTTP {resp.status_code}: {data}')
-    return data if isinstance(data, dict) else {'data': data}
-
-
-def _report_share_sync_heartbeat(summary: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """向中心端签到：分享同步任务每 10 分钟执行一次，中心三次缺失判离线。"""
-    if not _enabled():
-        return {'ok': False, 'skipped': True, 'message': '共享资源未启用'}
-    payload = {
-        'task_name': 'shared_share_status_sync_high_freq',
-        'task_interval_seconds': 600,
-        'client_version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
-        'status': 'ok',
-        'summary_json': summary if isinstance(summary, dict) else {},
-    }
-    client = SharedCenterClient()
-    method = getattr(client, 'share_sync_heartbeat', None)
-    if callable(method):
-        return method(payload)
-    for name in ('post', '_post'):
-        fn = getattr(client, name, None)
-        if callable(fn):
-            return fn('/api/v1/devices/share-sync/heartbeat', payload)
-    for name in ('request', '_request'):
-        fn = getattr(client, name, None)
-        if callable(fn):
-            try:
-                return fn('POST', '/api/v1/devices/share-sync/heartbeat', json=payload)
-            except TypeError:
-                return fn('POST', '/api/v1/devices/share-sync/heartbeat', payload)
-    return _direct_center_share_sync_heartbeat(payload)
-
-def _sync_logical_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
-    """轻量同步本机逻辑完结季 115 文件列表分享状态；供高频任务调用。
-
-    completed_season 是历史链路：这里仅处理 raw_json.share_kind=logical_season
-    或 center_source_id=svg_* 的本地 channel。
-    """
+def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
+    """轻量同步本机已创建的完结季分享状态；供高频任务调用。"""
     if not _enabled():
         return {'ok': False, 'message': '共享资源未启用', 'checked': 0}
     if not _COMPLETED_SHARE_SYNC_LOCK.acquire(blocking=False):
         return {'ok': True, 'skipped': True, 'message': '已有分享状态同步正在运行', 'checked': 0}
     try:
-        raw_rows = shared_share_db.list_completed_season_share_channels(
-            # 本地表名仍是历史命名，但同步主链路只处理逻辑完结季文件列表分享。
-            # valid 也周期性补报完整 share_code/share_url，确保中心端转存按钮不丢。
+        rows = shared_share_db.list_completed_season_share_channels(
+            # 只同步“未定态/异常态/本地取消态”。
+            # valid 分享不再进入高频维护轮询：正常通道不向中心反复上报，
+            # 失效漏网时由消费端 share_import 失败被动下架对应 channel。
+            # 逻辑季切换期需要把本地 valid 也周期性补报一次：
+            # 之前 status-only 上报可能把中心写成 failed，只有重新 report 完整
+            # share_code/share_url 才能恢复前端“转存”按钮。
             statuses=['pending_review', 'creating', 'valid', 'failed', 'expired', 'review_failed', 'import_failed', 'source_unavailable', 'disabled'],
-            limit=max(int(limit or 50) * 3, int(limit or 50)),
+            limit=limit,
             need_check=True,
         )
-        rows = [r for r in (raw_rows or []) if _share_channel_is_logical(r)]
-        skipped_legacy = len(raw_rows or []) - len(rows)
-        if limit and len(rows) > int(limit):
-            rows = rows[:int(limit)]
         if not rows:
-            return {'ok': True, 'checked': 0, 'skipped_legacy_completed_season': skipped_legacy, 'items': []}
+            return {'ok': True, 'checked': 0, 'items': []}
         from handler.p115_service import P115Service
         p115 = P115Service.get_client()
         if not p115:
@@ -1227,7 +1172,7 @@ def _sync_logical_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
                 row_status = str(row.get('status') or '').strip().lower()
                 if row_status == 'disabled':
                     delete_resp = _delete_completed_share_from_115(p115, share_code)
-                    msg = '用户已取消逻辑季文件列表分享；已尝试删除 115 分享记录'
+                    msg = '用户已取消完结季分享；已尝试删除 115 分享记录'
                     raw_status_json = {
                         'share_delete_response': delete_resp,
                         'status_source': 'local_disabled_cleanup',
@@ -1258,7 +1203,7 @@ def _sync_logical_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
                         local_deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
                     items.append({
                         'channel_id': channel_id,
-                        'group_id': source_id,
+                        'source_id': source_id,
                         'status': 'disabled',
                         'ok': True,
                         'cleanup_deleted': bool(delete_resp.get('deleted')),
@@ -1312,7 +1257,7 @@ def _sync_logical_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
                     )
                     items.append({
                         'channel_id': channel_id,
-                        'group_id': source_id,
+                        'source_id': source_id,
                         'status': keep_status,
                         'ok': True,
                         'skipped_center_update': True,
@@ -1378,7 +1323,7 @@ def _sync_logical_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
                     local_deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
                 items.append({
                     'channel_id': channel_id,
-                    'group_id': source_id,
+                    'source_id': source_id,
                     'status': status,
                     'ok': True,
                     'reported_center': bool(should_report_center),
@@ -1392,8 +1337,8 @@ def _sync_logical_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
                     status_message=f'同步分享状态失败: {e}',
                     last_checked_at='NOW()',
                 )
-                items.append({'channel_id': channel_id, 'group_id': source_id, 'ok': False, 'error': str(e)})
-        return {'ok': True, 'checked': len(items), 'skipped_legacy_completed_season': skipped_legacy, 'items': items}
+                items.append({'channel_id': channel_id, 'source_id': source_id, 'ok': False, 'error': str(e)})
+        return {'ok': True, 'checked': len(items), 'items': items}
     finally:
         _COMPLETED_SHARE_SYNC_LOCK.release()
 
@@ -1492,7 +1437,7 @@ def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
     event_type = str((event or {}).get('event_type') or payload.get('event_type') or '').strip()
     if source_kind not in {'movie', 'episode', 'logical_episode', 'logical_season'} or not source_id:
         return {}
-    if event_type in {LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE}:
+    if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE}:
         return {}
     return {'source_kind': source_kind, 'source_id': source_id, 'sha1': sha1}
 
@@ -1699,7 +1644,7 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
             if str(channel.get('status') or '').strip().lower() == 'valid' and channel.get('share_code'):
                 return {
                     'bypass': True,
-                    'reason': 'valid_logical_season_share_channel_in_payload',
+                    'reason': 'valid_completed_or_logical_season_share_channel_in_payload',
                     'channel_id': str(channel.get('channel_id') or ''),
                 }
     except Exception as e:
@@ -1713,7 +1658,7 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
             if str(channel.get('status') or '').strip().lower() == 'valid' and channel.get('share_code'):
                 return {
                     'bypass': True,
-                    'reason': 'valid_logical_season_share_channel',
+                    'reason': 'valid_completed_or_logical_season_share_channel',
                     'channel_id': str(channel.get('channel_id') or ''),
                 }
     except Exception as e:
@@ -1724,17 +1669,8 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
 
 def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
     event_type = _completed_share_event_type(event)
-    if event_type == 'create_completed_season_share':
-        client = SharedCenterClient()
-        event_id = str((event or {}).get('event_id') or '')
-        msg = '旧 create_completed_season_share 事件已移除：客户端只处理 create_logical_season_filelist_share。'
-        if event_id:
-            try:
-                client.ack_device_events([event_id], result='failed', message=msg)
-            except Exception:
-                pass
-        logger.warning(f"  ➜ [共享资源] {msg}")
-        return {'ok': False, 'skipped': True, 'deprecated': True, 'message': msg}
+    if event_type == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
+        return _reject_legacy_completed_share_event(event, ack=bool(kwargs.get('ack', True)))
     if event_type == LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE:
         return handle_create_logical_season_filelist_share_event(event, ack=bool(kwargs.get('ack', True)))
     source = _event_source_payload(event)
@@ -1757,7 +1693,7 @@ def _consume_device_event_with_transfer_gate(original_consume, event, *args, **k
     share_bypass = _completed_season_share_lease_bypass(event, source)
     if share_bypass.get('bypass'):
         logger.info(
-            f"  ➜ [共享资源] 跳过中心秒传许可：逻辑季存在有效 115 分享通道，"
+            f"  ➜ [共享资源] 跳过中心秒传许可：完结季/逻辑季存在有效 115 分享通道，"
             f"直接尝试分享转存，channel={share_bypass.get('channel_id') or '-'}"
         )
         return original_consume(event, *args, **kwargs)
@@ -5607,18 +5543,8 @@ def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: 
     """系统硬编码高频后台任务入口。
 
     周期由 scheduler_manager.py 固定控制，不进入用户可配置任务链；
-    本任务只做两件事：
-    1. 向中心端签到，供中心按 3 次缺失判定客户端离线；
-    2. 同步逻辑完结季 115 文件列表分享状态。
-
-    completed_season 分享链路已停用，不再同步、不再上报。
+    只同步完结季 115 分享通道状态，不顺带执行共享资源维护任务。
     maintenance_silent 参数仅为兼容 scheduler_manager.py 旧调用签名保留。
     """
-    heartbeat = {}
-    try:
-        heartbeat = _report_share_sync_heartbeat({'stage': 'task_start'})
-    except Exception as e:
-        heartbeat = {'ok': False, 'error': str(e)}
-        logger.warning(f"  ➜ [共享资源] 分享同步中心签到失败：{e}")
-    share_sync = _sync_logical_season_share_channels_once(limit=50)
-    return {'ok': True, 'share_sync_heartbeat': heartbeat, 'logical_season_share_sync': share_sync}
+    share_sync = _sync_completed_season_share_channels_once(limit=50)
+    return {'ok': True, 'completed_season_share_sync': share_sync}
