@@ -582,6 +582,36 @@ class SharedCenterClient:
     def completed_season_manifest(self, source_id: str) -> Dict[str, Any]:
         return self._get(f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/manifest", timeout=30)
 
+    def logical_season_manifest(self, group_id: str) -> Dict[str, Any]:
+        return self._get(f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/manifest", timeout=30)
+
+    def dispatch_logical_season_share(self, group_id: str, *, force: bool = False, reason: str = '') -> Dict[str, Any]:
+        return self._post(
+            f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/share/dispatch",
+            {'force': bool(force), 'reason': reason or ''},
+            timeout=20,
+        )
+
+    def report_logical_season_share(self, group_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post(
+            f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/share/report",
+            payload or {},
+            timeout=25,
+        )
+
+    def update_logical_season_share_status(self, channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post(
+            f"/api/v1/logical-season-share-channels/{urllib.parse.quote(str(channel_id))}/status",
+            payload or {},
+            timeout=20,
+        )
+
+    def get_logical_season_share_channel(self, group_id: str) -> Dict[str, Any]:
+        return self._get(
+            f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/share-channel",
+            timeout=15,
+        )
+
     def dispatch_completed_season_share(self, source_id: str, *, force: bool = False, reason: str = '') -> Dict[str, Any]:
         return self._post(
             f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/share/dispatch",
@@ -628,7 +658,7 @@ class SharedCenterClient:
         # 没有显式 transfer_mode。中心端第 5 步按 transfer_mode=share 才会启用 10 点封顶结算。
         if not payload.get('transfer_mode'):
             msg = str(payload.get('message') or '')
-            if str(source_kind or '').strip() == 'completed_season' and result == 'success' and (
+            if str(source_kind or '').strip() in ('completed_season', 'logical_season') and result == 'success' and (
                 '分享转存' in msg or '115 分享' in msg or 'share_import' in msg or 'transfer_mode=share' in msg
             ):
                 payload['transfer_mode'] = 'share'

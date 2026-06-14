@@ -557,6 +557,7 @@ def _event_source_payload(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_completed_season_share'
+LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_logical_season_filelist_share'
 PRO_QUOTA_AUTH_EVENT_TYPE = 'pro_quota_auth_check'
 _COMPLETED_SHARE_SYNC_LOCK = threading.Lock()
 
@@ -785,6 +786,86 @@ def _completed_share_file_ids_for_local_source(local_source: Dict[str, Any]) -> 
     return ids
 
 
+
+def _share_channel_raw_json(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = (row or {}).get('raw_json') if isinstance(row, dict) else {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _share_channel_is_logical(row: Dict[str, Any] = None, source_id: str = '') -> bool:
+    row = row if isinstance(row, dict) else {}
+    raw = _share_channel_raw_json(row)
+    sid = str(source_id or row.get('center_source_id') or '').strip()
+    return (
+        str(raw.get('share_kind') or '').strip() == 'logical_season'
+        or str(raw.get('event') or '').find('create_logical_season_filelist_share') >= 0
+        or sid.startswith('svg_')
+    )
+
+
+def _update_center_share_channel_status(client: SharedCenterClient, row: Dict[str, Any], channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if _share_channel_is_logical(row) and hasattr(client, 'update_logical_season_share_status'):
+        return client.update_logical_season_share_status(channel_id, payload)
+    return client.update_completed_season_share_status(channel_id, payload)
+
+
+def _report_logical_share_failure(client: SharedCenterClient, *, group_id: str, channel_id: str,
+                                  status: str = 'failed', message: str = '', raw_json: Dict[str, Any] | None = None,
+                                  event_id: str = '', payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    raw_json = dict(raw_json or {})
+    raw_json.setdefault('share_kind', 'logical_season')
+    raw_json.setdefault('event_id', event_id)
+    report_payload = {
+        'channel_id': channel_id,
+        'status': status,
+        'review_status': status,
+        'status_message': (message or status)[:1000],
+        'share_title': payload.get('title') or payload.get('share_title') or '',
+        'root_fid': '',
+        'root_name': payload.get('title') or payload.get('share_title') or '',
+        'file_count': payload.get('file_count') or len(payload.get('file_ids') or []),
+        'total_size': payload.get('total_size') or 0,
+        'raw_json': raw_json,
+    }
+    try:
+        resp = client.report_logical_season_share(group_id, report_payload)
+        shared_share_db.upsert_completed_season_share_channel({
+            'channel_id': channel_id,
+            'center_source_id': group_id,
+            'hub_id': payload.get('hub_id') or '',
+            'manifest_hash': payload.get('package_fingerprint') or payload.get('manifest_hash') or '',
+            'status': status,
+            'review_status': status,
+            'status_message': message,
+            'root_fid': '',
+            'root_name': payload.get('title') or payload.get('share_title') or '',
+            'file_count': report_payload['file_count'],
+            'total_size': report_payload['total_size'],
+            'raw_json': {'share_kind': 'logical_season', 'report_response': resp, 'event_id': event_id, **raw_json},
+            'reported': True,
+        })
+        return resp
+    except Exception as e:
+        shared_share_db.upsert_completed_season_share_channel({
+            'channel_id': channel_id,
+            'center_source_id': group_id,
+            'hub_id': payload.get('hub_id') or '',
+            'manifest_hash': payload.get('package_fingerprint') or payload.get('manifest_hash') or '',
+            'status': status,
+            'status_message': f'{message}; 上报中心失败: {e}',
+            'raw_json': {'share_kind': 'logical_season', 'event_id': event_id, **raw_json},
+        })
+        return {'ok': False, 'error': str(e)}
+
 def _report_completed_share_failure(client: SharedCenterClient, *, source_id: str, channel_id: str, local_source: Dict[str, Any] | None = None,
                                     status: str = 'failed', message: str = '', raw_json: Dict[str, Any] | None = None,
                                     event_id: str = '') -> Dict[str, Any]:
@@ -981,6 +1062,175 @@ def handle_create_completed_season_share_event(event: Dict[str, Any], *, ack: bo
     }
 
 
+
+def _logical_share_file_ids_from_payload(client: SharedCenterClient, group_id: str, payload: Dict[str, Any]) -> List[str]:
+    ids: List[str] = []
+    for value in payload.get('file_ids') or []:
+        text = str(value or '').strip()
+        if text and text not in ids:
+            ids.append(text)
+    if ids:
+        return ids
+    best_asset_map = payload.get('best_asset_map') if isinstance(payload.get('best_asset_map'), dict) else {}
+    for ep in sorted(best_asset_map.keys(), key=lambda x: _safe_int(x, 0)):
+        item = best_asset_map.get(ep) if isinstance(best_asset_map.get(ep), dict) else {}
+        fid = str(item.get('file_id') or item.get('fid') or '').strip()
+        if fid and fid not in ids:
+            ids.append(fid)
+    if ids or not group_id:
+        return ids
+    try:
+        manifest = client.logical_season_manifest(group_id) if hasattr(client, 'logical_season_manifest') else {}
+        for item in manifest.get('files') or []:
+            if not isinstance(item, dict):
+                continue
+            meta = item.get('rapid_meta_json') if isinstance(item.get('rapid_meta_json'), dict) else {}
+            fid = str(item.get('file_id') or item.get('fid') or meta.get('fid') or '').strip()
+            if fid and fid not in ids:
+                ids.append(fid)
+    except Exception as e:
+        logger.debug(f"  ➜ [逻辑季分享] 从中心 manifest 兜底获取 file_id 失败: group={group_id}, err={e}")
+    return ids
+
+
+def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
+    """处理中心端 create_logical_season_filelist_share 事件：按中心传入的 file_id 列表创建 115 分享。"""
+    client = SharedCenterClient()
+    event_id = str((event or {}).get('event_id') or '')
+    payload = _event_source_payload(event)
+    channel_id = str(payload.get('channel_id') or (event or {}).get('source_ref_id') or '').strip()
+    group_id = str(payload.get('group_id') or payload.get('source_id') or payload.get('source_ref_id') or '').strip()
+    title = str(payload.get('title') or payload.get('share_title') or group_id or channel_id or '逻辑完结季').strip()
+
+    if not channel_id or not group_id:
+        message = '创建逻辑季分享事件缺少 channel_id/group_id'
+        if ack and event_id:
+            client.ack_device_events([event_id], result='failed', message=message)
+        return {'ok': False, 'event_id': event_id, 'message': message}
+
+    share_ids = _logical_share_file_ids_from_payload(client, group_id, payload)
+    expected_count = _safe_int(payload.get('file_count') or payload.get('episode_total'), 0)
+    if not share_ids or (expected_count > 0 and len(share_ids) < expected_count):
+        message = f'逻辑季分享缺少完整 file_id 列表：{len(share_ids)}/{expected_count or "?"}，无法创建 115 分享：{title}'
+        report = _report_logical_share_failure(client, group_id=group_id, channel_id=channel_id, status='failed', message=message,
+                                               raw_json={'share_ids': share_ids, 'payload': payload}, event_id=event_id, payload=payload)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report}
+
+    receive_code = str(payload.get('receive_code') or '').strip() or _completed_share_receive_code(channel_id, group_id)
+    shared_share_db.upsert_completed_season_share_channel({
+        'channel_id': channel_id,
+        'center_source_id': group_id,
+        'hub_id': payload.get('hub_id') or '',
+        'manifest_hash': payload.get('package_fingerprint') or payload.get('manifest_hash') or '',
+        'status': 'creating',
+        'status_message': f'正在创建逻辑季 115 文件列表分享：{title}',
+        'receive_code': receive_code,
+        'root_fid': '',
+        'root_name': title,
+        'file_count': len(share_ids),
+        'total_size': payload.get('total_size') or 0,
+        'raw_json': {'share_kind': 'logical_season', 'event': payload, 'share_ids': share_ids},
+    })
+
+    try:
+        from handler.p115_service import P115Service
+        p115 = P115Service.get_client()
+        if not p115:
+            raise RuntimeError('115 客户端未初始化')
+        logger.info(f"  ➜ [逻辑季分享] 开始创建 115 文件列表分享：{title}，items={len(share_ids)}，channel={channel_id}")
+        create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
+    except Exception as e:
+        message = f'创建逻辑季 115 分享异常：{e}'
+        report = _report_logical_share_failure(client, group_id=group_id, channel_id=channel_id, status='failed', message=message,
+                                               raw_json={'exception': str(e), 'share_ids': share_ids}, event_id=event_id, payload=payload)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report}
+
+    share_payload = _extract_completed_share_payload(create_resp, receive_code=receive_code)
+    if not _p115_ok(create_resp) or not share_payload.get('share_code'):
+        message = f"创建逻辑季 115 分享失败：{_p115_error(create_resp)}"
+        report = _report_logical_share_failure(client, group_id=group_id, channel_id=channel_id, status='failed', message=message,
+                                               raw_json={'create_response': create_resp, 'share_ids': share_ids}, event_id=event_id, payload=payload)
+        if ack and event_id:
+            client.ack_device_events([event_id], result='ok', message=message[:500])
+        return {'ok': False, 'event_id': event_id, 'message': message, 'report': report, 'create_response': create_resp}
+
+    info_resp = {}
+    try:
+        info_resp = p115.share_info(share_payload.get('share_code'))
+    except Exception as e:
+        info_resp = {'state': False, 'error_msg': str(e), 'stage': 'share_info_after_create'}
+    status_info = _completed_share_status_from_info(info_resp, allow_implicit_valid=False)
+    if status_info.get('status') == 'failed':
+        status_info = {'status': 'pending_review', 'review_status': 'pending', 'message': '115 分享已创建，等待 115 审核'}
+
+    report_payload = {
+        'channel_id': channel_id,
+        'status': status_info.get('status') or 'pending_review',
+        'review_status': status_info.get('review_status') or '',
+        'status_message': status_info.get('message') or '115 分享已创建',
+        'share_code': share_payload.get('share_code') or '',
+        'receive_code': share_payload.get('receive_code') or receive_code,
+        'share_url': share_payload.get('share_url') or '',
+        'share_title': title,
+        'root_fid': '',
+        'root_name': title,
+        'file_count': len(share_ids),
+        'total_size': payload.get('total_size') or 0,
+        'raw_json': {
+            'share_kind': 'logical_season',
+            'event_id': event_id,
+            'share_ids': share_ids,
+            'create_response': create_resp,
+            'share_info_response': info_resp,
+        },
+    }
+    try:
+        report_resp = client.report_logical_season_share(group_id, report_payload)
+        reported = True
+    except Exception as e:
+        report_resp = {'ok': False, 'error': str(e)}
+        reported = False
+
+    local_saved = shared_share_db.upsert_completed_season_share_channel({
+        'channel_id': channel_id,
+        'center_source_id': group_id,
+        'hub_id': payload.get('hub_id') or '',
+        'manifest_hash': payload.get('package_fingerprint') or payload.get('manifest_hash') or '',
+        'status': report_payload['status'],
+        'review_status': report_payload['review_status'],
+        'status_message': report_payload['status_message'],
+        'share_code': report_payload['share_code'],
+        'receive_code': report_payload['receive_code'],
+        'share_url': report_payload['share_url'],
+        'share_title': title,
+        'root_fid': '',
+        'root_name': title,
+        'file_count': report_payload['file_count'],
+        'total_size': report_payload['total_size'],
+        'raw_json': {'share_kind': 'logical_season', 'center_report_response': report_resp, 'event': payload, 'share_ids': share_ids},
+        'checked': True,
+        'reported': reported,
+    })
+
+    if ack and event_id:
+        client.ack_device_events([event_id], result='ok' if reported else 'failed', message=(report_payload['status_message'] or '')[:500])
+    logger.info(f"  ➜ [逻辑季分享] 创建文件列表分享完成：{title}，status={report_payload['status']}，channel={channel_id}")
+    return {
+        'ok': bool(reported),
+        'event_id': event_id,
+        'channel_id': channel_id,
+        'group_id': group_id,
+        'status': report_payload['status'],
+        'share_code': report_payload['share_code'],
+        'local': local_saved,
+        'report': report_resp,
+    }
+
+
 def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
     """轻量同步本机已创建的完结季分享状态；供高频任务调用。"""
     if not _enabled():
@@ -1023,7 +1273,7 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                         'status_source': 'local_disabled_cleanup',
                     }
                     try:
-                        center_resp = client.update_completed_season_share_status(channel_id, {
+                        center_resp = _update_center_share_channel_status(client, row, channel_id, {
                             'status': 'disabled',
                             'review_status': 'disabled',
                             'status_message': msg,
@@ -1125,7 +1375,7 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                 should_report_center = bool(terminal_status or status_changed)
 
                 if should_report_center:
-                    center_resp = client.update_completed_season_share_status(channel_id, {
+                    center_resp = _update_center_share_channel_status(client, row, channel_id, {
                         'status': status,
                         'review_status': status_info.get('review_status') or '',
                         'status_message': msg,
@@ -1191,9 +1441,9 @@ def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
     ).strip()
     sha1 = _norm_sha1(payload.get('sha1'))
     event_type = str((event or {}).get('event_type') or payload.get('event_type') or '').strip()
-    if source_kind not in {'movie', 'episode', 'completed_season', 'logical_episode'} or not source_id:
+    if source_kind not in {'movie', 'episode', 'completed_season', 'logical_episode', 'logical_season'} or not source_id:
         return {}
-    if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE}:
+    if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE}:
         return {}
     return {'source_kind': source_kind, 'source_id': source_id, 'sha1': sha1}
 
@@ -1401,7 +1651,7 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
         or (event or {}).get('source_ref_id')
         or ''
     ).strip()
-    if source_kind != 'completed_season' or not source_id:
+    if source_kind not in {'completed_season', 'logical_season'} or not source_id:
         return {'bypass': False}
 
     try:
@@ -1411,7 +1661,7 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
             if str(channel.get('status') or '').strip().lower() == 'valid' and channel.get('share_code'):
                 return {
                     'bypass': True,
-                    'reason': 'valid_completed_season_share_channel_in_payload',
+                    'reason': 'valid_completed_or_logical_season_share_channel_in_payload',
                     'channel_id': str(channel.get('channel_id') or ''),
                 }
     except Exception as e:
@@ -1425,18 +1675,21 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
             if str(channel.get('status') or '').strip().lower() == 'valid' and channel.get('share_code'):
                 return {
                     'bypass': True,
-                    'reason': 'valid_completed_season_share_channel',
+                    'reason': 'valid_completed_or_logical_season_share_channel',
                     'channel_id': str(channel.get('channel_id') or ''),
                 }
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 查询完结季分享通道失败，仍按 Rapid 许可门禁处理：{e}")
+        logger.debug(f"  ➜ [共享资源] 查询完结季/逻辑季分享通道失败，仍按 Rapid 许可门禁处理：{e}")
 
     return {'bypass': False}
 
 
 def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
-    if _completed_share_event_type(event) == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
+    event_type = _completed_share_event_type(event)
+    if event_type == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
         return handle_create_completed_season_share_event(event, ack=bool(kwargs.get('ack', True)))
+    if event_type == LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE:
+        return handle_create_logical_season_filelist_share_event(event, ack=bool(kwargs.get('ack', True)))
     source = _event_source_payload(event)
     bypass = _local_event_should_bypass_transfer_lease(event, source)
     if bypass.get('bypass'):
@@ -1457,7 +1710,7 @@ def _consume_device_event_with_transfer_gate(original_consume, event, *args, **k
     share_bypass = _completed_season_share_lease_bypass(event, source)
     if share_bypass.get('bypass'):
         logger.info(
-            f"  ➜ [共享资源] 跳过中心秒传许可：完结季存在有效 115 分享通道，"
+            f"  ➜ [共享资源] 跳过中心秒传许可：完结季/逻辑季存在有效 115 分享通道，"
             f"直接尝试分享转存，channel={share_bypass.get('channel_id') or '-'}"
         )
         return original_consume(event, *args, **kwargs)
