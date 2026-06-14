@@ -1841,7 +1841,13 @@ const centerStatusTag = (row) => {
   const type = row.status_type || statusMap[row.status]?.type || 'default';
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
-const centerShareChannel = (row) => row?.share_channel || row?.logical_season_share_channel || row?.completed_season_share_channel || {};
+const centerShareChannel = (row) => row?.share_channel
+  || row?.logical_season_share_channel
+  || row?.completed_season_share_channel
+  || row?.logical_group?.share_channel
+  || row?.logical_group?.logical_season_share_channel
+  || row?.logical_group?.completed_season_share_channel
+  || {};
 const centerIsLogicalSeasonRow = (row) => {
   const kind = String(row?.source_kind || row?.resource_type || '').trim().toLowerCase();
   return kind === 'logical_season' || Boolean(row?.logical_shadow_only && row?.logical_group_id);
@@ -1855,7 +1861,20 @@ const centerLogicalNumber = (row, ...keys) => {
   }
   return 0;
 };
-const centerHasValidShareChannel = (row) => Boolean(row?.share_transfer_available || row?.has_valid_share_channel || String(centerShareChannel(row)?.status || '').toLowerCase() === 'valid');
+const centerHasValidShareChannel = (row) => {
+  const status = String(centerShareChannel(row)?.status || row?.share_channel_status || row?.logical_group?.share_channel_status || '').toLowerCase();
+  return Boolean(
+    row?.share_transfer_available
+    || row?.has_valid_share_channel
+    || row?.preferred_transfer_mode === 'share'
+    || row?.transfer_mode === 'share'
+    || row?.logical_group?.share_transfer_available
+    || row?.logical_group?.has_valid_share_channel
+    || row?.logical_group?.preferred_transfer_mode === 'share'
+    || row?.logical_group?.transfer_mode === 'share'
+    || status === 'valid'
+  );
+};
 const centerTransferActionText = (row) => centerHasValidShareChannel(row) ? '转存' : '秒传';
 const centerVersionActionDisabled = (row) => false;
 const centerSourceText = (row) => {
