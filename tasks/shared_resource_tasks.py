@@ -28,6 +28,7 @@ _SIGN_LISTENER_THREAD = None
 _LISTENER_STOP = threading.Event()
 _LISTENER_LOCK = threading.Lock()
 _FULL_SHARE_LOCK = threading.Lock()
+_CENTER_CONFIG_WARNED_REASONS = set()
 
 
 def _cfg_bool(value: Any, default: bool = False) -> bool:
@@ -54,8 +55,54 @@ def _shared_resource_switch_enabled() -> bool:
         return False
 
 
+def _shared_center_runtime_config() -> Dict[str, str]:
+    """读取共享中心运行必要配置。
+
+    shared_center_enabled() 在部分旧版本只判断中心 URL/开关，可能不校验
+    p115_shared_device_token。长轮询/签名轮询没有 token 时不能启动，
+    否则启动阶段会反复初始化中心客户端或进入无意义长轮询，表现为卡死。
+    """
+    try:
+        cfg = settings_db.get_shared_resource_config() or {}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 读取共享中心配置失败，按未配置处理: {e}")
+        return {'center_url': '', 'device_token': ''}
+    return {
+        'center_url': str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/'),
+        'device_token': str(cfg.get('p115_shared_device_token') or '').strip(),
+    }
+
+
+def _shared_center_runtime_ready(*, log_missing: bool = False) -> bool:
+    if not _shared_resource_switch_enabled():
+        return False
+    cfg = _shared_center_runtime_config()
+    missing = []
+    if not cfg.get('center_url'):
+        missing.append('center_url')
+    if not cfg.get('device_token'):
+        missing.append('device_token')
+    if missing:
+        reason = 'missing_' + '_'.join(missing)
+        if log_missing and reason not in _CENTER_CONFIG_WARNED_REASONS:
+            _CENTER_CONFIG_WARNED_REASONS.add(reason)
+            logger.warning(
+                "  ➜ [共享资源] 共享中心配置不完整，跳过启动长轮询/签名监听：%s",
+                ', '.join(missing),
+            )
+        return False
+    try:
+        return bool(shared_center_enabled())
+    except Exception as e:
+        reason = 'shared_center_enabled_error'
+        if log_missing and reason not in _CENTER_CONFIG_WARNED_REASONS:
+            _CENTER_CONFIG_WARNED_REASONS.add(reason)
+            logger.warning(f"  ➜ [共享资源] 检查共享中心启用状态失败，跳过长轮询启动: {e}")
+        return False
+
+
 def _enabled() -> bool:
-    return _shared_resource_switch_enabled() and shared_center_enabled()
+    return _shared_center_runtime_ready(log_missing=False)
 
 
 def _safe_int(value, default=0):
@@ -4221,12 +4268,12 @@ def _sign_listener_loop():
     while not _LISTENER_STOP.is_set():
         try:
             if not _enabled():
-                time.sleep(5)
+                _LISTENER_STOP.wait(5)
                 continue
             poll_and_process_rapid_sign_jobs_once(timeout=20, limit=10)
         except Exception as e:
             logger.warning(f"  ➜ [共享签名监听] 本轮处理失败: {e}")
-            time.sleep(3)
+            _LISTENER_STOP.wait(3)
     logger.info('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已停止。')
 
 
@@ -4235,18 +4282,19 @@ def _event_listener_loop():
     while not _LISTENER_STOP.is_set():
         try:
             if not _enabled():
-                time.sleep(15)
+                _LISTENER_STOP.wait(15)
                 continue
             poll_and_consume_once(timeout=25, limit=10)
         except Exception as e:
             logger.warning(f"  ➜ [共享事件监听] 本轮处理失败: {e}")
-            time.sleep(10)
+            _LISTENER_STOP.wait(10)
     logger.info('  ➜ [共享事件监听] Rapid v2 长轮询监听已停止。')
 
 
 def ensure_shared_device_event_listener() -> bool:
     global _LISTENER_THREAD, _SIGN_LISTENER_THREAD
-    if not _enabled():
+    if not _shared_center_runtime_ready(log_missing=True):
+        stop_shared_device_event_listener(timeout=0.2)
         return False
     with _LISTENER_LOCK:
         started = False
