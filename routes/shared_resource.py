@@ -80,6 +80,25 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     return settings_db.save_shared_resource_config(data)
 
 
+def _center_request_kwargs(timeout: int) -> Dict[str, Any]:
+    import config_manager
+    kwargs = {'timeout': timeout}
+    getter = getattr(config_manager, 'get_proxies_for_requests', None)
+    if callable(getter):
+        proxies = getter()
+        if proxies:
+            kwargs['proxies'] = proxies
+    return kwargs
+
+
+def _center_headers_for_cfg(cfg: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        'X-Device-Token': str((cfg or {}).get('p115_shared_device_token') or '').strip(),
+        'Content-Type': 'application/json',
+        'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
+    }
+
+
 def _fetch_center_credit() -> Dict[str, Any]:
     client = SharedCenterClient()
     pro_report = {}
@@ -1246,6 +1265,10 @@ def _center_flag_meta(row: Dict[str, Any], flag_key: str, meta_key: str) -> Dict
     return {}
 
 
+def _center_source_is_animation(row: Dict[str, Any]) -> bool:
+    return bool(_center_flag_meta(row, 'is_animation', 'animation_meta_json'))
+
+
 def _center_source_is_completed_certified(row: Dict[str, Any]) -> bool:
     """中心资源库“已完结认证”只认 available 的 completed_season。
 
@@ -1670,19 +1693,6 @@ def api_center_import():
 def api_register_center_device():
     cfg = _shared_resource_config_payload()
     install_id = str(cfg.get('p115_shared_install_id') or '').strip() or uuid.uuid4().hex
-    existing_token = str(cfg.get('p115_shared_device_token') or '').strip()
-    if existing_token:
-        # 这个接口只负责“首次注册”。已注册设备不要再从页面或脚本反复申请 token，
-        # 避免把“重置设备”当成刷基础贡献点入口。token 真损坏时，先在配置里清空 token 再注册。
-        cfg['p115_shared_install_id'] = install_id
-        cfg['p115_shared_resource_enabled'] = True
-        saved = _save_shared_config(cfg)
-        return jsonify({
-            'success': True,
-            'message': '共享中心设备已注册，无需重复注册；如设备 Token 已损坏，请先在配置中清空 Token 后重新注册。',
-            'data': saved,
-            'device': {'device_token': existing_token, 'install_id': install_id, 'already_registered': True},
-        })
     name = socket.gethostname() or 'ETK Device'
     try:
         client = SharedCenterClient()
