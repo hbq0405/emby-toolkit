@@ -221,7 +221,7 @@ class WatchlistProcessor:
                 precise_new_episode_ids.append(eid)
         if precise_new_episode_ids:
             logger.info(
-                "  ➜ [智能追剧] 本次单项刷新携带新增分集 ID: %s 个，仅这些分集允许触发追更分集源登记。",
+                "  ➜ [智能追剧] 本次单项刷新携带新增分集 ID: %s 个，仅这些分集用于本轮追剧状态刷新。",
                 len(precise_new_episode_ids),
             )
         
@@ -1225,76 +1225,13 @@ class WatchlistProcessor:
         return bool(result.get('ok'))
 
     def _trigger_airing_episode_share_detached(self, tmdb_id: str, emby_item_ids: List[str], series_name: str = '', year: str = ''):
-        """追更状态确认后，只对 webhook 明确传入的新增分集异步触发追更分集源登记。
-
-        这里严禁再按季扫描 media_metadata。watchlist_processor 只能做最终追更/完结
-        状态裁决，不能猜测“本次新增了哪些集”。否则长篇动漫或历史存量剧会把整季、
-        甚至上千集都拿去重复登记。
-        """
-        parent_series_tmdb_id = str(tmdb_id or '').strip()
-        if not parent_series_tmdb_id:
-            return
-
-        precise_episode_ids = []
-        for eid in emby_item_ids or []:
-            eid = str(eid or '').strip()
-            if eid and eid not in precise_episode_ids:
-                precise_episode_ids.append(eid)
-
-        if not precise_episode_ids:
-            logger.debug(
-                "  ➜ [共享资源] 追更分集源登记跳过：没有 webhook 精确新增分集 ID tmdb=%s",
-                parent_series_tmdb_id,
-            )
-            return
-
-        if not _shared_resource_auto_share_enabled():
-            logger.debug(
-                "  ➜ [共享资源] 共享资源未启用，跳过追更分集源登记：%s episodes=%s",
-                series_name or parent_series_tmdb_id, len(precise_episode_ids),
-            )
-            return
-
-        def _runner():
-            try:
-                from tasks.shared_resource_tasks import trigger_shared_rapid_register_for_library_item
-
-                created_total = 0
-                checked_total = 0
-                for emby_item_id in precise_episode_ids:
-                    checked_total += 1
-                    result = trigger_shared_rapid_register_for_library_item(
-                        None,
-                        item_type='Episode',
-                        emby_item_id=emby_item_id,
-                        parent_series_tmdb_id=parent_series_tmdb_id,
-                        title=series_name or '',
-                        year=year or '',
-                    ) or {}
-                    try:
-                        created_total += int(result.get('created', 0) or 0)
-                    except Exception:
-                        pass
-
-                logger.debug(
-                    "  ➜ [共享资源] 追更分集源登记完成：%s checked=%s created=%s",
-                    series_name or parent_series_tmdb_id, checked_total, created_total,
-                )
-            except Exception as e:
-                logger.warning(
-                    "  ➜ [共享资源] 追更分集源登记异步任务失败：%s episodes=%s -> %s",
-                    series_name or parent_series_tmdb_id, len(precise_episode_ids), e, exc_info=True,
-                )
-
-        threading.Thread(
-            target=_runner,
-            name=f"shared-airing-episode-rapid-{parent_series_tmdb_id}",
-            daemon=True,
-        ).start()
-        logger.info(
-            "  ➜ [共享资源] 触发追更分集源登记：%s episodes=%s",
-            series_name or parent_series_tmdb_id, len(precise_episode_ids),
+        """兼容旧调用点：共享分集登记已迁移到 Webhook 入库完成后执行。"""
+        logger.debug(
+            "  ➜ [共享资源] watchlist_processor 已不再触发分集源登记：%s episodes=%s",
+            series_name or tmdb_id or '-',
+            len(emby_item_ids or []),
         )
+        return None
 
     def _trigger_completed_season_pack_share_detached(
         self,
@@ -1304,72 +1241,13 @@ class WatchlistProcessor:
         year: str = '',
         expected_episode_count: int = None,
     ):
-        """完结一致性通过后异步登记 completed_season_source，避免阻塞单线程任务队列。
-
-        这里不能走 task_manager.submit_task：智能追剧本身通常已经运行在 task_manager
-        的单 worker / 全局锁里，内部再提交任务容易被全局锁挡住，或者让追剧刷新长时间
-        等待 RAW 上传、manifest 更新、中心事件派发等慢 I/O。
-
-        注意：title / expected_episode_count 必须从追剧判定链路显式传入。
-        否则任务层只能拿 parent_series_tmdb_id 兜底，中心 season_hub.title
-        会被纯数字 TMDb ID 污染；expected_episode_count 缺失也会影响完结包
-        状态和纯净版识别口径。
-        """
-        parent_series_tmdb_id = str(tmdb_id or '').strip()
-        try:
-            season_no = int(season_number)
-        except Exception:
-            logger.debug(
-                "  ➜ [共享资源] 完结季源登记跳过：无效季号 tmdb=%s season=%s",
-                parent_series_tmdb_id, season_number,
-            )
-            return
-        if not parent_series_tmdb_id:
-            return
-        if not _shared_resource_auto_share_enabled():
-            logger.debug(
-                "  ➜ [共享资源] 共享资源未启用，跳过完结季源登记：%s S%02d",
-                series_name or parent_series_tmdb_id, season_no,
-            )
-            return
-
-        def _runner():
-            try:
-                from tasks.shared_resource_tasks import trigger_completed_season_pack_share_task
-                result = trigger_completed_season_pack_share_task(
-                    None,
-                    parent_series_tmdb_id=parent_series_tmdb_id,
-                    season_number=season_no,
-                    title=series_name or '',
-                    year=year or '',
-                    expected_episode_count=expected_episode_count,
-                ) or {}
-                clean_meta = ((result.get('completed_season') or {}).get('item') or {}).get('clean_version_meta_json') or {}
-                logger.debug(
-                    "  ➜ [共享资源] 完结季源登记异步任务完成：%s S%02d created=%s, episode_cancelled=%s, clean=%s, clean_reason=%s, message=%s",
-                    series_name or parent_series_tmdb_id,
-                    season_no,
-                    result.get('created', 0),
-                    result.get('episode_cancelled', 0),
-                    ((result.get('completed_season') or {}).get('item') or {}).get('is_clean_version'),
-                    clean_meta.get('reason') if isinstance(clean_meta, dict) else '',
-                    result.get('message') or '',
-                )
-            except Exception as e:
-                logger.warning(
-                    "  ➜ [共享资源] 完结季源登记异步任务失败：%s S%02d -> %s",
-                    series_name or parent_series_tmdb_id, season_no, e, exc_info=True,
-                )
-
-        threading.Thread(
-            target=_runner,
-            name=f"shared-completed-season-rapid-{parent_series_tmdb_id}-S{season_no:02d}",
-            daemon=True,
-        ).start()
-        logger.info(
-            "  ➜ [共享资源] 触发完结季收藏源登记：%s S%02d",
-            series_name or parent_series_tmdb_id, season_no,
+        """兼容旧调用点：完结季共享登记已废弃，中心端由单集资产池自行聚合。"""
+        logger.debug(
+            "  ➜ [共享资源] watchlist_processor 已不再触发完结季包登记：%s S%s",
+            series_name or tmdb_id or '-',
+            season_number,
         )
+        return None
 
     def _set_season_active_washing(self, tmdb_id: str, season_number: int, enabled: bool, reason: str = '') -> bool:
         """按季设置/清理分集 active_washing 洗版特权标记。"""
@@ -1443,7 +1321,7 @@ class WatchlistProcessor:
         """已完结状态下统一执行本地已集齐季的一致性门禁。
 
         旧逻辑只校验“本地已入库的最大季号”，两季同批入库时 S01 会被 S02
-        覆盖掉，无法触发完结季包登记。这里改为按本地已集齐的有效季逐季校验。
+        覆盖掉。这里改为按本地已集齐的有效季逐季校验；共享登记已改由 Webhook 单集无脑上报，中心端自行凑整季。
 
         门禁可以在 Completed -> Completed 的 webhook/单项刷新中反复执行，
         但只有首次从追更/暂停/待定流转到 Completed 时才允许发起新的洗版。
@@ -1596,7 +1474,7 @@ class WatchlistProcessor:
                 )
                 logger.info(
                     f"  ➜ [完结校验跳过] 《{series_name}》S{last_s_num} 本地 {local_target_count}/{last_ep_count}，"
-                    "尚未集齐，不触发完结一致性校验/季包登记。"
+                    "尚未集齐，不触发完结一致性校验。"
                 )
                 continue
 
@@ -1617,7 +1495,7 @@ class WatchlistProcessor:
                     checked=True,
                     consistency_ok=True,
                     consistency_failed=False,
-                    completed_pack_triggered=True,
+                    completed_pack_triggered=False,
                     unresolved_failed_gate=False,
                     reason='consistency_ok',
                 )
@@ -1627,13 +1505,9 @@ class WatchlistProcessor:
                     False,
                     reason="一致性已通过，完结洗版事务收口。",
                 )
-                logger.info(f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过，异步触发季包登记。")
-                self._trigger_completed_season_pack_share_detached(
-                    tmdb_id,
-                    last_s_num,
-                    series_name,
-                    year=release_year,
-                    expected_episode_count=last_ep_count,
+                logger.info(
+                    f"  ➜ [完结校验] 《{series_name}》S{last_s_num} 本地文件一致性通过；"
+                    "共享登记已交由 Webhook 单集上报，中心端自行聚合逻辑完结季。"
                 )
                 if set_waiting_flag is not True:
                     set_waiting_flag = False
@@ -1756,18 +1630,15 @@ class WatchlistProcessor:
             # 2. 直接使用传入的集数进行一致性检查。
             #    当调用方已经执行过完结质量门禁时，可跳过这里，避免重复校验。
             if not skip_consistency_check and self._check_season_consistency(tmdb_id, season_number, episode_count):
-                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版，异步触发季包登记。")
+                logger.info(
+                    f"  ➜ [完结洗版] 《{series_name}》S{season_number} 本地文件一致性完美，无需洗版；"
+                    "共享登记已交由 Webhook 单集上报，中心端自行聚合逻辑完结季。"
+                )
                 self._set_season_active_washing(
                     tmdb_id,
                     season_number,
                     False,
                     reason="一致性已通过，不需要洗版。",
-                )
-                self._trigger_completed_season_pack_share_detached(
-                    tmdb_id,
-                    season_number,
-                    series_name,
-                    expected_episode_count=episode_count,
                 )
                 return
             
@@ -2598,52 +2469,11 @@ class WatchlistProcessor:
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
 
         # ======================================================================
-        # ★★★ 共享资源追更分集源登记 ★★★
+        # ★★★ 共享资源登记职责已迁移到 Webhook ★★★
         # ======================================================================
-        # Webhook 只负责入库和指纹体检；是否登记单集源必须由追剧模块根据
-        # final_status 决定：
-        # - Watching / Paused / Pending：登记明确新增集；
-        # - Completed 且一致性未通过：仍登记明确新增集，先给中心提供单集供给；
-        # - Completed 且一致性通过：只登记 completed_season_source，季包成功后会停用同季单集源。
-        if allow_airing_episode_share:
-            should_register_episode_source = final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]
-            has_unresolved_failed_gate = bool(
-                completed_quality_gate.get(
-                    'has_unresolved_failed_gate',
-                    bool(completed_quality_gate.get('consistency_failed'))
-                    and not bool(completed_quality_gate.get('completed_pack_triggered')),
-                )
-            )
-            if (
-                final_status == STATUS_COMPLETED
-                and has_unresolved_failed_gate
-            ):
-                should_register_episode_source = True
-                logger.info(
-                    "  ➜ [共享资源] 已判定完结但一致性未通过，先登记本轮新增单集源，等待洗版完成后再登记季包并清理单集源：%s S%s episodes=%s reason=%s",
-                    item_name,
-                    completed_quality_gate.get('target_season') or '-',
-                    len(airing_episode_emby_ids or []),
-                    completed_quality_gate.get('reason') or 'consistency_failed',
-                )
-
-            if should_register_episode_source:
-                release_date = latest_series_data.get('first_air_date') or ''
-                release_year = release_date[:4] if release_date else ''
-                self._trigger_airing_episode_share_detached(
-                    tmdb_id=tmdb_id,
-                    emby_item_ids=airing_episode_emby_ids or [],
-                    series_name=item_name,
-                    year=release_year,
-                )
-            else:
-                logger.debug(
-                    "  ➜ [共享资源] 本轮不登记单集源：%s episodes=%s, status=%s, gate=%s",
-                    item_name,
-                    len(airing_episode_emby_ids or []),
-                    translate_internal_status(final_status),
-                    completed_quality_gate.get('reason') or '-',
-                )
+        # 新方案下客户端只负责把电影/单集视频资产无脑登记到中心；
+        # 中心端按 resolution + video_codec + hdr_effect 聚合逻辑完结季。
+        # watchlist_processor 不再根据连载/完结/一致性结果触发任何共享登记。
 
         # ======================================================================
         # ★★★ MP 状态接管与同步 (自动待定 & 自动暂停) ★★★

@@ -450,29 +450,51 @@ def _submit_shared_auto_share_after_library_ready(
 ):
     """媒体入库完成后，异步登记 Rapid v2 共享源。
 
-    职责边界：
-    - Movie：入库完成即可登记电影源；
-    - Episode / Series：Webhook 只负责入库、指纹体检和把 new_episode_ids 透传给 watchlist_processor；
-      由 watchlist_processor 先判定连载/完结，再决定登记单集源或完结季包。
+    新逻辑下客户端不再负责季包一致性和完结季成包判断：
+    - Movie：入库完成即登记电影源；
+    - Series + new_episode_ids：入库完成即登记本轮新增分集源；
+    - 中心端根据单集资产池自行归类、凑整季、判定 pool_complete。
     """
     try:
-        if item_type != 'Movie' or not tmdb_id:
+        if not tmdb_id:
             return
 
         title = item_details.get('Name') or ''
         year = item_details.get('ProductionYear') or ''
-        _run_shared_auto_share_batch_detached(
-            f"Rapid电影共享源登记: {title or tmdb_id}",
-            [{
-                'item_type': 'Movie',
-                'tmdb_id': str(tmdb_id),
-                'emby_item_id': str(item_id),
-                'title': title,
-                'year': year,
-            }],
-        )
+
+        if item_type == 'Movie':
+            _run_shared_auto_share_batch_detached(
+                f"Rapid电影共享源登记: {title or tmdb_id}",
+                [{
+                    'item_type': 'Movie',
+                    'tmdb_id': str(tmdb_id),
+                    'emby_item_id': str(item_id),
+                    'title': title,
+                    'year': year,
+                }],
+            )
+            return
+
+        if item_type == 'Series':
+            precise_episode_ids = []
+            for eid in new_episode_ids or []:
+                eid = str(eid or '').strip()
+                if eid and eid not in precise_episode_ids:
+                    precise_episode_ids.append(eid)
+            if not precise_episode_ids:
+                return
+            _run_shared_auto_share_batch_detached(
+                f"Rapid分集共享源登记: {title or tmdb_id}",
+                [{
+                    'item_type': 'Episode',
+                    'emby_item_id': eid,
+                    'parent_series_tmdb_id': str(tmdb_id),
+                    'title': title,
+                    'year': year,
+                } for eid in precise_episode_ids],
+            )
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 提交 webhook Rapid 电影共享源登记失败: {e}", exc_info=True)
+        logger.warning(f"  ➜ [共享资源] 提交 webhook Rapid 共享源登记失败: {e}", exc_info=True)
 
 def _get_processor_local_strm_root(processor) -> str:
     """从 MediaProcessor / 配置中提取本地 STRM 根目录，用于补齐 p115_filesystem_cache.local_path。"""
@@ -667,7 +689,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             log_prefix="Webhook新集指纹补齐",
         )
 
-    # 3. 共享资源供给侧实时触发：电影仍入库即登记；剧集分集交由 watchlist_processor 状态判定后登记。
+    # 3. 共享资源供给侧实时触发：电影/本轮新增分集均在 Webhook 入库完成后登记；中心端负责后续整季归类。
     _submit_shared_auto_share_after_library_ready(
         item_details,
         item_id,
@@ -848,7 +870,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
                 precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
 
-                # 新集指纹体检已在 Webhook 中完成；watchlist_processor 后续可直接登记分集/季包共享源。
+                # 新集指纹体检与共享源登记均已在 Webhook 中完成；watchlist_processor 只负责追剧状态刷新。
                 logger.info(
                     f"  ➜ [智能追剧] 触发单项刷新..."
                     f"{' (透传新增分集: ' + str(len(precise_new_episode_ids)) + ' 个)' if precise_new_episode_ids else ''}"

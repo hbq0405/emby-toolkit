@@ -273,7 +273,7 @@
         正在补充中心待补充资源：{{ appendYear(centerTitleText(activeCenterReplenishSource), activeCenterReplenishSource.release_year) }}。系统已按中心 SHA1 精确匹配本机完全相同资源，并自动填入下方手动共享表单；确认无误后点击“登记共享源”。
       </n-alert>
       <n-alert v-else-if="!activeLocalShareRequest" type="info" :bordered="false" style="margin-bottom: 12px;">
-        直接输入片名搜索本地 media_metadata，系统只返回电影和季候选。选择季时会把该季下所有集登记到中心公共连载包；只有 watching_status=Completed 的季才做一致性校验并登记为客户端完结季包。
+        直接输入片名搜索本地 media_metadata。登记时只上传本机可秒传的视频资产；中心端会根据分辨率、编码和杜比/HDR 自动归类、凑整季，不再由客户端做季包一致性判断。
       </n-alert>
       <n-alert v-if="activeLocalShareRequest" type="warning" :bordered="false" style="margin-bottom: 12px;">
         正在响应求共享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。系统会自动检索本地库并按求共享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。没有候选就是本地没有符合条件的资源。
@@ -3219,39 +3219,37 @@ const centerVersionTags = (row) => {
   const summary = centerVersionSummary(row) || {};
   const tags = [];
   
-  // 1. 热度放第一个
+  // 1. 可展开资源把“展开/收起单集”放在最前面，避免夹在参数标签中间。
+  if (centerHasLogicalGroup(row) && centerVersionCanExpandEpisodes(row)) {
+    centerTagPush(tags, centerVersionEpisodesExpanded(row) ? '收起单集' : '展开单集', 'info', 'logical-episodes');
+  }
+
+  // 2. 热度
   centerTagPush(tags, `🔥 热度 ${row.success_count || 0}`, 'error', 'popularity');
 
-  // 2. 进度显示
+  // 3. 进度显示
   const progress = centerProgressText(row);
   if (progress) {
     const progressLabel = centerIsOngoingHub(row) ? `更新至 ${progress} 集` : progress;
     centerTagPush(tags, progressLabel, 'info', 'progress');
   }
 
-  if (centerHasLogicalGroup(row)) {
-    if (row.pool_complete || row.logical_pool_complete || row.logical_group?.pool_complete) {
-      centerTagPush(tags, '共享池完整', 'success', 'logical-pool-complete');
-    }
-    if (centerVersionCanExpandEpisodes(row)) {
-      centerTagPush(tags, centerVersionEpisodesExpanded(row) ? '收起单集' : '展开单集', 'info', 'logical-episodes');
-    }
-  }
+  // 共享池完整 / 候选 / 资产 / 可建分享属于中心端调试信息，不在用户前端展示。
 
-  // 3. 基础参数
+  // 4. 基础参数
   centerTagPush(tags, formatCenterSize(row), 'default', 'size');
   centerTagPush(tags, summary.resolution, 'success', 'resolution');
   centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
   centerTagPush(tags, codec, 'default', 'codec');
   
-  // 4. 彻底修复 FPS 叠词 (暴力剔除原有的 fps 字母，统一在最后加一个)
+  // 5. 彻底修复 FPS 叠词 (暴力剔除原有的 fps 字母，统一在最后加一个)
   if (summary.fps) {
     const cleanFps = String(summary.fps).replace(/fps/ig, '').trim();
     if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'default', 'fps');
   }
   
-  // 5. 其他标签
+  // 6. 其他标签
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
   else if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
