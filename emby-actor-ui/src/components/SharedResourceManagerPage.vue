@@ -398,7 +398,7 @@
                   size="small"
                   type="primary"
                   :loading="importingMap[version.source_id] === 'permanent'"
-                  :disabled="isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
+                  :disabled="centerVersionActionDisabled(version) || isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
                   @click="importCenterSource(version, 'permanent')"
                 >{{ centerTransferActionText(version) }}</n-button>
               </div>
@@ -1824,8 +1824,22 @@ const centerStatusTag = (row) => {
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
 const centerShareChannel = (row) => row?.share_channel || row?.completed_season_share_channel || {};
+const centerIsLogicalSeasonRow = (row) => {
+  const kind = String(row?.source_kind || row?.resource_type || '').trim().toLowerCase();
+  return kind === 'logical_season' || Boolean(row?.logical_shadow_only && row?.logical_group_id);
+};
+const centerIsLogicalShadowOnly = (row) => centerIsLogicalSeasonRow(row) && !row?.logical_import_available;
+const centerHasLogicalGroup = (row) => Boolean(row?.logical_group_id || row?.logical_group?.group_id || row?.pool_complete || row?.logical_pool_complete);
+const centerLogicalNumber = (row, ...keys) => {
+  for (const key of keys) {
+    const value = Number(row?.[key] ?? row?.logical_group?.[key]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 0;
+};
 const centerHasValidShareChannel = (row) => Boolean(row?.share_transfer_available || row?.has_valid_share_channel || String(centerShareChannel(row)?.status || '').toLowerCase() === 'valid');
-const centerTransferActionText = (row) => centerHasValidShareChannel(row) ? '转存' : '秒传';
+const centerTransferActionText = (row) => centerIsLogicalShadowOnly(row) ? '待接入' : (centerHasValidShareChannel(row) ? '转存' : '秒传');
+const centerVersionActionDisabled = (row) => centerIsLogicalShadowOnly(row);
 const centerSourceText = (row) => {
   // 中心端历史字段不完全统一：自动维护创建、手动创建、频道/影巢外部源可能分别落在
   // source_provider / source_label / provider / origin / create_mode 等字段里。这里不要缺省成“手动共享”，
@@ -1894,6 +1908,10 @@ const listCell = (items, limit = 3) => {
 const isCenterReplenishRow = (row) => String(row?.status || '').trim().toLowerCase() === 'replenish';
 const centerUsableResourceCount = (row) => {
   if (isCenterReplenishRow(row)) return 0;
+  if (centerHasLogicalGroup(row)) {
+    const logicalCount = centerLogicalNumber(row, 'logical_candidate_count', 'candidate_count', 'logical_client_complete_count', 'client_complete_count');
+    if (logicalCount > 0) return logicalCount;
+  }
   // 资源数显示的是可签名 holder 数，不是版本数。
   // version_count 只表示同一标题/同一集下有几个画质版本，不能反映秒传后新增的资源副本。
   for (const key of ['resource_count', 'usable_resource_count', 'available_holder_count', 'holder_count']) {
@@ -3077,6 +3095,21 @@ const centerVersionTags = (row) => {
   if (progress) {
     const progressLabel = centerIsOngoingHub(row) ? `更新至 ${progress} 集` : progress;
     centerTagPush(tags, progressLabel, 'info', 'progress');
+  }
+
+  if (centerHasLogicalGroup(row)) {
+    if (row.pool_complete || row.logical_pool_complete || row.logical_group?.pool_complete) {
+      centerTagPush(tags, '共享池完整', 'success', 'logical-pool-complete');
+    }
+    const candidateCount = centerLogicalNumber(row, 'logical_candidate_count', 'candidate_count');
+    const assetCount = centerLogicalNumber(row, 'logical_asset_count', 'asset_count');
+    const completeClientCount = centerLogicalNumber(row, 'logical_client_complete_count', 'client_complete_count');
+    const shareableCount = centerLogicalNumber(row, 'logical_shareable_client_count', 'shareable_client_count');
+    if (candidateCount > 0) centerTagPush(tags, `${candidateCount} 候选`, 'info', 'logical-candidates');
+    if (assetCount > 0) centerTagPush(tags, `${assetCount} 资产`, 'default', 'logical-assets');
+    if (completeClientCount > 0) centerTagPush(tags, `${completeClientCount} 完整客户端`, 'success', 'logical-complete-clients');
+    if (shareableCount > 0 || row.can_create_share || row.logical_can_create_share) centerTagPush(tags, '可建分享', 'warning', 'logical-shareable');
+    if (centerIsLogicalShadowOnly(row)) centerTagPush(tags, '展示预览', 'default', 'logical-preview');
   }
 
   // 3. 基础参数
