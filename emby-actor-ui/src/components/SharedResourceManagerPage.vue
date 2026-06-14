@@ -2207,6 +2207,13 @@ const groupCenterSources = (items, orderBy = 'latest') => {
     const typeLabel = centerTypeLabel(centerRowType(row));
     const sourceKind = String(row?.source_kind || '').trim().toLowerCase();
     const isPack = typeLabel === '季' || sourceKind === 'logical_season' || sourceKind === 'season_hub' || row?.is_collapsed_pack;
+    if (sourceKind === 'logical_season') {
+      // 逻辑季包的 group_id 就是中心端版本 ID。不能再按 hub/manifest 合并，
+      // 否则同一季多个逻辑版本会被前端吃成一条。
+      const gid = String(row?.logical_group_id || row?.group_id || row?.source_id || row?.source_ref_id || '').trim();
+      if (gid) return `logical:${gid}`;
+      if (row?.version_key) return `logical-version:${row.version_key}`;
+    }
     if (isPack) {
       const manifest = packManifestKey(row);
       // 季包只有“每一集 SHA1 全部一致”才算同一版本；任意一集不一致就是另一个版本。
@@ -3224,7 +3231,9 @@ const centerDetailVersions = computed(() => {
   return versions
     .filter(v => v && !centerIsLazyPlaceholder(v))
     .filter(v => {
-      const key = String(v?.source_id || v?.source_ref_id || v?.hub_id || v?.sha1 || v?.manifest_hash || v?.file_name || JSON.stringify(v).slice(0, 80));
+      const key = centerIsLogicalSeasonRow(v)
+        ? `logical:${String(v?.logical_group_id || v?.group_id || v?.source_id || v?.source_ref_id || v?.version_key || JSON.stringify(v).slice(0, 80))}`
+        : String(v?.source_id || v?.source_ref_id || v?.hub_id || v?.sha1 || v?.manifest_hash || v?.file_name || JSON.stringify(v).slice(0, 80));
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

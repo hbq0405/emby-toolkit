@@ -811,36 +811,47 @@ def _share_channel_is_logical(row: Dict[str, Any] = None, source_id: str = '') -
     )
 
 
+def _logical_share_report_payload_from_row(row: Dict[str, Any], channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """把本地 logical channel 的完整分享字段拼成中心 report payload。
+
+    逻辑季分享不能再走 status-only 接口：旧 status 接口没有 share_code/share_url
+    字段，中心会知道“115 审核通过”却拿不到转存凭证，最终前端只能显示秒传。
+    """
+    row = row if isinstance(row, dict) else {}
+    report_payload = dict(payload or {})
+    report_payload.update({
+        'channel_id': channel_id,
+        'share_code': row.get('share_code') or report_payload.get('share_code') or '',
+        'receive_code': row.get('receive_code') or report_payload.get('receive_code') or '',
+        'share_url': row.get('share_url') or report_payload.get('share_url') or '',
+        'share_title': row.get('share_title') or row.get('root_name') or report_payload.get('share_title') or '',
+        'root_fid': row.get('root_fid') or report_payload.get('root_fid') or '',
+        'root_cid': row.get('root_cid') or report_payload.get('root_cid') or '',
+        'root_name': row.get('root_name') or report_payload.get('root_name') or '',
+        'file_count': row.get('file_count') or report_payload.get('file_count') or 0,
+        'total_size': row.get('total_size') or report_payload.get('total_size') or 0,
+    })
+    raw = report_payload.get('raw_json') if isinstance(report_payload.get('raw_json'), dict) else {}
+    raw = dict(raw or {})
+    raw.setdefault('share_kind', 'logical_season')
+    raw.setdefault('report_source', 'local_share_status_sync')
+    report_payload['raw_json'] = raw
+    return report_payload
+
+
 def _update_center_share_channel_status(client: SharedCenterClient, row: Dict[str, Any], channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if _share_channel_is_logical(row) and hasattr(client, 'update_logical_season_share_status'):
-        try:
-            return client.update_logical_season_share_status(channel_id, payload)
-        except Exception as e:
-            # 兼容旧逻辑季分享：本地 channel 已存在且 115 后台正常，但中心端当时未落
-            # logical_season_share_channels，/status 会 404。这里用 group_id 走 report 接口
-            # 补建中心 channel，并带上 share_code，否则中心会继续认为没有可转存通道。
-            group_id = str((row or {}).get('center_source_id') or '').strip()
-            if group_id and hasattr(client, 'report_logical_season_share'):
-                report_payload = dict(payload or {})
-                report_payload.update({
-                    'channel_id': channel_id,
-                    'share_code': (row or {}).get('share_code') or report_payload.get('share_code') or '',
-                    'receive_code': (row or {}).get('receive_code') or report_payload.get('receive_code') or '',
-                    'share_url': (row or {}).get('share_url') or report_payload.get('share_url') or '',
-                    'share_title': (row or {}).get('share_title') or (row or {}).get('root_name') or report_payload.get('share_title') or '',
-                    'root_fid': (row or {}).get('root_fid') or report_payload.get('root_fid') or '',
-                    'root_cid': (row or {}).get('root_cid') or report_payload.get('root_cid') or '',
-                    'root_name': (row or {}).get('root_name') or report_payload.get('root_name') or '',
-                    'file_count': (row or {}).get('file_count') or report_payload.get('file_count') or 0,
-                    'total_size': (row or {}).get('total_size') or report_payload.get('total_size') or 0,
-                })
-                raw = report_payload.get('raw_json') if isinstance(report_payload.get('raw_json'), dict) else {}
-                raw = dict(raw or {})
-                raw.setdefault('status_update_fallback_error', str(e))
-                raw.setdefault('share_kind', 'logical_season')
-                report_payload['raw_json'] = raw
-                return client.report_logical_season_share(group_id, report_payload)
-            raise
+    if _share_channel_is_logical(row):
+        group_id = str((row or {}).get('center_source_id') or '').strip()
+        if not group_id:
+            return {'ok': False, 'message': '逻辑季分享本地记录缺少 group_id(center_source_id)'}
+        if not hasattr(client, 'report_logical_season_share'):
+            return {'ok': False, 'message': 'SharedCenterClient 缺少 report_logical_season_share'}
+        # 逻辑季一律走 report 接口，携带 share_code / receive_code / share_url。
+        # 不再调用 status-only 接口，避免中心只收到“审核通过”状态却没有转存凭证。
+        return client.report_logical_season_share(
+            group_id,
+            _logical_share_report_payload_from_row(row, channel_id, payload),
+        )
     return {'ok': True, 'skipped': True, 'message': '旧 completed_season 分享通道本地跳过，中心只维护 logical_season_share_channels。'}
 
 
@@ -1269,7 +1280,10 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
             # 只同步“未定态/异常态/本地取消态”。
             # valid 分享不再进入高频维护轮询：正常通道不向中心反复上报，
             # 失效漏网时由消费端 share_import 失败被动下架对应 channel。
-            statuses=['pending_review', 'creating', 'expired', 'review_failed', 'disabled'],
+            # 逻辑季切换期需要把本地 valid 也周期性补报一次：
+            # 之前 status-only 上报可能把中心写成 failed，只有重新 report 完整
+            # share_code/share_url 才能恢复前端“转存”按钮。
+            statuses=['pending_review', 'creating', 'valid', 'failed', 'expired', 'review_failed', 'import_failed', 'source_unavailable', 'disabled'],
             limit=limit,
             need_check=True,
         )
@@ -1399,7 +1413,10 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                 # 这些只更新本地 last_checked_at，不再制造 completed_season_share_status_update。
                 terminal_status = status in {'expired', 'review_failed'}
                 status_changed = bool(row_status and row_status != status)
-                should_report_center = bool(terminal_status or status_changed)
+                is_logical_channel = _share_channel_is_logical(row)
+                # 逻辑季 valid 即使本地状态没变化，也要补报完整分享字段，
+                # 用来修复中心端已有 failed/空 share_code 的历史通道。
+                should_report_center = bool(terminal_status or status_changed or (is_logical_channel and status == 'valid'))
 
                 if should_report_center:
                     center_resp = _update_center_share_channel_status(client, row, channel_id, {
