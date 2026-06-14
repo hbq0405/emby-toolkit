@@ -1133,6 +1133,66 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
     }
 
 
+
+def _direct_center_share_sync_heartbeat(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """直连中心端分享同步签到接口。SharedCenterClient 未升级时兜底使用。"""
+    cfg = settings_db.get_shared_resource_config() or {}
+    base_url = str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
+    token = str(cfg.get('p115_shared_device_token') or '').strip()
+    if not base_url or not token:
+        raise RuntimeError('共享中心地址或设备 Token 未配置')
+    headers = {
+        'X-Device-Token': token,
+        'Content-Type': 'application/json',
+        'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
+    }
+    kwargs = {'timeout': 20}
+    getter = getattr(config_manager, 'get_proxies_for_requests', None)
+    if callable(getter):
+        try:
+            proxies = getter()
+            if proxies:
+                kwargs['proxies'] = proxies
+        except Exception:
+            pass
+    resp = requests.post(f'{base_url}/api/v1/devices/share-sync/heartbeat', headers=headers, json=payload, **kwargs)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {'raw_text': resp.text[:1000]}
+    if resp.status_code >= 400:
+        raise RuntimeError(f'中心分享同步签到接口 HTTP {resp.status_code}: {data}')
+    return data if isinstance(data, dict) else {'data': data}
+
+
+def _report_share_sync_heartbeat(summary: Dict[str, Any] = None, *, status: str = 'ok') -> Dict[str, Any]:
+    """向中心端签到：客户端分享同步任务硬编码 10 分钟一次，中心三次缺失判离线。"""
+    if not _enabled():
+        return {'ok': False, 'skipped': True, 'message': '共享资源未启用'}
+    payload = {
+        'task_name': 'shared_share_status_sync_high_freq',
+        'task_interval_seconds': 600,
+        'client_version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
+        'status': str(status or 'ok')[:80],
+        'summary_json': summary if isinstance(summary, dict) else {},
+    }
+    client = SharedCenterClient()
+    method = getattr(client, 'share_sync_heartbeat', None)
+    if callable(method):
+        return method(payload)
+    for name in ('post', '_post'):
+        fn = getattr(client, name, None)
+        if callable(fn):
+            return fn('/api/v1/devices/share-sync/heartbeat', payload)
+    for name in ('request', '_request'):
+        fn = getattr(client, name, None)
+        if callable(fn):
+            try:
+                return fn('POST', '/api/v1/devices/share-sync/heartbeat', json=payload)
+            except TypeError:
+                return fn('POST', '/api/v1/devices/share-sync/heartbeat', payload)
+    return _direct_center_share_sync_heartbeat(payload)
+
 def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
     """轻量同步本机已创建的完结季分享状态；供高频任务调用。"""
     if not _enabled():
@@ -1140,19 +1200,19 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
     if not _COMPLETED_SHARE_SYNC_LOCK.acquire(blocking=False):
         return {'ok': True, 'skipped': True, 'message': '已有分享状态同步正在运行', 'checked': 0}
     try:
-        rows = shared_share_db.list_completed_season_share_channels(
-            # 只同步“未定态/异常态/本地取消态”。
-            # valid 分享不再进入高频维护轮询：正常通道不向中心反复上报，
-            # 失效漏网时由消费端 share_import 失败被动下架对应 channel。
-            # 逻辑季切换期需要把本地 valid 也周期性补报一次：
-            # 之前 status-only 上报可能把中心写成 failed，只有重新 report 完整
-            # share_code/share_url 才能恢复前端“转存”按钮。
+        raw_rows = shared_share_db.list_completed_season_share_channels(
+            # 本地表名仍是历史命名，但高频同步主链路只处理逻辑完结季文件列表分享。
+            # valid 也周期性补报完整 share_code/share_url，确保中心端转存按钮不丢。
             statuses=['pending_review', 'creating', 'valid', 'failed', 'expired', 'review_failed', 'import_failed', 'source_unavailable', 'disabled'],
-            limit=limit,
+            limit=max(int(limit or 50) * 3, int(limit or 50)),
             need_check=True,
         )
+        rows = [r for r in (raw_rows or []) if _share_channel_is_logical(r)]
+        skipped_legacy = len(raw_rows or []) - len(rows)
+        if limit and len(rows) > int(limit):
+            rows = rows[:int(limit)]
         if not rows:
-            return {'ok': True, 'checked': 0, 'items': []}
+            return {'ok': True, 'checked': 0, 'skipped_legacy_completed_season': skipped_legacy, 'items': []}
         from handler.p115_service import P115Service
         p115 = P115Service.get_client()
         if not p115:
@@ -1338,7 +1398,7 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                     last_checked_at='NOW()',
                 )
                 items.append({'channel_id': channel_id, 'source_id': source_id, 'ok': False, 'error': str(e)})
-        return {'ok': True, 'checked': len(items), 'items': items}
+        return {'ok': True, 'checked': len(items), 'skipped_legacy_completed_season': skipped_legacy, 'items': items}
     finally:
         _COMPLETED_SHARE_SYNC_LOCK.release()
 
@@ -5543,8 +5603,26 @@ def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: 
     """系统硬编码高频后台任务入口。
 
     周期由 scheduler_manager.py 固定控制，不进入用户可配置任务链；
-    只同步完结季 115 分享通道状态，不顺带执行共享资源维护任务。
+    本任务只做两件事：
+    1. 向中心端签到，供中心按 3 次缺失判定客户端离线；
+    2. 同步逻辑完结季 115 文件列表分享状态。
+
+    completed_season 分享链路已停用，不再同步、不再上报。
     maintenance_silent 参数仅为兼容 scheduler_manager.py 旧调用签名保留。
     """
-    share_sync = _sync_completed_season_share_channels_once(limit=50)
-    return {'ok': True, 'completed_season_share_sync': share_sync}
+    heartbeat = {}
+    try:
+        # 签到必须放在分享状态同步前面：即便 115 share_list 或同步逻辑异常，
+        # 也不能让中心误判本客户端离线。
+        heartbeat = _report_share_sync_heartbeat({'stage': 'task_start'})
+    except Exception as e:
+        heartbeat = {'ok': False, 'error': str(e)}
+        logger.warning(f"  ➜ [共享资源] 分享同步中心签到失败：{e}")
+
+    try:
+        share_sync = _sync_completed_season_share_channels_once(limit=50)
+    except Exception as e:
+        share_sync = {'ok': False, 'checked': 0, 'error': str(e)}
+        logger.warning(f"  ➜ [共享资源] 逻辑季分享状态同步失败：{e}")
+
+    return {'ok': True, 'share_sync_heartbeat': heartbeat, 'logical_season_share_sync': share_sync}
