@@ -1849,12 +1849,38 @@ const centerShareChannel = (row) => row?.share_channel
   || row?.logical_group?.logical_season_share_channel
   || row?.logical_group?.completed_season_share_channel
   || {};
+const centerLooksLogicalGroupId = (value) => /^(svg_|lsg_|logical_season_)/i.test(String(value || '').trim());
+const centerLogicalGroupId = (row) => {
+  const logicalGroup = row?.logical_group && typeof row.logical_group === 'object' ? row.logical_group : {};
+  for (const value of [row?.logical_group_id, row?.group_id, logicalGroup?.group_id, logicalGroup?.source_id, row?.logical_season_group_id]) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  for (const value of [row?.source_id, row?.source_ref_id, row?.center_source_id]) {
+    const text = String(value || '').trim();
+    if (centerLooksLogicalGroupId(text)) return text;
+  }
+  return '';
+};
 const centerIsLogicalSeasonRow = (row) => {
   const kind = String(row?.source_kind || row?.resource_type || '').trim().toLowerCase();
-  return kind === 'logical_season' || Boolean(row?.logical_shadow_only && row?.logical_group_id);
+  if (kind === 'logical_season') return true;
+  const groupId = centerLogicalGroupId(row);
+  if (!groupId) return false;
+  return Boolean(
+    row?.logical_shadow_only
+    || row?.logical_import_available
+    || row?.logical_pool_complete
+    || row?.pool_complete
+    || row?.logical_group_id
+    || row?.group_id
+    || row?.logical_group
+    || row?.best_asset_map
+    || (kind === 'completed_season' && centerLooksLogicalGroupId(groupId))
+  );
 };
 const centerIsLogicalShadowOnly = (row) => centerIsLogicalSeasonRow(row) && !row?.logical_import_available;
-const centerHasLogicalGroup = (row) => Boolean(row?.logical_group_id || row?.logical_group?.group_id || row?.pool_complete || row?.logical_pool_complete);
+const centerHasLogicalGroup = (row) => Boolean(centerLogicalGroupId(row) || row?.pool_complete || row?.logical_pool_complete);
 const centerLogicalNumber = (row, ...keys) => {
   for (const key of keys) {
     const value = Number(row?.[key] ?? row?.logical_group?.[key]);
@@ -1977,7 +2003,8 @@ const centerReplenishActionNode = () => h(NTooltip, { trigger: 'hover', placemen
 });
 
 const inferRapidSourceKind = (row) => {
-  const direct = String(row?.source_kind || row?.kind || '').trim();
+  const direct = String(row?.source_kind || row?.kind || '').trim().toLowerCase();
+  if (centerIsLogicalSeasonRow(row)) return 'logical_season';
   if (direct) return direct;
   const typeText = centerTypeLabel(centerRowType(row));
   if (typeText === '电影') return 'movie';
@@ -1986,9 +2013,13 @@ const inferRapidSourceKind = (row) => {
   return '';
 };
 
-const centerRapidSourceId = (row) => String(
-  row?.source_id || row?.source_ref_id || row?.episode_source_id || row?.center_source_id || ''
-).trim();
+const centerRapidSourceId = (row) => {
+  if (centerIsLogicalSeasonRow(row)) {
+    const groupId = centerLogicalGroupId(row);
+    if (groupId) return groupId;
+  }
+  return String(row?.source_id || row?.source_ref_id || row?.episode_source_id || row?.center_source_id || '').trim();
+};
 
 const buildCenterImportSourcePayload = (row) => {
   const sourceId = centerRapidSourceId(row);
@@ -2001,7 +2032,8 @@ const buildCenterImportSourcePayload = (row) => {
     source_kind: sourceKind,
     source_id: sourceId,
     source_ids: sourceKind === 'season_hub' ? childSourceIds : undefined,
-    source_ref_id: row?.source_ref_id || sourceId,
+    source_ref_id: sourceId,
+    logical_group_id: sourceKind === 'logical_season' ? sourceId : (row?.logical_group_id || ''),
     title: row?.title || '',
     tmdb_id: row?.tmdb_id || row?.share_tmdb_id || '',
     parent_series_tmdb_id: row?.parent_series_tmdb_id || row?.series_tmdb_id || '',

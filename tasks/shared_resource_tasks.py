@@ -1534,15 +1534,94 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
 
 
 
-def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
+def _looks_like_logical_season_group_id(value: Any) -> bool:
+    text = str(value or '').strip().lower()
+    return bool(text and re.match(r'^(svg_|lsg_|logical_season_)', text))
+
+
+def _logical_group_id_from_transfer_payload(payload: Dict[str, Any], fallback: Any = '') -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    logical_group = payload.get('logical_group') if isinstance(payload.get('logical_group'), dict) else {}
+    for value in (
+        payload.get('logical_group_id'),
+        payload.get('group_id'),
+        logical_group.get('group_id'),
+        logical_group.get('source_id'),
+        payload.get('logical_season_group_id'),
+        payload.get('source_id'),
+        payload.get('source_ref_id'),
+        fallback,
+    ):
+        text = str(value or '').strip()
+        if _looks_like_logical_season_group_id(text):
+            return text
+    for value in (payload.get('logical_group_id'), payload.get('group_id'), logical_group.get('group_id')):
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _normalize_event_source_for_transfer(event: Dict[str, Any], source: Dict[str, Any] = None) -> Dict[str, str]:
     payload = _event_source_payload(event)
-    source_kind = str(payload.get('source_kind') or (event or {}).get('source_kind') or '').strip()
+    source = source if isinstance(source, dict) else payload
+    source_kind = str(
+        payload.get('source_kind')
+        or source.get('source_kind')
+        or (event or {}).get('source_kind')
+        or ''
+    ).strip().lower().replace('-', '_')
     source_id = str(
         payload.get('source_id')
         or payload.get('source_ref_id')
+        or source.get('source_id')
+        or source.get('source_ref_id')
         or (event or {}).get('source_ref_id')
         or ''
     ).strip()
+    if source_kind == 'completed_season':
+        group_id = _logical_group_id_from_transfer_payload(payload or source, source_id)
+        if group_id:
+            logical_group = payload.get('logical_group') if isinstance(payload.get('logical_group'), dict) else {}
+            channel = (
+                payload.get('share_channel')
+                or payload.get('logical_season_share_channel')
+                or payload.get('completed_season_share_channel')
+                or {}
+            )
+            channel = channel if isinstance(channel, dict) else {}
+            raw_channel = channel.get('raw_json') if isinstance(channel.get('raw_json'), dict) else {}
+            if (
+                _looks_like_logical_season_group_id(group_id)
+                or payload.get('logical_pool_complete')
+                or payload.get('pool_complete')
+                or payload.get('logical_shadow_only')
+                or payload.get('logical_import_available')
+                or payload.get('logical_group_id')
+                or payload.get('group_id')
+                or logical_group
+                or isinstance(payload.get('best_asset_map'), dict)
+                or str((channel or {}).get('share_kind') or raw_channel.get('share_kind') or '').strip() == 'logical_season'
+            ):
+                source_kind = 'logical_season'
+                source_id = group_id
+                try:
+                    payload['source_kind'] = 'logical_season'
+                    payload['source_id'] = source_id
+                    payload['source_ref_id'] = source_id
+                    event['source_kind'] = 'logical_season'
+                    event['source_ref_id'] = source_id
+                    event['payload_json'] = payload
+                except Exception:
+                    pass
+    return {'source_kind': source_kind, 'source_id': source_id}
+
+
+def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
+    payload = _event_source_payload(event)
+    normalized = _normalize_event_source_for_transfer(event, payload)
+    source_kind = normalized.get('source_kind') or ''
+    source_id = normalized.get('source_id') or ''
     sha1 = _norm_sha1(payload.get('sha1'))
     event_type = str((event or {}).get('event_type') or payload.get('event_type') or '').strip()
     if source_kind not in {'movie', 'episode', 'logical_episode', 'logical_season'} or not source_id:
@@ -1741,20 +1820,9 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
     """
     payload = _event_source_payload(event)
     source = source if isinstance(source, dict) else {}
-    source_kind = str(
-        payload.get('source_kind')
-        or source.get('source_kind')
-        or (event or {}).get('source_kind')
-        or ''
-    ).strip()
-    source_id = str(
-        payload.get('source_id')
-        or payload.get('source_ref_id')
-        or source.get('source_id')
-        or source.get('source_ref_id')
-        or (event or {}).get('source_ref_id')
-        or ''
-    ).strip()
+    normalized = _normalize_event_source_for_transfer(event, source)
+    source_kind = normalized.get('source_kind') or ''
+    source_id = normalized.get('source_id') or ''
     if source_kind != 'logical_season' or not source_id:
         return {'bypass': False}
 

@@ -1939,6 +1939,68 @@ def _event_payload(event: Dict[str, Any]) -> Dict[str, Any]:
     return dict(payload or {})
 
 
+def _looks_like_logical_season_group_id(value: Any) -> bool:
+    text = str(value or '').strip().lower()
+    # 中心逻辑季组当前使用 svg_ 前缀；额外兼容后续/旧灰度可能出现的 lsg_/logical_season_。
+    return bool(text and re.match(r'^(svg_|lsg_|logical_season_)', text))
+
+
+def _logical_season_group_id_from_payload(payload: Dict[str, Any], fallback: Any = '') -> str:
+    """从中心资源行里提取逻辑季 group_id。
+
+    切到逻辑季包后，前端/旧缓存偶尔仍把资源行标成 completed_season。
+    这里统一把 logical_group_id/group_id/logical_group.group_id/source_id(svg_) 归一成
+    logical_season，避免再调用已经停用的 completed_season_manifest。
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    logical_group = payload.get('logical_group') if isinstance(payload.get('logical_group'), dict) else {}
+    candidates = (
+        payload.get('logical_group_id'),
+        payload.get('group_id'),
+        logical_group.get('group_id'),
+        logical_group.get('source_id'),
+        payload.get('logical_season_group_id'),
+        payload.get('source_id'),
+        payload.get('source_ref_id'),
+        fallback,
+    )
+    for value in candidates:
+        text = str(value or '').strip()
+        if _looks_like_logical_season_group_id(text):
+            return text
+    # 有明确逻辑季字段但 group_id 没有固定前缀时，也信任显式字段。
+    for value in (payload.get('logical_group_id'), payload.get('group_id'), logical_group.get('group_id')):
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _legacy_completed_source_should_use_logical(payload: Dict[str, Any], source_id: str = '') -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    group_id = _logical_season_group_id_from_payload(payload, source_id)
+    if not group_id:
+        return ''
+    if _looks_like_logical_season_group_id(group_id):
+        return group_id
+    logical_group = payload.get('logical_group') if isinstance(payload.get('logical_group'), dict) else {}
+    channel = _completed_share_channel_from_payload(payload) if '_completed_share_channel_from_payload' in globals() else {}
+    channel = channel if isinstance(channel, dict) else {}
+    raw_channel = channel.get('raw_json') if isinstance(channel.get('raw_json'), dict) else {}
+    has_logical_marker = bool(
+        payload.get('logical_pool_complete')
+        or payload.get('pool_complete')
+        or payload.get('logical_shadow_only')
+        or payload.get('logical_import_available')
+        or payload.get('logical_group_id')
+        or payload.get('group_id')
+        or logical_group
+        or isinstance(payload.get('best_asset_map'), dict)
+        or str(channel.get('share_kind') or raw_channel.get('share_kind') or '').strip() == 'logical_season'
+    )
+    return group_id if has_logical_marker else ''
+
+
 def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[str, str, List[Dict[str, Any]]]:
     payload = _event_payload(event)
     source_kind = _normalize_source_kind(event.get('source_kind') or payload.get('source_kind') or '')
@@ -1956,6 +2018,27 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
         else:
             source_kind = _normalize_source_kind(
                 payload.get('kind') or payload.get('item_type') or payload.get('display_type') or ''
+            )
+
+    logical_group_id = ''
+    if source_kind == 'completed_season':
+        logical_group_id = _legacy_completed_source_should_use_logical(payload, source_id)
+        if logical_group_id:
+            old_source_id = source_id
+            source_kind = 'logical_season'
+            source_id = logical_group_id
+            payload['source_kind'] = 'logical_season'
+            payload['source_id'] = source_id
+            payload['source_ref_id'] = source_id
+            try:
+                event['source_kind'] = 'logical_season'
+                event['source_ref_id'] = source_id
+                event['payload_json'] = payload
+            except Exception:
+                pass
+            logger.info(
+                f"  ➜ [共享资源] 已将旧 completed_season 转存事件改道为逻辑季包："
+                f"{old_source_id or '-'} -> {source_id}"
             )
 
     # 逻辑季包展开出来的单集资产：前端直接提交 logical_episode + asset_id + rapid 参数，
@@ -2039,7 +2122,15 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
     # 兼容中心返回的 completed season 包：列表接口只给源摘要，真正文件清单要再取 manifest。
     # 如果 manifest 为空，不能再显示“秒传完成 0/0”，这属于 manifest 缺失/旧数据，需要重新登记该季。
     if source_kind == 'completed_season':
-        manifest = client.completed_season_manifest(source_id)
+        # 新中心已停用旧 completed-season manifest。能识别为逻辑季的旧事件必须在上面改道；
+        # 到这里仍是 completed_season，直接给业务错误，避免抛 RuntimeError 打 500。
+        method = getattr(client, 'completed_season_manifest', None)
+        if not callable(method):
+            raise RuntimeError('旧 completed-season manifest 已停用，当前资源缺少 logical_season group_id，请刷新中心资源库后重试。')
+        try:
+            manifest = method(source_id)
+        except RuntimeError as e:
+            raise RuntimeError('旧 completed-season manifest 已停用，当前资源没有可识别的 logical_season group_id，请刷新中心资源库后重试。') from e
         manifest_item = (manifest.get('item') if isinstance(manifest, dict) and isinstance(manifest.get('item'), dict) else {}) or {}
         source_payload = {**manifest_item, **payload}
         files = (manifest.get('files') or manifest.get('items') or []) if isinstance(manifest, dict) else []
@@ -3436,7 +3527,9 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         }
 
     is_package_transfer = source_kind in ('completed_season', 'season_hub', 'logical_season') and len(files) > 1
-    payload.setdefault('source_kind', source_kind)
+    payload['source_kind'] = source_kind
+    payload['source_id'] = source_id
+    payload['source_ref_id'] = source_id
 
     # 完结季如果已有可用 115 分享通道，先直接转存到待整理根目录；
     # 不等 Rapid 秒传许可，也不提前创建 Rapid 临时目录。

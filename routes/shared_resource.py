@@ -1232,6 +1232,71 @@ def _center_source_is_short_drama(row: Dict[str, Any]) -> bool:
     return bool(_center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json'))
 
 
+def _center_import_looks_like_logical_group_id(value: Any) -> bool:
+    text = str(value or '').strip().lower()
+    return bool(text and re.match(r'^(svg_|lsg_|logical_season_)', text))
+
+
+def _center_import_logical_group_id(source: Dict[str, Any], fallback: Any = '') -> str:
+    source = source if isinstance(source, dict) else {}
+    logical_group = source.get('logical_group') if isinstance(source.get('logical_group'), dict) else {}
+    for value in (
+        source.get('logical_group_id'),
+        source.get('group_id'),
+        logical_group.get('group_id'),
+        logical_group.get('source_id'),
+        source.get('logical_season_group_id'),
+        source.get('source_id'),
+        source.get('source_ref_id'),
+        fallback,
+    ):
+        text = str(value or '').strip()
+        if _center_import_looks_like_logical_group_id(text):
+            return text
+    for value in (source.get('logical_group_id'), source.get('group_id'), logical_group.get('group_id')):
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _center_import_normalize_source(source: Dict[str, Any]) -> Dict[str, Any]:
+    """手动转存入口兜底：旧前端/旧缓存把逻辑季提交成 completed_season 时，改为 logical_season。"""
+    source = dict(source or {})
+    source_kind = str(source.get('source_kind') or source.get('kind') or '').strip().lower().replace('-', '_')
+    source_id = str(source.get('source_id') or source.get('source_ref_id') or '').strip()
+    logical_group = source.get('logical_group') if isinstance(source.get('logical_group'), dict) else {}
+    channel = (
+        source.get('share_channel')
+        or source.get('logical_season_share_channel')
+        or source.get('completed_season_share_channel')
+        or {}
+    )
+    channel = channel if isinstance(channel, dict) else {}
+    raw_channel = channel.get('raw_json') if isinstance(channel.get('raw_json'), dict) else {}
+    logical_group_id = _center_import_logical_group_id(source, source_id)
+    logical_marker = bool(
+        logical_group_id and (
+            _center_import_looks_like_logical_group_id(logical_group_id)
+            or source.get('logical_pool_complete')
+            or source.get('pool_complete')
+            or source.get('logical_shadow_only')
+            or source.get('logical_import_available')
+            or source.get('logical_group_id')
+            or source.get('group_id')
+            or logical_group
+            or isinstance(source.get('best_asset_map'), dict)
+            or str((channel or {}).get('share_kind') or raw_channel.get('share_kind') or '').strip() == 'logical_season'
+        )
+    )
+    if source_kind == 'completed_season' and logical_marker:
+        source['source_kind'] = 'logical_season'
+        source['source_id'] = logical_group_id
+        source['source_ref_id'] = logical_group_id
+        source['_normalized_from_source_kind'] = 'completed_season'
+    return source
+
+
 def _center_source_transfer_preflight(source: Dict[str, Any]) -> Dict[str, Any]:
     cfg = settings_db.get_shared_resource_config() or {}
     title = str((source or {}).get('title') or (source or {}).get('file_name') or (source or {}).get('source_id') or '').strip()
@@ -1611,6 +1676,7 @@ def api_center_import():
     # 这里给出明确错误，避免前端继续显示“秒传完成 0/0”。
     if not isinstance(source, dict):
         source = {}
+    source = _center_import_normalize_source(source)
     source_kind = source.get('source_kind') or source.get('kind') or ''
     source_id = source.get('source_id') or source.get('source_ref_id') or ''
     if (not source_kind or not source_id) and data.get('source_ids'):
