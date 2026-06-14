@@ -1191,7 +1191,7 @@ def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
     ).strip()
     sha1 = _norm_sha1(payload.get('sha1'))
     event_type = str((event or {}).get('event_type') or payload.get('event_type') or '').strip()
-    if source_kind not in {'movie', 'episode', 'completed_season'} or not source_id:
+    if source_kind not in {'movie', 'episode', 'completed_season', 'logical_episode'} or not source_id:
         return {}
     if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE}:
         return {}

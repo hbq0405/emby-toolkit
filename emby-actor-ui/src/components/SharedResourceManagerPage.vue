@@ -384,16 +384,34 @@
 
           <!-- 版本列表 -->
           <div class="center-version-detail-list">
-            <div v-for="version in centerDetailVersions" :key="centerVersionKey(version)" class="center-version-detail-card">
+            <div
+              v-for="version in centerDetailVersions"
+              :key="centerVersionKey(version)"
+              class="center-version-detail-card"
+              :class="{ 'center-version-detail-card-expandable': centerVersionCanExpandEpisodes(version) }"
+              @click="toggleCenterVersionEpisodes(version)"
+            >
               <div class="center-version-main">
                 <div class="center-version-tags">
                   <n-tag v-for="tagItem in centerVersionTags(version)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
                     {{ tagItem.label }}
                   </n-tag>
                 </div>
-                <!-- 详情页不展开/展示包内单集；发起秒传时再按需拉取 children。 -->
+                <div v-if="centerVersionCanExpandEpisodes(version) && centerVersionEpisodesExpanded(version)" class="center-episode-matrix" @click.stop>
+                  <n-button
+                    v-for="episode in centerVersionEpisodeItems(version)"
+                    :key="episode.key"
+                    size="tiny"
+                    round
+                    secondary
+                    :type="episode.asset ? 'primary' : 'default'"
+                    :disabled="!episode.asset || Boolean(importingMap[episode.loadingKey])"
+                    :loading="Boolean(importingMap[episode.loadingKey])"
+                    @click="importCenterLogicalEpisode(version, episode)"
+                  >{{ episode.label }}</n-button>
+                </div>
               </div>
-              <div class="center-version-action">
+              <div class="center-version-action" @click.stop>
                 <n-button
                   size="small"
                   type="primary"
@@ -487,6 +505,7 @@ const ledgerItems = ref([]);
 const centerSources = ref([]);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
+const centerVersionExpandedMap = reactive({});
 const centerHasMore = ref(true);
 const centerAppendLoading = ref(false);
 const centerInfiniteSentinel = ref(null);
@@ -1838,7 +1857,7 @@ const centerLogicalNumber = (row, ...keys) => {
   return 0;
 };
 const centerHasValidShareChannel = (row) => Boolean(row?.share_transfer_available || row?.has_valid_share_channel || String(centerShareChannel(row)?.status || '').toLowerCase() === 'valid');
-const centerTransferActionText = (row) => centerIsLogicalShadowOnly(row) ? '待接入' : (centerHasValidShareChannel(row) ? '转存' : '秒传');
+const centerTransferActionText = (row) => centerIsLogicalShadowOnly(row) ? '展开单集' : (centerHasValidShareChannel(row) ? '转存' : '秒传');
 const centerVersionActionDisabled = (row) => centerIsLogicalShadowOnly(row);
 const centerSourceText = (row) => {
   // 中心端历史字段不完全统一：自动维护创建、手动创建、频道/影巢外部源可能分别落在
@@ -3059,6 +3078,119 @@ const centerDetailModalTitle = computed(() => {
   return title;
 });
 const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || row?.file_name || Math.random());
+
+const parseCenterJsonObject = (value) => {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  return {};
+};
+const centerVersionExpandKey = (row) => String(row?.logical_group_id || row?.logical_group?.group_id || row?.group_id || centerVersionKey(row));
+const centerVersionBestAssetMap = (row) => {
+  const direct = parseCenterJsonObject(row?.best_asset_map);
+  if (Object.keys(direct).length) return direct;
+  return parseCenterJsonObject(row?.logical_group?.best_asset_map);
+};
+const centerVersionEpisodeItems = (row) => {
+  const assetMap = centerVersionBestAssetMap(row);
+  const total = Number(row?.episode_total || row?.progress_total || row?.logical_group?.episode_total || 0);
+  const mapKeys = Object.keys(assetMap)
+    .map(k => Number(k))
+    .filter(n => Number.isFinite(n) && n > 0);
+  const maxEp = Math.max(total || 0, ...mapKeys, 0);
+  if (!maxEp) return [];
+  const pad = maxEp >= 10 ? 2 : 1;
+  const items = [];
+  for (let ep = 1; ep <= maxEp; ep += 1) {
+    const asset = assetMap[String(ep)] || assetMap[ep] || null;
+    items.push({
+      episode_number: ep,
+      label: String(ep).padStart(pad, '0'),
+      asset,
+      key: `${centerVersionExpandKey(row)}:ep:${ep}`,
+      loadingKey: asset?.asset_id ? `logical_episode:${asset.asset_id}` : `${centerVersionExpandKey(row)}:missing:${ep}`,
+    });
+  }
+  return items;
+};
+const centerVersionCanExpandEpisodes = (row) => centerVersionEpisodeItems(row).some(item => item.asset && item.asset.asset_id);
+const centerVersionEpisodesExpanded = (row) => Boolean(centerVersionExpandedMap[centerVersionExpandKey(row)]);
+const toggleCenterVersionEpisodes = (row) => {
+  if (!centerVersionCanExpandEpisodes(row)) return;
+  const key = centerVersionExpandKey(row);
+  centerVersionExpandedMap[key] = !centerVersionExpandedMap[key];
+};
+const buildLogicalEpisodeImportSource = (version, episode) => {
+  const asset = episode?.asset || {};
+  const activeRow = activeCenterDetailRow.value || {};
+  const activeSeason = centerSeasonTabNumber(centerDetailActiveSeason.value ?? centerDefaultDetailSeason(activeRow));
+  const sourceId = String(asset.asset_id || '').trim();
+  const rapidMeta = {
+    ...(asset.rapid_meta_json && typeof asset.rapid_meta_json === 'object' ? asset.rapid_meta_json : {}),
+    preid: asset.preid || '',
+    pick_code: asset.pick_code || asset.pickcode || '',
+    file_id: asset.file_id || asset.fid || '',
+    source_kind: 'logical_episode',
+    source_id: sourceId,
+    original_source_kind: asset.source_kind || '',
+    original_source_ref_id: asset.source_ref_id || '',
+    logical_group_id: version?.logical_group_id || version?.group_id || version?.logical_group?.group_id || '',
+  };
+  return {
+    source_kind: 'logical_episode',
+    source_id: sourceId,
+    source_ref_id: sourceId,
+    title: centerTitleText(activeRow) || centerTitleText(version) || version?.title || '',
+    file_name: asset.file_name || asset.name || '',
+    tmdb_id: version?.tmdb_id || activeRow?.tmdb_id || '',
+    parent_series_tmdb_id: version?.tmdb_id || activeRow?.tmdb_id || '',
+    item_type: 'Episode',
+    display_type: 'Episode',
+    season_number: version?.season_number ?? activeSeason ?? null,
+    episode_number: episode?.episode_number ?? asset.episode_number ?? null,
+    sha1: asset.sha1 || '',
+    preid: asset.preid || '',
+    size: asset.size || 0,
+    file_size: asset.size || 0,
+    pick_code: asset.pick_code || asset.pickcode || '',
+    version_summary: version?.version_summary || version?.summary_json || version?.media_signature_json || {},
+    summary_json: version?.summary_json || version?.version_summary || {},
+    media_signature_json: version?.media_signature_json || version?.version_summary || {},
+    rapid_meta_json: rapidMeta,
+    logical_group_id: version?.logical_group_id || version?.group_id || version?.logical_group?.group_id || '',
+    logical_episode_asset: asset,
+  };
+};
+const importCenterLogicalEpisode = async (version, episode) => {
+  const source = buildLogicalEpisodeImportSource(version, episode);
+  if (!source.source_id || !source.sha1) {
+    message.error('逻辑单集缺少 asset_id 或 SHA1，不能秒传');
+    return;
+  }
+  const loadingKey = episode.loadingKey || `logical_episode:${source.source_id}`;
+  importingMap[loadingKey] = 'permanent';
+  try {
+    const res = await axios.post('/api/shared/resources/center/import', {
+      mode: 'permanent',
+      source_id: source.source_id,
+      source,
+      context: source,
+    });
+    message.success(res.data?.message || `第 ${episode.episode_number} 集秒传完成`);
+    await Promise.allSettled([loadSummary(), loadLedger()]);
+  } catch (e) {
+    message.error(e.response?.data?.message || `第 ${episode.episode_number} 集秒传失败`);
+  } finally {
+    delete importingMap[loadingKey];
+  }
+};
 // ★ 修改 1：按热度 (success_count) 降序排序
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
@@ -3101,15 +3233,9 @@ const centerVersionTags = (row) => {
     if (row.pool_complete || row.logical_pool_complete || row.logical_group?.pool_complete) {
       centerTagPush(tags, '共享池完整', 'success', 'logical-pool-complete');
     }
-    const candidateCount = centerLogicalNumber(row, 'logical_candidate_count', 'candidate_count');
-    const assetCount = centerLogicalNumber(row, 'logical_asset_count', 'asset_count');
-    const completeClientCount = centerLogicalNumber(row, 'logical_client_complete_count', 'client_complete_count');
-    const shareableCount = centerLogicalNumber(row, 'logical_shareable_client_count', 'shareable_client_count');
-    if (candidateCount > 0) centerTagPush(tags, `${candidateCount} 候选`, 'info', 'logical-candidates');
-    if (assetCount > 0) centerTagPush(tags, `${assetCount} 资产`, 'default', 'logical-assets');
-    if (completeClientCount > 0) centerTagPush(tags, `${completeClientCount} 完整客户端`, 'success', 'logical-complete-clients');
-    if (shareableCount > 0 || row.can_create_share || row.logical_can_create_share) centerTagPush(tags, '可建分享', 'warning', 'logical-shareable');
-    if (centerIsLogicalShadowOnly(row)) centerTagPush(tags, '展示预览', 'default', 'logical-preview');
+    if (centerVersionCanExpandEpisodes(row)) {
+      centerTagPush(tags, centerVersionEpisodesExpanded(row) ? '收起单集' : '展开单集', 'info', 'logical-episodes');
+    }
   }
 
   // 3. 基础参数
@@ -4677,6 +4803,17 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
+.center-version-detail-card-expandable { cursor: pointer; }
+.center-version-detail-card-expandable:hover { border-color: rgba(126, 240, 210, .32); }
+.center-episode-matrix {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 177, 255, .12);
+}
+.center-episode-matrix :deep(.n-button) { min-width: 34px; }
 @media (max-width: 768px) {
   .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
   .center-detail-head,

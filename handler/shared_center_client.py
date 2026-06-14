@@ -617,6 +617,9 @@ class SharedCenterClient:
             'offset': max(0, int(offset or 0)),
         }, timeout=20)
 
+    def acquire_transfer_lease(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/transfers/lease', payload or {}, timeout=30)
+
     def report_transfer(self, source_kind: str, source_id: str, result: str, **kwargs) -> Dict[str, Any]:
         payload = {'source_kind': source_kind, 'source_id': source_id, 'result': result}
         payload.update({k: v for k, v in kwargs.items() if v is not None})

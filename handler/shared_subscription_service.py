@@ -97,6 +97,10 @@ def _normalize_source_kind(value: str) -> str:
         return 'movie'
     if text in ('episode', 'episode_file', 'single'):
         return 'episode'
+    if text in ('logical_episode', 'logical_episode_asset'):
+        return 'logical_episode'
+    if text in ('logical_season', 'season_version_group'):
+        return 'logical_season'
     if text in ('completed_season', 'season', 'season_pack', 'tv_pack', 'pack'):
         return 'completed_season'
     if text in ('season_hub', 'hub', 'ongoing_hub'):
@@ -770,7 +774,7 @@ def _report_transfer_failed_safely(
     lease_id: str = '',
 ) -> Dict[str, Any]:
     fail_kind = _normalize_source_kind(source_kind)
-    if fail_kind not in ('movie', 'episode', 'completed_season') or not source_id:
+    if fail_kind not in ('movie', 'episode', 'completed_season', 'logical_episode') or not source_id:
         return {'ok': False, 'skipped': True, 'reason': 'unsupported_source_kind'}
     resp = _client_report_transfer_with_retry_queue(
         client,
@@ -1399,7 +1403,7 @@ def _episode_transfer_disabled_guard(source_kind: str, source_id: str = '', payl
         normalized_kind = 'season_hub'
     if not normalized_kind and payload.get('hub_id'):
         normalized_kind = 'season_hub'
-    if normalized_kind not in ('episode', 'season_hub'):
+    if normalized_kind not in ('episode', 'logical_episode', 'season_hub'):
         return {'blocked': False, 'source_kind': normalized_kind}
     sid = str(source_id or payload.get('source_id') or payload.get('source_ref_id') or payload.get('hub_id') or payload.get('id') or '').strip()
     title = str(payload.get('title') or payload.get('name') or payload.get('file_name') or sid or '').strip()
@@ -1953,6 +1957,27 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
             source_kind = _normalize_source_kind(
                 payload.get('kind') or payload.get('item_type') or payload.get('display_type') or ''
             )
+
+    # 逻辑季包展开出来的单集资产：前端直接提交 logical_episode + asset_id + rapid 参数，
+    # 中心端 lease/sign/report 均按 shared_episode_assets.asset_id 结算；本机只负责执行单文件秒传。
+    if source_kind == 'logical_episode':
+        file_info = dict(payload or {})
+        file_info['source_kind'] = 'logical_episode'
+        file_info['source_id'] = source_id or file_info.get('asset_id') or file_info.get('source_ref_id') or ''
+        file_info['source_ref_id'] = file_info['source_id']
+        if not file_info.get('file_name') and file_info.get('name'):
+            file_info['file_name'] = file_info.get('name')
+        rapid_meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
+        rapid_meta = dict(rapid_meta or {})
+        rapid_meta.setdefault('source_kind', 'logical_episode')
+        rapid_meta.setdefault('source_id', file_info['source_id'])
+        rapid_meta.setdefault('preid', file_info.get('preid') or '')
+        if file_info.get('pick_code') and not rapid_meta.get('pick_code'):
+            rapid_meta['pick_code'] = file_info.get('pick_code')
+        if file_info.get('file_id') and not rapid_meta.get('file_id'):
+            rapid_meta['file_id'] = file_info.get('file_id')
+        file_info['rapid_meta_json'] = rapid_meta
+        return source_kind, file_info['source_id'], [file_info]
 
     # display-list 里的 Pack 如果是公共连载季壳，通常只有 hub_id，没有 completed source_id。
     # 这种壳不能走 completed_season_manifest，否则会拿不到 7-8 这类 children 分集。
@@ -3415,7 +3440,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         report_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for report_kind, report_id, report_file in success_sources:
             report_kind = _normalize_source_kind(report_kind)
-            if report_kind not in ('movie', 'episode', 'completed_season') or not report_id:
+            if report_kind not in ('movie', 'episode', 'completed_season', 'logical_episode') or not report_id:
                 skipped_report_sources.append({'source_kind': report_kind, 'source_id': report_id, 'file': (report_file or {}).get('file_name') or (report_file or {}).get('sha1')})
                 continue
             key = (report_kind, report_id)
