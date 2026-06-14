@@ -3366,7 +3366,8 @@ def _local_display_meta_rows_for_candidate(candidate: Dict[str, Any]) -> Dict[st
 
     口径：
     - Movie：电影行。
-    - Season/Episode：海报/简介优先 Season 行，Series 行兜底；类型/评分/演职员只取 Series 行。
+    - Season：仅供兼容旧完结季源/手动季源登记使用。
+    - Episode：不再随单集源上传公共展示元数据；剧元数据与可信总集数由 watchlist_processor 统一补传。
     """
     candidate = candidate if isinstance(candidate, dict) else {}
     item_type = str(candidate.get('item_type') or '').strip()
@@ -3431,12 +3432,14 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
 
     口径：
     - Movie：创建/补充 Movie 壳，演职员挂 Movie 壳。
-    - Season/Episode：同时创建/补充 Series 壳和 Season 壳；
-      Season 壳只放季专属海报/简介，Series 壳放类型/评分/演职员。
+    - Season：仅兼容旧完结季源/手动季源登记。
+    - Episode：不上传公共展示元数据；剧元数据和可信总集数由 watchlist_processor 在追更判定后单独补传。
     - 中心端负责按“缺失才补、中文优先”合并，不让某个客户端拥有壳的所有权。
     """
     candidate = candidate if isinstance(candidate, dict) else {}
     item_type = str(candidate.get('item_type') or '').strip()
+    if item_type == 'Episode':
+        return {}
     rows = _local_display_meta_rows_for_candidate(candidate)
 
     def compact(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -3629,7 +3632,12 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             'fingerprint_repair': repair_result or {},
         }
     animation_meta = _animation_meta_for_candidate(candidate)
-    display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate)
+    # 单集源不再携带公共展示元数据。剧元数据 + 可信总集数由
+    # watchlist_processor 在追更判定完成后通过 metadata/display/upsert 单独补传，
+    # 避免 webhook/单集登记用不完整的分集上下文反复刷中心壳。
+    display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate) if (
+        item_type == 'Movie' or (item_type == 'Season' and should_register_completed)
+    ) else {}
     results = []
     if item_type == 'Season' and not should_register_completed:
         should_register_completed = _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
@@ -3690,7 +3698,6 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'release_year': candidate.get('release_year'),
                     'expected_episode_count': expected_count,
                     'source_provider': source_provider,
-                    **display_meta_bundle,
                     **common,
                 }
                 resp = client.register_episode_source(payload)

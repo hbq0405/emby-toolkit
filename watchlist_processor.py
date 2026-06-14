@@ -3,6 +3,7 @@
 import time
 import json
 import os
+import requests
 import concurrent.futures
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
@@ -619,6 +620,262 @@ class WatchlistProcessor:
             )
         except Exception as e:
             logger.warning(f"  ➜ [智能追剧] 校准分集 TMDb runtime_minutes 失败: {e}")
+
+
+    @staticmethod
+    def _watchlist_safe_int(value, default: int = 0) -> int:
+        try:
+            if value in (None, '', [], {}):
+                return default
+            return int(float(value))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _watchlist_release_year(value) -> Optional[int]:
+        text = str(value or '').strip()
+        if len(text) >= 4 and text[:4].isdigit():
+            return int(text[:4])
+        return None
+
+    def _post_shared_center_display_metadata(self, items: List[Dict[str, Any]], *, reason: str = 'watchlist_series_metadata') -> Dict[str, Any]:
+        """向中心端补传公共剧元数据/季总集数。
+
+        这是 watchlist_processor 专用的 metadata-only 通道：不创建 source，
+        只更新中心公共展示壳和 season_hubs.expected_episode_count。
+        """
+        clean_items = [dict(x or {}) for x in (items or []) if isinstance(x, dict)]
+        if not clean_items:
+            return {'ok': True, 'skipped': True, 'reason': 'empty_items'}
+        if not _shared_resource_auto_share_enabled():
+            return {'ok': True, 'skipped': True, 'reason': 'shared_resource_disabled'}
+
+        try:
+            cfg = settings_db.get_shared_resource_config() or {}
+            base_url = str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
+            token = str(cfg.get('p115_shared_device_token') or '').strip()
+            if not base_url or not token:
+                return {'ok': False, 'skipped': True, 'reason': 'center_not_configured', 'message': '共享中心 URL 或设备 Token 未配置'}
+
+            headers = {
+                'X-Device-Token': token,
+                'Content-Type': 'application/json',
+                'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
+            }
+            kwargs = {'timeout': 60}
+            try:
+                import config_manager
+                getter = getattr(config_manager, 'get_proxies_for_requests', None)
+                if callable(getter):
+                    proxies = getter()
+                    if proxies:
+                        kwargs['proxies'] = proxies
+            except Exception:
+                pass
+
+            payload = {
+                'items': [{
+                    'display_meta_items_json': clean_items,
+                    'display_meta_json': clean_items[-1] if clean_items else {},
+                    '_reason': reason,
+                }]
+            }
+            resp = requests.post(
+                f'{base_url}/api/v1/metadata/display/upsert',
+                headers=headers,
+                json=payload,
+                **kwargs,
+            )
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                data = {'raw_text': resp.text[:500]}
+            if resp.status_code >= 400:
+                return {'ok': False, 'status_code': resp.status_code, 'message': str(data)[:1000], 'response': data}
+            if isinstance(data, dict):
+                data.setdefault('ok', True)
+                return data
+            return {'ok': True, 'response': data}
+        except Exception as e:
+            return {'ok': False, 'message': str(e)}
+
+    def _build_shared_center_watchlist_metadata_items(
+        self,
+        *,
+        tmdb_id: str,
+        item_name: str,
+        latest_series_data: Dict[str, Any],
+        final_status: str,
+        seasons_lock_map: Dict[Any, Any] = None,
+        latest_season_num: int = 0,
+        auto_pending_cfg: Dict[str, Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """构造中心端公共展示壳 + Season 总集数索引。
+
+        口径：
+        - Series：上传剧名、简介、海报、评分、类型等公共展示字段；
+        - Season：只上传 season_number + expected_episode_count，不上传季标题/季海报；
+        - Pending：最新季使用虚标总集数，避免中心端把刚上线 1 集误判完结；
+        - Locked：豆瓣矫正/手动矫正的总集数最高优先级。
+        """
+        series = latest_series_data if isinstance(latest_series_data, dict) else {}
+        tmdb_id = str(tmdb_id or '').strip()
+        if not tmdb_id:
+            return []
+
+        auto_pending_cfg = auto_pending_cfg if isinstance(auto_pending_cfg, dict) else {}
+        lock_map = seasons_lock_map if isinstance(seasons_lock_map, dict) else {}
+        fake_total = self._watchlist_safe_int(auto_pending_cfg.get('default_total_episodes'), 99) or 99
+        release_date = str(series.get('first_air_date') or '').strip()
+
+        def _genres(value):
+            out = []
+            if isinstance(value, list):
+                for g in value:
+                    if isinstance(g, dict):
+                        name = g.get('name')
+                        if name in utils.GENRE_TRANSLATION_PATCH:
+                            name = utils.GENRE_TRANSLATION_PATCH[name]
+                        item = {'id': g.get('id', 0), 'name': name}
+                        if item.get('name'):
+                            out.append(item)
+                    elif isinstance(g, str) and g.strip():
+                        name = utils.GENRE_TRANSLATION_PATCH.get(g.strip(), g.strip())
+                        out.append({'id': 0, 'name': name})
+            return out[:12]
+
+        items: List[Dict[str, Any]] = []
+        series_meta = {
+            'tmdb_id': tmdb_id,
+            'item_type': 'Series',
+            'title': item_name or series.get('name') or series.get('original_name') or f'TMDb {tmdb_id}',
+            'original_title': series.get('original_name') or '',
+            'overview': series.get('overview') or '',
+            'poster_path': series.get('poster_path') or '',
+            'backdrop_path': series.get('backdrop_path') or '',
+            'release_date': release_date or None,
+            'release_year': self._watchlist_release_year(release_date),
+            'rating': series.get('vote_average'),
+            'genres_json': _genres(series.get('genres') or []),
+            'original_language': series.get('original_language') or '',
+            'total_episodes': self._watchlist_safe_int(series.get('number_of_episodes'), 0),
+            'watching_status': final_status,
+            'watchlist_tmdb_status': series.get('status') or '',
+            'metadata_source': 'watchlist_processor',
+        }
+        items.append({k: v for k, v in series_meta.items() if v not in (None, '', [], {})})
+
+        seasons = series.get('seasons') if isinstance(series.get('seasons'), list) else []
+        for season in seasons:
+            if not isinstance(season, dict):
+                continue
+            s_num = self._watchlist_safe_int(season.get('season_number'), -1)
+            if s_num <= 0:
+                # 特别篇不参与中心端完结季判定。
+                continue
+
+            lock_info = lock_map.get(s_num)
+            if lock_info is None:
+                lock_info = lock_map.get(str(s_num))
+            lock_info = lock_info if isinstance(lock_info, dict) else {}
+
+            tmdb_count = self._watchlist_safe_int(season.get('episode_count'), 0)
+            expected = tmdb_count
+            source = 'tmdb'
+            locked = bool(lock_info.get('locked'))
+            locked_count = self._watchlist_safe_int(lock_info.get('count'), 0)
+            if locked and locked_count > 0:
+                expected = locked_count
+                source = 'locked'
+            elif final_status == STATUS_PENDING and s_num == self._watchlist_safe_int(latest_season_num, 0):
+                expected = max(fake_total, tmdb_count or 0)
+                source = 'pending_virtual'
+
+            if expected <= 0:
+                # 没有总集数就只传剧壳，不传季索引，避免中心端误用最大集号推断完结。
+                continue
+
+            items.append({
+                'tmdb_id': tmdb_id,
+                'item_type': 'Season',
+                'season_number': s_num,
+                'expected_episode_count': expected,
+                'total_episodes': expected,
+                'episode_count': expected,
+                'episode_count_source': source,
+                'episode_count_locked': bool(source == 'locked'),
+                'episode_count_pending_virtual': bool(source == 'pending_virtual'),
+                'watching_status': final_status,
+                'watchlist_tmdb_status': series.get('status') or '',
+                'metadata_source': 'watchlist_processor',
+            })
+        return items
+
+    def _upload_shared_series_metadata_after_watchlist_decision_detached(
+        self,
+        *,
+        tmdb_id: str,
+        item_name: str,
+        latest_series_data: Dict[str, Any],
+        final_status: str,
+        seasons_lock_map: Dict[Any, Any] = None,
+        latest_season_num: int = 0,
+        auto_pending_cfg: Dict[str, Any] = None,
+    ) -> None:
+        """追更判定完成后补传中心剧元数据和可信季总集数。"""
+        if not _shared_resource_auto_share_enabled():
+            return
+        parent_tmdb_id = str(tmdb_id or '').strip()
+        if not parent_tmdb_id:
+            return
+
+        items = self._build_shared_center_watchlist_metadata_items(
+            tmdb_id=parent_tmdb_id,
+            item_name=item_name,
+            latest_series_data=latest_series_data,
+            final_status=final_status,
+            seasons_lock_map=seasons_lock_map or {},
+            latest_season_num=latest_season_num,
+            auto_pending_cfg=auto_pending_cfg or {},
+        )
+        if not items:
+            return
+
+        def _runner():
+            helper_result = {}
+            try:
+                # 先复用共享任务里的本地 DB 展示壳构造，补上传统 Series 演职员。
+                from tasks.shared_resource_tasks import upload_center_display_metadata_for_library_item
+                helper_result = upload_center_display_metadata_for_library_item(
+                    None,
+                    item_type='Series',
+                    tmdb_id=parent_tmdb_id,
+                    parent_series_tmdb_id=parent_tmdb_id,
+                    title=item_name,
+                    reason='watchlist_series_metadata',
+                ) or {}
+            except Exception as e:
+                helper_result = {'ok': False, 'message': str(e)}
+
+            season_result = self._post_shared_center_display_metadata(
+                items,
+                reason='watchlist_series_metadata_with_episode_total',
+            )
+            logger.info(
+                "  ➜ [共享资源] 追剧判定后已补传中心剧元数据：%s，items=%s，display_ok=%s，season_total_ok=%s",
+                item_name or parent_tmdb_id,
+                len(items),
+                helper_result.get('ok'),
+                season_result.get('ok'),
+            )
+            if not season_result.get('ok'):
+                logger.debug("  ➜ [共享资源] 追剧元数据补传响应：%s", season_result)
+
+        threading.Thread(
+            target=_runner,
+            name=f"shared-watchlist-metadata-{parent_tmdb_id}",
+            daemon=True,
+        ).start()
 
     def _get_series_to_process(self, where_clause: str, tmdb_id: Optional[str] = None, include_all_series: bool = False) -> List[Dict[str, Any]]:
         """
@@ -1838,6 +2095,7 @@ class WatchlistProcessor:
         latest_series_data, all_tmdb_episodes, emby_seasons = refresh_result
 
         # ==================== 季总集数锁定过滤器 ====================
+        seasons_lock_map = {}
         # 如果总集数被锁定，我们需要剔除 TMDb 返回的“多余”集数
         # 这样后续的“下一集计算”和“缺集计算”就不会看到这些不存在的集了
         try:
@@ -2325,8 +2583,27 @@ class WatchlistProcessor:
                     latest_season_num = valid_seasons[0]['season_number']
                     # 调用 DB 更新
                     watchlist_db.update_specific_season_total_episodes(tmdb_id, latest_season_num, fake_total)
+                    for _season_obj in seasons:
+                        if _season_obj.get('season_number') == latest_season_num:
+                            _season_obj['episode_count'] = fake_total
+                            break
+                    latest_series_data['number_of_episodes'] = max(self._watchlist_safe_int(latest_series_data.get('number_of_episodes'), 0), fake_total)
                     logger.debug(f"  ➜ 已同步更新 S{latest_season_num} 的总集数为 {fake_total}")
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
+
+        # 追剧判定完成后，中心端此时才能拿到最可信的 Series 元数据和季总集数：
+        # - Pending 使用虚标总集数，避免刚上线 1 集被误判完结；
+        # - Locked 使用豆瓣/手动矫正总集数；
+        # - 其他情况使用 TMDb 当前总集数。
+        self._upload_shared_series_metadata_after_watchlist_decision_detached(
+            tmdb_id=tmdb_id,
+            item_name=item_name,
+            latest_series_data=latest_series_data,
+            final_status=final_status,
+            seasons_lock_map=seasons_lock_map,
+            latest_season_num=latest_s_num,
+            auto_pending_cfg=auto_pending_cfg,
+        )
 
         # ======================================================================
         # ★★★ 提前计算季的活跃状态 (供数据库同步和目录重组使用) ★★★
