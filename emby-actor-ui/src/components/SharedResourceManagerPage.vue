@@ -1663,8 +1663,9 @@ const centerSeriesAllRegularSeasonsCompleted = (row) => {
   return regular.length > 0 && regular.every(centerSeasonRowIsCompleted);
 };
 const centerStatusValue = (row) => String(row?.status || '').trim().toLowerCase();
-const centerIsCompletedPack = (row) => Boolean(row?.source_kind === 'logical_season' || row?.logical_pool_complete || row?.pool_complete);
-const centerIsCompletedCertifiedSource = (row) => Boolean(row?.source_kind === 'logical_season' || row?.logical_pool_complete || row?.pool_complete || row?.is_completed_certified);
+const centerLogicalPoolComplete = (row) => Boolean(row?.pool_complete || row?.logical_pool_complete || String(row?.status || '').trim().toLowerCase() === 'pool_complete');
+const centerIsCompletedPack = (row) => Boolean((row?.source_kind === 'logical_season' && centerLogicalPoolComplete(row)) || centerLogicalPoolComplete(row));
+const centerIsCompletedCertifiedSource = (row) => Boolean((row?.source_kind === 'logical_season' && centerLogicalPoolComplete(row)) || centerLogicalPoolComplete(row) || row?.is_completed_certified);
 const centerProgressText = (row) => {
   if (row?.progress_text) return String(row.progress_text);
   const current = Number(row?.progress_current || row?.pack_item_count || row?.file_count || 0);

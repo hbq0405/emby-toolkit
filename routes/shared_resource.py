@@ -1203,16 +1203,20 @@ def _center_flag_meta(row: Dict[str, Any], flag_key: str, meta_key: str) -> Dict
 
 
 def _center_source_is_completed_certified(row: Dict[str, Any]) -> bool:
-    """中心资源库“已完结认证”只认中心逻辑季包。
+    """中心资源库“已完结认证”只认中心逻辑季包的 pool_complete。
 
-    新方案由 season_version_groups.pool_complete 管理完结状态；旧 completed_season_source
-    不再作为前端官方已完结依据。
+    分享通道是否 valid 只影响“转存/秒传”按钮；只要逻辑季包已经通过中心
+    一致性校验，就可以显示已完结标签和缎带。
     """
     row = row if isinstance(row, dict) else {}
     source_kind = str(row.get('source_kind') or '').strip().lower()
+    status = str(row.get('status') or '').strip().lower()
+    logical_complete = bool(row.get('logical_pool_complete') or row.get('pool_complete') or status == 'pool_complete')
     if source_kind == 'season_hub' or row.get('is_ongoing_hub'):
         return False
-    if source_kind == 'logical_season' or row.get('logical_pool_complete') or row.get('pool_complete'):
+    if source_kind == 'logical_season':
+        return logical_complete
+    if logical_complete:
         return True
     return bool(_center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json'))
 
@@ -1575,6 +1579,15 @@ def api_center_source_detail():
                 row['version_summary'] = _center_version_summary(row)
             if not row.get('size') and row.get('total_size'):
                 row['size'] = row.get('total_size')
+            completed_certified = _center_source_is_completed_certified(row)
+            if completed_certified:
+                row['is_completed_certified'] = True
+                row['is_completed'] = True
+                row['completed_certified_meta_json'] = row.get('completed_certified_meta_json') or {
+                    'is_completed_certified': True,
+                    'certified_by': 'logical_season_pool',
+                    'status': row.get('status'),
+                }
             row = _apply_local_season_meta(row)
             return row
 
