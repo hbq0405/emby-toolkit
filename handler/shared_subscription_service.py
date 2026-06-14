@@ -1939,38 +1939,6 @@ def _event_payload(event: Dict[str, Any]) -> Dict[str, Any]:
     return dict(payload or {})
 
 
-
-def _event_logical_group_id(payload: Dict[str, Any], source_id: str = '') -> str:
-    payload = payload if isinstance(payload, dict) else {}
-    logical = payload.get('logical_group') if isinstance(payload.get('logical_group'), dict) else {}
-    for value in (
-        payload.get('logical_group_id'),
-        logical.get('group_id'),
-        payload.get('group_id'),
-        source_id,
-        payload.get('source_id'),
-        payload.get('source_ref_id'),
-    ):
-        text = str(value or '').strip()
-        if text.startswith('svg_'):
-            return text
-    return ''
-
-
-def _event_should_use_logical_season(payload: Dict[str, Any], source_kind: str, source_id: str = '') -> str:
-    payload = payload if isinstance(payload, dict) else {}
-    kind = str(source_kind or payload.get('source_kind') or payload.get('kind') or '').strip().lower()
-    gid = _event_logical_group_id(payload, source_id)
-    if kind == 'logical_season' and gid:
-        return gid
-    if gid and (
-        kind in {'completed_season', 'season', 'pack', 'logical_season', ''}
-        or isinstance(payload.get('logical_group'), dict)
-        or str(payload.get('resource_type') or '').strip().lower() == 'logical_season'
-    ):
-        return gid
-    return ''
-
 def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[str, str, List[Dict[str, Any]]]:
     payload = _event_payload(event)
     source_kind = _normalize_source_kind(event.get('source_kind') or payload.get('source_kind') or '')
@@ -1989,17 +1957,6 @@ def _event_sources(event: Dict[str, Any], client: SharedCenterClient) -> Tuple[s
             source_kind = _normalize_source_kind(
                 payload.get('kind') or payload.get('item_type') or payload.get('display_type') or ''
             )
-
-    logical_group_id = _event_should_use_logical_season(payload, source_kind, source_id)
-    if logical_group_id:
-        source_kind = 'logical_season'
-        source_id = logical_group_id
-        payload = dict(payload or {})
-        payload['source_kind'] = 'logical_season'
-        payload['source_id'] = logical_group_id
-        payload['source_ref_id'] = logical_group_id
-        payload['group_id'] = logical_group_id
-        payload['logical_group_id'] = logical_group_id
 
     # 逻辑季包展开出来的单集资产：前端直接提交 logical_episode + asset_id + rapid 参数，
     # 中心端 lease/sign/report 均按 shared_episode_assets.asset_id 结算；本机只负责执行单文件秒传。
