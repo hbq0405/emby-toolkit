@@ -814,7 +814,7 @@ def _share_channel_is_logical(row: Dict[str, Any] = None, source_id: str = '') -
 def _update_center_share_channel_status(client: SharedCenterClient, row: Dict[str, Any], channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if _share_channel_is_logical(row) and hasattr(client, 'update_logical_season_share_status'):
         return client.update_logical_season_share_status(channel_id, payload)
-    return client.update_completed_season_share_status(channel_id, payload)
+    return {'ok': True, 'skipped': True, 'message': '旧 completed_season 分享通道本地跳过，中心只维护 logical_season_share_channels。'}
 
 
 def _report_logical_share_failure(client: SharedCenterClient, *, group_id: str, channel_id: str,
@@ -1441,7 +1441,7 @@ def _event_transfer_lease_identity(event: Dict[str, Any]) -> Dict[str, str]:
     ).strip()
     sha1 = _norm_sha1(payload.get('sha1'))
     event_type = str((event or {}).get('event_type') or payload.get('event_type') or '').strip()
-    if source_kind not in {'movie', 'episode', 'completed_season', 'logical_episode', 'logical_season'} or not source_id:
+    if source_kind not in {'movie', 'episode', 'logical_episode', 'logical_season'} or not source_id:
         return {}
     if event_type in {COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE, LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE, PRO_QUOTA_AUTH_EVENT_TYPE}:
         return {}
@@ -1651,7 +1651,7 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
         or (event or {}).get('source_ref_id')
         or ''
     ).strip()
-    if source_kind not in {'completed_season', 'logical_season'} or not source_id:
+    if source_kind != 'logical_season' or not source_id:
         return {'bypass': False}
 
     try:
@@ -1687,7 +1687,16 @@ def _completed_season_share_lease_bypass(event: Dict[str, Any], source: Dict[str
 def _consume_device_event_with_transfer_gate(original_consume, event, *args, **kwargs):
     event_type = _completed_share_event_type(event)
     if event_type == COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE:
-        return handle_create_completed_season_share_event(event, ack=bool(kwargs.get('ack', True)))
+        client = SharedCenterClient()
+        event_id = str((event or {}).get('event_id') or '')
+        msg = '旧 create_completed_season_share 事件已停用：客户端只处理逻辑季包文件列表分享。'
+        if event_id:
+            try:
+                client.ack_device_events([event_id], result='ok', message=msg)
+            except Exception:
+                pass
+        logger.info(f"  ➜ [共享资源] {msg}")
+        return {'ok': True, 'skipped': True, 'deprecated': True, 'message': msg}
     if event_type == LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE:
         return handle_create_logical_season_filelist_share_event(event, ack=bool(kwargs.get('ack', True)))
     source = _event_source_payload(event)
@@ -3796,55 +3805,28 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
     return bundle
 
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid') -> Dict[str, Any]:
-    """把本地媒体库中的电影/分集/季登记到 Rapid v2 中心。
+    """把本地电影/分集/季登记到 Rapid v2 中心。
 
-    规则：
-    - Movie：登记 movie_sources；
-    - Episode：登记 season_episode_sources，追更池不做版本一致性要求；
-    - Season：先把每集登记到追更池，锚定中心公共 season_hub；只有明确完结才登记 completed_season_source。
+    新口径：客户端只登记可秒传的电影/分集资产；Season 也拆成 episode_source
+    入中心资产池，由中心端 season_version_groups 负责凑齐逻辑完结季、打“已完结”
+    和派发文件列表分享。客户端不再创建/更新 completed_season_source，
+    也不再做季包一致性硬校验。
     """
     if not _enabled():
         return {'ok': False, 'message': '共享资源未启用或中心未配置'}
     candidate = _normalize_series_candidate_identity(dict(candidate or {}))
     item_type = str(candidate.get('item_type') or '').strip()
-    raw_repair_only = bool(candidate.get('_raw_repair_only'))
-    should_register_completed = item_type == 'Season' and _candidate_is_completed_season(
-        candidate,
-        source_provider=source_provider,
-        files=None,
-    )
-    allow_consistency_check = bool(should_register_completed)
+    effective_provider = 'rapid_logical_season' if str(source_provider or '').strip().lower() == 'rapid_completed_season' else source_provider
 
     files = shared_share_db.collect_files_for_candidate(candidate)
-    repair_result = {}
-    if not files and allow_consistency_check:
-        # 只有真正登记完结季包时，才允许走一致性/指纹修复链路。
-        # RAW/summary 补齐、维护任务、手动重新登记只做已有本地文件的 RAW 上传，
-        # 不能在维护任务里对所有连载季刷一致性校验。
-        repair_result = shared_share_db.repair_candidate_fingerprints(candidate, log_result=True)
-        files = shared_share_db.collect_files_for_candidate(candidate)
     if not files:
         return {
             'ok': False,
             'message': '未找到可共享的视频文件，请先确认 p115_filesystem_cache / media_metadata 已补齐 SHA1、PC 和大小',
-            'fingerprint_repair': repair_result or {},
+            'fingerprint_repair': {},
         }
 
-    completed_consistency_gate = {}
-    if allow_consistency_check:
-        completed_consistency_gate = _completed_season_consistency_gate(candidate, log_result=True)
-        if not completed_consistency_gate.get('ok'):
-            return {
-                'ok': False,
-                'skipped': True,
-                'reason': 'completed_season_consistency_failed',
-                'message': completed_consistency_gate.get('message') or '完结季一致性校验未通过，禁止登记中心',
-                'consistency': completed_consistency_gate.get('consistency') or {},
-                'fingerprint_repair': repair_result or {},
-            }
-
     # RAW 摘要生成发生在正式登记前，先把候选类型补进 file_info。
-    # 否则电影/剧集的时长标签门禁拿不到 item_type，容易把电影短片误判成短剧。
     candidate_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     if item_type == 'Movie':
         candidate_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
@@ -3861,6 +3843,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             if item_type == 'Episode':
                 _f.setdefault('episode_number', candidate.get('episode_number'))
         _ensure_file_preid(_f)
+
     root = shared_share_db.candidate_root_from_files(files)
     client = SharedCenterClient()
     raw_batch_result = _upload_raw_batch(client, files)
@@ -3882,20 +3865,12 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             'raw_skipped_existing': skipped_existing_raw,
             'missing_raw': raw_missing,
             'errors': errors,
-            'fingerprint_repair': repair_result or {},
+            'fingerprint_repair': {},
         }
+
     animation_meta = _animation_meta_for_candidate(candidate)
-    # 单集源不再携带公共展示元数据。剧元数据 + 可信总集数由
-    # watchlist_processor 在追更判定完成后通过 metadata/display/upsert 单独补传，
-    # 避免 webhook/单集登记用不完整的分集上下文反复刷中心壳。
-    display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate) if (
-        item_type == 'Movie' or (item_type == 'Season' and should_register_completed)
-    ) else {}
+    display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate) if item_type in ('Movie', 'Season') else {}
     results = []
-    if item_type == 'Season' and not should_register_completed:
-        should_register_completed = _candidate_is_completed_season(candidate, source_provider=source_provider, files=files)
-        allow_consistency_check = bool(should_register_completed)
-    register_episode_pool = not (item_type == 'Season' and should_register_completed)
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     if item_type == 'Movie':
         tmdb_id = str(candidate.get('tmdb_id') or '').strip()
@@ -3917,7 +3892,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'item_type': 'Movie',
                     'title': candidate.get('title'),
                     'release_year': candidate.get('release_year'),
-                    'source_provider': source_provider,
+                    'source_provider': effective_provider,
                     **display_meta_bundle,
                     **common,
                 }
@@ -3926,7 +3901,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 local = shared_share_db.upsert_local_source({
                     'source_kind': 'movie', 'center_source_id': center_item.get('source_id'), 'tmdb_id': tmdb_id, 'item_type': 'Movie',
                     'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'), 'preid': common.get('preid'),
-                    'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': source_provider,
+                    'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': effective_provider,
                     'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
                     'status': 'active', 'center_status': 'reported', 'media_signature_json': common.get('media_signature_json'),
                     'rapid_meta_json': common.get('rapid_meta_json'), 'raw_json': {'candidate': candidate, 'center_response': resp},
@@ -3934,8 +3909,6 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                 shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': raw_ok, **common}])
                 results.append(resp)
             else:
-                if not register_episode_pool:
-                    continue
                 ep_no = _safe_int_or_none(f.get('episode_number')) or _safe_int_or_none(candidate.get('episode_number'))
                 season_no = _safe_int_or_none(f.get('season_number')) or _safe_int_or_none(candidate.get('season_number'))
                 if season_no is None or ep_no is None:
@@ -3950,7 +3923,8 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'title': candidate.get('title'),
                     'release_year': candidate.get('release_year'),
                     'expected_episode_count': expected_count,
-                    'source_provider': source_provider,
+                    'source_provider': effective_provider,
+                    **display_meta_bundle,
                     **common,
                 }
                 resp = client.register_episode_source(payload)
@@ -3959,7 +3933,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
                     'source_kind': 'episode', 'center_source_id': center_item.get('source_id'), 'tmdb_id': tmdb_id,
                     'item_type': 'Episode', 'season_number': season_no, 'episode_number': ep_no,
                     'title': candidate.get('title'), 'release_year': candidate.get('release_year'), 'sha1': common.get('sha1'), 'preid': common.get('preid'),
-                    'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': source_provider,
+                    'size': common.get('size'), 'file_name': common.get('file_name'), 'source_provider': effective_provider,
                     'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
                     'status': 'active', 'center_status': 'reported', 'media_signature_json': common.get('media_signature_json'),
                     'rapid_meta_json': common.get('rapid_meta_json'), 'raw_json': {'candidate': candidate, 'center_response': resp},
@@ -3970,147 +3944,22 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             logger.warning(f"  ➜ [共享资源] 登记分集/电影失败: {f.get('file_name') or f.get('sha1')} -> {e}")
             errors.append({'file': f.get('file_name') or f.get('sha1'), 'error': str(e)})
 
-    completed_resp = None
-    episode_cancelled = 0
-    if item_type == 'Season' and should_register_completed:
-        completed_files = []
-        for f in files:
-            sha1 = _norm_sha1(f.get('sha1'))
-            if not sha1:
-                continue
-            raw = _raw_for_file(f)
-            sig = _media_signature(raw, f) if raw else {}
-            sig = _apply_animation_tag(sig, animation_meta)
-            preid = _ensure_file_preid(f)
-            final_size = _file_size_from_cache(f) or _infer_size_from_raw(raw) or 0
-            if final_size > 0:
-                f['size'] = final_size
-            completed_files.append({
-                'episode_number': _safe_int(f.get('episode_number'), 0), 'sha1': sha1, 'preid': preid or None, 'size': final_size or None,
-                'file_name': f.get('file_name') or '', 'quality': sig.get('resolution') or '', 'media_signature_json': sig,
-                'rapid_meta_json': _apply_animation_tag({'fid': f.get('fid'), 'pick_code': f.get('pick_code'), 'relative_path': f.get('relative_path'), 'preid': preid or ''}, animation_meta),
-            })
-        expected = _safe_int(candidate.get('expected_episode_count') or candidate.get('total_episodes'), 0)
-        consistency = (completed_consistency_gate.get('consistency') if isinstance(completed_consistency_gate, dict) else {}) or {}
-        status = _completed_status_from_files(completed_files, expected)
-        common_signature = {}
-        for _cf in completed_files:
-            sig = _cf.get('media_signature_json') if isinstance(_cf.get('media_signature_json'), dict) else {}
-            if sig:
-                common_signature = sig
-                break
-        short_detection = _detect_short_drama_for_completed_season(candidate, completed_files, files)
-        common_signature = dict(common_signature or {})
-        common_signature = _apply_animation_tag(common_signature, animation_meta)
-        common_signature['is_short_drama'] = bool(short_detection.get('is_short_drama'))
-        common_signature['short_drama_meta_json'] = short_detection
-        if isinstance(consistency, dict) and consistency:
-            status = _completed_gate_status_from_consistency(consistency)
-        clean_detection = {'is_clean_version': False, 'clean_version_checked': False, 'reason': 'status_not_available'}
-        if status.get('status') == 'available':
-            clean_detection = _detect_clean_version_for_completed_season(
-                candidate,
-                completed_files,
-                files,
-                source_provider=source_provider,
-            )
-            logger.info(
-                "  ➜ [共享资源] 完结季纯净版识别结果: %s S%02d clean=%s checked=%s reason=%s comparable=%s hits=%s/%s",
-                candidate.get('title') or tmdb_id,
-                _safe_int(candidate.get('season_number'), 0),
-                bool(clean_detection.get('is_clean_version')),
-                bool(clean_detection.get('clean_version_checked')),
-                clean_detection.get('reason') or '',
-                clean_detection.get('comparable_count') or 0,
-                clean_detection.get('hit_count') or 0,
-                clean_detection.get('required_hits') or 0,
-            )
-        else:
-            logger.debug(
-                "  ➜ [共享资源] 完结季状态不是 available，跳过纯净版识别: %s S%s status=%s message=%s",
-                candidate.get('title') or tmdb_id,
-                candidate.get('season_number'),
-                status.get('status'),
-                status.get('message') or '',
-            )
-        is_clean_version = bool(clean_detection.get('is_clean_version'))
-        clean_confidence = clean_detection.get('clean_version_confidence') if clean_detection.get('clean_version_checked') else None
-        is_completed_certified = status.get('status') == 'available'
-        completed_certified_meta = {
-            'is_completed_certified': bool(is_completed_certified),
-            'certified_by': 'season_consistency_check',
-            'status': status.get('status'),
-            'message': status.get('message') or '',
-            'expected_episode_count': expected or None,
-            'file_count': len(completed_files),
-            'consistency': consistency if isinstance(consistency, dict) else {},
-        } if is_completed_certified else {}
-        common_signature = _apply_completed_certified_tag(common_signature, completed_certified_meta)
-        season_rapid_meta = _apply_animation_tag({
-            'root_fid': root.get('root_fid'),
-            'root_name': root.get('root_name'),
-        }, animation_meta)
-        season_rapid_meta = _apply_completed_certified_tag(season_rapid_meta, completed_certified_meta)
-        try:
-            payload = {
-                'tmdb_id': tmdb_id,
-                'item_type': 'Season',
-                'season_number': _safe_int(candidate.get('season_number'), 0),
-                'title': candidate.get('title'),
-                'release_year': candidate.get('release_year'),
-                'expected_episode_count': expected or None,
-                'status': status['status'],
-                'status_message': status['message'],
-                'manifest_hash': shared_share_db.manifest_hash(completed_files),
-                'source_provider': 'rapid_completed_season',
-                **display_meta_bundle,
-                'is_clean_version': is_clean_version,
-                'clean_version_confidence': clean_confidence,
-                'clean_version_meta_json': clean_detection,
-                'media_signature_json': common_signature,
-                'rapid_meta_json': season_rapid_meta,
-                'files': completed_files,
-            }
-            completed_resp = client.register_completed_season_source(payload)
-            center_item = completed_resp.get('item') or {}
-            local = shared_share_db.upsert_local_source({
-                'source_kind': 'completed_season', 'center_source_id': center_item.get('source_id'), 'tmdb_id': tmdb_id,
-                'item_type': 'Season', 'season_number': candidate.get('season_number'), 'title': candidate.get('title'),
-                'release_year': candidate.get('release_year'), 'source_provider': 'rapid_completed_season',
-                'root_fid': root.get('root_fid'), 'root_name': root.get('root_name'),
-                'status': status['status'], 'center_status': 'reported', 'manifest_hash': payload['manifest_hash'],
-                'file_count': len(completed_files), 'total_size': sum(_safe_int(x.get('size'), 0) for x in completed_files),
-                'is_clean_version': payload['is_clean_version'], 'clean_version_confidence': payload['clean_version_confidence'],
-                'clean_version_meta_json': payload['clean_version_meta_json'], 'raw_json': {'candidate': candidate, 'center_response': completed_resp, 'status': status, 'consistency': consistency, 'clean_detection': clean_detection, 'short_detection': short_detection, 'animation_meta': animation_meta, 'completed_certified_meta': completed_certified_meta, 'root': root},
-            })
-            shared_share_db.replace_source_files(local['id'], [{**f, 'raw_ffprobe_uploaded': bool(_raw_for_file(f))} for f in files])
-            if status.get('status') == 'available':
-                episode_cancelled = _disable_local_episode_sources_for_completed_season(
-                    tmdb_id,
-                    candidate.get('season_number'),
-                    center_client=client,
-                )
-        except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 登记完结季源失败: {candidate.get('title') or tmdb_id} -> {e}")
-            errors.append({'completed_season': candidate.get('title') or tmdb_id, 'error': str(e)})
-
     return {
-        'ok': bool(results or completed_resp),
+        'ok': bool(results),
         'registered_count': len(results),
         'raw_uploaded_count': uploaded,
         'raw_ready_count': raw_ready_count,
         'raw_skipped_existing': skipped_existing_raw,
-        'completed_season': completed_resp,
-        'episode_cancelled': episode_cancelled,
+        'completed_season': None,
+        'episode_cancelled': 0,
         'errors': errors,
         'root': root,
-        'fingerprint_repair': repair_result or {},
+        'fingerprint_repair': {},
         'message': (
             f"已登记 {len(results)} 个分集/电影源"
-            + ("，已更新完结季源" + (f"，已停用 {episode_cancelled} 个同季单集源" if episode_cancelled else '') if completed_resp else ("，连载季已聚合到中心公共包" if item_type == 'Season' else ''))
+            + ("，季资源已交由中心逻辑完结季池聚合" if item_type == 'Season' else '')
         ),
     }
-
 
 
 def _candidate_from_emby_item_id(emby_item_id: str) -> Dict[str, Any]:
@@ -4166,7 +4015,7 @@ def trigger_shared_auto_share_for_library_item(processor=None, **kwargs) -> Dict
 
 
 def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tmdb_id: str = '', season_number=None, title: str = '', year: str = '', **kwargs) -> Dict[str, Any]:
-    """兼容旧调用名：完结季不再创建分享包，只更新 completed_season_source manifest。"""
+    """兼容旧调用名：完结季不再创建客户端季包；只登记分集资产，中心端自动生成逻辑完结季。"""
     parent = str(parent_series_tmdb_id or kwargs.get('tmdb_id') or '').strip()
     if not parent:
         return {'ok': False, 'created': 0, 'message': '缺少父剧 TMDb ID'}
@@ -4195,8 +4044,8 @@ def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tm
         'clean_version_confidence': kwargs.get('clean_version_confidence'),
         'clean_version_meta_json': kwargs.get('clean_version_meta_json') or {},
     }
-    result = register_candidate_to_center(candidate, source_provider='rapid_completed_season')
-    result['created'] = result.get('registered_count', 0) + (1 if result.get('completed_season') else 0)
+    result = register_candidate_to_center(candidate, source_provider='rapid_logical_season')
+    result['created'] = result.get('registered_count', 0)
     result.setdefault('episode_cancelled', 0)
     return result
 
@@ -4883,8 +4732,7 @@ def _delete_bad_completed_source_from_center_and_local(row: Dict[str, Any], gate
 def _reregister_non_effective_local_sources(limit: int = 300) -> Dict[str, Any]:
     """维护任务：处理本地非有效共享源。
 
-    - 完结季：先严格复检一致性；仍不通过就中心取消登记 + 本地删除，
-      不再反复重登同一个垃圾 completed_season_source。
+    - 旧 completed_season_source：不再复检一致性，直接下架/删除，避免继续走客户端季包旧链路。
     - 电影/分集/其他：保留原来的重新登记修复流程。
     """
     rows = shared_share_db.list_non_effective_local_sources(limit=limit)
@@ -4915,40 +4763,19 @@ def _reregister_non_effective_local_sources(limit: int = 300) -> Dict[str, Any]:
             reregister_rows.append(row)
             continue
 
-        candidate = _candidate_from_local_source(row)
+        gate = {
+            'ok': False,
+            'reason': 'legacy_completed_season_source_removed',
+            'message': '旧 completed_season_source 已停用；完结季由中心逻辑季包管理。',
+            'final_failure': True,
+        }
         consistency_checked += 1
-        gate = _completed_season_consistency_gate(candidate, log_result=True)
-        label = _maintenance_candidate_label(candidate, fallback=row.get('title') or row.get('tmdb_id') or str(row.get('id') or ''))
-        if gate.get('ok'):
-            reregister_rows.append(row)
-            logger.info(
-                "  ➜ [共享资源维护] 非有效完结季复检通过，准备重新登记：%s，id=%s",
-                label,
-                row.get('id'),
-            )
-            continue
-
         consistency_failed += 1
-        if gate.get('final_failure', True):
-            removed = _delete_bad_completed_source_from_center_and_local(row, gate, client=client)
-            if removed.get('ok'):
-                removed_items.append(removed)
-            else:
-                remove_failed_items.append(removed)
-            continue
-
-        # 临时校验异常不直接删，保留到重登记/下次维护暴露错误。
-        try:
-            shared_share_db.update_local_source(int(row.get('id') or 0), last_error=gate.get('message') or '完结季一致性校验异常')
-        except Exception:
-            pass
-        reregister_rows.append(row)
-        logger.warning(
-            "  ➜ [共享资源维护] 非有效完结季复检异常，暂不删除：%s，id=%s，原因=%s",
-            label,
-            row.get('id'),
-            gate.get('message') or gate.get('reason'),
-        )
+        removed = _delete_bad_completed_source_from_center_and_local(row, gate, client=client)
+        if removed.get('ok'):
+            removed_items.append(removed)
+        else:
+            remove_failed_items.append(removed)
 
     # reregister_local_sources 内部会按电影/季/集身份去重，并保持原 source_provider，
     # 避免生成 maintenance_reregister 影子源。

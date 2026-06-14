@@ -569,10 +569,10 @@ class SharedCenterClient:
         return self._post('/api/v1/sources/episode/register', payload or {}, timeout=35)
 
     def register_completed_season_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self._post('/api/v1/sources/completed-season/register', payload or {}, timeout=60)
+        raise RuntimeError('旧 completed-season/register 已停用：客户端只登记电影/分集资产，完结季由中心逻辑季包接口管理。')
 
     def update_completed_season_status(self, source_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self._post(f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/status", payload or {}, timeout=25)
+        return {'ok': False, 'skipped': True, 'message': '旧 completed_season_source 状态接口已停用，中心只认逻辑季包。'}
 
     def disable_source(self, source_kind: str, source_id: str, message: str = '') -> Dict[str, Any]:
         source_kind = str(source_kind or '').strip()
@@ -580,7 +580,7 @@ class SharedCenterClient:
         return self._post(f"/api/v1/sources/{urllib.parse.quote(source_kind)}/{urllib.parse.quote(source_id)}/disable", {'message': message}, timeout=25)
 
     def completed_season_manifest(self, source_id: str) -> Dict[str, Any]:
-        return self._get(f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/manifest", timeout=30)
+        raise RuntimeError('旧 completed-season manifest 已停用，请使用 logical_season_manifest(group_id)。')
 
     def logical_season_manifest(self, group_id: str) -> Dict[str, Any]:
         return self._get(f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/manifest", timeout=30)
@@ -613,39 +613,19 @@ class SharedCenterClient:
         )
 
     def dispatch_completed_season_share(self, source_id: str, *, force: bool = False, reason: str = '') -> Dict[str, Any]:
-        return self._post(
-            f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/share/dispatch",
-            {'force': bool(force), 'reason': reason or ''},
-            timeout=20,
-        )
+        return {'ok': False, 'skipped': True, 'message': '旧 completed-season 分享派发接口已停用，改用 dispatch_logical_season_share。'}
 
     def report_completed_season_share(self, source_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self._post(
-            f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/share/report",
-            payload or {},
-            timeout=25,
-        )
+        return {'ok': False, 'skipped': True, 'message': '旧 completed-season 分享上报接口已停用，改用 report_logical_season_share。'}
 
     def update_completed_season_share_status(self, channel_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return self._post(
-            f"/api/v1/completed-season-share-channels/{urllib.parse.quote(str(channel_id))}/status",
-            payload or {},
-            timeout=20,
-        )
+        return {'ok': False, 'skipped': True, 'message': '旧 completed-season 分享状态接口已停用，改用 update_logical_season_share_status。'}
 
     def get_completed_season_share_channel(self, source_id: str) -> Dict[str, Any]:
-        return self._get(
-            f"/api/v1/sources/completed-season/{urllib.parse.quote(str(source_id))}/share-channel",
-            timeout=15,
-        )
+        return {'ok': True, 'item': {}, 'skipped': True, 'message': '旧 completed-season 分享通道查询已停用，改用 get_logical_season_share_channel。'}
 
     def list_completed_season_share_channels(self, *, status: str = '', source_id: str = '', limit: int = 100, offset: int = 0) -> Dict[str, Any]:
-        return self._get('/api/v1/completed-season-share-channels', {
-            'status': status or '',
-            'source_id': source_id or '',
-            'limit': max(1, min(int(limit or 100), 500)),
-            'offset': max(0, int(offset or 0)),
-        }, timeout=20)
+        return {'ok': True, 'items': [], 'total': 0, 'skipped': True, 'message': '旧 completed-season 分享通道列表已停用。'}
 
     def acquire_transfer_lease(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post('/api/v1/transfers/lease', payload or {}, timeout=30)
