@@ -1058,17 +1058,25 @@ def api_search_shareable_media():
 def api_manual_validate():
     """Rapid v2 手动登记前预校验。
 
-    新方案不再由客户端做完结季一致性校验，也不再登记 completed_season_source。
-    这里只确认本地能定位到可秒传文件，并检查 RAW/summary_json 是否可上传中心；
-    Season 会拆成分集资产，后续由中心逻辑季包统一凑整季。
+    前端仍沿用 /shares/manual-validate 这个路由名，但这里不再校验 115 分享码/提取码，
+    只确认本地能定位到可秒传文件，并检查 RAW 媒体信息是否可用于中心展示/匹配。
     """
     data = shared_tasks._normalize_series_candidate_identity(_request_json())
+    # 手动预校验分两段：
+    # 1) 普通电影/连载季只检查本地是否能定位视频、是否能生成 RAW/summary_json；
+    # 2) 已完结季必须在这里同步执行 completed_season_source 硬门禁，不能等到点“登记共享源”时才报错。
+    #
+    # 注意：collect_files_for_candidate 仍然带 _skip_fingerprint_repair，避免连载季预检误触发一致性/指纹修复；
+    # 真正需要一致性门禁的已完结季，会单独用 gate_candidate 调 _completed_season_consistency_gate。
     data['_skip_fingerprint_repair'] = True
+    consistency = {}
+    completed_consistency_gate = {}
     files = shared_share_db.collect_files_for_candidate(data)
     root = shared_share_db.candidate_root_from_files(files)
     missing_raw = []
     for f in files:
         sha1 = str(f.get('sha1') or '').upper()
+        # 不只检查 RAW 是否存在，还要确认能生成中心资源库展示用 summary_json。
         try:
             entry = shared_tasks._prepare_raw_upload_entry(f)
         except Exception:
@@ -1076,14 +1084,47 @@ def api_manual_validate():
         if sha1 and not entry:
             missing_raw.append({'sha1': sha1, 'file_name': f.get('file_name'), 'reason': 'RAW 或 summary_json 缺失'})
 
+    should_check_completed = False
+    try:
+        gate_candidate = dict(data)
+        gate_candidate.pop('_skip_fingerprint_repair', None)
+        gate_candidate['source_provider'] = 'manual_rapid'
+        should_check_completed = (
+            str(gate_candidate.get('item_type') or '').strip() == 'Season'
+            and shared_tasks._candidate_is_completed_season(gate_candidate, source_provider='manual_rapid', files=files)
+        )
+        if files and should_check_completed:
+            completed_consistency_gate = shared_tasks._completed_season_consistency_gate(gate_candidate, log_result=True) or {}
+            consistency = completed_consistency_gate.get('consistency') or {}
+    except Exception as e:
+        # 如果预检本身异常，已完结季宁可前置拦截，也不要再次放行到“登记共享源”才失败。
+        should_check_completed = should_check_completed or (
+            str(data.get('item_type') or '').strip() == 'Season'
+            and (
+                str(data.get('watching_status') or data.get('season_status') or '').strip().lower() == 'completed'
+                or _boolish(data.get('is_completed'), False)
+            )
+        )
+        completed_consistency_gate = {
+            'ok': False,
+            'reason': 'manual_validate_consistency_error',
+            'message': f'完结季一致性预校验异常，禁止登记中心：{e}',
+            'consistency': {},
+            'final_failure': False,
+        }
+        consistency = {}
+
     if not files:
         message = '没有找到可登记视频文件'
+        valid = False
+    elif should_check_completed and not completed_consistency_gate.get('ok'):
+        message = completed_consistency_gate.get('message') or '完结季一致性校验未通过，不能登记共享源'
         valid = False
     elif missing_raw:
         message = f'找到 {len(files)} 个视频文件，但有 {len(missing_raw)} 个缺少 RAW 媒体信息，暂不登记中心'
         valid = False
     else:
-        message = f'找到 {len(files)} 个可登记视频文件，可登记为 Rapid v2 逻辑季资产'
+        message = f'找到 {len(files)} 个可登记视频文件，可登记为 Rapid v2 共享源'
         valid = True
 
     data_payload = {
@@ -1094,8 +1135,11 @@ def api_manual_validate():
         'files': files,
         'root': root,
         'root_fid': root.get('root_fid') or '',
-        'reason': 'raw_missing' if missing_raw else '',
-        'center_managed_logical_season': True,
+        'consistency': consistency or {},
+        # 给前端保留完整门禁结果，用于展示 reason/message，并作为禁用按钮依据。
+        'completed_consistency_gate': completed_consistency_gate or {},
+        'season_pack_consistency': consistency or {},
+        'reason': (completed_consistency_gate or {}).get('reason') or ('raw_missing' if missing_raw else ''),
     }
     return jsonify({
         'success': True,
@@ -1203,21 +1247,18 @@ def _center_flag_meta(row: Dict[str, Any], flag_key: str, meta_key: str) -> Dict
 
 
 def _center_source_is_completed_certified(row: Dict[str, Any]) -> bool:
-    """中心资源库“已完结认证”只认中心逻辑季包的 pool_complete。
+    """中心资源库“已完结认证”只认 available 的 completed_season。
 
-    分享通道是否 valid 只影响“转存/秒传”按钮；只要逻辑季包已经通过中心
-    一致性校验，就可以显示已完结标签和缎带。
+    不能用 Season 类型、进度满、watching_status=Completed 或 source_kind=completed_season 兜底，
+    否则历史脏数据 status=alive 的 completed_season 也会被前端打上“已完结”。
     """
     row = row if isinstance(row, dict) else {}
     source_kind = str(row.get('source_kind') or '').strip().lower()
     status = str(row.get('status') or '').strip().lower()
-    logical_complete = bool(row.get('logical_pool_complete') or row.get('pool_complete') or status == 'pool_complete')
+    if source_kind == 'completed_season':
+        return status == 'available'
     if source_kind == 'season_hub' or row.get('is_ongoing_hub'):
         return False
-    if source_kind == 'logical_season':
-        return logical_complete
-    if logical_complete:
-        return True
     return bool(_center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json'))
 
 
@@ -1230,6 +1271,52 @@ def _center_source_is_short_drama(row: Dict[str, Any]) -> bool:
     if direct is not None:
         return bool(direct)
     return bool(_center_flag_meta(row, 'is_short_drama', 'short_drama_meta_json'))
+
+
+
+def _center_import_logical_group_id(source: Dict[str, Any]) -> str:
+    source = source if isinstance(source, dict) else {}
+    logical = source.get('logical_group') if isinstance(source.get('logical_group'), dict) else {}
+    for value in (
+        source.get('logical_group_id'),
+        logical.get('group_id'),
+        source.get('group_id'),
+        source.get('source_id'),
+        source.get('source_ref_id'),
+    ):
+        text = str(value or '').strip()
+        if text.startswith('svg_'):
+            return text
+    return ''
+
+
+def _normalize_center_import_source(source: Dict[str, Any]) -> Dict[str, Any]:
+    """手动转存入口统一识别逻辑季包，避免落回旧 completed-season manifest。"""
+    source = dict(source or {}) if isinstance(source, dict) else {}
+    logical = source.get('logical_group') if isinstance(source.get('logical_group'), dict) else {}
+    kind = str(source.get('source_kind') or source.get('kind') or '').strip().lower()
+    group_id = _center_import_logical_group_id(source)
+    logical_marker = bool(
+        kind == 'logical_season'
+        or group_id
+        or str(source.get('resource_type') or '').strip().lower() == 'logical_season'
+        or logical
+    )
+    if logical_marker and group_id:
+        merged = {}
+        merged.update(logical)
+        merged.update(source)
+        merged['source_kind'] = 'logical_season'
+        merged['kind'] = 'logical_season'
+        merged['resource_type'] = 'logical_season'
+        merged['source_id'] = group_id
+        merged['source_ref_id'] = group_id
+        merged['group_id'] = group_id
+        merged['logical_group_id'] = group_id
+        if isinstance(logical.get('best_asset_map'), dict) and not isinstance(merged.get('best_asset_map'), dict):
+            merged['best_asset_map'] = logical.get('best_asset_map')
+        return merged
+    return source
 
 
 def _center_source_transfer_preflight(source: Dict[str, Any]) -> Dict[str, Any]:
@@ -1429,7 +1516,7 @@ def api_center_sources():
                 row['is_completed'] = True
                 row['completed_certified_meta_json'] = completed_meta or {
                     'is_completed_certified': True,
-                    'certified_by': 'logical_season_pool',
+                    'certified_by': 'completed_season_source',
                     'status': row.get('status'),
                 }
             else:
@@ -1509,10 +1596,10 @@ def api_center_source_children():
                 row['is_completed'] = True
                 row['completed_certified_meta_json'] = completed_meta or {
                     'is_completed_certified': True,
-                    'certified_by': 'logical_season_pool',
+                    'certified_by': 'completed_season_source',
                     'status': row.get('status'),
                 }
-            else:
+            elif row.get('source_kind') != 'completed_season':
                 row['is_completed_certified'] = False
                 row['is_completed'] = False
                 row.pop('completed_certified_meta_json', None)
@@ -1556,7 +1643,7 @@ def api_center_source_detail():
             row = row if isinstance(row, dict) else {}
             kind = str(row.get('source_kind') or row.get('lazy_children_kind') or '').strip().lower()
             typ = str(row.get('display_type') or row.get('item_type') or '').strip().lower()
-            return bool(kind in {'season_hub', 'logical_season'} or typ in {'pack', 'season', 'series'})
+            return bool(kind in {'season_hub', 'completed_season'} or typ in {'pack', 'season', 'series'})
 
         def _decorate_detail_row(row):
             if not isinstance(row, dict):
@@ -1579,15 +1666,6 @@ def api_center_source_detail():
                 row['version_summary'] = _center_version_summary(row)
             if not row.get('size') and row.get('total_size'):
                 row['size'] = row.get('total_size')
-            completed_certified = _center_source_is_completed_certified(row)
-            if completed_certified:
-                row['is_completed_certified'] = True
-                row['is_completed'] = True
-                row['completed_certified_meta_json'] = row.get('completed_certified_meta_json') or {
-                    'is_completed_certified': True,
-                    'certified_by': 'logical_season_pool',
-                    'status': row.get('status'),
-                }
             row = _apply_local_season_meta(row)
             return row
 
@@ -1606,6 +1684,7 @@ def api_center_source_detail():
 def api_center_import():
     data = _request_json()
     source = data.get('source') if isinstance(data.get('source'), dict) else data
+    source = _normalize_center_import_source(source)
 
     # 旧前端曾只提交 source_ids/context，没有提交完整中心源行；Rapid v2 需要 source_kind/source_id/sha1 等字段。
     # 这里给出明确错误，避免前端继续显示“秒传完成 0/0”。
