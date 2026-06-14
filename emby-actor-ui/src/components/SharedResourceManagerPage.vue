@@ -14,9 +14,9 @@
                 <template #icon><n-icon :component="SettingsIcon" /></template>
                 配置
               </n-button>
-              <n-button v-if="!hasCenterDevice" type="warning" ghost :loading="registeringDevice" @click="registerCenterDevice">
+              <n-button v-if="needsCenterDeviceToken" type="warning" ghost :loading="registeringDevice" @click="registerCenterDevice">
                 <template #icon><n-icon :component="SyncIcon" /></template>
-                注册设备
+                {{ centerDeviceRegisterButtonText }}
               </n-button>
               <n-button :loading="refreshingCredit" @click="refreshCredit">
                 <template #icon><n-icon :component="RefreshIcon" /></template>
@@ -30,8 +30,8 @@
           </div>
         </template>
 
-        <n-alert v-if="!hasCenterDevice" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
-          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献点、登记共享、秒传中心资源。
+        <n-alert v-if="needsCenterDeviceToken" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
+          {{ centerDeviceTokenAlertText }}
         </n-alert>
 
         <n-grid class="stat-grid" :cols="isMobile ? 2 : 4" :x-gap="12" :y-gap="12">
@@ -213,8 +213,18 @@
           <n-form-item label="中心地址">
             <n-input v-model:value="sharedConfigForm.p115_shared_center_url" placeholder="https://shared.55565576.xyz" />
           </n-form-item>
+          <n-form-item label="安装实例 ID">
+            <n-input v-model:value="sharedConfigForm.p115_shared_install_id" disabled placeholder="自动生成，用于恢复设备 Token 和继承签名身份" />
+            <template #feedback>用于中心端识别同一安装实例。请勿清空；Token 丢失时会依靠它恢复原设备身份。</template>
+          </n-form-item>
           <n-form-item label="设备 Token">
-            <n-input v-model:value="sharedConfigForm.p115_shared_device_token" type="password" show-password-on="click" placeholder="注册设备后自动写入，也可手动粘贴" />
+            <n-input-group>
+              <n-input v-model:value="sharedConfigForm.p115_shared_device_token" type="password" show-password-on="click" placeholder="注册设备后自动写入，也可手动粘贴" />
+              <n-button v-if="needsCenterDeviceToken" type="warning" ghost :loading="registeringDevice" @click="registerCenterDevice">
+                {{ centerDeviceRegisterButtonText }}
+              </n-button>
+            </n-input-group>
+            <template #feedback>{{ centerDeviceTokenHelpText }}</template>
           </n-form-item>
           <n-form-item label="禁止单集秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_disable_episode_transfer">
@@ -453,6 +463,7 @@ const sharedConfigSaving = ref(false);
 const sharedConfigForm = reactive({
   p115_shared_resource_enabled: false,
   p115_shared_center_url: 'https://shared.55565576.xyz',
+  p115_shared_install_id: '',
   p115_shared_device_token: '',
   p115_shared_resource_mode: 'rapid',
   p115_shared_disable_episode_transfer: false,
@@ -853,7 +864,27 @@ const centerCreatedTime = (row) => {
 };
 const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink(row), ...parts.filter(Boolean)]);
 
-const hasCenterDevice = computed(() => Boolean((summary.value.credit || {}).device_id));
+const centerDeviceId = computed(() => String((summary.value.credit || {}).device_id || '').trim());
+const sharedDeviceToken = computed(() => String(sharedConfigForm.p115_shared_device_token || '').trim());
+const sharedInstallId = computed(() => String(sharedConfigForm.p115_shared_install_id || '').trim());
+const hasCenterDevice = computed(() => Boolean(centerDeviceId.value));
+const hasSharedDeviceToken = computed(() => Boolean(sharedDeviceToken.value));
+const needsCenterDeviceToken = computed(() => !hasSharedDeviceToken.value);
+const centerDeviceRegisterButtonText = computed(() => (sharedInstallId.value || centerDeviceId.value) ? '恢复 Token' : '注册设备');
+const centerDeviceTokenAlertText = computed(() => {
+  if (hasCenterDevice.value) {
+    return '共享资源中心设备记录还在，但本地设备 Token 缺失。点击“恢复 Token”会使用安装实例 ID 向中心重新获取 Token，并继承原设备的共享源和签名身份。';
+  }
+  return '共享资源中心尚未注册设备。点击“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献点、登记共享、秒传中心资源。';
+});
+const centerDeviceTokenHelpText = computed(() => {
+  if (needsCenterDeviceToken.value) {
+    return (sharedInstallId.value || centerDeviceId.value)
+      ? '本地 Token 为空。点击“恢复 Token”会保留安装实例 ID，并向中心重新获取原设备 Token。'
+      : '本地尚未注册中心设备。点击“注册设备”会创建安装实例 ID 并写入设备 Token。';
+  }
+  return '设备 Token 已配置。普通用户不再提供“重置设备”入口，避免误操作导致设备身份和贡献点异常。';
+});
 
 const centerResourceStats = computed(() => {
   const credit = summary.value.credit || {};
@@ -3224,6 +3255,7 @@ const applySharedConfig = (data = {}) => {
   Object.assign(sharedConfigForm, {
     p115_shared_resource_enabled: Boolean(data.p115_shared_resource_enabled),
     p115_shared_center_url: data.p115_shared_center_url || 'https://shared.55565576.xyz',
+    p115_shared_install_id: data.p115_shared_install_id || '',
     p115_shared_device_token: data.p115_shared_device_token || '',
     p115_shared_resource_mode: 'rapid',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
@@ -3637,8 +3669,21 @@ const triggerSharedMaintenance = async () => {
   }
 };
 
-const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献点流水失败'); } finally { ledgerLoading.value = false; } };
+const loadLedger = async () => {
+  ledgerLoading.value = true;
+  try {
+    const res = await axios.get('/api/shared/resources/credit/ledger', {
+      params: { limit: 200, actual_only: 1, sync_center: hasSharedDeviceToken.value ? 1 : 0 },
+    });
+    ledgerItems.value = res.data?.items || [];
+  } catch {
+    message.error('加载贡献点流水失败');
+  } finally {
+    ledgerLoading.value = false;
+  }
+};
 const loadAll = async (forceRefresh = false) => {
+  await loadSharedConfig();
   const tasks = [loadSummary(), loadLedger()];
   if (activeTab.value === 'center') tasks.push(resetCenterSources(forceRefresh));
   else if (activeTab.value === 'requests') tasks.push(loadShareRequests());
@@ -3674,20 +3719,38 @@ const setupCenterInfiniteObserver = () => {
 };
 
 const registerCenterDevice = async () => {
-  if (hasCenterDevice.value) return;
+  if (hasSharedDeviceToken.value) {
+    message.info('设备 Token 已存在，无需重新注册；如 Token 确认丢失，请先清空并保存配置后再恢复。');
+    return;
+  }
   registeringDevice.value = true;
   try {
     const res = await axios.post('/api/shared/resources/center/device/register', {});
-    message.success(res.data?.message || '中心设备已注册');
-    await Promise.allSettled([loadSummary(), loadLedger(), loadCenterSources()]);
+    message.success(res.data?.message || (sharedInstallId.value || centerDeviceId.value ? '设备 Token 已恢复' : '中心设备已注册'));
+    await Promise.allSettled([loadSharedConfig(), loadSummary(), loadLedger(), loadCenterSources()]);
   } catch (e) {
-    message.error(e.response?.data?.message || '注册中心设备失败');
+    message.error(e.response?.data?.message || '注册/恢复中心设备失败');
   } finally {
     registeringDevice.value = false;
   }
 };
 
-const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献点已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献点失败'); } finally { refreshingCredit.value = false; } };
+const refreshCredit = async () => {
+  if (needsCenterDeviceToken.value) {
+    message.warning('设备 Token 缺失，请先注册或恢复设备 Token。');
+    return;
+  }
+  refreshingCredit.value = true;
+  try {
+    await axios.post('/api/shared/resources/credit/refresh');
+    message.success('贡献点已同步');
+    await Promise.allSettled([loadSummary(), loadLedger()]);
+  } catch (e) {
+    message.error(e.response?.data?.message || '刷新贡献点失败');
+  } finally {
+    refreshingCredit.value = false;
+  }
+};
 
 const resetManualShareForm = () => {
   manualShareValidationSeq += 1;
