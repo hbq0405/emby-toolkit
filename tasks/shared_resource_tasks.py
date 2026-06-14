@@ -1116,7 +1116,7 @@ def _logical_share_file_ids_from_payload(client: SharedCenterClient, group_id: s
             if fid and fid not in ids:
                 ids.append(fid)
     except Exception as e:
-        logger.debug(f"  ➜ [逻辑季分享] 从中心 manifest 兜底获取 file_id 失败: group={group_id}, err={e}")
+        logger.debug(f"  ➜ [共享资源] 从中心 manifest 兜底获取 file_id 失败: group={group_id}, err={e}")
     return ids
 
 
@@ -1166,7 +1166,7 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         p115 = P115Service.get_client()
         if not p115:
             raise RuntimeError('115 客户端未初始化')
-        logger.info(f"  ➜ [逻辑季分享] 开始创建 115 文件列表分享：{title}，items={len(share_ids)}，channel={channel_id}")
+        logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：{title}，items={len(share_ids)}，channel={channel_id}")
         create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
     except Exception as e:
         message = f'创建逻辑季 115 分享异常：{e}'
@@ -1245,7 +1245,7 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
 
     if ack and event_id:
         client.ack_device_events([event_id], result='ok' if reported else 'failed', message=(report_payload['status_message'] or '')[:500])
-    logger.info(f"  ➜ [逻辑季分享] 创建文件列表分享完成：{title}，status={report_payload['status']}，channel={channel_id}")
+    logger.info(f"  ➜ [共享资源] 创建文件列表分享完成：{title}，status={report_payload['status']}，channel={channel_id}")
     return {
         'ok': bool(reported),
         'event_id': event_id,
