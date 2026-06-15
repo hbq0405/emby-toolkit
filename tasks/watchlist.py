@@ -27,7 +27,8 @@ def task_process_watchlist(processor, tmdb_id: Optional[str] = None, new_episode
         processor.run_regular_processing_task_concurrent(
             progress_callback=progress_updater, 
             tmdb_id=tmdb_id,
-            new_episode_ids=new_episode_ids
+            new_episode_ids=new_episode_ids,
+            skip_logical_share_dispatch=not bool(tmdb_id),
         )
 
     except Exception as e:
@@ -115,7 +116,7 @@ def task_add_all_series_to_watchlist(processor):
             def worker(series_data):
                 try:
                     # 调用单体处理逻辑，它会自动修正状态 (Completed -> Watching)
-                    processor._process_one_series(series_data)
+                    processor._process_one_series(series_data, skip_logical_share_dispatch=True)
                 except Exception as e:
                     logger.error(f"校准剧集 {series_data.get('item_name')} 失败: {e}")
 
