@@ -1891,14 +1891,22 @@ def _ledger_media_context(row: Dict[str, Any]) -> Dict[str, Any]:
     sha1 = _ledger_extract_sha1(row)
     raw = _ledger_json(row.get('raw_json'))
     center_ledger = raw.get('center_ledger') if isinstance(raw.get('center_ledger'), dict) else {}
+    media = raw.get('media') if isinstance(raw.get('media'), dict) else {}
+    source = raw.get('source') if isinstance(raw.get('source'), dict) else {}
+    shared_source = raw.get('shared_source') if isinstance(raw.get('shared_source'), dict) else {}
+    job = raw.get('job') if isinstance(raw.get('job'), dict) else {}
     out: Dict[str, Any] = {}
 
     # 贡献点明细的媒体名应优先来自中心 /credit/ledger 的 join 结果。
     # 本地库只做最后兜底，避免本地重组/重命名导致“标题 S03 S03E08”这种重复拼接。
-    for source in (center_ledger, row):
-        for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year', 'file_count'):
-            if source.get(key) not in (None, ''):
-                out[key] = source.get(key)
+    for source_obj in (center_ledger, row, media, source, shared_source, job):
+        for key in (
+            'tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind',
+            'title', 'file_name', 'release_year', 'file_count',
+            'series_title', 'series_original_title', 'series_release_year',
+        ):
+            if source_obj.get(key) not in (None, ''):
+                out[key] = source_obj.get(key)
 
     for key in ('title', 'file_name', 'name'):
         if out.get('title') in (None, '') and raw.get(key):
@@ -1906,7 +1914,16 @@ def _ledger_media_context(row: Dict[str, Any]) -> Dict[str, Any]:
 
     if out.get('title') in (None, '') and sha1:
         local = _ledger_local_media_by_sha1(sha1)
-        for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind', 'title', 'file_name', 'release_year'):
+        for key in (
+            'tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind',
+            'title', 'file_name', 'release_year',
+            'series_title', 'series_original_title', 'series_release_year',
+        ):
+            if out.get(key) in (None, '') and local.get(key) not in (None, ''):
+                out[key] = local.get(key)
+    elif sha1:
+        local = _ledger_local_media_by_sha1(sha1)
+        for key in ('series_title', 'series_original_title', 'series_release_year'):
             if out.get(key) in (None, '') and local.get(key) not in (None, ''):
                 out[key] = local.get(key)
 

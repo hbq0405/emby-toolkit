@@ -1251,7 +1251,8 @@ const ledgerContext = (row = {}) => {
   const job = (raw.job && typeof raw.job === 'object') ? raw.job : {};
   const first = (...values) => values.find(v => v !== undefined && v !== null && String(v).trim() !== '');
   return {
-    title: first(center.title, row.title, media.title, source.title, sharedSource.title, job.title, raw.title, center.file_name, row.file_name, raw.file_name),
+    title: first(center.series_title, row.series_title, media.series_title, source.series_title, sharedSource.series_title, job.series_title, raw.series_title, center.title, row.title, media.title, source.title, sharedSource.title, job.title, raw.title, center.file_name, row.file_name, raw.file_name),
+    series_title: first(center.series_title, row.series_title, media.series_title, source.series_title, sharedSource.series_title, job.series_title, raw.series_title),
     file_name: first(center.file_name, row.file_name, media.file_name, source.file_name, sharedSource.file_name, job.file_name, raw.file_name),
     tmdb_id: first(center.tmdb_id, row.tmdb_id, media.tmdb_id, source.tmdb_id, sharedSource.tmdb_id, raw.tmdb_id),
     item_type: first(center.item_type, row.item_type, media.item_type, source.item_type, sharedSource.item_type, raw.item_type),
