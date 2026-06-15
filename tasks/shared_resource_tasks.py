@@ -4220,21 +4220,19 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
         total = len(candidates)
         skipped_existing = int(candidate_stats.get('skipped_existing') or 0)
         skipped_duplicate = int(candidate_stats.get('skipped_duplicate') or 0)
-        skipped_completed_episode = int(candidate_stats.get('skipped_completed_episode') or 0)
-        skipped_episode_candidate = int(candidate_stats.get('skipped_episode_candidate') or skipped_completed_episode or 0)
-        skipped_non_completed_season = int(candidate_stats.get('skipped_non_completed_season') or 0)
+        skipped_season_candidate = int(candidate_stats.get('skipped_season_candidate') or 0)
         scanned = int(candidate_stats.get('scanned') or 0)
         existing_summary = candidate_stats.get('existing_index') or {}
         timings = candidate_stats.get('timings') or {}
 
-        _task_status(10, f'扫描完成：媒体候选 {scanned}，已排除有效共享 {skipped_existing}，已跳过分集 {skipped_episode_candidate}，已跳过非完结季 {skipped_non_completed_season}，待登记 {total}。')
+        _task_status(10, f'扫描完成：媒体候选 {scanned}，已排除有效共享 {skipped_existing}，已跳过季级条目 {skipped_season_candidate}，待登记 {total}。')
         logger.info(
-            '  ➜ [共享资源] 一键登记媒体库扫描完成：扫描 %s，跳过已有有效共享 %s，跳过分集 %s，跳过非完结季 %s，跳过重复候选 %s，待登记 %s，已有索引=%s，耗时=%s',
-            scanned, skipped_existing, skipped_episode_candidate, skipped_non_completed_season, skipped_duplicate, total, existing_summary, timings,
+            '  ➜ [共享资源] 一键登记媒体库扫描完成：扫描 %s，跳过已有有效共享 %s，跳过季级条目 %s，跳过重复候选 %s，待登记 %s，已有索引=%s，耗时=%s',
+            scanned, skipped_existing, skipped_season_candidate, skipped_duplicate, total, existing_summary, timings,
         )
 
         if total <= 0:
-            msg = f'无需登记：扫描 {scanned} 个候选，已排除有效共享 {skipped_existing} 个，已跳过分集 {skipped_episode_candidate} 个，已跳过非完结季 {skipped_non_completed_season} 个。'
+            msg = f'无需登记：扫描 {scanned} 个候选，已排除有效共享 {skipped_existing} 个，已跳过季级条目 {skipped_season_candidate} 个。'
             _task_status(100, msg)
             logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：{msg}")
             return {
@@ -4244,20 +4242,17 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                 'failed': 0,
                 'skipped_existing': skipped_existing,
                 'skipped_duplicate': skipped_duplicate,
-                'skipped_completed_episode': skipped_completed_episode,
-                'skipped_episode_candidate': skipped_episode_candidate,
-                'skipped_non_completed_season': skipped_non_completed_season,
+                'skipped_season_candidate': skipped_season_candidate,
                 'scanned': scanned,
                 'timings': timings,
                 'message': msg,
             }
 
         ok = failed = 0
-        skipped_bad_completed = 0
         items = []
         for idx, cand in enumerate(candidates, 1):
             if processor is not None and hasattr(processor, 'is_stop_requested') and processor.is_stop_requested():
-                msg = f'任务已中断：已处理 {idx - 1}/{total}，成功 {ok}，失败 {failed}，不合格跳过 {skipped_bad_completed}。'
+                msg = f'任务已中断：已处理 {idx - 1}/{total}，成功 {ok}，失败 {failed}。'
                 _task_status(max(10, min(99, int(10 + ((idx - 1) / max(total, 1)) * 85))), msg)
                 logger.info(f"  ➜ [共享资源] 一键登记媒体库中断：{msg}")
                 return {
@@ -4266,12 +4261,9 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
                     'total': total,
                     'success': ok,
                     'failed': failed,
-                    'skipped_bad_completed': skipped_bad_completed,
                     'skipped_existing': skipped_existing,
                     'skipped_duplicate': skipped_duplicate,
-                    'skipped_completed_episode': skipped_completed_episode,
-                    'skipped_episode_candidate': skipped_episode_candidate,
-                    'skipped_non_completed_season': skipped_non_completed_season,
+                    'skipped_season_candidate': skipped_season_candidate,
                     'scanned': scanned,
                     'items': items[:50],
                     'timings': timings,
@@ -4280,53 +4272,43 @@ def share_all_library(processor=None, max_items: int = 100000) -> Dict[str, Any]
 
             title = cand.get('title') or cand.get('display_title') or cand.get('tmdb_id') or f'候选 {idx}'
             progress = max(10, min(95, int(10 + ((idx - 1) / max(total, 1)) * 85)))
-            _task_status(progress, f'正在登记 {idx}/{total}：{title}（成功 {ok}，失败 {failed}，不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}）')
+            _task_status(progress, f'正在登记 {idx}/{total}：{title}（成功 {ok}，失败 {failed}，已跳过 {skipped_existing}）')
             try:
                 res = register_candidate_to_center(cand, source_provider='rapid_all_library')
-                is_bad_completed_skip = (
-                    not res.get('ok')
-                    and res.get('reason') == 'completed_season_consistency_failed'
-                )
                 item = {
                     'title': title,
                     'ok': bool(res.get('ok')),
-                    'skipped': bool(is_bad_completed_skip),
+                    'skipped': False,
                     'reason': res.get('reason') or '',
                     'message': res.get('message') or '',
                 }
                 if res.get('ok'):
                     ok += 1
-                elif is_bad_completed_skip:
-                    skipped_bad_completed += 1
-                    logger.info(f"  ➜ [共享资源] 一键登记跳过不合格完结季: {title} -> {res.get('message') or ''}")
                 else:
                     failed += 1
                 items.append(item)
                 if idx % 10 == 0 or idx == total:
                     _task_status(
                         max(10, min(95, int(10 + (idx / max(total, 1)) * 85))),
-                        f'一键登记进度：{idx}/{total}，成功 {ok}，失败 {failed}，不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}。'
+                        f'一键登记进度：{idx}/{total}，成功 {ok}，失败 {failed}，已跳过 {skipped_existing}。'
                     )
-                    logger.info(f"  ➜ [共享资源] 一键登记媒体库进度：{idx}/{total}，成功 {ok}，失败 {failed}，不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}")
+                    logger.info(f"  ➜ [共享资源] 一键登记媒体库进度：{idx}/{total}，成功 {ok}，失败 {failed}，已跳过 {skipped_existing}")
             except Exception as e:
                 failed += 1
                 items.append({'title': title, 'ok': False, 'message': str(e)})
                 logger.warning(f"  ➜ [共享资源] 一键登记媒体库失败: {title} -> {e}")
 
-        msg = f'一键登记完成：扫描 {scanned}，跳过已有有效共享 {skipped_existing}，跳过分集 {skipped_episode_candidate}，跳过非完结季 {skipped_non_completed_season}，完结季不合格跳过 {skipped_bad_completed}，登记成功 {ok}，失败 {failed}。'
+        msg = f'一键登记完成：扫描 {scanned}，跳过已有有效共享 {skipped_existing}，跳过季级条目 {skipped_season_candidate}，登记成功 {ok}，失败 {failed}。'
         _task_status(100, msg)
-        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}，跳过分集 {skipped_episode_candidate}，跳过非完结季 {skipped_non_completed_season}，完结季不合格跳过 {skipped_bad_completed}，已跳过 {skipped_existing}")
+        logger.info(f"  ➜ [共享资源] 一键登记媒体库完成：候选 {total}，成功 {ok}，失败 {failed}，跳过季级条目 {skipped_season_candidate}，已跳过 {skipped_existing}")
         return {
             'ok': True,
             'total': total,
             'success': ok,
             'failed': failed,
-            'skipped_bad_completed': skipped_bad_completed,
             'skipped_existing': skipped_existing,
             'skipped_duplicate': skipped_duplicate,
-            'skipped_completed_episode': skipped_completed_episode,
-            'skipped_episode_candidate': skipped_episode_candidate,
-            'skipped_non_completed_season': skipped_non_completed_season,
+            'skipped_season_candidate': skipped_season_candidate,
             'scanned': scanned,
             'items': items[:50],
             'timings': timings,
@@ -4592,8 +4574,8 @@ def _sync_center_credit() -> Dict[str, Any]:
     snapshot = {
         'device_id': me.get('id'),
         'credit': int(me.get('credit') or 0),
-        'wanted_gaps': int(stats.get('active_gap_devices') or 0),
-        'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0) + int(stats.get('completed_season_sources') or 0),
+        'wanted_gaps': int(stats.get('share_requests') or stats.get('active_gap_devices') or 0),
+        'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0),
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
         'remote_devices': int(stats.get('devices') or 0),
         'raw_json': {'me': me, 'stats': stats},
@@ -4614,9 +4596,10 @@ def _candidate_from_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
     episode = _safe_int_or_none(row.get('episode_number'))
     if source_kind == 'movie' or item_type == 'Movie':
         final_type = 'Movie'
-    elif source_kind in ('completed_season', 'episode', 'episode_group') or item_type in ('Season', 'Episode') or season is not None:
-        # Rapid v2 手动补齐/重新登记按“季”粒度处理，避免单集源继续散铺。
-        final_type = 'Season' if season is not None else 'Episode'
+    elif source_kind in ('episode', 'episode_group') or item_type == 'Episode' or episode is not None:
+        final_type = 'Episode'
+    elif item_type == 'Season' or season is not None:
+        final_type = 'Season'
     else:
         final_type = item_type or 'Movie'
     candidate = {
@@ -4638,20 +4621,12 @@ def _candidate_from_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         '_original_source_provider': row.get('source_provider') or '',
         '_original_center_source_id': row.get('center_source_id') or '',
     }
-    # 完结季源重新登记必须继续走 completed_season_source，不能降级成连载分集池。
-    # 否则中心会出现同季公共 season_hub，甚至用单集版本摘要/大小污染整季展示。
-    if source_kind == 'completed_season':
-        candidate['watching_status'] = 'Completed'
-        candidate['_force_completed_season'] = True
     return {k: v for k, v in candidate.items() if v not in (None, '')}
 
 
 def _reregister_provider_for_row(row: Dict[str, Any], requested: str = '') -> str:
     """重新登记应保持原 provider，避免生成 manual_reregister 影子源。"""
     row = dict(row or {})
-    source_kind = str(row.get('source_kind') or '').strip().lower()
-    if source_kind == 'completed_season':
-        return 'rapid_completed_season'
     original = str(row.get('source_provider') or '').strip()
     requested = str(requested or '').strip()
     if requested and requested != 'manual_reregister':
@@ -4665,7 +4640,7 @@ def reregister_local_source(source_id: int, *, source_provider: str = '') -> Dic
         return {'ok': False, 'message': '本地共享源不存在', 'source_id': source_id}
     candidate = _candidate_from_local_source(row)
     # “重新登记”是原共享源的原地修复：重新上传 RAW/summary_json，
-    # provider 保持原值，完结季保持 completed_season_source，避免生成影子源或降级成连载分集池。
+    # provider 保持原值，避免生成 manual_reregister 影子源。
     candidate['_raw_repair_only'] = True
     provider = _reregister_provider_for_row(row, source_provider)
     result = register_candidate_to_center(candidate, source_provider=provider)

@@ -112,8 +112,16 @@ def _fetch_center_credit() -> Dict[str, Any]:
         'device_id': me.get('id'),
         'credit': int(me.get('credit') or 0),
         # Rapid v2 入库即共享后，普通缺口数量不再作为首页统计；首页展示主动“求共享”数量。
-        'wanted_gaps': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
-        'share_requests': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
+        'wanted_gaps': int(
+            stats.get('share_requests')
+            if stats.get('share_requests') is not None
+            else (stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0)
+        ),
+        'share_requests': int(
+            stats.get('share_requests')
+            if stats.get('share_requests') is not None
+            else (stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0)
+        ),
         'shared_sources': video_count,
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
         'display_movie_count': int(display_movies.get('total') or stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or movie_source_count),
@@ -1031,8 +1039,7 @@ def api_delete_local_sources_batch():
 def api_search_shareable_media():
     keyword = request.args.get('keyword') or request.args.get('q') or ''
     limit = int(request.args.get('limit') or 100)
-    # 手动添加共享源的最小粒度是“电影 / 季”。
-    # 单集可作为连载季公共包下的子项登记，但不再出现在搜索候选里，避免用户选择单集后无法追踪整季。
+    # 客户端只登记视频资源；Season 候选只是本地批量登记入口，最终仍会拆成分集上传中心。
     rows = shared_share_db.search_shareable_media(keyword, search_limit=max(limit * 6, 200), result_limit=max(limit * 4, 100))
     items = []
     for row in rows or []:
@@ -1041,9 +1048,7 @@ def api_search_shareable_media():
         row = _apply_local_season_meta(row)
         item_type = str(row.get('share_item_type') or row.get('item_type') or '').strip().lower()
         share_type = str(row.get('share_type') or '').strip().lower()
-        if item_type in ('episode', 'episode_file') or share_type == 'episode_file' or row.get('episode_number') not in (None, '', 0):
-            continue
-        if item_type in ('movie', 'season', 'series') or share_type in ('movie_file', 'movie_folder', 'season_pack', 'series_pack'):
+        if item_type in ('movie', 'season', 'episode', 'series') or share_type in ('movie_file', 'movie_folder', 'season_pack', 'episode_file', 'series_pack'):
             items.append(row)
         if len(items) >= limit:
             break

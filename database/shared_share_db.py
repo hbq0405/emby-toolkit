@@ -391,8 +391,7 @@ def get_shared_resource_summary() -> Dict[str, Any]:
                     COUNT(*) FILTER (WHERE center_status='reported') AS reported,
                     COUNT(*) FILTER (WHERE status IN ('inconsistent','incomplete','error')) AS failed,
                     COUNT(*) FILTER (WHERE source_kind='movie') AS movies,
-                    COUNT(*) FILTER (WHERE source_kind='episode') AS episodes,
-                    COUNT(*) FILTER (WHERE source_kind='completed_season') AS completed_seasons
+                    COUNT(*) FILTER (WHERE source_kind='episode') AS episodes
                 FROM shared_rapid_sources
                 """
             )
@@ -763,7 +762,6 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         tmdb_id = str(row.get('tmdb_id') or '')
 
     files: List[Dict[str, Any]] = []
-    consistency = None
     share_item_type = item_type
     share_type = 'movie_file'
     if item_type == 'Movie':
@@ -777,12 +775,6 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         ep_rows = _episode_rows(tmdb_id, season)
         for ep_row in ep_rows:
             files.extend(_files_for_media_row(ep_row))
-        consistency = None
-        if not files and ep_rows:
-            consistency = repair_candidate_fingerprints({**row, 'parent_series_tmdb_id': tmdb_id, 'item_type': 'Season', 'season_number': season}, log_result=True)
-            files = []
-            for ep_row in _episode_rows(tmdb_id, season):
-                files.extend(_files_for_media_row(ep_row))
         share_type = 'season_pack'
         share_item_type = 'Season'
     elif item_type == 'Series':
@@ -794,8 +786,6 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     title = _candidate_title(row, share_item_type, tmdb_id, season, episode)
     resolvable = bool(files)
     message = f'已定位 {len(files)} 个可登记视频文件' if resolvable else '未定位到已入库视频文件；需要 media_metadata 中有 PC/SHA1 且 p115_filesystem_cache 能反查到文件'
-    if consistency and isinstance(consistency, dict) and consistency.get('message'):
-        message = f"{message}；{consistency.get('message')}"
     in_library = bool(resolvable or row.get('in_library'))
 
     return {
@@ -823,7 +813,7 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'file_count': len(files),
         'resolvable': resolvable,
         'message': message,
-        'consistency': consistency or {},
+        'consistency': {},
         'source_provider': 'manual_rapid',
         'raw_json': row,
     }
@@ -905,21 +895,6 @@ def collect_files_for_candidate(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     season = _nullable_int(data.get('season_number'))
     episode = _nullable_int(data.get('episode_number'))
     files = []
-    # 只有“明确完结季”才允许走 helpers.check_season_consistency。
-    # 连载季 / 单集只做本地文件定位，不做季级一致性校验，避免维护任务或一键登记把连载季拖去体检。
-    watching_status = str(data.get('watching_status') or data.get('season_status') or '').strip().lower()
-    provider = str(data.get('source_provider') or data.get('_original_source_provider') or '').strip().lower()
-    is_completed_season = (
-        item_type == 'Season'
-        and (
-            bool(data.get('_force_completed_season'))
-            or watching_status in {'Completed', 'complete', 'ended', 'end', '完结', '已完结'}
-            or provider == 'rapid_completed_season'
-        )
-    )
-    if is_completed_season and not data.get('_raw_repair_only') and not data.get('_skip_fingerprint_repair'):
-        # 完结季必须严格体检；这里只负责补齐/校验所需指纹，是否允许登记由任务层统一拦截。
-        repair_candidate_fingerprints(data, log_result=True)
 
     if item_type == 'Movie':
         with get_db_connection() as conn:
@@ -975,7 +950,6 @@ def _load_effective_local_share_index(limit: int = 500000) -> Dict[str, Any]:
         'movie_sha1s': set(),
         'episode_identities': set(),
         'episode_sha1s': set(),
-        'completed_seasons': {},
     }
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -1030,9 +1004,6 @@ def _load_effective_local_share_index(limit: int = 500000) -> Dict[str, Any]:
                 index['episode_identities'].add((tmdb_id, season, ep_no))
                 if sha1:
                     index['episode_sha1s'].add((tmdb_id, season, ep_no, sha1))
-        elif kind == 'completed_season':
-            if season is not None:
-                index['completed_seasons'][(tmdb_id, season)] = row.get('manifest_hash') or True
     index['source_count'] = len(index['source_ids'])
     return index
 
@@ -1160,8 +1131,6 @@ def _season_row_already_registered(row: Dict[str, Any], index: Dict[str, Any]) -
     season = _nullable_int((row or {}).get('season_number'))
     if not parent or season is None:
         return False
-    if _is_completed_status((row or {}).get('watching_status')) and (parent, season) in index.get('completed_seasons', {}):
-        return True
     return _season_episode_rows_all_registered(parent, season, index)
 
 
@@ -1184,7 +1153,6 @@ def _existing_share_index_summary(index: Dict[str, Any]) -> Dict[str, int]:
         'source_count': int(index.get('source_count') or 0),
         'movie_files': len(index.get('movie_sha1s', set()) or []),
         'episode_files': len(index.get('episode_sha1s', set()) or []),
-        'completed_seasons': len(index.get('completed_seasons', {}) or {}),
     }
 
 
@@ -1291,7 +1259,7 @@ def all_library_share_candidates(
     _emit_scan_progress(
         progress_callback,
         2,
-        f"已有有效共享：资源 {existing_summary.get('source_count', 0)}，电影 {existing_summary.get('movie_files', 0)}，分集 {existing_summary.get('episode_files', 0)}，完结季 {existing_summary.get('completed_seasons', 0)}。正在读取媒体库候选..."
+        f"已有有效共享：资源 {existing_summary.get('source_count', 0)}，电影 {existing_summary.get('movie_files', 0)}，分集 {existing_summary.get('episode_files', 0)}。正在读取媒体库候选..."
     )
     rows = _media_rows_for_search('', limit)
     timings['load_media_rows_sec'] = round(time.perf_counter() - t_media, 3)
@@ -1300,14 +1268,11 @@ def all_library_share_candidates(
     seen = set()
     skipped_existing = 0
     skipped_duplicate = 0
-    # 兼容旧统计字段：过去只屏蔽“完结季分集”，现在一键登记不再登记任何分集。
-    skipped_completed_episode = 0
-    skipped_episode_candidate = 0
-    skipped_non_completed_season = 0
+    skipped_season_candidate = 0
     scanned = len(rows)
     t_filter = time.perf_counter()
 
-    _emit_scan_progress(progress_callback, 3, f'已读取媒体候选 {scanned} 个，正在筛选电影与完结季候选...')
+    _emit_scan_progress(progress_callback, 3, f'已读取媒体候选 {scanned} 个，正在筛选电影与分集候选...')
 
     for idx, row in enumerate(rows, 1):
         item_type = str(row.get('item_type') or '')
@@ -1316,7 +1281,7 @@ def all_library_share_candidates(
             _emit_scan_progress(
                 progress_callback,
                 min(10, progress),
-                f'正在筛选媒体候选 {idx}/{scanned}，已排除有效共享 {skipped_existing}，已跳过分集 {skipped_episode_candidate}，已跳过非完结季 {skipped_non_completed_season}，待登记 {len(result)}...'
+                f'正在筛选媒体候选 {idx}/{scanned}，已排除有效共享 {skipped_existing}，已跳过季级条目 {skipped_season_candidate}，待登记 {len(result)}...'
             )
 
         if exclude_existing and _media_row_already_registered(row, existing_index):
@@ -1327,24 +1292,17 @@ def all_library_share_candidates(
             cand = _build_lightweight_share_candidate(row)
             key = ('Movie', cand.get('tmdb_id'), tuple(cand.get('file_sha1s') or _as_array(row.get('file_sha1_json'))))
         elif item_type == 'Episode':
-            # 一键登记媒体库只登记电影和“已完结 Season”。
-            # 连载分集交给维护任务 list_unregistered_airing_episode_candidates 做追更补齐，
-            # 避免全库登记把连载季的存量分集批量塞进中心 season_hub。
-            skipped_episode_candidate += 1
-            if _is_completed_status(row.get('season_watching_status')):
-                skipped_completed_episode += 1
-            continue
-        elif item_type == 'Season':
-            status = row.get('watching_status') or row.get('season_watching_status')
-            if not _is_completed_status(status):
-                skipped_non_completed_season += 1
-                continue
             cand = _build_lightweight_share_candidate(row)
-            # 登记阶段 _candidate_is_completed_season 只认 Completed；这里统一归一化，
-            # 避免数据库里出现 ended / 已完结 这类等价状态时又被当成连载季拆分登记。
-            cand['watching_status'] = 'Completed'
-            cand['season_status'] = 'Completed'
-            key = ('Season', cand.get('tmdb_id'), cand.get('season_number'))
+            key = (
+                'Episode',
+                cand.get('share_tmdb_id') or cand.get('tmdb_id'),
+                cand.get('season_number'),
+                cand.get('episode_number'),
+                tuple(cand.get('file_sha1s') or []),
+            )
+        elif item_type == 'Season':
+            skipped_season_candidate += 1
+            continue
         else:
             continue
 
@@ -1356,7 +1314,7 @@ def all_library_share_candidates(
 
     timings['filter_candidates_sec'] = round(time.perf_counter() - t_filter, 3)
     timings['total_scan_sec'] = round(time.perf_counter() - t0, 3)
-    _emit_scan_progress(progress_callback, 10, f'候选扫描完成：扫描 {scanned}，排除有效共享 {skipped_existing}，跳过分集 {skipped_episode_candidate}，跳过非完结季 {skipped_non_completed_season}，重复 {skipped_duplicate}，待登记 {len(result)}。')
+    _emit_scan_progress(progress_callback, 10, f'候选扫描完成：扫描 {scanned}，排除有效共享 {skipped_existing}，跳过季级条目 {skipped_season_candidate}，重复 {skipped_duplicate}，待登记 {len(result)}。')
 
     if return_stats:
         return {
@@ -1365,9 +1323,7 @@ def all_library_share_candidates(
             'total': len(result),
             'skipped_existing': skipped_existing,
             'skipped_duplicate': skipped_duplicate,
-            'skipped_completed_episode': skipped_completed_episode,
-            'skipped_episode_candidate': skipped_episode_candidate,
-            'skipped_non_completed_season': skipped_non_completed_season,
+            'skipped_season_candidate': skipped_season_candidate,
             'existing_index': existing_summary,
             'timings': timings,
         }

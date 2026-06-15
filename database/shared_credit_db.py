@@ -34,14 +34,12 @@ def get_shared_resource_summary() -> Dict[str, Any]:
                     COUNT(*) FILTER (WHERE status IN ('inconsistent','incomplete','error')) AS failed,
                     COUNT(*) FILTER (WHERE source_kind='movie') AS movies,
                     COUNT(*) FILTER (WHERE source_kind='episode') AS episodes,
-                    COUNT(*) FILTER (WHERE source_kind='completed_season') AS completed_seasons,
                     COUNT(*) FILTER (WHERE status IN ('active','available') AND source_kind='movie') AS alive_movies,
                     COUNT(*) FILTER (WHERE status IN ('active','available') AND source_kind='episode') AS alive_episodes,
-                    COUNT(*) FILTER (WHERE status IN ('active','available') AND source_kind='completed_season') AS alive_completed_seasons,
-                    COUNT(DISTINCT tmdb_id) FILTER (
+                    COUNT(DISTINCT COALESCE(NULLIF(parent_series_tmdb_id, ''), NULLIF(tmdb_id, ''))) FILTER (
                         WHERE status IN ('active','available')
-                          AND source_kind IN ('episode', 'completed_season')
-                          AND COALESCE(tmdb_id, '') <> ''
+                          AND source_kind = 'episode'
+                          AND COALESCE(NULLIF(parent_series_tmdb_id, ''), NULLIF(tmdb_id, '')) IS NOT NULL
                     ) AS alive_series_count
                 FROM shared_rapid_sources
                 """
