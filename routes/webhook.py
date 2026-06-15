@@ -393,9 +393,35 @@ def _run_shared_auto_share_batch_detached(task_name: str, register_items: List[d
         created_total = 0
         failed_total = 0
         try:
-            from tasks.shared_resource_tasks import trigger_shared_rapid_register_for_library_item
+            from tasks.shared_resource_tasks import (
+                trigger_shared_rapid_register_batch_for_library_items,
+                trigger_shared_rapid_register_for_library_item,
+            )
 
             logger.info(f"  ➜ [共享资源] 入库即登记共享源: {task_name}，items={len(items)}")
+            if len(items) > 1:
+                batch_result = trigger_shared_rapid_register_batch_for_library_items(None, items) or {}
+                try:
+                    created_total += int(batch_result.get('created', 0) or 0)
+                except Exception:
+                    pass
+                failed_total += int(batch_result.get('failed', 0) or 0)
+                logger.info(
+                    "  ➜ [共享资源] 已按批次预上传 RAW：%s，items=%s，raw_uploaded=%s，raw_ready=%s，raw_skipped=%s",
+                    task_name,
+                    len(items),
+                    ((batch_result.get('raw_batch_result') or {}).get('uploaded_count') or 0),
+                    ((batch_result.get('raw_batch_result') or {}).get('count') or 0),
+                    ((batch_result.get('raw_batch_result') or {}).get('skipped_existing') or 0),
+                )
+                logger.info(
+                    "  ➜ [共享资源] 入库共享源登记完成: %s，items=%s，created=%s，failed=%s",
+                    task_name,
+                    len(items),
+                    created_total,
+                    failed_total,
+                )
+                return
             for item in items:
                 try:
                     result = trigger_shared_rapid_register_for_library_item(None, **item) or {}

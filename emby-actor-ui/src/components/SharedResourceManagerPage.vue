@@ -914,9 +914,14 @@ const centerResourceStats = computed(() => {
     return 0;
   };
   const movieCount = numberValue(credit.display_movie_count, credit.center_movie_count, mediaStats.movie_count, rawStats.display_movie_count, rawStats.movie_sources);
-  const seasonCount = numberValue(credit.display_season_count, credit.center_season_count, mediaStats.season_count, rawStats.display_season_count, 0);
-  const videoCount = numberValue(credit.video_count, mediaStats.video_count, rawStats.video_count, credit.raw_ffprobe, rawStats.raw_ffprobe);
-  return { movieCount, seasonCount, videoCount };
+  const seriesCount = numberValue(credit.display_series_count, credit.center_series_count, mediaStats.series_count, rawStats.display_series_count, 0);
+  const videoCount = numberValue(
+    credit.video_count,
+    mediaStats.video_count,
+    rawStats.video_count,
+    numberValue(rawStats.movie_sources, 0) + numberValue(rawStats.episode_sources, 0)
+  );
+  return { movieCount, seriesCount, videoCount };
 });
 
 
@@ -960,8 +965,13 @@ const statCards = computed(() => {
   const centerStats = centerResourceStats.value;
   return [
     { key: 'credit', label: '贡献点', value: credit.credit ?? 0, desc: creditCardDesc.value },
-    { key: 'shares', label: '我的共享', value: shares.total ?? 0, desc: `${shares.alive ?? 0} 个有效共享` },
-    { key: 'remote_sources', label: '中心资源', value: `电影 ${centerStats.movieCount} · 剧集 ${centerStats.seasonCount}`, desc: `共计视频 ${centerStats.videoCount} 个` },
+    {
+      key: 'shares',
+      label: '我的共享',
+      value: shares.alive ?? 0,
+      desc: `电影 ${shares.alive_movies ?? 0} · 剧集 ${shares.alive_series_count ?? 0} · 视频 ${shares.alive_videos ?? 0}`,
+    },
+    { key: 'remote_sources', label: '中心资源', value: `电影 ${centerStats.movieCount} · 剧集 ${centerStats.seriesCount}`, desc: `共计视频 ${centerStats.videoCount} 个` },
     { key: 'share_requests', label: '求共享', value: credit.share_requests ?? credit.wanted_gaps ?? 0, desc: '活跃求共享需求' },
   ];
 });

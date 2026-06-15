@@ -89,26 +89,43 @@ def _fetch_center_credit() -> Dict[str, Any]:
         logger.debug(f"  ➜ [共享资源] Pro 额度认证上报失败，继续同步贡献点: {e}")
     me = client.me()
     stats = client.stats()
+    display_movies = {}
+    display_series = {}
+    try:
+        display_movies = client.list_display_sources(item_type='Movie', limit=1, offset=0)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 拉取中心电影展示统计失败: {e}")
+    try:
+        display_series = client.list_display_sources(item_type='Series', limit=1, offset=0)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 拉取中心剧集展示统计失败: {e}")
     ledger = {}
     try:
         ledger = client.credit_ledger(limit=500)
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 拉取中心贡献点流水失败: {e}")
+    movie_source_count = int(stats.get('movie_sources') or 0)
+    episode_source_count = int(stats.get('episode_sources') or 0)
+    logical_group_count = int(stats.get('logical_season_groups') or 0)
+    video_count = movie_source_count + episode_source_count
     snapshot = {
         'device_id': me.get('id'),
         'credit': int(me.get('credit') or 0),
         # Rapid v2 入库即共享后，普通缺口数量不再作为首页统计；首页展示主动“求共享”数量。
         'wanted_gaps': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
         'share_requests': int(stats.get('active_share_requests') if stats.get('active_share_requests') is not None else stats.get('active_gap_devices') or 0),
-        'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0),
+        'shared_sources': video_count,
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
-        'display_movie_count': int(stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or stats.get('movie_sources') or 0),
-        'display_season_count': int(stats.get('display_season_count') or (stats.get('media_stats') or {}).get('season_count') or 0),
-        'video_count': int(stats.get('video_count') or (stats.get('media_stats') or {}).get('video_count') or stats.get('raw_ffprobe') or 0),
-        'media_stats': stats.get('media_stats') or {
-            'movie_count': int(stats.get('display_movie_count') or stats.get('movie_sources') or 0),
-            'season_count': int(stats.get('display_season_count') or 0),
-            'video_count': int(stats.get('video_count') or stats.get('raw_ffprobe') or 0),
+        'display_movie_count': int(display_movies.get('total') or stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or movie_source_count),
+        'display_series_count': int(display_series.get('total') or stats.get('display_series_count') or (stats.get('media_stats') or {}).get('series_count') or 0),
+        'display_season_count': int(stats.get('display_season_count') or (stats.get('media_stats') or {}).get('season_count') or logical_group_count),
+        'video_count': video_count,
+        'media_stats': {
+            **((stats.get('media_stats') or {}) if isinstance(stats.get('media_stats'), dict) else {}),
+            'movie_count': int(display_movies.get('total') or stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or movie_source_count),
+            'series_count': int(display_series.get('total') or stats.get('display_series_count') or (stats.get('media_stats') or {}).get('series_count') or 0),
+            'season_count': int(stats.get('display_season_count') or (stats.get('media_stats') or {}).get('season_count') or logical_group_count),
+            'video_count': video_count,
         },
         'pro_quota': (pro_report.get('pro_quota') or pro_report.get('quota') or stats.get('pro_quota') or me.get('pro_quota') or {}),
         'remote_devices': int(stats.get('devices') or 0),

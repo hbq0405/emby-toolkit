@@ -2382,6 +2382,28 @@ def _prepare_raw_upload_entry(file_info: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _prime_candidate_files_for_registration(candidate: Dict[str, Any], files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    candidate = dict(candidate or {})
+    item_type = str(candidate.get('item_type') or '').strip()
+    candidate_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
+    if item_type == 'Movie':
+        candidate_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
+    for file_info in files or []:
+        if item_type == 'Movie':
+            file_info.setdefault('item_type', 'Movie')
+            file_info.setdefault('tmdb_id', candidate_tmdb_id)
+        elif item_type in ('Season', 'Episode'):
+            file_info.setdefault('item_type', 'Episode')
+            file_info.setdefault('tmdb_id', candidate_tmdb_id)
+            file_info.setdefault('parent_series_tmdb_id', candidate_tmdb_id)
+            file_info.setdefault('series_tmdb_id', candidate_tmdb_id)
+            file_info.setdefault('season_number', candidate.get('season_number'))
+            if item_type == 'Episode':
+                file_info.setdefault('episode_number', candidate.get('episode_number'))
+        _ensure_file_preid(file_info)
+    return files
+
+
 def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -> Dict[str, Any]:
     """按需上传 RAW。
 
@@ -2434,8 +2456,18 @@ def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -
         if entry:
             entries.append(entry)
 
+    skipped_existing_sha1s = [sha for sha, ok in uploaded.items() if ok]
     if not entries:
-        return {'ok': True, 'uploaded': uploaded, 'count': len(uploaded), 'uploaded_count': 0, 'skipped_existing': skipped_existing, 'errors': errors}
+        return {
+            'ok': True,
+            'uploaded': uploaded,
+            'count': len(uploaded),
+            'uploaded_count': 0,
+            'skipped_existing': skipped_existing,
+            'skipped_existing_sha1s': skipped_existing_sha1s,
+            'fresh_uploaded_sha1s': [],
+            'errors': errors,
+        }
 
     try:
         if hasattr(client, 'upload_raw_ffprobe_batch'):
@@ -2461,6 +2493,8 @@ def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -
                     'count': len(uploaded),
                     'uploaded_count': uploaded_count,
                     'skipped_existing': skipped_existing,
+                    'skipped_existing_sha1s': skipped_existing_sha1s,
+                    'fresh_uploaded_sha1s': [sha for sha in uploaded.keys() if sha not in before],
                     'errors': errors,
                 }
     except Exception as e:
@@ -2483,6 +2517,8 @@ def _upload_raw_batch(client: SharedCenterClient, files: List[Dict[str, Any]]) -
         'count': len(uploaded),
         'uploaded_count': len(set(uploaded.keys()) - before),
         'skipped_existing': skipped_existing,
+        'skipped_existing_sha1s': skipped_existing_sha1s,
+        'fresh_uploaded_sha1s': [sha for sha in uploaded.keys() if sha not in before],
         'errors': errors,
     }
 
@@ -3838,7 +3874,7 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
     bundle.update(_build_display_credits_bundle(series_row) if series_row else {'people_json': [], 'credits_json': []})
     return bundle
 
-def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid') -> Dict[str, Any]:
+def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid', preuploaded_raw_state: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """把本地电影/分集/季登记到 Rapid v2 中心。
 
     新口径：客户端只登记可秒传的电影/分集资产；Season 也拆成 episode_source
@@ -3861,31 +3897,22 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         }
 
     # RAW 摘要生成发生在正式登记前，先把候选类型补进 file_info。
-    candidate_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
-    if item_type == 'Movie':
-        candidate_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
-    for _f in files:
-        if item_type == 'Movie':
-            _f.setdefault('item_type', 'Movie')
-            _f.setdefault('tmdb_id', candidate_tmdb_id)
-        elif item_type in ('Season', 'Episode'):
-            _f.setdefault('item_type', 'Episode')
-            _f.setdefault('tmdb_id', candidate_tmdb_id)
-            _f.setdefault('parent_series_tmdb_id', candidate_tmdb_id)
-            _f.setdefault('series_tmdb_id', candidate_tmdb_id)
-            _f.setdefault('season_number', candidate.get('season_number'))
-            if item_type == 'Episode':
-                _f.setdefault('episode_number', candidate.get('episode_number'))
-        _ensure_file_preid(_f)
+    files = _prime_candidate_files_for_registration(candidate, files)
 
     root = shared_share_db.candidate_root_from_files(files)
     client = SharedCenterClient()
-    raw_batch_result = _upload_raw_batch(client, files)
+    raw_batch_result = preuploaded_raw_state if isinstance(preuploaded_raw_state, dict) else _upload_raw_batch(client, files)
     uploaded_sha1s = raw_batch_result.get('uploaded') or {}
-    uploaded = int(raw_batch_result.get('uploaded_count') if raw_batch_result.get('uploaded_count') is not None else (raw_batch_result.get('count') or 0))
-    raw_ready_count = int(raw_batch_result.get('count') or 0)
-    skipped_existing_raw = int(raw_batch_result.get('skipped_existing') or 0)
-    errors = list(raw_batch_result.get('errors') or [])
+    candidate_sha1s = {_norm_sha1((f or {}).get('sha1')) for f in files if _norm_sha1((f or {}).get('sha1'))}
+    fresh_uploaded_sha1s = {_norm_sha1(x) for x in (raw_batch_result.get('fresh_uploaded_sha1s') or []) if _norm_sha1(x)}
+    skipped_existing_sha1s = {_norm_sha1(x) for x in (raw_batch_result.get('skipped_existing_sha1s') or []) if _norm_sha1(x)}
+    uploaded = len(candidate_sha1s & fresh_uploaded_sha1s) if isinstance(preuploaded_raw_state, dict) else int(raw_batch_result.get('uploaded_count') if raw_batch_result.get('uploaded_count') is not None else (raw_batch_result.get('count') or 0))
+    raw_ready_count = len({sha for sha in candidate_sha1s if uploaded_sha1s.get(sha)}) if isinstance(preuploaded_raw_state, dict) else int(raw_batch_result.get('count') or 0)
+    skipped_existing_raw = len(candidate_sha1s & skipped_existing_sha1s) if isinstance(preuploaded_raw_state, dict) else int(raw_batch_result.get('skipped_existing') or 0)
+    errors = [
+        err for err in (raw_batch_result.get('errors') or [])
+        if not isinstance(preuploaded_raw_state, dict) or _norm_sha1((err or {}).get('sha1')) in candidate_sha1s
+    ]
     raw_missing = _raw_batch_missing_for_files(files, uploaded_sha1s)
     if raw_missing:
         names = '、'.join([str(x.get('file_name') or x.get('sha1')) for x in raw_missing[:5]])
@@ -4018,9 +4045,9 @@ def _candidate_from_emby_item_id(emby_item_id: str) -> Dict[str, Any]:
         logger.debug(f"  ➜ [共享资源] 按 Emby ID 查询媒体行失败: {emby_item_id} -> {e}")
         return {}
 
-def trigger_shared_rapid_register_for_library_item(processor=None, **kwargs) -> Dict[str, Any]:
-    if not _enabled():
-        return {'ok': False, 'created': 0, 'message': '共享资源未启用'}
+
+def _library_register_candidate_from_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    kwargs = dict(kwargs or {})
     db_row = _candidate_from_emby_item_id(kwargs.get('emby_item_id'))
     item_type = kwargs.get('item_type') or kwargs.get('share_item_type') or db_row.get('item_type')
     candidate = {
@@ -4038,6 +4065,73 @@ def trigger_shared_rapid_register_for_library_item(processor=None, **kwargs) -> 
     if candidate.get('item_type') == 'Episode' and db_row.get('tmdb_id'):
         candidate['tmdb_id'] = db_row.get('tmdb_id')
         candidate['parent_series_tmdb_id'] = candidate.get('parent_series_tmdb_id') or kwargs.get('parent_series_tmdb_id')
+    return candidate
+
+
+def trigger_shared_rapid_register_batch_for_library_items(processor=None, register_items: List[Dict[str, Any]] | None = None) -> Dict[str, Any]:
+    if not _enabled():
+        return {'ok': False, 'created': 0, 'message': '共享资源未启用'}
+    items = [dict(x or {}) for x in (register_items or []) if isinstance(x, dict)]
+    if not items:
+        return {'ok': False, 'created': 0, 'message': '没有可登记的条目'}
+
+    prepared = []
+    all_files: List[Dict[str, Any]] = []
+    for raw_item in items:
+        candidate = _library_register_candidate_from_kwargs(raw_item)
+        candidate = _normalize_series_candidate_identity(dict(candidate or {}))
+        files = shared_share_db.collect_files_for_candidate(candidate)
+        files = _prime_candidate_files_for_registration(candidate, files)
+        prepared.append({'item': raw_item, 'candidate': candidate, 'has_files': bool(files)})
+        all_files.extend(files)
+
+    raw_batch_result = _upload_raw_batch(SharedCenterClient(), all_files) if all_files else {
+        'ok': True,
+        'uploaded': {},
+        'count': 0,
+        'uploaded_count': 0,
+        'skipped_existing': 0,
+        'skipped_existing_sha1s': [],
+        'fresh_uploaded_sha1s': [],
+        'errors': [],
+    }
+
+    created_total = 0
+    failed_total = 0
+    results = []
+    for entry in prepared:
+        try:
+            result = register_candidate_to_center(
+                entry['candidate'],
+                source_provider='rapid_auto_library',
+                preuploaded_raw_state=raw_batch_result,
+            )
+        except Exception as e:
+            result = {'ok': False, 'message': f'登记异常: {e}', 'error': str(e)}
+        try:
+            created_total += int(result.get('created', 0) or result.get('registered_count', 0) or 0)
+        except Exception:
+            pass
+        if not result.get('ok'):
+            failed_total += 1
+        results.append({
+            'item': entry['item'],
+            'candidate': entry['candidate'],
+            'result': result,
+        })
+
+    return {
+        'ok': failed_total == 0,
+        'created': created_total,
+        'failed': failed_total,
+        'raw_batch_result': raw_batch_result,
+        'items': results,
+    }
+
+def trigger_shared_rapid_register_for_library_item(processor=None, **kwargs) -> Dict[str, Any]:
+    if not _enabled():
+        return {'ok': False, 'created': 0, 'message': '共享资源未启用'}
+    candidate = _library_register_candidate_from_kwargs(kwargs)
     result = register_candidate_to_center(candidate, source_provider='rapid_auto_library')
     result['created'] = result.get('registered_count', 0)
     return result
