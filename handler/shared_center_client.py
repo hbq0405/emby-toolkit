@@ -582,6 +582,15 @@ class SharedCenterClient:
     def register_episode_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post('/api/v1/sources/episode/register', payload or {}, timeout=35)
 
+    def disable_source(self, source_kind: str, source_id: str, message: str = '') -> Dict[str, Any]:
+        source_kind = str(source_kind or '').strip()
+        source_id = str(source_id or '').strip()
+        return self._post(
+            f"/api/v1/sources/{urllib.parse.quote(source_kind)}/{urllib.parse.quote(source_id)}/disable",
+            {'message': message},
+            timeout=25,
+        )
+
     def logical_season_manifest(self, group_id: str) -> Dict[str, Any]:
         return self._get(f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/manifest", timeout=30)
 
