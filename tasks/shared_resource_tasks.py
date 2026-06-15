@@ -5973,8 +5973,15 @@ def _display_meta_key(meta: Dict[str, Any]) -> tuple:
     meta = meta if isinstance(meta, dict) else {}
     typ = str(meta.get('item_type') or '').strip()
     tmdb = str(meta.get('tmdb_id') or '').strip()
+    if typ == 'Episode':
+        return (
+            tmdb,
+            typ,
+            _safe_int_or_none(meta.get('season_number')),
+            _safe_int_or_none(meta.get('episode_number')),
+        )
     season = _safe_int_or_none(meta.get('season_number')) if typ == 'Season' else None
-    return (tmdb, typ, season)
+    return (tmdb, typ, season, None)
 
 
 def _display_meta_has_useful_payload(meta: Dict[str, Any]) -> bool:
@@ -6160,7 +6167,7 @@ def _build_display_meta_backfill_bundles(limit: int = 500) -> Dict[str, Any]:
             if not isinstance(meta, dict):
                 continue
             key = _display_meta_key(meta)
-            if not key[0] or key[1] not in ('Movie', 'Series', 'Season'):
+            if not key[0] or key[1] not in ('Movie', 'Series', 'Season', 'Episode'):
                 continue
             scanned_meta_items += 1
             if key in seen_meta_keys:
