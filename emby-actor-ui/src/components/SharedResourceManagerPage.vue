@@ -643,7 +643,7 @@ const shareStatusOptions = [
 const centerStatusOptions = [
   { label: '全部', value: 'alive,available' },
   { label: '仅可用', value: 'alive' },
-  { label: '已完结', value: 'completed_certified' },
+  { label: '一致版', value: 'completed_certified' },
   { label: '动漫', value: 'animation' },
   { label: '纯净版', value: 'clean_version' },
   { label: '短剧', value: 'short_drama' },
@@ -1694,10 +1694,24 @@ const centerSeasonRowIsCompleted = (row) => {
     || seasonStatus === 'completed'
   );
 };
+const centerSeasonRowIsCertified = (row) => {
+  if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
+  const meta = row.completed_certified_meta_json || row.completed_certified_meta || {};
+  return Boolean(
+    centerIsCompletedCertifiedSource(row)
+    || row.is_completed_certified
+    || (meta && typeof meta === 'object' && meta.is_completed_certified)
+  );
+};
 const centerSeriesAllRegularSeasonsCompleted = (row) => {
   if (!centerIsSeriesGroup(row)) return false;
   const regular = centerSeriesSeasonRows(row).filter(item => !centerSeasonIsSpecialNumber(item));
   return regular.length > 0 && regular.every(centerSeasonRowIsCompleted);
+};
+const centerSeriesAllRegularSeasonsCertified = (row) => {
+  if (!centerIsSeriesGroup(row)) return false;
+  const regular = centerSeriesSeasonRows(row).filter(item => !centerSeasonIsSpecialNumber(item));
+  return regular.length > 0 && regular.every(centerSeasonRowIsCertified);
 };
 const centerStatusValue = (row) => String(row?.status || '').trim().toLowerCase();
 const centerLogicalPoolComplete = (row) => Boolean(row?.pool_complete || row?.logical_pool_complete || String(row?.status || '').trim().toLowerCase() === 'pool_complete');
@@ -1773,7 +1787,7 @@ const centerNestedParts = (row) => {
   return parts;
 };
 const centerCompletedCertifiedMeta = (row) => {
-  // 已完结是 ETK 官方认证标签：新方案只认中心逻辑季包 pool_complete。
+  // 一致版是 ETK 官方认证标签：新方案只认中心逻辑季包 pool_complete。
   if (centerIsOngoingHub(row)) return {};
   if (!centerIsCompletedCertifiedSource(row) && !row?.is_completed_certified) return {};
   for (const part of centerNestedParts(row)) {
@@ -1789,11 +1803,11 @@ const centerCompletedCertifiedMeta = (row) => {
 };
 const isCenterCompletedCertified = (row) => Boolean(
   !centerIsOngoingHub(row)
-  && (centerSeriesAllRegularSeasonsCompleted(row) || centerCompletedCertifiedMeta(row).is_completed_certified)
+  && (centerSeriesAllRegularSeasonsCertified(row) || centerCompletedCertifiedMeta(row).is_completed_certified)
 );
 const centerCompletedCertifiedTooltip = (row) => {
   const meta = centerCompletedCertifiedMeta(row);
-  const parts = ['已通过中心完整性校验'];
+  const parts = ['已通过中心完整性与版本一致性校验'];
   const fileCount = meta.file_count ?? row?.file_count ?? row?.pack_item_count;
   const expected = meta.expected_episode_count ?? row?.expected_episode_count ?? row?.progress_total;
   if (fileCount != null && expected != null) parts.push(`集数 ${fileCount}/${expected}`);
@@ -1843,7 +1857,7 @@ const centerTypeCell = (row) => {
 
   if (isCenterCompletedCertified(row) && !centerIsOngoingHub(row)) {
     tags.push(h(NTooltip, { trigger: 'hover' }, {
-      trigger: () => h(NTag, { size: 'small', round: true, type: 'success', class: 'center-flag-tag' }, { default: () => '已完结' }),
+      trigger: () => h(NTag, { size: 'small', round: true, type: 'success', class: 'center-flag-tag' }, { default: () => '一致版' }),
       default: () => centerCompletedCertifiedTooltip(row),
     }));
   }
@@ -3008,7 +3022,8 @@ const centerRibbonText = (row) => {
   if (isCenterReplenishRow(row)) return '待补充';
   // 剧卡片优先显示连载状态：只要任一普通季连载中就挂“连载中”，特别篇不参与判定。
   if (centerIsOngoingHub(row)) return '连载中';
-  if (isCenterCompletedCertified(row)) return '已完结';
+  if (isCenterCompletedCertified(row)) return '一致版';
+  if (centerIsSeriesGroup(row) || centerIsSeasonLike(row)) return '已完结';
   return '';
 };
 const centerRibbonClass = (row) => {
@@ -3094,7 +3109,7 @@ const centerCardTags = (row) => {
   if (seasonCount > 1) centerTagPush(tags, `共 ${seasonCount} 季`, 'info', 'season-count');
   else if (singleSeasonLabel) centerTagPush(tags, singleSeasonLabel, 'info', 'single-season');
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
-  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
+  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '一致版', 'success', 'completed');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
   if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
   if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
@@ -3383,7 +3398,7 @@ const centerVersionTags = (row) => {
   
   // 6. 其他标签
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
-  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '已完结', 'success', 'completed');
+  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '一致版', 'success', 'completed');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
   if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
   if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
