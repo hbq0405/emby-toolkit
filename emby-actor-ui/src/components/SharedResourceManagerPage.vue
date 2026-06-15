@@ -34,7 +34,7 @@
           {{ centerDeviceTokenAlertText }}
         </n-alert>
 
-        <n-grid class="stat-grid" :cols="isMobile ? 2 : 4" :x-gap="12" :y-gap="12">
+        <n-grid class="stat-grid" :cols="isMobile ? 2 : 5" :x-gap="12" :y-gap="12">
           <n-gi v-for="card in statCards" :key="card.key">
             <div class="stat-card">
               <div class="stat-label">{{ card.label }}</div>
@@ -644,7 +644,6 @@ const centerStatusOptions = [
   { label: '全部', value: 'alive,available' },
   { label: '仅可用', value: 'alive' },
   { label: '一致版', value: 'completed_certified' },
-  { label: '动漫', value: 'animation' },
   { label: '纯净版', value: 'clean_version' },
   { label: '短剧', value: 'short_drama' },
 ];
@@ -967,8 +966,8 @@ const creditCardDesc = computed(() => {
 const centerDeviceStats = computed(() => {
   const credit = summary.value.credit || {};
   const rawStats = credit?.raw_json?.stats || {};
-  const online = firstFiniteNumber(rawStats.online_devices, credit.remote_devices, 0);
-  const total = firstFiniteNumber(rawStats.devices, online);
+  const total = firstFiniteNumber(rawStats.devices, credit.remote_devices, 0);
+  const online = Math.min(firstFiniteNumber(rawStats.online_devices, 0), total || Number.MAX_SAFE_INTEGER);
   return { online, total };
 });
 
@@ -1006,8 +1005,8 @@ const statCards = computed(() => {
     {
       key: 'shares',
       label: '我的共享',
-      value: shares.alive ?? 0,
-      desc: `电影 ${shares.alive_movies ?? 0} · 剧集 ${localShareSeriesCount.value} · 视频 ${shares.alive_videos ?? 0}`,
+      value: `电影 ${shares.alive_movies ?? 0} · 剧集 ${localShareSeriesCount.value}`,
+      desc: `共计视频 ${shares.alive_videos ?? 0} 个`,
     },
     { key: 'remote_sources', label: '中心资源', value: `电影 ${centerStats.movieCount} · 剧集 ${centerStats.seriesCount}`, desc: `共计视频 ${centerStats.videoCount} 个` },
     { key: 'share_requests', label: '求共享', value: activeShareRequestCount.value, desc: '活跃求共享需求' },

@@ -706,6 +706,7 @@ class WatchlistProcessor:
         item_name: str,
         latest_series_data: Dict[str, Any],
         final_status: str,
+        episodes: List[Dict[str, Any]] = None,
         seasons_lock_map: Dict[Any, Any] = None,
         latest_season_num: int = 0,
         auto_pending_cfg: Dict[str, Any] = None,
@@ -809,6 +810,23 @@ class WatchlistProcessor:
                 'watchlist_tmdb_status': series.get('status') or '',
                 'metadata_source': 'watchlist_processor',
             })
+        for ep in episodes or []:
+            if not isinstance(ep, dict):
+                continue
+            s_num = self._watchlist_safe_int(ep.get('season_number'), -1)
+            e_num = self._watchlist_safe_int(ep.get('episode_number'), -1)
+            runtime = self._normalize_tmdb_runtime_minutes(ep.get('runtime'))
+            if s_num <= 0 or e_num <= 0 or runtime is None:
+                continue
+            items.append({
+                'tmdb_id': tmdb_id,
+                'item_type': 'Episode',
+                'season_number': s_num,
+                'episode_number': e_num,
+                'runtime_minutes': runtime,
+                'runtime_source': 'tmdb_episode_runtime',
+                'metadata_source': 'watchlist_processor',
+            })
         return items
 
     def _upload_shared_series_metadata_after_watchlist_decision_detached(
@@ -818,6 +836,7 @@ class WatchlistProcessor:
         item_name: str,
         latest_series_data: Dict[str, Any],
         final_status: str,
+        episodes: List[Dict[str, Any]] = None,
         seasons_lock_map: Dict[Any, Any] = None,
         latest_season_num: int = 0,
         auto_pending_cfg: Dict[str, Any] = None,
@@ -833,6 +852,7 @@ class WatchlistProcessor:
             tmdb_id=parent_tmdb_id,
             item_name=item_name,
             latest_series_data=latest_series_data,
+            episodes=episodes or [],
             final_status=final_status,
             seasons_lock_map=seasons_lock_map or {},
             latest_season_num=latest_season_num,
@@ -2599,6 +2619,7 @@ class WatchlistProcessor:
             tmdb_id=tmdb_id,
             item_name=item_name,
             latest_series_data=latest_series_data,
+            episodes=all_tmdb_episodes,
             final_status=final_status,
             seasons_lock_map=seasons_lock_map,
             latest_season_num=latest_s_num,

@@ -1986,7 +1986,7 @@ def _media_signature(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict
         'audio_list': [x for x in audio_list if x.get('display') or x.get('codec') or x.get('language')],
         'subtitle_list': [x for x in subtitle_list if x.get('display') or x.get('codec') or x.get('language')],
     }
-    return _apply_short_drama_meta(sig, raw, source)
+    return _apply_runtime_meta(sig, raw)
 
 
 def _center_format_rate(value: Any) -> str:
@@ -2267,7 +2267,7 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         'subtitles': subtitle_items[:24],
         'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
     }
-    return _apply_short_drama_meta(summary, raw, source)
+    return _apply_runtime_meta(summary, raw)
 
 
 def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, Any], final_size: int = 0) -> Dict[str, Any]:
@@ -2299,7 +2299,7 @@ def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, A
         'audio_count', 'subtitle_count', 'audio_list', 'subtitle_list',
         'audios', 'subtitles', 'formatted_by',
         'resolution_display', 'codec_display', 'effect_key', 'frame_rate',
-        'duration_minutes', 'is_short_drama', 'short_drama_meta_json',
+        'duration_minutes',
     }
     compact = {k: summary.get(k) for k in allowed_keys if k in summary}
     for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audios', 16), ('subtitles', 24)):
@@ -2540,7 +2540,6 @@ def _raw_batch_missing_for_files(files: List[Dict[str, Any]], uploaded_sha1s: Di
 def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, animation_meta: Dict[str, Any] = None) -> Dict[str, Any]:
     raw = _raw_for_file(file_info) if raw_uploaded else {}
     sig = _media_signature(raw, file_info) if raw else {}
-    sig = _apply_animation_tag(sig, animation_meta)
     preid = _ensure_file_preid(file_info)
     # size 不能只信 p115_filesystem_cache。第三方 STRM/旧库补齐 RAW 时，
     # cache 可能缺 size，但 RAW 里通常有 MediaSourceInfo.Size / format.size。
@@ -2554,7 +2553,6 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, 
         'relative_path': file_info.get('relative_path') or '',
         'preid': preid or '',
     }
-    rapid_meta = _apply_animation_tag(rapid_meta, animation_meta)
     return {
         'sha1': _norm_sha1(file_info.get('sha1')),
         'preid': preid or None,
@@ -2857,6 +2855,14 @@ def _apply_short_drama_meta(summary: Dict[str, Any], raw: Dict[str, Any], source
         summary['duration_minutes'] = meta.get('runtime_minutes')
     summary['is_short_drama'] = bool(meta.get('is_short_drama'))
     summary['short_drama_meta_json'] = meta
+    return summary
+
+
+def _apply_runtime_meta(summary: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    summary = summary if isinstance(summary, dict) else {}
+    runtime = _physical_runtime_minutes_from_raw(raw)
+    if runtime > 0:
+        summary['duration_minutes'] = round(runtime, 2)
     return summary
 
 
@@ -3929,7 +3935,6 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             'fingerprint_repair': {},
         }
 
-    animation_meta = _animation_meta_for_candidate(candidate)
     display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate) if item_type in ('Movie', 'Season') else {}
     results = []
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
@@ -3946,7 +3951,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
         try:
             sha_for_raw = _norm_sha1(f.get('sha1'))
             raw_ok = bool(uploaded_sha1s.get(sha_for_raw))
-            common = _file_payload_common(f, raw_uploaded=raw_ok, animation_meta=animation_meta)
+            common = _file_payload_common(f, raw_uploaded=raw_ok)
             if item_type == 'Movie':
                 payload = {
                     'tmdb_id': tmdb_id,
@@ -4168,9 +4173,6 @@ def trigger_completed_season_pack_share_task(processor=None, *, parent_series_tm
         'expected_episode_count': expected,
         'total_episodes': expected,
         'watching_status': 'Completed',
-        'is_clean_version': kwargs.get('is_clean_version', False),
-        'clean_version_confidence': kwargs.get('clean_version_confidence'),
-        'clean_version_meta_json': kwargs.get('clean_version_meta_json') or {},
     }
     result = register_candidate_to_center(candidate, source_provider='rapid_logical_season')
     result['created'] = result.get('registered_count', 0)
