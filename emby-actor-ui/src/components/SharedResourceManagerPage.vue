@@ -503,6 +503,7 @@ const summary = ref({ shares: {}, credit: {} });
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
+const centerBackendGrouped = ref(false);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
 const centerVersionExpandedMap = reactive({});
@@ -519,7 +520,11 @@ const shareRequestSearchItems = ref([]);
 const selectedShareRequestMedia = ref(null);
 const shareRequestQuote = ref(null);
 const shareRequestEpisodeText = ref('');
-const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
+const groupedCenterSources = computed(() => (
+  centerBackendGrouped.value
+    ? normalizeBackendCenterSources(centerSources.value || [])
+    : groupCenterSources(centerSources.value || [], centerFilters.order_by)
+));
 const shareFilters = reactive({ keyword: '', status: 'usable', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '', status: 'alive,available', item_type: 'all', order_by: 'latest' });
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
@@ -868,6 +873,8 @@ const tmdbLink = (row, labelPrefix = 'TMDb') => {
 };
 
 const centerCreatedTime = (row) => {
+  const sortTs = Number(row?.sort_timestamp || 0);
+  if (Number.isFinite(sortTs) && sortTs > 0) return sortTs * 1000;
   const t = new Date(row?.created_at || 0).getTime();
   return Number.isFinite(t) ? t : 0;
 };
@@ -1360,14 +1367,21 @@ const ledgerCreditText = (row, rows = null) => {
   }
   return `${unitName} ${formatDelta(delta)}`;
 };
+const usableLedgerTitle = (value) => {
+  const text = String(value || '').trim();
+  return text && text !== '-' ? text : '';
+};
 const ledgerDisplayTitle = (row) => {
   if (row?.title_display) {
-    const fixed = appendLedgerSeasonEpisode(row.title_display, row, { aggregate: Boolean(row.__ledger_aggregated && isLedgerConsumedRow(row)) });
+    const fixed = usableLedgerTitle(appendLedgerSeasonEpisode(row.title_display, row, { aggregate: Boolean(row.__ledger_aggregated && isLedgerConsumedRow(row)) }));
     if (fixed && !fixed.startsWith('秒传签名：') && !/^未知资源\s+[A-Fa-f0-9]/.test(fixed)) return fixed;
   }
-  if (row?.ledger_aggregate_title && row.__ledger_aggregated) return row.ledger_aggregate_title;
+  if (row?.ledger_aggregate_title && row.__ledger_aggregated) {
+    const aggregateTitle = usableLedgerTitle(row.ledger_aggregate_title);
+    if (aggregateTitle) return aggregateTitle;
+  }
   const ctx = ledgerContext(row);
-  const title = appendLedgerSeasonEpisode(ctx.title || ctx.file_name, row, { aggregate: Boolean(row.__ledger_aggregated && isLedgerConsumedRow(row)) });
+  const title = usableLedgerTitle(appendLedgerSeasonEpisode(ctx.title || ctx.file_name, row, { aggregate: Boolean(row.__ledger_aggregated && isLedgerConsumedRow(row)) }));
   if (title && !title.startsWith('秒传签名：') && !/^未知资源\s+[A-Fa-f0-9]/.test(title)) return title;
   const raw = ledgerRawJson(row);
   const event = String(row?.event_type || '').toLowerCase();
@@ -1383,7 +1397,7 @@ const ledgerDisplayTitle = (row) => {
     const sha = ctx.sha1 || raw.sha1 || raw.file_sha1 || raw.sign_check || '';
     return sha ? `秒传签名：${shortLedgerHash(sha)}` : '秒传签名任务';
   }
-  return row?.title || '-';
+  return usableLedgerTitle(row?.title) || '-';
 };
 
 const ledgerReasonDisplay = (row) => {
@@ -2258,6 +2272,23 @@ const centerLazyPlaceholder = (row) => {
   };
 };
 
+const normalizeBackendCenterSources = (items) => (items || []).filter(item => item && typeof item === 'object').map(item => {
+  const group = {
+    ...item,
+    group_key: item.group_key || item.display_group_key || centerGroupKey(item),
+  };
+  group.versions = Array.isArray(item.versions) && item.versions.length
+    ? item.versions
+    : [{ ...item, versions: undefined, children: undefined, pack_items: undefined, resources: undefined }];
+  if (centerNeedsLoadChildren(group)) {
+    group.children = Array.isArray(item.children) && item.children.length ? item.children : [centerLazyPlaceholder(group)];
+  } else {
+    group.children = Array.isArray(item.children) ? item.children : [];
+  }
+  group.pack_items = Array.isArray(item.pack_items) ? item.pack_items : [];
+  return group;
+});
+
 const groupCenterSources = (items, orderBy = 'latest') => {
   const normSha1 = (value) => {
     const text = String(value || '').trim().toUpperCase();
@@ -2363,11 +2394,6 @@ const groupCenterSources = (items, orderBy = 'latest') => {
         existing.total_size = Math.max(Number(existing.total_size || existing.size || 0), Number(raw.total_size || raw.size || 0)) || existing.total_size || raw.total_size;
         existing.children = mergeChildLists(existing.children, raw.children);
         existing.pack_items = mergeChildLists(existing.pack_items, raw.pack_items);
-        if (centerCreatedTime(raw) > centerCreatedTime(existing)) {
-          existing.created_at = raw.created_at || existing.created_at;
-          existing.updated_at = raw.updated_at || existing.updated_at;
-          existing.sort_timestamp = raw.sort_timestamp || existing.sort_timestamp;
-        }
       } else {
         const item = {
           ...raw,
@@ -3124,8 +3150,8 @@ const centerCardTags = (row) => {
     centerTagPush(tags, formatCenterSize(primary), 'default', 'size');
     centerTagPush(tags, summary.resolution, 'success', 'resolution');
     centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
-    centerTrackFeatureTags(primary).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   }
+  centerTrackFeatureTags(primary).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   return tags.slice(0, 9);
 };
 
@@ -3639,6 +3665,7 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
     if (forceRefresh) params.force_refresh = 1;
     const res = await axios.get('/api/shared/resources/center/sources', { params });
     const items = res.data?.items || [];
+    centerBackendGrouped.value = Boolean(res.data?.backend_grouped || res.data?.series_grouped || res.data?.source_schema === 'logical_only_series_grouped');
     centerSources.value = append ? [...(centerSources.value || []), ...items] : items;
     centerPagination.itemCount = Number(res.data?.total || 0);
     const total = Number(centerPagination.itemCount || 0);

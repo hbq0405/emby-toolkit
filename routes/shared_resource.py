@@ -523,6 +523,23 @@ def _share_channel_tmdb_season_key(row: Dict[str, Any]) -> tuple[str, int] | Non
     return (tmdb_id, season_no)
 
 
+def _share_channel_hub_id(row: Dict[str, Any]) -> str:
+    row = row if isinstance(row, dict) else {}
+    raw = _share_channel_raw_json(row)
+    event = raw.get('event') if isinstance(raw.get('event'), dict) else {}
+    payload = raw.get('payload') if isinstance(raw.get('payload'), dict) else {}
+    center_item = raw.get('center_response') if isinstance(raw.get('center_response'), dict) else {}
+    center_item = center_item.get('item') if isinstance(center_item.get('item'), dict) else {}
+    return str(
+        row.get('hub_id')
+        or center_item.get('hub_id')
+        or event.get('hub_id')
+        or payload.get('hub_id')
+        or raw.get('hub_id')
+        or ''
+    ).strip()
+
+
 def _local_completed_share_public(channel: Dict[str, Any]) -> Dict[str, Any]:
     channel = dict(channel or {})
     if not channel:
@@ -545,13 +562,14 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
     rows = [r for r in (rows or []) if isinstance(r, dict)]
     local_ids = []
     center_ids = []
+    hub_ids = []
     tmdb_ids = []
     row_pairs = {}
     for row in rows:
         kind = str(row.get('source_kind') or '').strip().lower()
         is_logical = _share_channel_is_logical(row)
         source_ids = row.get('source_ids') if isinstance(row.get('source_ids'), list) else []
-        if not is_logical and not source_ids and kind != 'episode_group':
+        if not is_logical and not source_ids and kind not in {'episode_group', 'completed_season'}:
             continue
         try:
             rid = int(row.get('id') or 0)
@@ -573,12 +591,15 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
             cid = str(cid_value or '').strip()
             if cid and cid not in center_ids:
                 center_ids.append(cid)
+        hub_id = _share_channel_hub_id(row)
+        if hub_id and hub_id not in hub_ids:
+            hub_ids.append(hub_id)
         pair = _share_channel_tmdb_season_key(row)
         if pair:
             row_pairs[id(row)] = pair
             if pair[0] not in tmdb_ids:
                 tmdb_ids.append(pair[0])
-    if not local_ids and not center_ids and not tmdb_ids:
+    if not local_ids and not center_ids and not hub_ids and not tmdb_ids:
         return
     try:
         with get_db_connection() as conn:
@@ -590,6 +611,9 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
                 if center_ids:
                     clauses.append('center_source_id = ANY(%s)')
                     args.append(center_ids)
+                if hub_ids:
+                    clauses.append('hub_id = ANY(%s)')
+                    args.append(hub_ids)
                 if tmdb_ids:
                     clauses.append(
                         """
@@ -617,6 +641,7 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
         return
     by_local = {}
     by_center = {}
+    by_hub = {}
     by_pair = {}
     for ch in channels:
         lid = ch.get('local_source_id')
@@ -625,6 +650,9 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
         cid = str(ch.get('center_source_id') or '').strip()
         if cid and cid not in by_center:
             by_center[cid] = ch
+        hub_id = _share_channel_hub_id(ch)
+        if hub_id and hub_id not in by_hub:
+            by_hub[hub_id] = ch
         pair = _share_channel_tmdb_season_key(ch)
         if pair and pair not in by_pair:
             by_pair[pair] = ch
@@ -649,6 +677,8 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
                 channel = by_center.get(str(cid or '').strip())
                 if channel:
                     break
+        if not channel:
+            channel = by_hub.get(_share_channel_hub_id(row))
         if not channel:
             channel = by_pair.get(row_pairs.get(id(row)) or _share_channel_tmdb_season_key(row))
         if not channel:
@@ -781,7 +811,13 @@ def api_list_local_sources():
                 SELECT 
                     id, source_kind, item_type, tmdb_id, season_number, episode_number, 
                     status, center_status, center_source_id, created_at, updated_at, 
-                    file_count, title, file_name, source_provider
+                    file_count, title, file_name, source_provider,
+                    COALESCE(
+                        raw_json->'center_response'->'item'->>'hub_id',
+                        raw_json->'event'->>'hub_id',
+                        raw_json->'payload'->>'hub_id',
+                        raw_json->>'hub_id'
+                    ) AS hub_id
                 FROM shared_rapid_sources 
                 {where_sql} 
                 ORDER BY {order_sql} 
@@ -1579,13 +1615,7 @@ def api_center_sources():
                 row['is_completed_certified'] = False
                 row['is_completed'] = False
                 row.pop('completed_certified_meta_json', None)
-            # 连载季公共包没有统一版本参数；完结季包/电影/展开后的集才展示。
-            if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
-                row['version_summary'] = {}
-                row['summary_json'] = {}
-                row['media_signature_json'] = {}
-            else:
-                row['version_summary'] = _center_version_summary(row)
+            row['version_summary'] = _center_version_summary(row)
             if not row.get('size') and row.get('total_size'):
                 row['size'] = row.get('total_size')
             if local_season_meta_map:
@@ -1714,12 +1744,7 @@ def api_center_source_detail():
                 for key in ('versions', 'children', 'pack_items', 'resources'):
                     if isinstance(row.get(key), list):
                         row[key] = [_decorate_detail_row(x) for x in row.get(key) if isinstance(x, dict)]
-            if row.get('is_ongoing_hub') or row.get('source_kind') == 'season_hub':
-                row['version_summary'] = {}
-                row.setdefault('summary_json', {})
-                row.setdefault('media_signature_json', {})
-            else:
-                row['version_summary'] = _center_version_summary(row)
+            row['version_summary'] = _center_version_summary(row)
             if not row.get('size') and row.get('total_size'):
                 row['size'] = row.get('total_size')
             completed_certified = _center_source_is_completed_certified(row)
