@@ -909,7 +909,7 @@ const centerResourceStats = computed(() => {
   const credit = summary.value.credit || {};
   const rawStats = credit?.raw_json?.stats || {};
   const mediaStats = credit.media_stats || rawStats.media_stats || {};
-  const movieCount = firstFiniteNumber(credit.display_movie_count, credit.center_movie_count, mediaStats.movie_count, rawStats.display_movie_count, rawStats.movie_sources);
+  const movieCount = firstFiniteNumber(rawStats.movie_sources, credit.display_movie_count, credit.center_movie_count, mediaStats.movie_count, rawStats.display_movie_count);
   const seriesCount = firstFiniteNumber(
     credit.display_series_count,
     credit.center_series_count,
@@ -957,13 +957,19 @@ const proQuotaStats = computed(() => {
 });
 
 const creditCardDesc = computed(() => {
-  const credit = summary.value.credit || {};
-  const devices = `${credit.remote_devices ?? 0} 个设备`;
   const quota = proQuotaStats.value;
-  if (!quota.active || !quota.tier) return devices;
+  if (!quota.active || !quota.tier) return '普通贡献点';
   const grant = quota.dailyGrant ? `今日 +${quota.dailyGrant}` : '今日未发放';
   const capText = quota.cap ? `${quota.balance}/${quota.cap}` : `${quota.balance}`;
-  return `Pro ${quota.label || quota.tier} ${grant}，累计 ${capText} · ${devices}`;
+  return `Pro ${quota.label || quota.tier} ${grant}，累计 ${capText}`;
+});
+
+const centerDeviceStats = computed(() => {
+  const credit = summary.value.credit || {};
+  const rawStats = credit?.raw_json?.stats || {};
+  const online = firstFiniteNumber(rawStats.online_devices, credit.remote_devices, 0);
+  const total = firstFiniteNumber(rawStats.devices, online);
+  return { online, total };
 });
 
 const localShareSeriesCount = computed(() => {
@@ -993,8 +999,10 @@ const activeShareRequestCount = computed(() => {
 const statCards = computed(() => {
   const shares = summary.value.shares || {};
   const centerStats = centerResourceStats.value;
+  const deviceStats = centerDeviceStats.value;
   return [
     { key: 'credit', label: '贡献点', value: summary.value.credit?.credit ?? 0, desc: creditCardDesc.value },
+    { key: 'devices', label: '在线设备', value: `${deviceStats.online}/${deviceStats.total}`, desc: '30 分钟内有心跳的设备' },
     {
       key: 'shares',
       label: '我的共享',

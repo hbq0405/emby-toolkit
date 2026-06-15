@@ -89,12 +89,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
         logger.debug(f"  ➜ [共享资源] Pro 额度认证上报失败，继续同步贡献点: {e}")
     me = client.me()
     stats = client.stats()
-    display_movies = {}
     display_series = {}
-    try:
-        display_movies = client.list_display_sources(item_type='Movie', limit=1, offset=0)
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 拉取中心电影展示统计失败: {e}")
     try:
         display_series = client.list_display_sources(item_type='Series', limit=1, offset=0)
     except Exception as e:
@@ -109,7 +104,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
     logical_group_count = int(stats.get('logical_season_groups') or 0)
     video_count = movie_source_count + episode_source_count
     raw_media_stats = (stats.get('media_stats') or {}) if isinstance(stats.get('media_stats'), dict) else {}
-    display_movie_count = int(display_movies.get('total') or stats.get('display_movie_count') or raw_media_stats.get('movie_count') or movie_source_count)
+    display_movie_count = int(stats.get('display_movie_count') or raw_media_stats.get('movie_count') or movie_source_count)
     display_series_count = int(
         display_series.get('total')
         or stats.get('display_series_count')
@@ -157,8 +152,15 @@ def _fetch_center_credit() -> Dict[str, Any]:
         'video_count': video_count,
         'media_stats': media_stats,
         'pro_quota': (pro_report.get('pro_quota') or pro_report.get('quota') or stats.get('pro_quota') or me.get('pro_quota') or {}),
-        'remote_devices': int(stats.get('devices') or 0),
-        'raw_json': {'me': me, 'stats': enriched_stats},
+        'remote_devices': int(stats.get('online_devices') if stats.get('online_devices') is not None else stats.get('devices') or 0),
+        'raw_json': {
+            'me': me,
+            'stats': {
+                **enriched_stats,
+                'online_devices': int(stats.get('online_devices') if stats.get('online_devices') is not None else stats.get('devices') or 0),
+                'devices': int(stats.get('devices') or 0),
+            },
+        },
     }
     saved = shared_credit_db.upsert_credit_snapshot(snapshot)
     center_ledger_items = ledger.get('items') or []
