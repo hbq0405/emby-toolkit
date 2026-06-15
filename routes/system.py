@@ -3,6 +3,7 @@
 from flask import Blueprint, jsonify, request, Response, stream_with_context
 import logging
 import json
+import os
 import re
 import requests
 import docker
@@ -24,7 +25,80 @@ import handler.github as github
 system_bp = Blueprint('system', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
 
+PRO_AUTH_WORKER_URL = "https://auth.55565576.xyz"
+PRO_PRICING_FALLBACK_TIERS = [
+    {"key": "month", "tier": "M", "label": "月付", "amount": "8.00", "amount_cents": 800, "currency": "CNY", "note": ""},
+    {"key": "year", "tier": "Y", "label": "年付", "amount": "68.00", "amount_cents": 6800, "currency": "CNY", "note": ""},
+    {"key": "lifetime", "tier": "L", "label": "终身", "amount": "188.00", "amount_cents": 18800, "currency": "CNY", "note": "含部署"},
+]
+
 # 2. 定义路由
+
+def _fallback_pro_pricing(message=None):
+    data = {
+        "success": True,
+        "source": "fallback",
+        "currency": "CNY",
+        "tiers": PRO_PRICING_FALLBACK_TIERS,
+        "fallback": True,
+    }
+    if message:
+        data["message"] = message
+    return data
+
+
+def _normalize_pro_pricing(payload):
+    if not isinstance(payload, dict):
+        return None
+
+    raw_tiers = payload.get("tiers")
+    if not isinstance(raw_tiers, list):
+        return None
+
+    normalized = []
+    allowed_keys = {"month", "quarter", "year", "lifetime"}
+    allowed_tiers = {"M", "Q", "Y", "L"}
+
+    for item in raw_tiers:
+        if not isinstance(item, dict):
+            continue
+
+        key = str(item.get("key") or "").strip()
+        tier = str(item.get("tier") or "").strip().upper()
+        if key not in allowed_keys or tier not in allowed_tiers:
+            continue
+
+        amount_cents = item.get("amount_cents")
+        try:
+            amount_cents = int(amount_cents)
+        except (TypeError, ValueError):
+            amount_cents = 0
+        if amount_cents <= 0:
+            continue
+
+        amount = f"{amount_cents / 100:.2f}"
+        normalized.append({
+            "key": key,
+            "tier": tier,
+            "label": str(item.get("label") or key).strip(),
+            "amount": amount,
+            "amount_cents": amount_cents,
+            "currency": "CNY",
+            "note": str(item.get("note") or "").strip(),
+        })
+
+    if not normalized:
+        return None
+
+    order = {"month": 0, "quarter": 1, "year": 2, "lifetime": 3}
+    normalized.sort(key=lambda row: order.get(row["key"], 99))
+    return {
+        "success": True,
+        "source": "worker",
+        "currency": "CNY",
+        "tiers": normalized,
+        "fallback": False,
+    }
 
 # --- 任务状态与控制 ---
 @system_bp.route('/status', methods=['GET'])
@@ -620,6 +694,30 @@ def api_reset_ai_prompts():
     except Exception as e:
         logger.error(f"  ➜ 重置 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "重置失败"}), 500
+
+@system_bp.route('/system/pro_pricing', methods=['GET'])
+@admin_required
+def api_get_pro_pricing():
+    """读取 Pro 续费价格。前端只拿安全白名单字段，失败时返回本地兜底价格。"""
+    verify_url = os.getenv("ETK_PRO_AUTH_WORKER_URL", PRO_AUTH_WORKER_URL).strip() or PRO_AUTH_WORKER_URL
+
+    try:
+        resp = requests.post(
+            verify_url,
+            json={"action": "pricing"},
+            timeout=5,
+            proxies=config_manager.get_proxies_for_requests()
+        )
+        result = resp.json()
+        normalized = _normalize_pro_pricing(result)
+        if resp.ok and normalized:
+            return jsonify(normalized)
+
+        logger.warning(f"  ➜ Pro 价格接口返回异常，使用兜底价格: status={resp.status_code}, body={result}")
+        return jsonify(_fallback_pro_pricing("云端价格暂不可用，已显示默认价格"))
+    except Exception as e:
+        logger.warning(f"  ➜ Pro 价格接口不可用，使用兜底价格: {e}")
+        return jsonify(_fallback_pro_pricing("云端价格暂不可用，已显示默认价格"))
 
 @system_bp.route('/system/activate_pro', methods=['POST'])
 @admin_required

@@ -1923,23 +1923,13 @@
         <!-- 正常激活/续期模式显示的 UI -->
         <template v-if="!isTransferMode">
           <n-radio-group v-model:value="proTier" name="pro_tier_group" style="width: 100%;">
-            <n-grid :cols="isMobile ? 1 : 3" :x-gap="12" :y-gap="12">
-              <n-gi>
-                <n-radio-button value="month" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
-                  <div style="font-size: 16px; font-weight: bold;">月付</div>
-                  <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥8</div>
-                </n-radio-button>
-              </n-gi>
-              <n-gi>
-                <n-radio-button value="year" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
-                  <div style="font-size: 16px; font-weight: bold;">年付</div>
-                  <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥68</div>
-                </n-radio-button>
-              </n-gi>
-              <n-gi>
-                <n-radio-button value="lifetime" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
-                  <div style="font-size: 16px; font-weight: bold;">终身</div>
-                  <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥188(含部署)</div>
+            <n-grid :cols="proTierGridCols" :x-gap="12" :y-gap="12">
+              <n-gi v-for="option in proTierOptions" :key="option.key">
+                <n-radio-button :value="option.key" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
+                  <div style="font-size: 16px; font-weight: bold;">{{ option.label }}</div>
+                  <div style="color: #d48806; font-size: 18px; margin-top: 4px;">
+                    ￥{{ option.amountText }}<span v-if="option.note">({{ option.note }})</span>
+                  </div>
                 </n-radio-button>
               </n-gi>
             </n-grid>
@@ -2306,17 +2296,72 @@ const licenseKey = ref('');
 const isActivating = ref(false);
 const proTier = ref('year'); // 默认选中年付
 const isTransferMode = ref(false);
+const proPricing = ref(null);
+const isLoadingProPricing = ref(false);
+
+const fallbackProTierOptions = [
+  { key: 'month', tier: 'M', label: '月付', amount: '8.00', amountText: '8', note: '' },
+  { key: 'year', tier: 'Y', label: '年付', amount: '68.00', amountText: '68', note: '' },
+  { key: 'lifetime', tier: 'L', label: '终身', amount: '188.00', amountText: '188', note: '含部署' }
+];
+
+const normalizeProTierOption = (item) => {
+  const amount = String(item?.amount || '0.00');
+  return {
+    key: item?.key,
+    tier: item?.tier,
+    label: item?.label || item?.key,
+    amount,
+    amountText: amount.replace(/\.00$/, ''),
+    note: item?.note || ''
+  };
+};
+
+const proTierOptions = computed(() => {
+  const tiers = Array.isArray(proPricing.value?.tiers) ? proPricing.value.tiers : [];
+  const options = tiers.map(normalizeProTierOption).filter(item => item.key && item.amount !== '0.00');
+  return options.length ? options : fallbackProTierOptions;
+});
+
+const proTierGridCols = computed(() => {
+  if (isMobile.value) return 1;
+  return Math.min(Math.max(proTierOptions.value.length, 1), 4);
+});
+
+const syncSelectedProTier = () => {
+  if (proTierOptions.value.some(item => item.key === proTier.value)) return;
+  proTier.value = proTierOptions.value.find(item => item.key === 'year')?.key || proTierOptions.value[0]?.key || 'year';
+};
+
+const loadProPricing = async () => {
+  if (isLoadingProPricing.value) return;
+  isLoadingProPricing.value = true;
+  try {
+    const response = await axios.get('/api/system/pro_pricing');
+    if (response.data?.success && Array.isArray(response.data.tiers)) {
+      proPricing.value = response.data;
+      syncSelectedProTier();
+    }
+  } catch (error) {
+    console.warn('加载 Pro 价格失败，使用本地兜底价格:', error);
+  } finally {
+    isLoadingProPricing.value = false;
+  }
+};
 
 const proPrice = computed(() => {
-  if (proTier.value === 'month') return '8.00';
-  if (proTier.value === 'year') return '68.00';
-  if (proTier.value === 'lifetime') return '188.00';
-  return '0.00';
+  return proTierOptions.value.find(item => item.key === proTier.value)?.amount || '0.00';
 });
 
 const proActionButtonText = computed(() => {
   if (isTransferMode.value) return '换绑';
   return configModel.value?.is_pro_active ? '续期' : '激活';
+});
+
+watch(showProModal, (visible) => {
+  if (visible && !isTransferMode.value) {
+    loadProPricing();
+  }
 });
 
 const handleActivatePro = async () => {
