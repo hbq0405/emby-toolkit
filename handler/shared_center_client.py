@@ -17,17 +17,6 @@ from database import settings_db
 logger = logging.getLogger(__name__)
 
 
-class SharedCenterRequestError(RuntimeError):
-    """共享中心 HTTP 错误，保留状态码和响应体，方便本地代理日志定位真实原因。"""
-
-    def __init__(self, message: str, *, status_code: int = 0, url: str = '', body=None, text: str = ''):
-        super().__init__(message)
-        self.status_code = int(status_code or 0)
-        self.url = str(url or '')
-        self.body = body if isinstance(body, dict) else {}
-        self.text = str(text or '')
-
-
 
 
 def _normalize_pro_tier(value: str = '') -> str:
@@ -151,24 +140,9 @@ def _raise_for_center_error(resp):
         min_version = body.get('min_client_version') if isinstance(body, dict) else ''
         client_version = body.get('client_version') if isinstance(body, dict) else ''
         message = body.get('message') if isinstance(body, dict) else ''
-        raise SharedCenterRequestError(
-            message or f"共享中心拒绝服务：当前客户端版本 {client_version or _app_version()} 低于中心要求 {min_version or '未知'}",
-            status_code=resp.status_code,
-            url=getattr(resp, 'url', ''),
-            body=body,
-            text=getattr(resp, 'text', '')[:2000],
-        )
-    detail = ''
-    if isinstance(body, dict):
-        detail = body.get('detail') or body.get('message') or body.get('error') or ''
-    text = str(getattr(resp, 'text', '') or '')
-    raise SharedCenterRequestError(
-        f"共享中心请求失败: {resp.status_code} {detail or text[:500]}",
-        status_code=resp.status_code,
-        url=getattr(resp, 'url', ''),
-        body=body,
-        text=text[:2000],
-    )
+        raise RuntimeError(message or f"共享中心拒绝服务：当前客户端版本 {client_version or _app_version()} 低于中心要求 {min_version or '未知'}")
+    detail = body.get('detail') or body.get('message') if isinstance(body, dict) else ''
+    raise RuntimeError(f"共享中心请求失败: {resp.status_code} {detail or resp.text[:300]}")
 
 
 def _request_kwargs(timeout: int) -> Dict[str, Any]:
@@ -329,10 +303,7 @@ class SharedCenterClient:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        try:
-            resp = requests.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
-        except requests.RequestException as e:
-            raise RuntimeError(f"共享中心请求异常: POST {path}: {e}") from e
+        resp = requests.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -340,10 +311,7 @@ class SharedCenterClient:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        try:
-            resp = requests.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
-        except requests.RequestException as e:
-            raise RuntimeError(f"共享中心请求异常: GET {path}: {e}") from e
+        resp = requests.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -416,50 +384,17 @@ class SharedCenterClient:
 
         默认只返回电影和季容器；连载季返回公共 season_hub，单集只作为 children/pack_items。
         force_refresh=True 时绕过中心端展示缓存并重建缓存。
-
-        兜底：display-list 属于新聚合口径，中心端迁移不完整时最容易 500。
-        为了不让前端整页白屏，5xx/404 时临时退回旧 sources/list 口径，
-        同时在返回体里标记 display_fallback，便于日志和前端提示。
         """
-        limit_value = max(1, min(int(limit or 200), 1000))
-        offset_value = max(0, int(offset or 0))
-        params = {
+        return self._get('/api/v1/sources/display-list', {
             'q': q or '',
             'status': status or 'alive,available,updating,inconsistent,incomplete',
             'item_type': item_type or '',
             'tmdb_id': tmdb_id or '',
             'order_by': order_by or 'latest',
-            'limit': limit_value,
-            'offset': offset_value,
+            'limit': max(1, min(int(limit or 200), 1000)),
+            'offset': max(0, int(offset or 0)),
             'force_refresh': 1 if force_refresh else 0,
-        }
-        try:
-            return self._get('/api/v1/sources/display-list', params, timeout=30)
-        except SharedCenterRequestError as e:
-            if e.status_code not in {404, 500, 502, 503, 504}:
-                raise
-            logger.warning(
-                "  ➜ [共享资源] 中心 display-list 不可用，临时退回 sources/list：status=%s, url=%s, err=%s",
-                e.status_code, e.url or '/api/v1/sources/display-list', e,
-            )
-            fallback_item_type = str(item_type or '').strip()
-            if fallback_item_type.lower() in {'pack', 'season_pack'}:
-                fallback_item_type = 'Season'
-            fallback = self.list_sources(
-                q=q or '',
-                status=status or 'alive,available,updating,inconsistent,incomplete',
-                item_type=fallback_item_type,
-                tmdb_id=tmdb_id or '',
-                limit=limit_value,
-                offset=offset_value,
-            )
-            fallback['display_fallback'] = True
-            fallback['display_fallback_endpoint'] = '/api/v1/sources/list'
-            fallback['display_fallback_reason'] = str(e)
-            fallback['display_fallback_status_code'] = e.status_code
-            fallback.setdefault('items', [])
-            fallback.setdefault('total', len(fallback.get('items') or []))
-            return fallback
+        }, timeout=30)
 
 
     def list_display_children(self, *, source_kind: str = '', source_id: str = '', source_ids: List[str] | None = None,
