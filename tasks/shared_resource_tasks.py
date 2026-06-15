@@ -6219,7 +6219,7 @@ def _post_center_display_meta_backfill(bundles: List[Dict[str, Any]], *, batch_s
             resp = requests.post(
                 url,
                 headers=headers,
-                json={'items': batch},
+                json={'items': batch, 'skip_logical_share_dispatch': True},
                 **_center_request_kwargs_for_display_meta(timeout=90),
             )
             posted_batches += 1
