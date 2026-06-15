@@ -2713,7 +2713,19 @@ const centerDisplayGenres = (row) => {
   return '';
 };
 
-const centerPeopleList = (value) => Array.isArray(value) ? value.filter(x => x && typeof x === 'object') : [];
+const parseCenterJsonArray = (value) => {
+  if (Array.isArray(value)) return value.filter(x => x && typeof x === 'object');
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(x => x && typeof x === 'object') : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  return [];
+};
+const centerPeopleList = (value) => parseCenterJsonArray(value);
 const centerPersonName = (p) => String(p?.name || p?.primary_name || p?.original_name || '').trim();
 const centerPersonCharacter = (p) => String(p?.character || p?.character_name || '').trim();
 const centerCharacterHasRolePrefix = (text) => /^(饰|配|配音|声演|CV|Voice|voice)\s*/.test(String(text || '').trim());
@@ -2755,6 +2767,29 @@ const centerDetailPeople = (row) => {
     .slice(0, 1)
     .map(p => ({ ...p, _credit_role: 'director', _is_animation: animation }))
     .filter(centerPersonName);
+  if (!actors.length && !directors.length) {
+    const people = centerPeopleList(row.people_json || meta.people_json);
+    const credits = centerPeopleList(row.credits_json || meta.credits_json);
+    if (people.length && credits.length) {
+      const peopleMap = new Map(
+        people.map(p => [String(p?.tmdb_person_id || p?.id || ''), p]).filter(([id]) => id)
+      );
+      return credits
+        .map(credit => {
+          const id = String(credit?.tmdb_person_id || credit?.id || '');
+          const person = peopleMap.get(id) || {};
+          return {
+            ...person,
+            ...credit,
+            character: credit?.character || credit?.character_name || person?.character || '',
+            _credit_role: String(credit?.credit_type || '').toLowerCase() === 'director' ? 'director' : 'actor',
+            _is_animation: animation,
+          };
+        })
+        .filter(centerPersonName)
+        .slice(0, 7);
+    }
+  }
   // 展示顺序：主演在前，导演最后。
   return [...actors, ...directors];
 };
@@ -3319,24 +3354,31 @@ const centerEpisodePreview = () => '';
 const mergeCenterDetailPayload = (base, payload) => {
   const row = { ...(base || {}) };
   const data = payload?.data && typeof payload.data === 'object' ? payload.data : (payload || {});
-  const meta = data.media_meta || data.tmdb_meta || data.meta || {};
+  const detailItem = data.item && typeof data.item === 'object' ? data.item : {};
+  const detailData = {
+    ...Object.fromEntries(Object.entries(data).filter(([k]) => !['data', 'item'].includes(k))),
+    ...detailItem,
+  };
+  const meta = detailData.media_meta || detailData.tmdb_meta || detailData.meta || {};
   const oldMeta = centerTmdbMeta(row) || {};
   const merged = {
     ...row,
-    ...Object.fromEntries(Object.entries(data).filter(([k]) => !['data'].includes(k))),
+    ...detailData,
     tmdb_meta: { ...oldMeta, ...meta },
   };
   for (const field of ['poster_path', 'backdrop_path', 'overview', 'title', 'release_year']) {
     if (!merged[field] && meta[field]) merged[field] = meta[field];
   }
-  if (!merged.actors && Array.isArray(data.actors)) merged.actors = data.actors;
-  if (!merged.directors && Array.isArray(data.directors)) merged.directors = data.directors;
+  if (!merged.actors && Array.isArray(detailData.actors)) merged.actors = detailData.actors;
+  if (!merged.directors && Array.isArray(detailData.directors)) merged.directors = detailData.directors;
+  if (!merged.people_json && Array.isArray(detailData.people_json)) merged.people_json = detailData.people_json;
+  if (!merged.credits_json && Array.isArray(detailData.credits_json)) merged.credits_json = detailData.credits_json;
 
   const activeSeason = centerSeasonTabNumber(
-    data.active_season_number ?? data.default_season_number ?? data.season_number ?? centerDetailActiveSeason.value ?? row.active_season_number ?? row.default_season_number
+    detailData.active_season_number ?? detailData.default_season_number ?? detailData.season_number ?? centerDetailActiveSeason.value ?? row.active_season_number ?? row.default_season_number
   );
-  if (Array.isArray(data.seasons) && data.seasons.length) {
-    merged.seasons = data.seasons;
+  if (Array.isArray(detailData.seasons) && detailData.seasons.length) {
+    merged.seasons = detailData.seasons;
   } else if (Array.isArray(row.seasons) && row.seasons.length) {
     merged.seasons = row.seasons;
   }
