@@ -598,6 +598,9 @@ class SharedCenterClient:
             timeout=15,
         )
 
+    def share_sync_heartbeat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/devices/share-sync/heartbeat', payload or {}, timeout=20)
+
 
     def acquire_transfer_lease(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post('/api/v1/transfers/lease', payload or {}, timeout=30)

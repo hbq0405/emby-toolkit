@@ -249,6 +249,7 @@ def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 g.update({
                     'id': row.get('id'),
                     'source_ids': [],
+                    'center_source_ids': [],
                     'source_kind': 'episode_group',
                     'share_type': 'season_pack',
                     'item_type': 'Season',
@@ -272,6 +273,9 @@ def _aggregate_local_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             sid = row.get('id')
             if sid not in g['source_ids']:
                 g['source_ids'].append(sid)
+            center_source_id = str(row.get('center_source_id') or '').strip()
+            if center_source_id and center_source_id not in g['center_source_ids']:
+                g['center_source_ids'].append(center_source_id)
             ep_no = row.get('episode_number')
             if ep_no not in (None, ''):
                 g['episode_numbers'].append(_safe_int(ep_no, 0))
@@ -491,6 +495,34 @@ def _share_channel_is_logical(row: Dict[str, Any] | None = None, source_id: str 
     )
 
 
+def _share_channel_tmdb_season_key(row: Dict[str, Any]) -> tuple[str, int] | None:
+    """从本地逻辑季分享通道缓存里取 tmdb_id + season_number 兜底关联键。"""
+    row = row if isinstance(row, dict) else {}
+    raw = _share_channel_raw_json(row)
+    event = raw.get('event') if isinstance(raw.get('event'), dict) else {}
+    payload = raw.get('payload') if isinstance(raw.get('payload'), dict) else {}
+    tmdb_id = str(
+        row.get('tmdb_id')
+        or event.get('tmdb_id')
+        or payload.get('tmdb_id')
+        or raw.get('tmdb_id')
+        or ''
+    ).strip()
+    season = (
+        row.get('season_number')
+        if row.get('season_number') not in (None, '')
+        else event.get('season_number')
+        if event.get('season_number') not in (None, '')
+        else payload.get('season_number')
+        if payload.get('season_number') not in (None, '')
+        else raw.get('season_number')
+    )
+    season_no = _safe_int(season, -1)
+    if not tmdb_id or season_no < 0:
+        return None
+    return (tmdb_id, season_no)
+
+
 def _local_completed_share_public(channel: Dict[str, Any]) -> Dict[str, Any]:
     channel = dict(channel or {})
     if not channel:
@@ -513,9 +545,13 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
     rows = [r for r in (rows or []) if isinstance(r, dict)]
     local_ids = []
     center_ids = []
+    tmdb_ids = []
+    row_pairs = {}
     for row in rows:
         kind = str(row.get('source_kind') or '').strip().lower()
-        if not _share_channel_is_logical(row):
+        is_logical = _share_channel_is_logical(row)
+        source_ids = row.get('source_ids') if isinstance(row.get('source_ids'), list) else []
+        if not is_logical and not source_ids and kind != 'episode_group':
             continue
         try:
             rid = int(row.get('id') or 0)
@@ -523,10 +559,26 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
                 local_ids.append(rid)
         except Exception:
             pass
-        cid = str(row.get('center_source_id') or '').strip()
-        if cid and cid not in center_ids:
-            center_ids.append(cid)
-    if not local_ids and not center_ids:
+        for sid in source_ids:
+            try:
+                sid_int = int(sid or 0)
+            except Exception:
+                sid_int = 0
+            if sid_int > 0 and sid_int not in local_ids:
+                local_ids.append(sid_int)
+        center_candidates = [row.get('center_source_id')]
+        if isinstance(row.get('center_source_ids'), list):
+            center_candidates.extend(row.get('center_source_ids') or [])
+        for cid_value in center_candidates:
+            cid = str(cid_value or '').strip()
+            if cid and cid not in center_ids:
+                center_ids.append(cid)
+        pair = _share_channel_tmdb_season_key(row)
+        if pair:
+            row_pairs[id(row)] = pair
+            if pair[0] not in tmdb_ids:
+                tmdb_ids.append(pair[0])
+    if not local_ids and not center_ids and not tmdb_ids:
         return
     try:
         with get_db_connection() as conn:
@@ -538,6 +590,17 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
                 if center_ids:
                     clauses.append('center_source_id = ANY(%s)')
                     args.append(center_ids)
+                if tmdb_ids:
+                    clauses.append(
+                        """
+                        (
+                            raw_json->'event'->>'tmdb_id' = ANY(%s)
+                            OR raw_json->'payload'->>'tmdb_id' = ANY(%s)
+                            OR raw_json->>'tmdb_id' = ANY(%s)
+                        )
+                        """
+                    )
+                    args.extend([tmdb_ids, tmdb_ids, tmdb_ids])
                 cur.execute(
                     f"""
                     SELECT *
@@ -554,6 +617,7 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
         return
     by_local = {}
     by_center = {}
+    by_pair = {}
     for ch in channels:
         lid = ch.get('local_source_id')
         if lid not in (None, '') and int(lid) not in by_local:
@@ -561,14 +625,32 @@ def _attach_completed_share_channels_to_local_rows(rows: List[Dict[str, Any]]) -
         cid = str(ch.get('center_source_id') or '').strip()
         if cid and cid not in by_center:
             by_center[cid] = ch
+        pair = _share_channel_tmdb_season_key(ch)
+        if pair and pair not in by_pair:
+            by_pair[pair] = ch
     for row in rows:
         channel = None
         try:
             channel = by_local.get(int(row.get('id') or 0))
         except Exception:
             channel = None
+        if not channel and isinstance(row.get('source_ids'), list):
+            for sid in row.get('source_ids') or []:
+                try:
+                    channel = by_local.get(int(sid or 0))
+                except Exception:
+                    channel = None
+                if channel:
+                    break
         if not channel:
             channel = by_center.get(str(row.get('center_source_id') or '').strip())
+        if not channel and isinstance(row.get('center_source_ids'), list):
+            for cid in row.get('center_source_ids') or []:
+                channel = by_center.get(str(cid or '').strip())
+                if channel:
+                    break
+        if not channel:
+            channel = by_pair.get(row_pairs.get(id(row)) or _share_channel_tmdb_season_key(row))
         if not channel:
             row['has_share_channel'] = False
             row['share_channel_status'] = 'none'

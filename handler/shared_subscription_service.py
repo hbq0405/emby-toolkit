@@ -3108,7 +3108,7 @@ def _wait_rapid_transfer_lease_for_fallback(
     source_id: str,
     payload: Dict[str, Any],
     event_id: str = '',
-    max_wait_seconds: int = 600,
+    max_wait_seconds: int = 60,
 ) -> Dict[str, Any]:
     """分享转存失败回退 Rapid 前再申请秒传许可；纯分享路径不会提前等待。"""
     existing = _event_transfer_lease_id(payload)
@@ -3131,7 +3131,7 @@ def _wait_rapid_transfer_lease_for_fallback(
             'reason': 'share_import_failed_before_rapid_fallback',
         },
     }
-    deadline = time.time() + max(30, int(max_wait_seconds or 600))
+    deadline = time.time() + max(10, int(max_wait_seconds or 60))
     attempts = 0
     last_resp: Dict[str, Any] = {}
     label = str((payload or {}).get('title') or source_id)
@@ -3143,6 +3143,12 @@ def _wait_rapid_transfer_lease_for_fallback(
             logger.debug(f"  ➜ [共享资源] Rapid 回退秒传许可接口不可用，按旧流程继续：{source_kind}:{source_id}, err={e}")
             return {'ok': True, 'skipped': True, 'reason': 'lease_api_unavailable', 'error': str(e)}
         last_resp = resp if isinstance(resp, dict) else {'raw': resp}
+        if last_resp.get('ok') and last_resp.get('allow') is False and not last_resp.get('deferred'):
+            logger.info(
+                f"  ➜ [共享资源] 分享转存失败后 Rapid 回退被中心明确拒绝："
+                f"{source_kind}:{source_id}, reason={last_resp.get('reason') or 'not_allowed'}"
+            )
+            return {'ok': True, 'blocked': True, 'lease': last_resp, 'attempts': attempts}
         if last_resp.get('allow') or (last_resp.get('ok') and not last_resp.get('deferred') and last_resp.get('allow') is not False):
             lease_id = str(last_resp.get('lease_id') or '').strip()
             if lease_id:
@@ -3579,6 +3585,29 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                 event_id=event_id,
             )
             share_transfer['rapid_fallback_lease'] = fallback_lease
+            if fallback_lease.get('blocked'):
+                lease = fallback_lease.get('lease') if isinstance(fallback_lease.get('lease'), dict) else {}
+                message = lease.get('message') or '中心秒传许可拒绝，跳过 Rapid 回退'
+                if ack and event_id:
+                    try:
+                        client.ack_device_events([event_id], result='skipped', message=message[:500])
+                    except Exception:
+                        pass
+                return {
+                    'ok': True,
+                    'skipped': True,
+                    'blocked': True,
+                    'blocked_reason': lease.get('reason') or 'transfer_lease_blocked',
+                    'message': message,
+                    'event_id': event_id,
+                    'source_kind': source_kind,
+                    'source_id': source_id,
+                    'success_count': 0,
+                    'total': len(files),
+                    'errors': [],
+                    'transfer_mode': 'rapid',
+                    'share_transfer': share_transfer,
+                }
             lease_id = _event_transfer_lease_id(payload, event)
 
     # 到这里才进入 Rapid 秒传分支；季包秒传必须先创建标准临时剧目录。
