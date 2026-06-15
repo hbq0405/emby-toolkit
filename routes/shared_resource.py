@@ -170,6 +170,18 @@ def _safe_int(value, default=0):
         return default
 
 
+def _request_int_arg(name: str, default: int = 0, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(float(request.args.get(name) or default))
+    except Exception:
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 def _max_text(values: List[Any]) -> str:
     vals = [str(v) for v in values if v not in (None, '')]
     return max(vals) if vals else ''
@@ -1394,14 +1406,16 @@ def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
 def api_center_sources():
     try:
         client = SharedCenterClient()
+        limit_value = _request_int_arg('limit', _request_int_arg('page_size', 200), minimum=1, maximum=1000)
+        offset_value = _request_int_arg('offset', 0, minimum=0)
         resp = client.list_display_sources(
             q=request.args.get('q') or request.args.get('keyword') or '',
             status=request.args.get('status') or 'alive,available',
             item_type=request.args.get('item_type') or '',
             tmdb_id=request.args.get('tmdb_id') or '',
             order_by=request.args.get('order_by') or 'latest',
-            limit=int(request.args.get('limit') or request.args.get('page_size') or 200),
-            offset=int(request.args.get('offset') or 0),
+            limit=limit_value,
+            offset=offset_value,
             force_refresh=_boolish(
                 request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
                 False,
@@ -1469,9 +1483,21 @@ def api_center_sources():
             _strip_center_display_children(_decorate_center_row(row))
             for row in raw_items
         ]
+        if resp.get('display_fallback'):
+            logger.warning(
+                "  ➜ [共享资源] 中心资源库使用降级 sources/list 返回：items=%s, reason=%s",
+                len(resp.get('items') or []),
+                resp.get('display_fallback_reason') or '',
+            )
         return jsonify({'success': True, **resp})
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
+        logger.error(
+            "  ➜ [共享资源] 中心资源库列表接口失败: args=%s, err=%s",
+            dict(request.args),
+            e,
+            exc_info=True,
+        )
+        return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 502
 
 
 @shared_resource_bp.route('/center/sources/children', methods=['GET'])
