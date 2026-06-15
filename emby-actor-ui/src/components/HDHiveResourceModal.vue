@@ -35,10 +35,10 @@
           </n-button>
           <n-button-group size="small">
             <n-button :type="sourceFilter === 'all' ? 'primary' : 'default'" @click="sourceFilter = 'all'">
-              全部 {{ resources.length }}
+              全部 {{ allDisplayCount }}
             </n-button>
             <n-button :type="sourceFilter === 'shared_pool' ? 'primary' : 'default'" @click="sourceFilter = 'shared_pool'">
-              共享池 {{ sharedPoolCount }}
+              共享池 {{ sharedPoolDisplayCount }}
             </n-button>
             <n-button :type="sourceFilter === 'hdhive' ? 'primary' : 'default'" @click="sourceFilter = 'hdhive'">
               影巢 {{ hdhiveCount }}
@@ -73,7 +73,7 @@
                     {{ isSharedPool(res) ? '共享池' : (isChannel(res) ? '频道' : '影巢') }}
                   </n-tag>
                   <div style="font-weight: 700; font-size: 15px; line-height: 1.4; word-break: break-all;">
-                    {{ res.title || res.name || '未命名资源' }}
+                    {{ sharedPoolCardTitle(res) }}
                   </div>
                 </div>
 
@@ -82,15 +82,19 @@
                     {{ formatPanType(res.pan_type) }}
                   </n-tag>
 
-                  <n-tag size="small" type="default" :bordered="true" v-if="res.share_size">
+                  <n-tag size="small" type="default" :bordered="true" v-if="isSharedPoolGroup(res)">
+                    资源版本 {{ res._shared_pool_versions.length }}
+                  </n-tag>
+
+                  <n-tag size="small" type="default" :bordered="true" v-if="res.share_size && !isSharedPoolGroup(res)">
                     {{ res.share_size }}
                   </n-tag>
 
-                  <n-tag size="small" type="success" :bordered="false" v-if="formatResolution(res)">
+                  <n-tag size="small" type="success" :bordered="false" v-if="formatResolution(res) && !isSharedPoolGroup(res)">
                     {{ formatResolution(res) }}
                   </n-tag>
 
-                  <n-tag size="small" type="warning" :bordered="false" v-if="formatSource(res)">
+                  <n-tag size="small" type="warning" :bordered="false" v-if="formatSource(res) && !isSharedPoolGroup(res)">
                     {{ formatSource(res) }}
                   </n-tag>
 
@@ -102,7 +106,7 @@
                     {{ res._season_match_label }}
                   </n-tag>
 
-                  <n-tag size="small" type="default" :bordered="true" v-if="res._shared_pool_source_label">
+                  <n-tag size="small" type="default" :bordered="true" v-if="res._shared_pool_source_label && !isSharedPoolGroup(res)">
                     {{ res._shared_pool_source_label }}
                   </n-tag>
 
@@ -122,6 +126,60 @@
                   </n-tag>
                 </n-space>
 
+                <div v-if="isSharedPoolGroup(res)" class="cloud-version-list">
+                  <div
+                    v-for="(version, index) in res._shared_pool_versions"
+                    :key="getResourceKey(version)"
+                    class="cloud-version-row"
+                  >
+                    <div class="cloud-version-main">
+                      <n-space size="small" wrap>
+                        <n-tag size="small" type="default" :bordered="false">
+                          {{ sharedPoolVersionLabel(version, index) }}
+                        </n-tag>
+                        <n-tag size="small" :type="getPanTypeColor(version.pan_type)" :bordered="false">
+                          {{ formatPanType(version.pan_type) }}
+                        </n-tag>
+                        <n-tag size="small" type="default" :bordered="true" v-if="version.share_size">
+                          {{ version.share_size }}
+                        </n-tag>
+                        <n-tag size="small" type="success" :bordered="false" v-if="formatResolution(version)">
+                          {{ formatResolution(version) }}
+                        </n-tag>
+                        <n-tag size="small" type="warning" :bordered="false" v-if="formatSource(version)">
+                          {{ formatSource(version) }}
+                        </n-tag>
+                        <n-tag size="small" type="default" :bordered="true" v-if="version._shared_pool_source_label">
+                          {{ version._shared_pool_source_label }}
+                        </n-tag>
+                        <n-tag
+                          v-for="tag in cloudFeatureTags(version)"
+                          :key="`${getResourceKey(version)}:${tag.label}`"
+                          size="small"
+                          :type="tag.type || 'default'"
+                          :bordered="tag.bordered !== false"
+                        >
+                          {{ tag.label }}
+                        </n-tag>
+                      </n-space>
+                    </div>
+                    <div class="cloud-version-action">
+                      <div class="cloud-version-action-hint">
+                        {{ sharedPoolActionText(version).hint }}
+                      </div>
+                      <n-button
+                        type="primary"
+                        size="small"
+                        :color="sharedPoolActionText(version).color"
+                        :loading="downloadingKey === getResourceKey(version)"
+                        @click="download(version)"
+                      >
+                        {{ sharedPoolActionText(version).button }}
+                      </n-button>
+                    </div>
+                  </div>
+                </div>
+
                 <div v-if="formatQuality(res) && !isSharedPool(res)" style="font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 4px;">
                   📦 {{ formatQuality(res) }}
                 </div>
@@ -135,7 +193,7 @@
                 </div>
               </div>
 
-              <div style="flex-shrink: 0; min-width: 92px; text-align: right;">
+              <div v-if="!isSharedPoolGroup(res)" style="flex-shrink: 0; min-width: 92px; text-align: right;">
                 <div style="font-size: 12px; color: #f0a020; margin-bottom: 6px;">
                   <span v-if="isSharedPool(res)">{{ sharedPoolActionText(res).hint }}</span>
                   <span v-else-if="isChannel(res)">可转存</span>
@@ -270,6 +328,23 @@ const sharedPoolActionText = (resource) => {
   return { hint: '可秒传', button: '秒传', color: '#18a058' };
 };
 
+const isSharedPoolGroup = (resource) => {
+  return Boolean(resource?._shared_pool_group && Array.isArray(resource?._shared_pool_versions) && resource._shared_pool_versions.length > 0);
+};
+
+const sharedPoolCardTitle = (resource) => {
+  if (isSharedPoolGroup(resource)) {
+    return resource._shared_pool_group_title || resource.title || resource.name || '共享池资源';
+  }
+  return resource?.title || resource?.name || '未命名资源';
+};
+
+const sharedPoolVersionLabel = (resource, index) => {
+  const label = String(resource?._shared_pool_version_label || '').trim();
+  if (label) return label;
+  return `版本 ${index + 1}`;
+};
+
 const hdhiveCount = computed(() => resources.value.filter((item) => isHDHive(item)).length);
 const channelCount = computed(() => resources.value.filter((item) => isChannel(item)).length);
 const sharedPoolCount = computed(() => resources.value.filter((item) => isSharedPool(item)).length);
@@ -317,23 +392,69 @@ const sortCloudResources = (list) => {
     .map(({ item }) => item);
 };
 
+const sharedPoolSeasonGroupKey = (resource) => {
+  if (!isSharedPool(resource)) return '';
+  const season = parseSeasonNumber(resource);
+  if (!season) return '';
+  const tmdb = String(resource?.tmdb_id || '').trim();
+  const title = stripSeasonSuffix(resource?.title || resource?.name || '').toLowerCase();
+  return `${tmdb || title}:s${season}`;
+};
+
+const groupSharedPoolResources = (list) => {
+  const groups = new Map();
+  const output = [];
+
+  (list || []).forEach((item) => {
+    const key = sharedPoolSeasonGroupKey(item);
+    if (!key) {
+      output.push(item);
+      return;
+    }
+    if (!groups.has(key)) {
+      const group = {
+        ...item,
+        unique_id: `shared_pool_group:${key}`,
+        _shared_pool_group: true,
+        _shared_pool_group_title: item.title || item.name || '共享池资源',
+        _shared_pool_versions: [],
+      };
+      groups.set(key, group);
+      output.push(group);
+    }
+    groups.get(key)._shared_pool_versions.push(item);
+  });
+
+  return output.map((item) => {
+    if (!isSharedPoolGroup(item) || item._shared_pool_versions.length <= 1) {
+      return isSharedPoolGroup(item) ? item._shared_pool_versions[0] : item;
+    }
+    item._shared_pool_versions = sortCloudResources(item._shared_pool_versions);
+    item._shared_pool_source_label = `资源版本 ${item._shared_pool_versions.length}`;
+    return item;
+  });
+};
+
+const resourcesForFilter = (filter) => {
+  if (filter === 'hdhive') return resources.value.filter((item) => isHDHive(item));
+  if (filter === 'channel') return resources.value.filter((item) => isChannel(item));
+  if (filter === 'shared_pool') return resources.value.filter((item) => isSharedPool(item));
+  return resources.value;
+};
+
+const displayListForFilter = (filter) => groupSharedPoolResources(sortCloudResources(resourcesForFilter(filter)));
+
+const allDisplayCount = computed(() => displayListForFilter('all').length);
+const sharedPoolDisplayCount = computed(() => displayListForFilter('shared_pool').length);
+
 const displayResources = computed(() => {
-  if (sourceFilter.value === 'hdhive') {
-    return sortCloudResources(resources.value.filter((item) => isHDHive(item)));
-  }
-  if (sourceFilter.value === 'channel') {
-    return sortCloudResources(resources.value.filter((item) => isChannel(item)));
-  }
-  if (sourceFilter.value === 'shared_pool') {
-    return sortCloudResources(resources.value.filter((item) => isSharedPool(item)));
-  }
-  return sortCloudResources(resources.value);
+  return displayListForFilter(sourceFilter.value);
 });
 
 const warningMessages = computed(() => stats.value?.warnings || []);
 const summaryText = computed(() => {
   if (!stats.value) return '';
-  return `共享池 ${stats.value.shared_pool_total || 0} 条，影巢 ${stats.value.hdhive_filtered || 0}/${stats.value.hdhive_total || 0} 条，频道 ${stats.value.channel_total || 0} 条，当前展示 ${stats.value.shown || resources.value.length} 条。剧集云搜索默认不按季过滤，方便肉眼挑选。`;
+  return `共享池 ${stats.value.shared_pool_total || 0} 条，影巢 ${stats.value.hdhive_filtered || 0}/${stats.value.hdhive_total || 0} 条，频道 ${stats.value.channel_total || 0} 条，当前展示 ${displayResources.value.length} 张卡片。共享池按季聚合展示，影巢/频道保留宽松搜索。`;
 });
 
 const formatPanType = (type) => {
@@ -659,5 +780,49 @@ const download = async (resource) => {
 <style scoped>
 .cloud-resource-card :deep(.n-card__content) {
   padding: 12px 14px;
+}
+
+.cloud-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.cloud-version-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(12, 18, 42, .42);
+  border: 1px solid rgba(148, 177, 255, .14);
+}
+
+.cloud-version-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.cloud-version-action {
+  flex: 0 0 auto;
+  min-width: 72px;
+  text-align: right;
+}
+
+.cloud-version-action-hint {
+  font-size: 12px;
+  color: #f0a020;
+  margin-bottom: 6px;
+}
+
+@media (max-width: 640px) {
+  .cloud-version-row {
+    flex-direction: column;
+  }
+
+  .cloud-version-action {
+    text-align: left;
+  }
 }
 </style>
