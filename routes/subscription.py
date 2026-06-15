@@ -748,6 +748,9 @@ def _shared_pool_version_rows(resource):
             "pack_item_count", "is_completed_certified", "is_completed", "is_ongoing_hub",
             "is_clean_version", "clean_version_meta_json", "is_short_drama", "short_drama_meta_json",
             "is_animation", "animation_meta_json", "tag_labels",
+            "share_channel", "logical_season_share_channel", "completed_share_channel",
+            "has_share_channel", "share_channel_status", "has_valid_share_channel",
+            "share_transfer_available", "preferred_transfer_mode", "transfer_mode",
             "_completion_label", "release_year",
         ):
             if merged.get(key) in (None, "", [], {}) and parent.get(key) not in (None, "", [], {}):
@@ -963,9 +966,9 @@ def get_cloud_resources():
             shared_item_type = 'Movie' if media_type == 'movie' else 'Pack'
             shared_status = 'alive,available' if media_type == 'movie' else 'alive,available,updating,inconsistent,incomplete'
             # 剧集云搜索要先按季号重排，不能只取“最新共享”的前 N 条后再排序，
-            # 否则老一点的第 1 季可能被中心端分页截掉。这里多取一段，再本地按 1/2/3 季裁剪展示。
+            # 否则老一点的第 1 季可能被中心端分页截掉。这里多取一段，再本地按 1/2/3 季展示。
             shared_fetch_limit = shared_limit
-            if media_type == 'tv' and season in (None, ''):
+            if media_type == 'tv':
                 shared_fetch_limit = max(shared_limit, min(500, shared_limit * 5))
             shared_resp = client.list_display_sources(
                 q='' if tmdb_id else title,
@@ -977,10 +980,6 @@ def get_cloud_resources():
                 offset=0,
             )
             shared_items = [x for x in (shared_resp.get('items') or []) if isinstance(x, dict)]
-            if media_type == 'tv' and season not in (None, ''):
-                wanted_season = _safe_int(season, default=0, min_value=0)
-                if wanted_season > 0:
-                    shared_items = [x for x in shared_items if _safe_int(x.get('season_number'), default=-999) == wanted_season]
             shared_version_items = []
             for item in shared_items:
                 shared_version_items.extend(_shared_pool_version_rows(item))
@@ -1138,10 +1137,12 @@ def trigger_cloud_download():
             except Exception as e:
                 return jsonify({"success": False, "message": f"加载共享池季包明细失败：{e}"}), 500
 
-        result = consume_center_source_payload(shared_source)
+        mode = str(data.get('mode') or resource.get('preferred_transfer_mode') or resource.get('transfer_mode') or 'rapid').strip().lower()
+        result = consume_center_source_payload(shared_source, mode=mode)
         ok = bool(result.get('ok') or result.get('success'))
         status_code = 200 if ok else 400
-        msg = result.get('message') or (f"共享池秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}" if ok else "共享池秒传失败")
+        action = '转存' if (result.get('transfer_mode') == 'share' or mode == 'share') else '秒传'
+        msg = result.get('message') or (f"共享池{action}完成：{result.get('success_count', 0)}/{result.get('total', 0)}" if ok else f"共享池{action}失败")
         return jsonify({"success": ok, "message": msg, "data": result}), status_code
 
     if source_type in {'hdhive', 'hive', '影巢'} or slug:

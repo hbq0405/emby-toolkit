@@ -137,7 +137,7 @@
 
               <div style="flex-shrink: 0; min-width: 92px; text-align: right;">
                 <div style="font-size: 12px; color: #f0a020; margin-bottom: 6px;">
-                  <span v-if="isSharedPool(res)">可秒传</span>
+                  <span v-if="isSharedPool(res)">{{ sharedPoolActionText(res).hint }}</span>
                   <span v-else-if="isChannel(res)">可转存</span>
                   <span v-else-if="res.already_owned">已解锁</span>
                   <span v-else-if="res.unlock_points === 0 || res.unlock_points === null">免费</span>
@@ -146,12 +146,12 @@
 
                 <n-button
                   type="primary"
-                  :color="isSharedPool(res) ? '#18a058' : (isChannel(res) ? '#2080f0' : '#f0a020')"
+                  :color="isSharedPool(res) ? sharedPoolActionText(res).color : (isChannel(res) ? '#2080f0' : '#f0a020')"
                   size="small"
                   @click="download(res)"
                   :loading="downloadingKey === getResourceKey(res)"
                 >
-                  {{ isSharedPool(res) ? '秒传' : (isOffline(res.pan_type) || res.magnet_url ? '离线下载' : '一键转存') }}
+                  {{ isSharedPool(res) ? sharedPoolActionText(res).button : (isOffline(res.pan_type) || res.magnet_url ? '离线下载' : '一键转存') }}
                 </n-button>
               </div>
             </div>
@@ -249,6 +249,25 @@ const isSharedPool = (resource) => {
 const isHDHive = (resource) => {
   const source = String(resource?.source_type || resource?._cloud_source || resource?.source || '').toLowerCase();
   return !isSharedPool(resource) && !isChannel(resource) && (source === 'hdhive' || source === 'hive' || Boolean(resource?.slug));
+};
+
+const hasSharedPoolShareTransfer = (resource) => {
+  if (!isSharedPool(resource)) return false;
+  const mode = String(resource?.preferred_transfer_mode || resource?.transfer_mode || '').toLowerCase();
+  const status = String(resource?.share_channel_status || resource?.share_channel?.status || resource?.logical_season_share_channel?.status || '').toLowerCase();
+  return Boolean(
+    resource?.share_transfer_available ||
+    resource?.has_valid_share_channel ||
+    mode === 'share' ||
+    status === 'valid'
+  );
+};
+
+const sharedPoolActionText = (resource) => {
+  if (hasSharedPoolShareTransfer(resource)) {
+    return { hint: '可转存', button: '转存', color: '#2080f0' };
+  }
+  return { hint: '可秒传', button: '秒传', color: '#18a058' };
 };
 
 const hdhiveCount = computed(() => resources.value.filter((item) => isHDHive(item)).length);
@@ -617,7 +636,8 @@ const download = async (resource) => {
       tmdb_id: getTmdbId(),
       media_type: getMediaType(),
       title: mediaTitle.value,
-      year: mediaYear.value
+      year: mediaYear.value,
+      mode: isSharedPool(resource) ? (hasSharedPoolShareTransfer(resource) ? 'share' : 'rapid') : undefined
     };
 
     const res = await axios.post('/api/subscription/cloud/download', payload);
@@ -625,9 +645,6 @@ const download = async (resource) => {
     if (res.data.success) {
       message.success(res.data.message);
       emit('download-success');
-      setTimeout(() => {
-        isVisible.value = false;
-      }, 1500);
     } else {
       message.error(res.data.message || '触发下载失败');
     }

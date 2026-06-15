@@ -4119,11 +4119,14 @@ def consume_center_source_payload(source: Dict[str, Any], mode: str = 'rapid', c
         source_id = str(source.get('episode_source_id') or '').strip()
     if not source_kind or not source_id:
         return {'enabled': True, 'ok': False, 'success': False, 'message': '中心源缺少 source_kind/source_id，无法秒传'}
+    if mode:
+        source.setdefault('preferred_transfer_mode', str(mode or '').strip().lower())
+        source.setdefault('transfer_mode', str(mode or '').strip().lower())
     event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
     result = consume_device_event(event, ack=False)
     result['success'] = bool(result.get('ok'))
     result['count'] = int(result.get('success_count') or 0)
-    result['action_type'] = '共享资源秒传'
+    result['action_type'] = '共享资源转存' if result.get('transfer_mode') == 'share' else '共享资源秒传'
     return result
 
 
