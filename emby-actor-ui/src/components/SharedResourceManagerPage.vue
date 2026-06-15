@@ -1693,6 +1693,9 @@ const centerSeriesSeasonRows = (row) => Array.isArray(row?.seasons) ? row.season
 const centerSeasonIsSpecialNumber = (row) => centerSeasonTabNumber(row) === 0;
 const centerSeasonRowIsOngoing = (row) => {
   if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
+  const current = Number(row.progress_current || row.episode_available || row.file_count || 0);
+  const total = Number(row.progress_total || row.episode_total || row.expected_episode_count || 0);
+  if (total > 0 && current >= total) return false;
   const kind = String(row.source_kind || row.lazy_children_kind || '').trim().toLowerCase();
   const status = String(row.season_status || '').trim().toLowerCase();
   return Boolean(row.is_ongoing_hub || kind === 'season_hub' || status === 'ongoing');
@@ -1708,8 +1711,11 @@ const centerSeasonRowIsCompleted = (row) => {
   const kind = String(row.source_kind || row.lazy_children_kind || '').trim().toLowerCase();
   const status = String(row.status || '').trim().toLowerCase();
   const seasonStatus = String(row.season_status || '').trim().toLowerCase();
+  const current = Number(row.progress_current || row.episode_available || row.file_count || 0);
+  const total = Number(row.progress_total || row.episode_total || row.expected_episode_count || 0);
   return Boolean(
     (kind === 'logical_season' && (row.pool_complete || row.logical_pool_complete || status === 'pool_complete'))
+    || (total > 0 && current >= total)
     || row.is_completed_certified
     || row.is_completed
     || seasonStatus === 'completed'
