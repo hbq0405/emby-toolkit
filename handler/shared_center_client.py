@@ -396,6 +396,20 @@ class SharedCenterClient:
             'force_refresh': 1 if force_refresh else 0,
         }, timeout=30)
 
+    def list_cloud_search_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent,incomplete',
+                                  item_type: str = '', tmdb_id: str = '', order_by: str = 'latest',
+                                  limit: int = 200, offset: int = 0, **_ignored) -> Dict[str, Any]:
+        """云资源搜索专用口径：返回可挑选的电影/季包行，不影响中心资源库剧卡聚合。"""
+        return self._get('/api/v1/sources/cloud-search', {
+            'q': q or '',
+            'status': status or 'alive,available,updating,inconsistent,incomplete',
+            'item_type': item_type or '',
+            'tmdb_id': tmdb_id or '',
+            'order_by': order_by or 'latest',
+            'limit': max(1, min(int(limit or 200), 1000)),
+            'offset': max(0, int(offset or 0)),
+        }, timeout=30)
+
 
     def list_display_children(self, *, source_kind: str = '', source_id: str = '', source_ids: List[str] | None = None,
                               hub_id: str = '', limit: int = 5000, offset: int = 0, **_ignored) -> Dict[str, Any]:

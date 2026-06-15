@@ -970,7 +970,7 @@ def get_cloud_resources():
             shared_fetch_limit = shared_limit
             if media_type == 'tv':
                 shared_fetch_limit = max(shared_limit, min(500, shared_limit * 5))
-            shared_resp = client.list_display_sources(
+            shared_resp = client.list_cloud_search_sources(
                 q='' if tmdb_id else title,
                 status=shared_status,
                 item_type=shared_item_type,
