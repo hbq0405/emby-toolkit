@@ -4571,14 +4571,55 @@ def _sync_center_credit() -> Dict[str, Any]:
     me = client.me()
     stats = client.stats()
     ledger = client.credit_ledger(limit=500)
+    display_movies = {}
+    display_series = {}
+    try:
+        display_movies = client.list_display_sources(item_type='Movie', limit=1, offset=0)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 拉取中心电影展示统计失败: {e}")
+    try:
+        display_series = client.list_display_sources(item_type='Series', limit=1, offset=0)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 拉取中心剧集展示统计失败: {e}")
+    movie_source_count = int(stats.get('movie_sources') or 0)
+    episode_source_count = int(stats.get('episode_sources') or 0)
+    logical_group_count = int(stats.get('logical_season_groups') or 0)
+    video_count = movie_source_count + episode_source_count
+    raw_media_stats = (stats.get('media_stats') or {}) if isinstance(stats.get('media_stats'), dict) else {}
+    display_movie_count = int(display_movies.get('total') or stats.get('display_movie_count') or raw_media_stats.get('movie_count') or movie_source_count)
+    display_series_count = int(
+        display_series.get('total')
+        or stats.get('display_series_count')
+        or raw_media_stats.get('series_count')
+        or stats.get('display_season_count')
+        or raw_media_stats.get('season_count')
+        or logical_group_count
+        or 0
+    )
+    display_season_count = int(stats.get('display_season_count') or raw_media_stats.get('season_count') or display_series_count or logical_group_count)
+    media_stats = {
+        **raw_media_stats,
+        'movie_count': display_movie_count,
+        'series_count': display_series_count,
+        'season_count': display_season_count,
+        'video_count': video_count,
+    }
+    enriched_stats = {
+        **stats,
+        'display_movie_count': display_movie_count,
+        'display_series_count': display_series_count,
+        'display_season_count': display_season_count,
+        'video_count': video_count,
+        'media_stats': media_stats,
+    }
     snapshot = {
         'device_id': me.get('id'),
         'credit': int(me.get('credit') or 0),
         'wanted_gaps': int(stats.get('share_requests') or stats.get('active_gap_devices') or 0),
-        'shared_sources': int(stats.get('movie_sources') or 0) + int(stats.get('episode_sources') or 0),
+        'shared_sources': video_count,
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
         'remote_devices': int(stats.get('devices') or 0),
-        'raw_json': {'me': me, 'stats': stats},
+        'raw_json': {'me': me, 'stats': enriched_stats},
     }
     saved = shared_credit_db.upsert_credit_snapshot(snapshot)
     synced = shared_credit_db.sync_center_credit_ledger(ledger.get('items') or [], device_snapshot=me)

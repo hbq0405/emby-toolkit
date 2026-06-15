@@ -108,6 +108,33 @@ def _fetch_center_credit() -> Dict[str, Any]:
     episode_source_count = int(stats.get('episode_sources') or 0)
     logical_group_count = int(stats.get('logical_season_groups') or 0)
     video_count = movie_source_count + episode_source_count
+    raw_media_stats = (stats.get('media_stats') or {}) if isinstance(stats.get('media_stats'), dict) else {}
+    display_movie_count = int(display_movies.get('total') or stats.get('display_movie_count') or raw_media_stats.get('movie_count') or movie_source_count)
+    display_series_count = int(
+        display_series.get('total')
+        or stats.get('display_series_count')
+        or raw_media_stats.get('series_count')
+        or stats.get('display_season_count')
+        or raw_media_stats.get('season_count')
+        or logical_group_count
+        or 0
+    )
+    display_season_count = int(stats.get('display_season_count') or raw_media_stats.get('season_count') or display_series_count or logical_group_count)
+    media_stats = {
+        **raw_media_stats,
+        'movie_count': display_movie_count,
+        'series_count': display_series_count,
+        'season_count': display_season_count,
+        'video_count': video_count,
+    }
+    enriched_stats = {
+        **stats,
+        'display_movie_count': display_movie_count,
+        'display_series_count': display_series_count,
+        'display_season_count': display_season_count,
+        'video_count': video_count,
+        'media_stats': media_stats,
+    }
     snapshot = {
         'device_id': me.get('id'),
         'credit': int(me.get('credit') or 0),
@@ -124,20 +151,14 @@ def _fetch_center_credit() -> Dict[str, Any]:
         ),
         'shared_sources': video_count,
         'raw_ffprobe': int(stats.get('raw_ffprobe') or 0),
-        'display_movie_count': int(display_movies.get('total') or stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or movie_source_count),
-        'display_series_count': int(display_series.get('total') or stats.get('display_series_count') or (stats.get('media_stats') or {}).get('series_count') or 0),
-        'display_season_count': int(stats.get('display_season_count') or (stats.get('media_stats') or {}).get('season_count') or logical_group_count),
+        'display_movie_count': display_movie_count,
+        'display_series_count': display_series_count,
+        'display_season_count': display_season_count,
         'video_count': video_count,
-        'media_stats': {
-            **((stats.get('media_stats') or {}) if isinstance(stats.get('media_stats'), dict) else {}),
-            'movie_count': int(display_movies.get('total') or stats.get('display_movie_count') or (stats.get('media_stats') or {}).get('movie_count') or movie_source_count),
-            'series_count': int(display_series.get('total') or stats.get('display_series_count') or (stats.get('media_stats') or {}).get('series_count') or 0),
-            'season_count': int(stats.get('display_season_count') or (stats.get('media_stats') or {}).get('season_count') or logical_group_count),
-            'video_count': video_count,
-        },
+        'media_stats': media_stats,
         'pro_quota': (pro_report.get('pro_quota') or pro_report.get('quota') or stats.get('pro_quota') or me.get('pro_quota') or {}),
         'remote_devices': int(stats.get('devices') or 0),
-        'raw_json': {'me': me, 'stats': stats},
+        'raw_json': {'me': me, 'stats': enriched_stats},
     }
     saved = shared_credit_db.upsert_credit_snapshot(snapshot)
     center_ledger_items = ledger.get('items') or []

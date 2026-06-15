@@ -910,7 +910,18 @@ const centerResourceStats = computed(() => {
   const rawStats = credit?.raw_json?.stats || {};
   const mediaStats = credit.media_stats || rawStats.media_stats || {};
   const movieCount = firstFiniteNumber(credit.display_movie_count, credit.center_movie_count, mediaStats.movie_count, rawStats.display_movie_count, rawStats.movie_sources);
-  const seriesCount = firstFiniteNumber(credit.display_series_count, credit.center_series_count, mediaStats.series_count, rawStats.display_series_count, rawStats.series_count, 0);
+  const seriesCount = firstFiniteNumber(
+    credit.display_series_count,
+    credit.center_series_count,
+    mediaStats.series_count,
+    rawStats.display_series_count,
+    rawStats.series_count,
+    mediaStats.season_count,
+    rawStats.display_season_count,
+    rawStats.logical_season_groups,
+    rawStats.season_groups,
+    0
+  );
   const videoCount = firstFiniteNumber(
     credit.video_count,
     mediaStats.video_count,
