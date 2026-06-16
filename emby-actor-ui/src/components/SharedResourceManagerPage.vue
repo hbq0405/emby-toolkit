@@ -2765,7 +2765,12 @@ const centerColumns = [
 
 const centerTmdbMeta = (row) => {
   if (!row || typeof row !== 'object') return {};
-  return row.tmdb_meta || row;
+  const meta = (row.tmdb_meta && typeof row.tmdb_meta === 'object') ? row.tmdb_meta : {};
+  const merged = { ...row, ...meta };
+  merged.vote_average = meta.vote_average ?? meta.rating ?? row.vote_average ?? row.rating;
+  merged.rating = meta.rating ?? row.rating ?? row.vote_average;
+  merged.genres = meta.genres ?? meta.genres_json ?? row.genres ?? row.genres_json;
+  return merged;
 };
 const centerStripYear = (text) => String(text || '').replace(/\s*[（(]\s*(?:19|20)\d{2}\s*[）)]\s*$/g, '').trim();
 const centerBaseTitle = (row) => {
