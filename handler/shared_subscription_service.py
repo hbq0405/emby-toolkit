@@ -868,6 +868,54 @@ def _rapid_sign_request_from_response(resp: Any) -> Dict[str, Any]:
     return {}
 
 
+def _rapid_sign_job_status_text(status: str) -> str:
+    status = str(status or '').strip()
+    return {
+        'pending': '等待中心分配签名设备',
+        'claimed': '签名设备已领取但未回传',
+        'done': '签名已完成',
+        'failed': '签名设备执行失败',
+        'expired': '签名任务已超时',
+        'cancelled': '签名任务已取消',
+    }.get(status, status or '未知状态')
+
+
+def _rapid_sign_job_failure_reason(wait_resp: Any, *, job_id: str, holder_id: str = '', elapsed: float = 0) -> Tuple[str, str, bool]:
+    resp = wait_resp if isinstance(wait_resp, dict) else {}
+    job_obj = resp.get('job') if isinstance(resp.get('job'), dict) else {}
+    status = str(resp.get('status') or job_obj.get('status') or '').strip()
+    result_meta = job_obj.get('result_meta_json') if isinstance(job_obj.get('result_meta_json'), dict) else {}
+    message = str(job_obj.get('message') or resp.get('message') or result_meta.get('message') or '').strip()
+    abort_transfer = bool(resp.get('abort_transfer') or result_meta.get('abort_transfer'))
+    holder = str(job_obj.get('claimed_by') or job_obj.get('holder_id') or holder_id or '').strip()
+    elapsed_text = f"{int(elapsed)}s" if elapsed and elapsed > 0 else ''
+
+    if message:
+        reason = message
+    elif status == 'claimed':
+        reason = '源设备已领取签名任务，但等待超时仍未回传签名，可能是源设备离线、任务卡住或源文件读取失败'
+    elif status == 'pending':
+        reason = '中心端暂未找到可用签名设备'
+    elif status == 'failed':
+        reason = '源设备签名失败'
+    elif status == 'expired':
+        reason = '中心端等待签名超时'
+    elif status == 'cancelled':
+        reason = '中心端取消了签名任务'
+    else:
+        reason = '中心端未返回可用签名'
+
+    parts = [f"任务={job_id}", f"状态={_rapid_sign_job_status_text(status)}"]
+    if holder:
+        parts.append(f"签名设备={holder}")
+    if elapsed_text:
+        parts.append(f"等待={elapsed_text}")
+    parts.append(f"原因={reason}")
+    if abort_transfer:
+        parts.append("本次转存已中止")
+    return '，'.join(parts), reason, abort_transfer
+
+
 def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info: Dict[str, Any], target_cid: str, sha1: str, size: int, file_name: str, rapid_meta: Dict[str, Any], first_resp: Any) -> Dict[str, Any]:
     sign_req = _rapid_sign_request_from_response(first_resp)
     if not sign_req:
@@ -908,7 +956,9 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     if not job_id:
         raise RuntimeError(f'中心未返回 sign_job id: {create_resp}')
     logger.info(f"  ➜ [负载均衡签名] 签名任务已创建：等待源客户端签名...")
+    wait_started_at = time.time()
     wait_resp = client.wait_rapid_sign_job(job_id, timeout=75)
+    wait_elapsed = time.time() - wait_started_at
     status = str(wait_resp.get('status') or (wait_resp.get('job') or {}).get('status') or '')
     sign_val = str(wait_resp.get('sign_val') or (wait_resp.get('job') or {}).get('sign_val') or '').strip().upper()
     if status != 'done' or not _norm_sha1(sign_val):
@@ -919,12 +969,20 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
         no_retry = status in ('failed', 'expired', 'cancelled') or abort_transfer or any(
             x in job_message for x in ('所有 holder', '无可用 holder', 'no rapid sign holder available', 'holder 未领取签名任务', '资源签名不可用')
         )
-        logger.warning(f"  ➜ [负载均衡签名] sign_job 未完成：job_id={job_id}, status={status}, no_retry={no_retry}, abort={abort_transfer}, resp={str(wait_resp)[:500]}")
+        human_detail, human_reason, human_abort = _rapid_sign_job_failure_reason(
+            wait_resp,
+            job_id=job_id,
+            holder_id=holder_id,
+            elapsed=wait_elapsed,
+        )
+        abort_transfer = abort_transfer or human_abort
+        logger.warning(f"  ➜ [负载均衡签名] 签名失败：{file_name}，{human_detail}")
+        logger.debug(f"  ➜ [负载均衡签名] sign_job 原始响应：job_id={job_id}, status={status}, no_retry={no_retry}, abort={abort_transfer}, resp={str(wait_resp)[:500]}")
         return {
             'ok': False,
             'response': first_resp,
             'sign_job': wait_resp,
-            'message': job_message or wait_resp.get('message') or f'sign_job 未完成: {status}',
+            'message': human_reason or job_message or wait_resp.get('message') or f'sign_job 未完成: {status}',
             'no_retry': bool(no_retry),
             'abort_transfer': bool(abort_transfer or status in ('failed', 'expired', 'cancelled')),
         }
@@ -1314,8 +1372,18 @@ def _source_parent_series_tmdb_id(src: Dict[str, Any], context: Dict[str, Any] =
     return ''
 
 
-def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: str,
-                       media_type: str, original_lang: str = '', has_external_subtitle: bool = False):
+def _washing_new_level(
+    sha1: str,
+    file_name: str,
+    file_size: int,
+    target_cid: str,
+    media_type: str,
+    original_lang: str = '',
+    has_external_subtitle: bool = False,
+    tmdb_id: str = '',
+    season_num=None,
+    episode_num=None,
+):
     try:
         from handler.resubscribe_service import WashingService
         raw_info = WashingService._get_raw_info_by_sha1(sha1)
@@ -1329,11 +1397,16 @@ def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: st
         new_info['_file_size'] = file_size
         new_info['_original_lang'] = original_lang
         new_info['has_external_subtitle'] = has_external_subtitle
-        norm_new = WashingService._normalize_info(new_info)
+        new_info['_media_type'] = media_type
+        new_info['_tmdb_id'] = tmdb_id
+        new_info['_season_num'] = season_num
+        new_info['_episode_num'] = episode_num
         db_media_type = 'Movie' if str(media_type).lower() == 'movie' else 'Series'
         priorities = WashingService._load_priorities(db_media_type, target_cid)
         if not priorities:
             return 999, '未配置优先级规则'
+        new_info['_need_clean_version_check'] = WashingService._priorities_need_clean_version(priorities)
+        norm_new = WashingService._normalize_info(new_info)
         return WashingService.get_level(norm_new, priorities)
     except Exception as e:
         return 999, f'读取洗版优先级失败: {e}'
@@ -1766,6 +1839,9 @@ def _prepare_files_before_rapid_transfer(
             media_type,
             original_lang=original_lang,
             has_external_subtitle=False,
+            tmdb_id=str(tmdb_for_washing),
+            season_num=s_num,
+            episode_num=e_num,
         )
         logger.info(
             f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 评分完成："

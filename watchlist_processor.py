@@ -815,6 +815,12 @@ class WatchlistProcessor:
                 'tmdb_id': tmdb_id,
                 'item_type': 'Season',
                 'season_number': s_num,
+                'title': season.get('name') or '',
+                'original_title': season.get('name') or '',
+                'overview': season.get('overview') or '',
+                'poster_path': season.get('poster_path') or '',
+                'release_date': season.get('air_date') or '',
+                'release_year': self._watchlist_release_year(season.get('air_date') or ''),
                 'expected_episode_count': expected,
                 'total_episodes': expected,
                 'episode_count': expected,
@@ -1416,6 +1422,18 @@ class WatchlistProcessor:
             enable_auto_pause = auto_pause_days > 0
             auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
             enable_sync_sub = watchlist_cfg.get('sync_mp_subscription', False)
+            episode_wash_enabled = bool(
+                watchlist_cfg.get(
+                    'series_subscription_best_version',
+                    watchlist_cfg.get('sync_mp_subscription_episode_wash', False),
+                )
+            )
+            full_wash_enabled = bool(
+                watchlist_cfg.get(
+                    'series_subscription_best_version_full',
+                    watchlist_cfg.get('sync_mp_subscription_full_wash', False),
+                )
+            )
             
             # 获取配置的虚标集数 (默认99)
             fake_total_episodes = int(auto_pending_cfg.get('default_total_episodes', 99))
@@ -1457,7 +1475,9 @@ class WatchlistProcessor:
                         sub_success = moviepilot.subscribe_series_to_moviepilot(
                             series_info={'title': series_name, 'tmdb_id': tmdb_id},
                             season_number=s_num,
-                            config=self.config
+                            config=self.config,
+                            best_version=1 if (episode_wash_enabled or full_wash_enabled or final_status == STATUS_COMPLETED) else None,
+                            best_version_full=1 if (full_wash_enabled or final_status == STATUS_COMPLETED) else None,
                         )
                         if not sub_success:
                             logger.warning(f"  ➜ [MP同步] 补订 S{s_num} 失败，跳过。")

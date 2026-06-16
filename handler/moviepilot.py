@@ -187,7 +187,13 @@ def check_subscription_exists(tmdb_id: str, item_type: str, config: Dict[str, An
 # ======================================================================
 # 业务封装函数
 # ======================================================================
-def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[int], config: Dict[str, Any] = None, best_version: Optional[int] = None) -> bool:
+def subscribe_series_to_moviepilot(
+    series_info: dict,
+    season_number: Optional[int],
+    config: Dict[str, Any] = None,
+    best_version: Optional[int] = None,
+    best_version_full: Optional[int] = None,
+) -> bool:
     """订阅单季或整部剧集"""
     title = series_info.get('title') or series_info.get('item_name')
     if not title:
@@ -204,8 +210,11 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[in
     
     if best_version is not None:
         payload["best_version"] = best_version
-        payload["best_version_full"] = 1  # 明确告诉 MP 这是全集洗版
-        logger.info(f"  ➜ 本次订阅为全集洗版订阅")
+        if best_version_full is not None:
+            payload["best_version_full"] = best_version_full
+            logger.info("  ➜ 本次订阅为全集洗版订阅")
+        else:
+            logger.info("  ➜ 本次订阅为分集洗版订阅")
 
     log_msg = f"  ➜ 正在向 MoviePilot 提交剧集订阅: '{title}'"
     if season_number is not None:

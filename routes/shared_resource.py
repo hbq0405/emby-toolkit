@@ -1698,7 +1698,7 @@ def api_center_sources_home():
             if cached:
                 return jsonify(cached)
 
-        resp = client.list_display_home(limit_per_section=limit_per_section)
+        resp = client.list_display_home(limit_per_section=limit_per_section, force_refresh=force_refresh)
 
         def _decorate_center_row(row):
             if not isinstance(row, dict):
@@ -2144,6 +2144,57 @@ def _ledger_local_media_by_sha1(sha1: str) -> Dict[str, Any]:
     return cache[sha1]
 
 
+def _ledger_title_is_identity(value: Any) -> bool:
+    text = str(value or '').strip()
+    if not text:
+        return True
+    if text.lower().startswith('rapid_sign:'):
+        return True
+    return bool(re.fullmatch(r'(?:rapid_sign:)?[A-Fa-f0-9]{40}(?::.*)?', text))
+
+
+def _ledger_local_source_context(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = row if isinstance(row, dict) else {}
+    raw = _ledger_json(row.get('raw_json'))
+    center_ledger = raw.get('center_ledger') if isinstance(raw.get('center_ledger'), dict) else {}
+    nested = [raw.get(k) for k in ('media', 'source', 'shared_source', 'job') if isinstance(raw.get(k), dict)]
+    ids: List[str] = []
+    kinds: List[str] = []
+    for source_obj in (row, raw, center_ledger, *nested):
+        kind = str(source_obj.get('source_kind') or '').strip()
+        if kind and kind not in kinds:
+            kinds.append(kind)
+        for key in ('source_id', 'source_ref_id', 'center_source_id', 'ref_id'):
+            value = str(source_obj.get(key) or '').strip()
+            if not value or value in ids or _ledger_title_is_identity(value):
+                continue
+            ids.append(value)
+    if not ids:
+        return {}
+
+    cache = getattr(_ledger_local_source_context, '_cache', None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(_ledger_local_source_context, '_cache', cache)
+    cache_key = (tuple(ids), tuple(kinds))
+    if cache_key in cache:
+        return cache[cache_key]
+
+    candidates: List[Dict[str, Any]] = []
+    for value in ids:
+        try:
+            candidates.append(shared_share_db.get_local_source(int(value)) or {})
+        except Exception:
+            pass
+        for kind in kinds or ('movie', 'episode', 'completed_season'):
+            try:
+                candidates.append(shared_share_db.get_local_source_by_center(kind, value) or {})
+            except Exception:
+                pass
+    cache[cache_key] = next((x for x in candidates if x and not _ledger_title_is_identity(x.get('title') or x.get('file_name'))), {})
+    return cache[cache_key]
+
+
 def _ledger_sxx(season) -> str:
     try:
         return f"S{int(season):02d}"
@@ -2184,14 +2235,35 @@ def _ledger_media_context(row: Dict[str, Any]) -> Dict[str, Any]:
         if out.get('title') in (None, '') and raw.get(key):
             out['title'] = raw.get(key)
 
-    if out.get('title') in (None, '') and sha1:
+    source_ctx = _ledger_local_source_context(row)
+    if source_ctx:
+        title_is_identity = _ledger_title_is_identity(out.get('title'))
+        for key in (
+            'tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind',
+            'title', 'file_name', 'release_year',
+            'series_title', 'series_original_title', 'series_release_year',
+        ):
+            if source_ctx.get(key) in (None, ''):
+                continue
+            if key == 'title':
+                if title_is_identity:
+                    out[key] = source_ctx.get(key)
+                continue
+            if out.get(key) in (None, ''):
+                out[key] = source_ctx.get(key)
+
+    if (out.get('title') in (None, '') or _ledger_title_is_identity(out.get('title'))) and sha1:
         local = _ledger_local_media_by_sha1(sha1)
         for key in (
             'tmdb_id', 'item_type', 'season_number', 'episode_number', 'source_kind',
             'title', 'file_name', 'release_year',
             'series_title', 'series_original_title', 'series_release_year',
         ):
-            if out.get(key) in (None, '') and local.get(key) not in (None, ''):
+            if local.get(key) in (None, ''):
+                continue
+            if key == 'title' and not _ledger_title_is_identity(out.get('title')):
+                continue
+            if out.get(key) in (None, '') or key == 'title':
                 out[key] = local.get(key)
     elif sha1:
         local = _ledger_local_media_by_sha1(sha1)

@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class WashingService:
+    # 洗版按单集判断，首集/尾集可能仍带片头或片尾，不能复用共享资源整季多数投票的保守阈值。
+    CLEAN_VERSION_MIN_DELTA_MINUTES = 1.5
+    CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.985
+    SHORT_DRAMA_MAX_RUNTIME_MINUTES = 25.0
+
     @classmethod
     def _safe_parse_jsonish(cls, val: Any) -> Any:
         if val is None:
@@ -89,6 +94,212 @@ class WashingService:
         return {}
 
     @classmethod
+    def _text_has_effect_subtitle_mark(cls, value: Any) -> bool:
+        text = str(value or "").strip().lower()
+        if not text:
+            return False
+        if "\u7279\u6548" in text:
+            return True
+        normalized = (
+            text.replace("_", " ")
+            .replace("-", " ")
+            .replace(".", " ")
+            .replace("/", " ")
+            .replace("(", " ")
+            .replace(")", " ")
+        )
+        tokens = set(normalized.split())
+        return bool({"effect", "effects", "tx"} & tokens)
+
+    @classmethod
+    def _has_effect_subtitle(cls, parsed: Any, media_streams: List[Dict[str, Any]]) -> bool:
+        for stream in media_streams or []:
+            if not isinstance(stream, dict) or str(stream.get("Type", "")).lower() != "subtitle":
+                continue
+            if any(cls._text_has_effect_subtitle_mark(stream.get(key)) for key in ("Title", "DisplayTitle", "title", "display_title")):
+                return True
+
+        if not isinstance(parsed, dict):
+            return False
+
+        for key in ("subtitles", "subtitle_tracks", "subtitle_list", "subtitle"):
+            raw_value = parsed.get(key)
+            if cls._text_has_effect_subtitle_mark(raw_value):
+                return True
+            for item in cls._safe_parse_list(raw_value):
+                if isinstance(item, dict):
+                    if any(
+                        cls._text_has_effect_subtitle_mark(item.get(field))
+                        for field in ("Title", "DisplayTitle", "title", "display_title", "display", "name")
+                    ):
+                        return True
+                elif cls._text_has_effect_subtitle_mark(item):
+                    return True
+        return False
+
+    @classmethod
+    def _minutes(cls, value: Any, divisor: float) -> float:
+        try:
+            return 0.0 if value in (None, "", 0, "0") else float(value) / divisor
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _physical_runtime_minutes_from_info(cls, info: Any) -> float:
+        parsed = cls._safe_parse_jsonish(info)
+        if isinstance(parsed, list) and parsed:
+            parsed = parsed[0]
+        if not isinstance(parsed, dict):
+            return 0.0
+
+        media_source = cls._extract_media_source_info(parsed)
+        candidates = [
+            cls._minutes(media_source.get("RunTimeTicks"), 600000000.0),
+            cls._minutes(parsed.get("RunTimeTicks"), 600000000.0),
+        ]
+        fmt = parsed.get("format") if isinstance(parsed.get("format"), dict) else {}
+        candidates.append(cls._minutes(fmt.get("duration"), 60.0))
+        candidates.extend(
+            cls._minutes(s.get("duration"), 60.0)
+            for s in (parsed.get("streams") or [])
+            if isinstance(s, dict)
+        )
+        return next((x for x in candidates if x > 0), 0.0)
+
+    @classmethod
+    def _official_episode_runtime(cls, tmdb_id: str, season_num: int, episode_num: int) -> tuple[float, str]:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT runtime_minutes
+                        FROM media_metadata
+                        WHERE item_type = 'Episode'
+                          AND parent_series_tmdb_id = %s
+                          AND season_number = %s
+                          AND episode_number = %s
+                          AND runtime_minutes IS NOT NULL
+                          AND runtime_minutes > 0
+                        LIMIT 1
+                        """,
+                        (str(tmdb_id), season_num, episode_num),
+                    )
+                    row = cursor.fetchone()
+                    if row and row.get("runtime_minutes"):
+                        return float(row.get("runtime_minutes") or 0), "local_media_metadata"
+        except Exception as e:
+            logger.debug("  ➜ [洗版] 读取本地 TMDb 分集时长失败: tmdb=%s, S%sE%s, err=%s", tmdb_id, season_num, episode_num, e)
+
+        try:
+            import config_manager
+            import constants
+            from handler import tmdb as tmdb_handler
+
+            api_key = (config_manager.APP_CONFIG or {}).get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            if not api_key:
+                return 0.0, "missing_official_runtime"
+            data = tmdb_handler.get_season_details_tmdb(int(float(tmdb_id)), season_num, str(api_key), append_to_response=None)
+            for ep in (data or {}).get("episodes") or []:
+                if isinstance(ep, dict) and int(ep.get("episode_number") or 0) == episode_num:
+                    runtime = float(ep.get("runtime") or 0)
+                    return runtime, "tmdb_realtime" if runtime > 0 else "missing_official_runtime"
+        except Exception as e:
+            logger.debug("  ➜ [洗版] 实时查询 TMDb 分集时长失败: tmdb=%s, S%sE%s, err=%s", tmdb_id, season_num, episode_num, e)
+        return 0.0, "missing_official_runtime"
+
+    @classmethod
+    def _series_has_animation_genre(cls, tmdb_id: str) -> bool:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT genres_json
+                        FROM media_metadata
+                        WHERE item_type = 'Series' AND tmdb_id = %s
+                        ORDER BY in_library DESC, last_updated_at DESC NULLS LAST
+                        LIMIT 1
+                        """,
+                        (str(tmdb_id),),
+                    )
+                    row = cursor.fetchone()
+            genres = cls._safe_parse_jsonish((row or {}).get("genres_json")) or []
+            if isinstance(genres, dict):
+                genres = genres.get("genres") or [genres]
+            for item in genres if isinstance(genres, list) else [genres]:
+                if isinstance(item, dict):
+                    if str(item.get("id") or "") == "16":
+                        return True
+                    text = f"{item.get('name') or ''} {item.get('zh') or ''} {item.get('en') or ''}".lower()
+                else:
+                    text = str(item or "").lower()
+                if any(x in text for x in ("animation", "动画", "動漫", "动漫", "anime", "アニメ")):
+                    return True
+        except Exception as e:
+            logger.debug("  ➜ [洗版] 检查动画类型失败: tmdb=%s, err=%s", tmdb_id, e)
+        return False
+
+    @classmethod
+    def _clean_version_result(
+        cls,
+        media_type: str,
+        tmdb_id: str,
+        season_num: Optional[int],
+        episode_num: Optional[int],
+        info: Any,
+    ) -> Dict[str, Any]:
+        if str(media_type or "").lower() not in {"tv", "series"}:
+            return {"checked": False, "is_clean": False, "reason": "non_series"}
+        if not tmdb_id or season_num is None or episode_num is None:
+            return {"checked": False, "is_clean": False, "reason": "missing_identity"}
+        try:
+            season_num = int(float(season_num))
+            episode_num = int(float(episode_num))
+        except Exception:
+            return {"checked": False, "is_clean": False, "reason": "missing_identity"}
+        if cls._series_has_animation_genre(tmdb_id):
+            return {"checked": False, "is_clean": False, "reason": "animation_genre_skipped"}
+
+        physical = cls._physical_runtime_minutes_from_info(info)
+        if physical <= 0:
+            return {"checked": False, "is_clean": False, "reason": "missing_physical_runtime"}
+        if 0 < physical < cls.SHORT_DRAMA_MAX_RUNTIME_MINUTES:
+            return {"checked": False, "is_clean": False, "reason": "short_drama_skipped"}
+
+        official, source = cls._official_episode_runtime(tmdb_id, season_num, episode_num)
+        if official <= 0:
+            return {
+                "checked": False,
+                "is_clean": False,
+                "reason": "missing_official_runtime",
+                "physical_runtime_minutes": round(physical, 2),
+            }
+
+        delta = official - physical
+        ratio = physical / official if official > 0 else 1.0
+        min_delta = cls.CLEAN_VERSION_MIN_DELTA_MINUTES
+        max_ratio = cls.CLEAN_VERSION_MAX_RUNTIME_RATIO
+        is_clean = delta >= min_delta and ratio <= max_ratio
+        return {
+            "checked": True,
+            "is_clean": bool(is_clean),
+            "reason": "runtime_shorter" if is_clean else "runtime_not_short_enough",
+            "runtime_source": source,
+            "official_runtime_minutes": round(official, 2),
+            "physical_runtime_minutes": round(physical, 2),
+            "delta_minutes": round(delta, 2),
+            "runtime_ratio": round(ratio, 4),
+            "min_delta_minutes": min_delta,
+            "max_runtime_ratio": max_ratio,
+            "is_short_drama": False,
+        }
+
+    @classmethod
+    def _priorities_need_clean_version(cls, priorities: list) -> bool:
+        return any(bool(p.get("clean_version")) for p in (priorities or []) if isinstance(p, dict))
+
+    @classmethod
     def _normalize_info(cls, info: dict) -> dict:
         """
         只按原始媒体信息标准化。
@@ -109,6 +320,9 @@ class WashingService:
             "audio_langs": set(),
             "sub_langs": set(),
             "size_gb": 0.0,
+            "has_effect_subtitle": False,
+            "is_clean_version": None,
+            "clean_version_detail": {},
         }
 
         if not info:
@@ -226,6 +440,7 @@ class WashingService:
 
         norm["audio_langs"] = {normalize_lang_code(a) for a in raw_audio_langs if a}
         norm["sub_langs"] = {normalize_lang_code(s) for s in raw_sub_langs if s}
+        norm["has_effect_subtitle"] = cls._has_effect_subtitle(parsed, media_streams)
 
         # 5. 体积
         size_bytes = (
@@ -253,6 +468,16 @@ class WashingService:
             )
         norm["original_lang"] = normalize_lang_code(raw_original_lang) # ★ 替换为全局方法
         norm["has_external_subtitle"] = parsed.get("has_external_subtitle", False)
+        if isinstance(parsed, dict) and parsed.get("_need_clean_version_check"):
+            clean_result = cls._clean_version_result(
+                media_type=parsed.get("_media_type") or parsed.get("media_type") or parsed.get("type") or "",
+                tmdb_id=parsed.get("_tmdb_id") or parsed.get("tmdb_id") or "",
+                season_num=parsed.get("_season_num") or parsed.get("season_number"),
+                episode_num=parsed.get("_episode_num") or parsed.get("episode_number"),
+                info=parsed,
+            )
+            norm["is_clean_version"] = clean_result.get("is_clean") if clean_result.get("checked") else None
+            norm["clean_version_detail"] = clean_result
         return norm
 
     @classmethod
@@ -357,6 +582,14 @@ class WashingService:
                     if not matched_subs and not has_ext_sub: 
                         return False, "缺少必须的字幕"
 
+        if priority_rule.get("subtitle_effect") or priority_rule.get("effect_subtitle"):
+            has_effect_subtitle = bool(norm_info.get("has_effect_subtitle"))
+            if is_exclude:
+                if has_effect_subtitle:
+                    return True, "命中排除条件: 特效字幕"
+            elif not has_effect_subtitle:
+                return False, "缺少特效字幕"
+
         # 6. 体积
         min_size = priority_rule.get("min_size_gb")
         max_size = priority_rule.get("max_size_gb")
@@ -374,6 +607,20 @@ class WashingService:
                 return False, "体积过小"
             if max_size and norm_info["size_gb"] > 0 and norm_info["size_gb"] > float(max_size):
                 return False, "体积过大"
+
+        # 7. 纯净版：用物理时长对比 TMDb 官方分集时长。
+        if priority_rule.get("clean_version"):
+            clean_flag = norm_info.get("is_clean_version")
+            clean_detail = norm_info.get("clean_version_detail") or {}
+            if clean_flag is None:
+                if not is_exclude:
+                    return False, f"无法判断纯净版 ({clean_detail.get('reason') or 'unknown'})"
+            elif clean_flag:
+                if is_exclude:
+                    return True, "命中排除条件: 纯净版"
+            else:
+                if not is_exclude:
+                    return False, "未命中纯净版"
 
         # 最终返回
         if is_exclude:
@@ -617,6 +864,9 @@ class WashingService:
         media_type: str,
         original_lang: str = None,
         has_external_subtitle: bool = False,
+        tmdb_id: str = "",
+        season_num: Optional[int] = None,
+        episode_num: Optional[int] = None,
     ) -> Dict[str, Any]:
         """只计算当前文件在洗版模板里的优先级，不做新旧版本比较。
 
@@ -658,6 +908,10 @@ class WashingService:
         new_video_info["_file_size"] = file_size
         new_video_info["_original_lang"] = original_lang
         new_video_info["has_external_subtitle"] = has_external_subtitle
+        new_video_info["_media_type"] = media_type
+        new_video_info["_tmdb_id"] = tmdb_id
+        new_video_info["_season_num"] = season_num
+        new_video_info["_episode_num"] = episode_num
 
         db_media_type = "Movie" if str(media_type or "").lower() == "movie" else "Series"
         result["db_media_type"] = db_media_type
@@ -669,6 +923,7 @@ class WashingService:
             result["reason"] = "未配置优先级规则，未记录洗版等级"
             return result
 
+        new_video_info["_need_clean_version_check"] = cls._priorities_need_clean_version(priorities)
         norm_new = cls._normalize_info(new_video_info)
         level, reason = cls.get_level(norm_new, priorities)
         result["ok"] = True
@@ -723,9 +978,10 @@ class WashingService:
         new_video_info["_file_size"] = file_size
         new_video_info["_original_lang"] = original_lang
         new_video_info["has_external_subtitle"] = has_external_subtitle # ★★★ 注入字典 ★★★
-
-        # 4. 统一调用标准化解析
-        norm_new = cls._normalize_info(new_video_info)
+        new_video_info["_media_type"] = media_type
+        new_video_info["_tmdb_id"] = tmdb_id
+        new_video_info["_season_num"] = season_num
+        new_video_info["_episode_num"] = episode_num
 
         db_media_type = "Movie" if media_type.lower() == "movie" else "Series"
 
@@ -733,6 +989,11 @@ class WashingService:
         priorities = cls._load_priorities(db_media_type, target_cid)
         if not priorities:
             return "ACCEPT", "未配置优先级规则，默认放行"
+
+        new_video_info["_need_clean_version_check"] = cls._priorities_need_clean_version(priorities)
+
+        # 4. 统一调用标准化解析
+        norm_new = cls._normalize_info(new_video_info)
 
         # 2. 新文件是否达标
         new_level, new_reason_detail = cls.get_level(norm_new, priorities)
@@ -768,6 +1029,11 @@ class WashingService:
                 old_info = {}
 
             old_info["_original_lang"] = original_lang
+            old_info["_media_type"] = media_type
+            old_info["_tmdb_id"] = tmdb_id
+            old_info["_season_num"] = season_num
+            old_info["_episode_num"] = episode_num
+            old_info["_need_clean_version_check"] = cls._priorities_need_clean_version(priorities)
             norm_old = cls._normalize_info(old_info)
 
             old_level, _ = cls.get_level(norm_old, priorities)
