@@ -1496,6 +1496,7 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                         s.season_number,
                         s.episode_number AS source_episode_number,
                         f.id AS file_row_id,
+                        NULLIF(COALESCE(f.fid, ''), '') AS file_fid,
                         NULLIF(UPPER(COALESCE(f.sha1, '')), '') AS file_sha1,
                         NULLIF(COALESCE(f.pick_code, ''), '') AS file_pick_code,
                         f.episode_number AS file_episode_number
@@ -1569,6 +1570,30 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                     FROM candidate_files cf
                     GROUP BY cf.local_source_id
                 ),
+                cache_match AS (
+                    SELECT
+                        cf.local_source_id,
+                        COUNT(cf.file_row_id) FILTER (
+                            WHERE EXISTS (
+                                SELECT 1
+                                FROM p115_filesystem_cache p
+                                WHERE (
+                                           cf.file_sha1 IS NOT NULL
+                                           AND UPPER(COALESCE(p.sha1, '')) = cf.file_sha1
+                                      )
+                                   OR (
+                                           cf.file_pick_code IS NOT NULL
+                                           AND COALESCE(p.pick_code, '') = cf.file_pick_code
+                                      )
+                                   OR (
+                                           cf.file_fid IS NOT NULL
+                                           AND COALESCE(p.id, '') = cf.file_fid
+                                      )
+                            )
+                        )::integer AS cache_live_files
+                    FROM candidate_files cf
+                    GROUP BY cf.local_source_id
+                ),
                 source_match AS (
                     SELECT
                         s.id AS local_source_id,
@@ -1624,12 +1649,19 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                     s.*,
                     COALESCE(f.total_files, 0) AS total_files,
                     COALESCE(f.live_files, 0) AS live_files,
+                    COALESCE(cm.cache_live_files, 0) AS cache_live_files,
                     CASE
+                        WHEN s.source_kind = 'completed_season'
+                         AND COALESCE(s.center_source_id, '') LIKE 'css_%'
+                         AND COALESCE(f.total_files, 0) > 0
+                         AND COALESCE(cm.cache_live_files, 0) = 0
+                        THEN 'legacy_completed_season_file_not_in_cache'
                         WHEN COALESCE(f.total_files, 0) > 0 THEN 'source_file_not_in_library'
                         ELSE 'source_not_in_library'
                     END AS offline_reason
                 FROM candidate_sources s
                 LEFT JOIN file_match f ON f.local_source_id = s.id
+                LEFT JOIN cache_match cm ON cm.local_source_id = s.id
                 LEFT JOIN source_match sm ON sm.local_source_id = s.id
                 WHERE
                     (
@@ -1640,6 +1672,12 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                         COALESCE(f.total_files, 0) = 0
                         AND COALESCE(s.sha1, '') <> ''
                         AND COALESCE(sm.source_live, FALSE) = FALSE
+                    )
+                    OR (
+                        s.source_kind = 'completed_season'
+                        AND COALESCE(s.center_source_id, '') LIKE 'css_%'
+                        AND COALESCE(f.total_files, 0) > 0
+                        AND COALESCE(cm.cache_live_files, 0) = 0
                     )
                 ORDER BY s.updated_at ASC NULLS LAST, s.id ASC
                 """,
@@ -1827,6 +1865,41 @@ def get_completed_season_share_channel_by_source(center_source_id: str, statuses
                     (center_source_id,),
                 )
             return _row(cur.fetchone()) or {}
+
+
+def list_completed_season_share_channels_by_source(local_source_id: int = None, center_source_id: str = '', statuses=None) -> List[Dict[str, Any]]:
+    status_list = [str(x).strip() for x in (statuses or []) if str(x).strip()]
+    center_source_id = str(center_source_id or '').strip()
+    try:
+        local_source_id = int(local_source_id or 0)
+    except Exception:
+        local_source_id = 0
+    source_where = []
+    args: List[Any] = []
+    if local_source_id > 0:
+        source_where.append('local_source_id=%s')
+        args.append(local_source_id)
+    if center_source_id:
+        source_where.append('center_source_id=%s')
+        args.append(center_source_id)
+    if not source_where:
+        return []
+    status_sql = ''
+    if status_list:
+        status_sql = 'AND status = ANY(%s)'
+        args.append(status_list)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT * FROM shared_completed_season_share_channels
+                WHERE ({' OR '.join(source_where)})
+                {status_sql}
+                ORDER BY updated_at DESC NULLS LAST, id DESC
+                """,
+                args,
+            )
+            return _rows(cur.fetchall())
 
 
 def list_completed_season_share_channels(statuses=None, limit: int = 100, need_check: bool = False) -> List[Dict[str, Any]]:

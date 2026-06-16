@@ -646,6 +646,8 @@ COMPLETED_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_completed_season_share'
 LOGICAL_SEASON_SHARE_CREATE_EVENT_TYPE = 'create_logical_season_filelist_share'
 PRO_QUOTA_AUTH_EVENT_TYPE = 'pro_quota_auth_check'
 _COMPLETED_SHARE_SYNC_LOCK = threading.Lock()
+_COMPLETED_SHARE_DELETE_RETRY_SECONDS = 300
+_COMPLETED_SHARE_DELETE_ATTEMPTS: Dict[str, float] = {}
 
 
 def _completed_share_event_type(event: Dict[str, Any]) -> str:
@@ -730,6 +732,124 @@ def _delete_completed_share_from_115(p115, share_code: str) -> Dict[str, Any]:
 
     cancel_ok = any(_completed_share_delete_ok(a.get('response')) for a in attempts if a.get('method') == 'share_cancel')
     return {'state': bool(cancel_ok), 'deleted': False, 'cancelled_only': bool(cancel_ok), 'attempts': attempts}
+
+
+def _delete_completed_share_channels_for_source(row: Dict[str, Any], reason: str, *, client: SharedCenterClient = None) -> Dict[str, Any]:
+    row = dict(row or {})
+    local_id = int(row.get('id') or 0)
+    center_source_id = str(row.get('center_source_id') or '').strip()
+    channels = shared_share_db.list_completed_season_share_channels_by_source(
+        local_source_id=local_id,
+        center_source_id=center_source_id,
+    )
+    if not channels:
+        return {'ok': True, 'checked': 0, 'deleted_115': 0, 'deleted_local': 0, 'kept_audit': 0, 'items': []}
+
+    p115 = None
+    deleted_115 = 0
+    deleted_local = 0
+    kept_audit = 0
+    failed = 0
+    items = []
+    for channel in channels:
+        channel_id = str(channel.get('channel_id') or '').strip()
+        share_code = str(channel.get('share_code') or '').strip()
+        item = {
+            'channel_id': channel_id,
+            'center_source_id': channel.get('center_source_id'),
+            'share_code': share_code,
+        }
+        if not channel_id:
+            continue
+        if not share_code:
+            if _keep_missing_share_code_channel(channel):
+                kept_audit += 1
+                item.update({'ok': True, 'kept_audit': True, 'reason': 'missing_share_code_audit'})
+                items.append(item)
+                continue
+            deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
+            deleted_local += 1 if deleted else 0
+            item.update({'ok': True, 'deleted_local_channel': bool(deleted), 'reason': 'missing_share_code_no_115_share'})
+            items.append(item)
+            continue
+
+        if p115 is None:
+            try:
+                from handler.p115_service import P115Service
+                p115 = P115Service.get_client()
+            except Exception as e:
+                p115 = None
+                item.update({'ok': False, 'error': f'115 客户端初始化失败: {e}'})
+                items.append(item)
+                failed += 1
+                continue
+        if not p115:
+            item.update({'ok': False, 'error': '115 客户端未初始化，无法删除旧版分享'})
+            items.append(item)
+            failed += 1
+            continue
+
+        now_ts = time.time()
+        last_attempt = float(_COMPLETED_SHARE_DELETE_ATTEMPTS.get(share_code) or 0)
+        if last_attempt and now_ts - last_attempt < _COMPLETED_SHARE_DELETE_RETRY_SECONDS:
+            wait_seconds = int(_COMPLETED_SHARE_DELETE_RETRY_SECONDS - (now_ts - last_attempt))
+            item.update({'ok': False, 'error': f'115 分享删除刚失败过，{wait_seconds}s 后再重试', 'retry_after': wait_seconds})
+            items.append(item)
+            failed += 1
+            continue
+
+        delete_resp = _delete_completed_share_from_115(p115, share_code)
+        item['share_delete_response'] = delete_resp
+        if delete_resp.get('state') is False:
+            _COMPLETED_SHARE_DELETE_ATTEMPTS[share_code] = now_ts
+            msg = f'删除旧版共享源前删除 115 分享失败: {delete_resp}'
+            try:
+                shared_share_db.update_completed_season_share_channel(
+                    channel_id,
+                    status_message=msg[:1000],
+                    raw_json={'share_delete_response': delete_resp, 'cleanup_reason': reason},
+                    last_checked_at='NOW()',
+                )
+            except Exception:
+                pass
+            item.update({'ok': False, 'error': msg})
+            items.append(item)
+            failed += 1
+            continue
+
+        _COMPLETED_SHARE_DELETE_ATTEMPTS.pop(share_code, None)
+        deleted_115 += 1 if delete_resp.get('deleted') or delete_resp.get('cancelled_only') or delete_resp.get('skipped') else 0
+        center_resp = {}
+        try:
+            client = client or SharedCenterClient()
+            center_resp = _update_center_share_channel_status(client, channel, channel_id, {
+                'status': 'disabled',
+                'review_status': 'disabled',
+                'status_message': reason,
+                'raw_json': {'share_delete_response': delete_resp, 'cleanup_reason': reason},
+            })
+        except Exception as e:
+            center_resp = {'ok': False, 'error': str(e)}
+        if isinstance(center_resp, dict) and center_resp.get('ok') is False:
+            item.update({'ok': False, 'error': f'中心分享通道状态同步失败: {center_resp}', 'center': center_resp})
+            items.append(item)
+            failed += 1
+            continue
+
+        deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
+        deleted_local += 1 if deleted else 0
+        item.update({'ok': True, 'deleted_115_share': True, 'deleted_local_channel': bool(deleted), 'center': center_resp})
+        items.append(item)
+
+    return {
+        'ok': failed == 0,
+        'checked': len(channels),
+        'deleted_115': deleted_115,
+        'deleted_local': deleted_local,
+        'kept_audit': kept_audit,
+        'failed': failed,
+        'items': items,
+    }
 
 
 def _extract_completed_share_payload(resp: Dict[str, Any], *, receive_code: str = '') -> Dict[str, Any]:
@@ -5682,6 +5802,29 @@ def _delete_bad_completed_source_from_center_and_local(row: Dict[str, Any], gate
     reason = str(gate.get('message') or gate.get('reason') or '完结季一致性校验未通过').strip()
     center_resp = {}
 
+    share_cleanup = _delete_completed_share_channels_for_source(row, reason, client=client)
+    if not share_cleanup.get('ok'):
+        try:
+            shared_share_db.update_local_source(local_id, last_error=f'旧版 115 分享删除失败: {share_cleanup}')
+        except Exception:
+            pass
+        logger.warning(
+            "  ➜ [共享资源维护] 删除旧版共享源前清理 115 分享失败，保留本地记录等待下次重试：%s，id=%s，center=%s，share_cleanup=%s",
+            label,
+            local_id,
+            center_source_id or '-',
+            share_cleanup,
+        )
+        return {
+            'ok': False,
+            'id': local_id,
+            'title': label,
+            'center_source_id': center_source_id,
+            'message': '旧版 115 分享删除失败',
+            'reason': reason,
+            'share_cleanup': share_cleanup,
+        }
+
     if center_source_id:
         try:
             client = client or SharedCenterClient()
@@ -5728,6 +5871,7 @@ def _delete_bad_completed_source_from_center_and_local(row: Dict[str, Any], gate
         'center_source_id': center_source_id,
         'reason': reason,
         'center_response': center_resp,
+        'share_cleanup': share_cleanup,
         'deleted': deleted,
     }
 
@@ -5982,6 +6126,33 @@ def disable_shared_sources_for_deleted_fids(
         matched_file_fids = [str(x) for x in (row.get('matched_file_fids') or []) if str(x or '').strip()]
         center_resp: Dict[str, Any] = {}
 
+        share_cleanup = _delete_completed_share_channels_for_source(row, reason_text, client=client)
+        if not share_cleanup.get('ok'):
+            failed += 1
+            try:
+                shared_share_db.update_local_source(local_id, last_error=f'洗版旧版 115 分享删除失败: {share_cleanup}')
+            except Exception:
+                pass
+            logger.warning(
+                "  ➜ [共享资源] 洗版旧源 115 分享删除失败，保留本地 active 等维护任务重试: "
+                "id=%s, kind=%s, center=%s, title=%s, share_cleanup=%s",
+                local_id,
+                source_kind,
+                center_source_id or '-',
+                title,
+                share_cleanup,
+            )
+            items.append({
+                'id': local_id,
+                'source_kind': source_kind,
+                'center_source_id': center_source_id,
+                'title': title,
+                'ok': False,
+                'error': '旧版 115 分享删除失败',
+                'share_cleanup': share_cleanup,
+            })
+            continue
+
         if center_source_id:
             try:
                 if not _enabled():
@@ -6036,6 +6207,7 @@ def disable_shared_sources_for_deleted_fids(
                 'ok': True,
                 'matched_file_fids': matched_file_fids,
                 'root_fid_matched': str(row.get('root_fid') or '') in fid_list,
+                'share_cleanup': share_cleanup,
             }
             items.append(item)
             logger.info(
@@ -6096,6 +6268,34 @@ def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
         reason = str(row.get('offline_reason') or 'sha1_not_in_library')
         msg = f'local library removed or replaced: {reason}'
         center_resp = {}
+        share_cleanup = _delete_completed_share_channels_for_source(row, reason, client=client)
+
+        # share_cleanup 已在中心下架前完成，这里只复用结果，避免维护重试时重复删除 115 分享。
+        if not share_cleanup.get('ok'):
+            failed += 1
+            try:
+                shared_share_db.update_local_source(local_id, last_error=f'失效源 115 分享删除失败: {share_cleanup}')
+            except Exception:
+                pass
+            logger.warning(
+                "  ➜ [共享资源维护] 本机失效共享源 115 分享删除失败，保留 active 等下次重试: "
+                "id=%s, kind=%s, center=%s, title=%s, share_cleanup=%s",
+                local_id,
+                source_kind,
+                center_source_id or '-',
+                title,
+                share_cleanup,
+            )
+            items.append({
+                'id': local_id,
+                'source_kind': source_kind,
+                'center_source_id': center_source_id,
+                'title': title,
+                'ok': False,
+                'error': '失效源 115 分享删除失败',
+                'share_cleanup': share_cleanup,
+            })
+            continue
 
         if center_source_id:
             try:
@@ -6129,6 +6329,7 @@ def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
             'reason': reason,
             'total_files': int(row.get('total_files') or 0),
             'live_files': int(row.get('live_files') or 0),
+            'share_cleanup': share_cleanup,
         }
         items.append(item)
         logger.info(
