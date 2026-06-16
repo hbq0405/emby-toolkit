@@ -852,6 +852,113 @@ def _delete_completed_share_channels_for_source(row: Dict[str, Any], reason: str
     }
 
 
+def _delete_logical_share_channels_for_fids(fid_list: List[str], reason: str, *, client: SharedCenterClient = None) -> Dict[str, Any]:
+    fid_set = {str(x).strip() for x in (fid_list or []) if str(x).strip()}
+    if not fid_set:
+        return {'ok': True, 'checked': 0, 'deleted_115': 0, 'deleted_local': 0, 'failed': 0, 'items': []}
+    statuses = ['valid', 'pending_review', 'creating']
+    channels = shared_share_db.list_completed_season_share_channels(statuses=statuses, limit=1000, need_check=False)
+    matched = []
+    for channel in channels or []:
+        if not _share_channel_is_logical(channel):
+            continue
+        share_ids = _logical_share_row_file_ids(channel)
+        hit_fids = sorted(fid_set.intersection({str(x).strip() for x in share_ids if str(x).strip()}))
+        if hit_fids:
+            matched.append((channel, hit_fids))
+    if not matched:
+        return {'ok': True, 'checked': 0, 'deleted_115': 0, 'deleted_local': 0, 'failed': 0, 'items': []}
+
+    p115 = None
+    deleted_115 = 0
+    deleted_local = 0
+    failed = 0
+    items = []
+    for channel, hit_fids in matched:
+        channel_id = str(channel.get('channel_id') or '').strip()
+        share_code = str(channel.get('share_code') or '').strip()
+        item = {
+            'channel_id': channel_id,
+            'center_source_id': channel.get('center_source_id'),
+            'share_code': share_code,
+            'matched_fids': hit_fids[:20],
+        }
+        if not channel_id:
+            continue
+        if not share_code:
+            deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
+            deleted_local += 1 if deleted else 0
+            item.update({'ok': True, 'deleted_local_channel': bool(deleted), 'reason': 'missing_share_code_no_115_share'})
+            items.append(item)
+            continue
+
+        if p115 is None:
+            try:
+                from handler.p115_service import P115Service
+                p115 = P115Service.get_client()
+            except Exception as e:
+                p115 = None
+                item.update({'ok': False, 'error': f'115 客户端初始化失败: {e}'})
+                items.append(item)
+                failed += 1
+                continue
+        if not p115:
+            item.update({'ok': False, 'error': '115 客户端未初始化，无法删除旧版逻辑季分享'})
+            items.append(item)
+            failed += 1
+            continue
+
+        delete_resp = _delete_completed_share_from_115(p115, share_code)
+        item['share_delete_response'] = delete_resp
+        if delete_resp.get('state') is False:
+            msg = f'删除旧版逻辑季分享失败: {delete_resp}'
+            try:
+                shared_share_db.update_completed_season_share_channel(
+                    channel_id,
+                    status_message=msg[:1000],
+                    raw_json={'share_delete_response': delete_resp, 'cleanup_reason': reason, 'matched_fids': hit_fids[:50]},
+                    last_checked_at='NOW()',
+                )
+            except Exception:
+                pass
+            item.update({'ok': False, 'error': msg})
+            items.append(item)
+            failed += 1
+            continue
+
+        deleted_115 += 1 if delete_resp.get('deleted') or delete_resp.get('cancelled_only') or delete_resp.get('skipped') else 0
+        center_resp = {}
+        try:
+            client = client or SharedCenterClient()
+            center_resp = _update_center_share_channel_status(client, channel, channel_id, {
+                'status': 'disabled',
+                'review_status': 'disabled',
+                'status_message': reason,
+                'raw_json': {'share_delete_response': delete_resp, 'cleanup_reason': reason, 'matched_fids': hit_fids[:50]},
+            })
+        except Exception as e:
+            center_resp = {'ok': False, 'error': str(e)}
+        if isinstance(center_resp, dict) and center_resp.get('ok') is False:
+            item.update({'ok': False, 'error': f'中心逻辑季分享通道状态同步失败: {center_resp}', 'center': center_resp})
+            items.append(item)
+            failed += 1
+            continue
+
+        deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
+        deleted_local += 1 if deleted else 0
+        item.update({'ok': True, 'deleted_115_share': True, 'deleted_local_channel': bool(deleted), 'center': center_resp})
+        items.append(item)
+
+    return {
+        'ok': failed == 0,
+        'checked': len(matched),
+        'deleted_115': deleted_115,
+        'deleted_local': deleted_local,
+        'failed': failed,
+        'items': items,
+    }
+
+
 def _extract_completed_share_payload(resp: Dict[str, Any], *, receive_code: str = '') -> Dict[str, Any]:
     resp = resp if isinstance(resp, dict) else {}
     data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
@@ -1177,21 +1284,54 @@ def _find_completed_share_list_item_by_receive_and_count(p115, *, receive_code: 
     return matches[0] if len(matches) == 1 else {}
 
 
-def _local_existing_logical_share_for_create(group_id: str, manifest_hash: str = '') -> Dict[str, Any]:
+def _logical_share_row_file_ids(row: Dict[str, Any]) -> List[str]:
+    raw = _share_channel_raw_json(row)
+    share_ids = raw.get('share_ids')
+    if isinstance(share_ids, list):
+        return [str(x).strip() for x in share_ids if str(x).strip()]
+    event = raw.get('event') if isinstance(raw.get('event'), dict) else {}
+    ids = []
+    for value in event.get('file_ids') or []:
+        fid = str(value).strip()
+        if fid and fid not in ids:
+            ids.append(fid)
+    best_asset_map = event.get('best_asset_map') if isinstance(event.get('best_asset_map'), dict) else {}
+    for ep in sorted(best_asset_map.keys(), key=lambda x: _safe_int(x, 0)):
+        item = best_asset_map.get(ep) if isinstance(best_asset_map.get(ep), dict) else {}
+        fid = str(item.get('file_id') or item.get('fid') or '').strip()
+        if fid and fid not in ids:
+            ids.append(fid)
+    return ids
+
+
+def _same_logical_share_file_ids(left: List[str], right: List[str]) -> bool:
+    left_ids = [str(x).strip() for x in (left or []) if str(x).strip()]
+    right_ids = [str(x).strip() for x in (right or []) if str(x).strip()]
+    return bool(left_ids and right_ids and len(left_ids) == len(right_ids) and set(left_ids) == set(right_ids))
+
+
+def _local_existing_logical_share_for_create(group_id: str, manifest_hash: str = '', share_ids: List[str] = None) -> Dict[str, Any]:
     statuses = ['valid', 'pending_review', 'creating']
-    row = shared_share_db.get_completed_season_share_channel_by_source(group_id, statuses=statuses)
-    if row and str(row.get('share_code') or '').strip():
-        return row
+    share_ids = [str(x).strip() for x in (share_ids or []) if str(x).strip()]
     manifest_hash = str(manifest_hash or '').strip()
+    rows = shared_share_db.list_completed_season_share_channels_by_source(center_source_id=group_id, statuses=statuses)
+    for item in rows or []:
+        if not _share_channel_is_logical(item):
+            continue
+        if not str(item.get('share_code') or '').strip():
+            continue
+        item_manifest = str(item.get('manifest_hash') or '').strip()
+        if manifest_hash and item_manifest == manifest_hash:
+            return item
+        if _same_logical_share_file_ids(_logical_share_row_file_ids(item), share_ids):
+            return item
     if not manifest_hash:
         return {}
     rows = shared_share_db.list_completed_season_share_channels(statuses=statuses, limit=1000, need_check=False)
     for item in rows or []:
         if not _share_channel_is_logical(item):
             continue
-        if str(item.get('manifest_hash') or '').strip() != manifest_hash:
-            continue
-        if str(item.get('share_code') or '').strip():
+        if str(item.get('manifest_hash') or '').strip() == manifest_hash and str(item.get('share_code') or '').strip():
             return item
     return {}
 
@@ -1438,7 +1578,8 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         return {'ok': False, 'event_id': event_id, 'message': message}
 
     manifest_hash = str(payload.get('package_fingerprint') or payload.get('manifest_hash') or '').strip()
-    existing_share = _local_existing_logical_share_for_create(group_id, manifest_hash)
+    share_ids = _logical_share_file_ids_from_payload(client, group_id, payload)
+    existing_share = _local_existing_logical_share_for_create(group_id, manifest_hash, share_ids)
     if existing_share:
         status = str(existing_share.get('status') or 'pending_review').strip().lower()
         message = f'本地已存在逻辑季 115 分享，复用已有 share_code：{title}'
@@ -1499,7 +1640,6 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
             'report': report_resp,
         }
 
-    share_ids = _logical_share_file_ids_from_payload(client, group_id, payload)
     expected_count = _safe_int(payload.get('file_count') or payload.get('episode_total'), 0)
     if not share_ids or (expected_count > 0 and len(share_ids) < expected_count):
         message = f'逻辑季分享缺少完整 file_id 列表：{len(share_ids)}/{expected_count or "?"}，无法创建 115 分享：{title}'
@@ -6081,6 +6221,25 @@ def disable_shared_sources_for_deleted_fids(
     if not fid_list:
         return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0, 'items': []}
 
+    reason_text = str(reason or 'washing_replaced_old_version').strip()
+    center_message = str(message or '').strip() or f'local file deleted by washing: {reason_text}'
+    disabled = 0
+    failed = 0
+    items: List[Dict[str, Any]] = []
+    logical_share_cleanup = _delete_logical_share_channels_for_fids(fid_list, reason_text)
+    if not logical_share_cleanup.get('ok'):
+        failed += int(logical_share_cleanup.get('failed') or 1)
+        items.append({
+            'ok': False,
+            'error': '旧版逻辑季 115 分享删除失败',
+            'logical_share_cleanup': logical_share_cleanup,
+        })
+    elif logical_share_cleanup.get('checked'):
+        items.append({
+            'ok': True,
+            'logical_share_cleanup': logical_share_cleanup,
+        })
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -6109,14 +6268,16 @@ def disable_shared_sources_for_deleted_fids(
         return {'ok': False, 'matched': 0, 'disabled': 0, 'failed': 1, 'error': str(e), 'items': []}
 
     if not rows:
-        return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0, 'items': []}
+        return {
+            'ok': failed == 0,
+            'matched': 0,
+            'disabled': 0,
+            'failed': failed,
+            'logical_share_cleanup': logical_share_cleanup,
+            'items': items[:50],
+        }
 
-    reason_text = str(reason or 'washing_replaced_old_version').strip()
-    center_message = str(message or '').strip() or f'local file deleted by washing: {reason_text}'
     client = None
-    disabled = 0
-    failed = 0
-    items: List[Dict[str, Any]] = []
 
     for row in rows:
         local_id = int(row.get('id') or 0)
@@ -6242,6 +6403,7 @@ def disable_shared_sources_for_deleted_fids(
         'matched': len(rows),
         'disabled': disabled,
         'failed': failed,
+        'logical_share_cleanup': logical_share_cleanup,
         'items': items[:50],
     }
 
