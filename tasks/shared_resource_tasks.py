@@ -3237,6 +3237,32 @@ def _raw_batch_missing_for_files(files: List[Dict[str, Any]], uploaded_sha1s: Di
     return missing
 
 
+def _files_missing_pick_code(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    missing = []
+    for f in files or []:
+        pc = str((f or {}).get('pick_code') or (f or {}).get('pickcode') or (f or {}).get('pc') or '').strip()
+        if pc:
+            continue
+        missing.append({
+            'sha1': _norm_sha1((f or {}).get('sha1')),
+            'file_name': (f or {}).get('file_name') or (f or {}).get('name') or '',
+        })
+    return missing
+
+
+def _missing_pick_code_reject_result(files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    missing = _files_missing_pick_code(files)
+    names = '、'.join([str(x.get('file_name') or x.get('sha1') or 'unknown') for x in missing[:5]])
+    if len(missing) > 5:
+        names += f" 等 {len(missing)} 个"
+    return {
+        'ok': False,
+        'message': f'缺少 115 pick_code，已拒绝登记中心：{names}',
+        'missing_pick_code': missing,
+        'fingerprint_repair': {},
+    }
+
+
 def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, animation_meta: Dict[str, Any] = None) -> Dict[str, Any]:
     raw = _raw_for_file(file_info) if raw_uploaded else {}
     sig = _media_signature(raw, file_info) if raw else {}
@@ -4431,6 +4457,21 @@ def _local_display_meta_rows_for_candidate(candidate: Dict[str, Any]) -> Dict[st
                         out['movie'] = dict(row)
                     return out
 
+                if item_type == 'Series' and series_id:
+                    cur.execute(
+                        """
+                        SELECT * FROM media_metadata
+                        WHERE item_type='Series' AND tmdb_id=%s
+                        ORDER BY last_updated_at DESC NULLS LAST
+                        LIMIT 1
+                        """,
+                        (series_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        out['series'] = dict(row)
+                    return out
+
                 if item_type in ('Season', 'Episode') and series_id:
                     if item_type == 'Episode' and season_no is not None and _safe_int_or_none(candidate.get('episode_number')) is not None:
                         cur.execute(
@@ -4524,6 +4565,23 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
             'release_year': _safe_int_or_none(row.get('release_year')) or _safe_int_or_none(fallback_year),
             'release_date': str(row.get('release_date') or '') or None,
         }
+        if item_type == 'Season':
+            expected = _safe_int_or_none(row.get('total_episodes') or candidate.get('expected_episode_count') or candidate.get('total_episodes'))
+            if expected and expected > 0:
+                meta.update({
+                    'expected_episode_count': expected,
+                    'total_episodes': expected,
+                    'episode_count': expected,
+                })
+            for src_key, dst_key in (
+                ('watching_status', 'watching_status'),
+                ('season_status', 'watching_status'),
+                ('watchlist_tmdb_status', 'watchlist_tmdb_status'),
+                ('total_episodes_locked', 'episode_count_locked'),
+            ):
+                value = row.get(src_key) if row.get(src_key) not in (None, '', [], {}) else candidate.get(src_key)
+                if value not in (None, '', [], {}):
+                    meta[dst_key] = value
         if include_series_fields:
             meta.update({
                 'rating': row.get('rating'),
@@ -4669,6 +4727,13 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
 
     # RAW 摘要生成发生在正式登记前，先把候选类型补进 file_info。
     files = _prime_candidate_files_for_registration(candidate, files)
+    missing_pick_code = _files_missing_pick_code(files)
+    if missing_pick_code:
+        logger.warning(
+            "  ➜ [共享资源] 跳过缺少 115 pick_code 的资源登记: %s",
+            '、'.join([str(x.get('file_name') or x.get('sha1') or 'unknown') for x in missing_pick_code[:5]]),
+        )
+        return _missing_pick_code_reject_result(files)
 
     root = shared_share_db.candidate_root_from_files(files)
     client = SharedCenterClient()
@@ -4862,6 +4927,13 @@ def trigger_shared_rapid_register_batch_for_library_items(processor=None, regist
             continue
         files = shared_share_db.collect_files_for_candidate(candidate)
         files = _prime_candidate_files_for_registration(candidate, files)
+        if files and _files_missing_pick_code(files):
+            prepared.append({
+                'item': raw_item,
+                'candidate': candidate,
+                'blocked_result': _missing_pick_code_reject_result(files),
+            })
+            continue
         prepared.append({'item': raw_item, 'candidate': candidate, 'has_files': bool(files)})
         all_files.extend(files)
 
@@ -6124,6 +6196,7 @@ def _display_meta_has_useful_payload(meta: Dict[str, Any]) -> bool:
     for key in (
         'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
         'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
+        'expected_episode_count', 'total_episodes', 'episode_count',
     ):
         if meta.get(key) not in (None, '', [], {}):
             return True
@@ -6253,6 +6326,9 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                     'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
                     'release_year', 'release_date',
                 )),
+                'season_total': has_any(season, ('total_episodes',)),
+                'expected_episode_count': has_any(season, ('total_episodes',)),
+                'total_episodes': has_any(season, ('total_episodes',)),
             }
         return any(checks.get(field, False) for field in missing)
 
@@ -6372,6 +6448,36 @@ def _post_center_display_meta_backfill(bundles: List[Dict[str, Any]], *, batch_s
         'accepted_meta_items': accepted_meta_items,
         'accepted_bundles': accepted_bundles,
         'errors': errors[:20],
+    }
+
+
+def upload_center_display_metadata_for_library_item(processor=None, **kwargs) -> Dict[str, Any]:
+    """补传单个媒体壳展示元数据，供追剧刷新等链路复用。"""
+    candidate = _normalize_series_candidate_identity(_library_register_candidate_from_kwargs(kwargs))
+    item_type = str(candidate.get('item_type') or '').strip()
+    if item_type not in ('Movie', 'Series', 'Season', 'Episode'):
+        return {'ok': False, 'message': f'unsupported item_type: {item_type or "-"}'}
+
+    bundle = _center_display_meta_bundle_for_candidate(candidate)
+    meta_items = bundle.get('display_meta_items_json') if isinstance(bundle.get('display_meta_items_json'), list) else []
+    if not meta_items and isinstance(bundle.get('display_meta_json'), dict):
+        meta_items = [bundle.get('display_meta_json')]
+    filtered_items = [x for x in meta_items if isinstance(x, dict) and _display_meta_has_useful_payload(x)]
+    if not filtered_items:
+        return {'ok': False, 'message': 'no local display metadata'}
+
+    out = dict(bundle)
+    out['display_meta_items_json'] = filtered_items
+    out['display_meta_json'] = filtered_items[-1]
+    if kwargs.get('reason'):
+        out['_reason'] = str(kwargs.get('reason'))
+
+    posted = _post_center_display_meta_backfill([out], batch_size=1)
+    return {
+        'ok': bool(posted.get('ok')),
+        'uploaded_meta_items': _safe_int(posted.get('accepted_meta_items'), 0),
+        'uploaded_bundles': _safe_int(posted.get('accepted_bundles'), 0),
+        'errors': posted.get('errors') or [],
     }
 
 
