@@ -135,6 +135,18 @@ def _build_rating_value_sql(rating_expr: str) -> str:
 
     return f"CASE {chr(10).join(whens)} ELSE {else_logic} END"
 
+
+def _asset_runtime_sql(alias: str) -> str:
+    return f"""
+    (
+        SELECT AVG((a->>'runtime_minutes')::numeric)
+        FROM jsonb_array_elements(COALESCE({alias}.asset_details_json, '[]'::jsonb)) a
+        WHERE (a->>'runtime_minutes') ~ '^[0-9]+(\\.[0-9]+)?$'
+          AND (a->>'runtime_minutes')::numeric > 0
+    )
+    """
+
+
 def query_virtual_library_items(
     rules: List[Dict[str, Any]], 
     logic: str, 
@@ -527,16 +539,24 @@ def query_virtual_library_items(
         elif field == 'runtime':
             try:
                 val = float(value)
-                runtime_logic = """
+                row_runtime_sql = f"COALESCE({_asset_runtime_sql('m')}, m.runtime_minutes, 0)"
+                runtime_logic = f"""
                 (CASE
                     WHEN m.item_type = 'Series' THEN (
-                        SELECT COALESCE(AVG(ep.runtime_minutes), 0)
+                        SELECT COALESCE(AVG(rt.runtime_minutes), 0)
                         FROM media_metadata ep
+                        CROSS JOIN LATERAL (
+                            SELECT COALESCE(
+                                {_asset_runtime_sql('ep')},
+                                ep.runtime_minutes,
+                                0
+                            ) AS runtime_minutes
+                        ) rt
                         WHERE ep.parent_series_tmdb_id = m.tmdb_id 
                           AND ep.item_type = 'Episode'
-                          AND ep.runtime_minutes > 0
+                          AND rt.runtime_minutes > 0
                     )
-                    ELSE COALESCE(m.runtime_minutes, 0)
+                    ELSE {row_runtime_sql}
                 END)
                 """
                 if op == 'gte': clause = f"{runtime_logic} >= %s"
