@@ -11,11 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 class WashingService:
-    CLEAN_VERSION_MIN_DELTA_MINUTES = 2.5
-    CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.94
+    # 洗版按单集判断，首集/尾集可能仍带片头或片尾，不能复用共享资源整季多数投票的保守阈值。
+    CLEAN_VERSION_MIN_DELTA_MINUTES = 1.0
+    CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.985
     SHORT_DRAMA_MAX_RUNTIME_MINUTES = 25.0
-    CLEAN_VERSION_SHORT_DRAMA_MIN_DELTA_MINUTES = 1.0
-    CLEAN_VERSION_SHORT_DRAMA_MAX_RUNTIME_RATIO = 0.98
 
     @classmethod
     def _safe_parse_jsonish(cls, val: Any) -> Any:
@@ -221,6 +220,8 @@ class WashingService:
         physical = cls._physical_runtime_minutes_from_info(info)
         if physical <= 0:
             return {"checked": False, "is_clean": False, "reason": "missing_physical_runtime"}
+        if 0 < physical < cls.SHORT_DRAMA_MAX_RUNTIME_MINUTES:
+            return {"checked": False, "is_clean": False, "reason": "short_drama_skipped"}
 
         official, source = cls._official_episode_runtime(tmdb_id, season_num, episode_num)
         if official <= 0:
@@ -233,9 +234,8 @@ class WashingService:
 
         delta = official - physical
         ratio = physical / official if official > 0 else 1.0
-        short_drama = 0 < physical < cls.SHORT_DRAMA_MAX_RUNTIME_MINUTES
-        min_delta = cls.CLEAN_VERSION_SHORT_DRAMA_MIN_DELTA_MINUTES if short_drama else cls.CLEAN_VERSION_MIN_DELTA_MINUTES
-        max_ratio = cls.CLEAN_VERSION_SHORT_DRAMA_MAX_RUNTIME_RATIO if short_drama else cls.CLEAN_VERSION_MAX_RUNTIME_RATIO
+        min_delta = cls.CLEAN_VERSION_MIN_DELTA_MINUTES
+        max_ratio = cls.CLEAN_VERSION_MAX_RUNTIME_RATIO
         is_clean = delta >= min_delta and ratio <= max_ratio
         return {
             "checked": True,
@@ -248,7 +248,7 @@ class WashingService:
             "runtime_ratio": round(ratio, 4),
             "min_delta_minutes": min_delta,
             "max_runtime_ratio": max_ratio,
-            "is_short_drama": bool(short_drama),
+            "is_short_drama": False,
         }
 
     @classmethod
