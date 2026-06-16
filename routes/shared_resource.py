@@ -1600,19 +1600,27 @@ def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
 def api_center_sources():
     try:
         client = SharedCenterClient()
-        resp = client.list_display_sources(
-            q=request.args.get('q') or request.args.get('keyword') or '',
-            status=request.args.get('status') or 'alive,available',
-            item_type=request.args.get('item_type') or '',
-            tmdb_id=request.args.get('tmdb_id') or '',
-            order_by=request.args.get('order_by') or 'latest',
-            limit=int(request.args.get('limit') or request.args.get('page_size') or 200),
-            offset=int(request.args.get('offset') or 0),
-            force_refresh=_boolish(
-                request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
-                False,
-            ),
-        )
+        q = request.args.get('q') or request.args.get('keyword') or ''
+        tmdb_id = request.args.get('tmdb_id') or ''
+        params = {
+            'q': q,
+            'status': request.args.get('status') or 'alive,available',
+            'item_type': request.args.get('item_type') or '',
+            'tmdb_id': tmdb_id,
+            'order_by': request.args.get('order_by') or 'latest',
+            'limit': int(request.args.get('limit') or request.args.get('page_size') or 200),
+            'offset': int(request.args.get('offset') or 0),
+        }
+        if str(q or '').strip() or str(tmdb_id or '').strip():
+            resp = client.list_cloud_search_sources(**params)
+        else:
+            resp = client.list_display_sources(
+                **params,
+                force_refresh=_boolish(
+                    request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
+                    False,
+                ),
+            )
 
         raw_items = [row for row in (resp.get('items') or []) if isinstance(row, dict)]
         # 中心资源库首屏必须保持“中心端已聚合壳”直出。

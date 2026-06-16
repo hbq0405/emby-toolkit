@@ -1665,6 +1665,8 @@ const stripCenterSeasonFromTitle = (title, row = {}) => {
     const seasonText = String(season);
     const season02 = seasonText.padStart(2, '0');
     const patterns = [
+      new RegExp(`\\s*(?:[-·—–_]+\\s*)?S0?${seasonText}E\\d{1,3}\\s*$`, 'i'),
+      new RegExp(`\\s*(?:[-·—–_]+\\s*)?S${season02}E\\d{1,3}\\s*$`, 'i'),
       new RegExp(`\\s*(?:[-·—–_]+\\s*)?(?:S0?${seasonText}|S${season02})\\s*$`, 'i'),
       new RegExp(`\\s*(?:[-·—–_]+\\s*)?Season\\s*0?${seasonText}\\s*$`, 'i'),
       new RegExp(`\\s*(?:[-·—–_]+\\s*)?第\\s*0?${seasonText}\\s*季\\s*$`, 'i'),
@@ -1673,6 +1675,10 @@ const stripCenterSeasonFromTitle = (title, row = {}) => {
   }
   // 兜底清理中心端历史标题里混入的季号；季号统一放到“类型”列显示。
   text = text
+    .replace(/\s*(?:[-·—–_]+\s*)?S\d{1,3}E\d{1,3}\s*第\s*\d{1,3}\s*季\s*$/i, '')
+    .replace(/\s*(?:[-·—–_]+\s*)?第\s*\d{1,3}\s*季\s*S\d{1,3}E\d{1,3}\s*$/i, '')
+    .replace(/\s*(?:[-·—–_]+\s*)?S\d{1,3}E\d{1,3}\s*$/i, '')
+    .replace(/\s*(?:[-·—–_]+\s*)?第\s*\d{1,3}\s*集\s*$/i, '')
     .replace(/\s*(?:[-·—–_]+\s*)?S\d{1,3}\s*$/i, '')
     .replace(/\s*(?:[-·—–_]+\s*)?Season\s*\d{1,3}\s*$/i, '')
     .replace(/\s*(?:[-·—–_]+\s*)?第\s*\d{1,3}\s*季\s*$/i, '')
@@ -2918,15 +2924,6 @@ const onCenterProfileError = (event) => {
 
 const centerPosterWallPrimaryTitle = (row) => {
   const base = centerBaseTitle(row) || '未知资源';
-  const typeLabel = centerTypeLabel(centerRowType(row));
-  const season = Number(row?.season_number || 0);
-  const episode = Number(row?.episode_number || 0);
-  if (typeLabel === '剧集') return base;
-  if (typeLabel === '季' && season > 0 && !/第\s*\d+\s*季/.test(base)) return `${base} 第 ${season} 季`;
-  if (typeLabel === '单集') {
-    const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
-    return se ? `${base} ${se}` : base;
-  }
   return base;
 };
 const centerAvailableSeasonNumbers = (row) => {
@@ -2951,6 +2948,11 @@ const centerSingleSeasonLabel = (row) => {
   if (n === null || n === 1) return '';
   return n === 0 ? '特别篇' : `第 ${n} 季`;
 };
+const centerPosterWallSeasonLabel = (row) => {
+  const n = centerSingleSeasonNumber(row);
+  if (n === null) return '';
+  return n === 0 ? '特别篇' : `第 ${n} 季`;
+};
 const centerShouldShowDetailSeasonTabs = (row) => {
   const nums = centerAvailableSeasonNumbers(row);
   // 只有“唯一一季且是第一季”才隐藏；只有特别篇或只有第 2/3 季也要显示出来。
@@ -2963,8 +2965,10 @@ const centerSeasonCount = (row) => {
 };
 const centerPosterWallYear = (row) => {
   const year = centerDisplayYear(row) || '';
-  const seasonCount = centerIsSeriesGroup(row) ? centerSeasonCount(row) : 0;
-  const singleSeasonLabel = centerIsSeriesGroup(row) ? centerSingleSeasonLabel(row) : '';
+  const isSeries = centerIsSeriesGroup(row);
+  const isSeriesResource = isSeries || centerIsSeasonLike(row) || centerTypeLabel(centerRowType(row)) === '单集';
+  const seasonCount = isSeries ? centerSeasonCount(row) : 0;
+  const singleSeasonLabel = isSeriesResource ? centerPosterWallSeasonLabel(row) : '';
   const parts = [];
   if (year) parts.push(year);
   if (seasonCount > 1) parts.push(`共 ${seasonCount} 季`);
