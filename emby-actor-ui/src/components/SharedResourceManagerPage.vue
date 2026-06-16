@@ -3647,12 +3647,14 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
       clearCenterChildrenLoading();
       centerHasMore.value = true;
     }
-    if (!append && centerHomeMode.value && !forceRefresh) {
-      const res = await axios.get('/api/shared/resources/center/sources/home', { params: { limit_per_section: 10 } });
+    if (!append && centerHomeMode.value) {
+      const params = { limit_per_section: 10 };
+      if (forceRefresh) params.force_refresh = 1;
+      const res = await axios.get('/api/shared/resources/center/sources/home', { params });
       centerHomeSections.value = Array.isArray(res.data?.sections) ? res.data.sections : [];
-      centerSources.value = res.data?.items || [];
+      centerSources.value = [];
       centerBackendGrouped.value = true;
-      centerPagination.itemCount = Number(res.data?.total || centerSources.value.length || 0);
+      centerPagination.itemCount = Number(res.data?.total || 0);
       centerHasMore.value = false;
       setupCenterInfiniteObserver();
       return;

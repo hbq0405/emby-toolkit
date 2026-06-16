@@ -2,9 +2,11 @@
 # Rapid v2 共享资源 API：不再创建/管理 115 分享；只登记秒传资源索引与消费中心事件。
 import json
 import logging
+import copy
 import re
 import socket
 import threading
+import time
 import uuid
 from typing import Any, Dict, List
 
@@ -23,6 +25,35 @@ import tasks.shared_resource_tasks as shared_tasks
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
 logger = logging.getLogger(__name__)
+_CENTER_HOME_PROXY_CACHE: Dict[Any, Dict[str, Any]] = {}
+_CENTER_HOME_PROXY_CACHE_LOCK = threading.RLock()
+_CENTER_HOME_PROXY_CACHE_TTL_SECONDS = 300
+
+
+def _center_home_proxy_cache_get(cache_key) -> Dict[str, Any] | None:
+    now = time.time()
+    with _CENTER_HOME_PROXY_CACHE_LOCK:
+        entry = _CENTER_HOME_PROXY_CACHE.get(cache_key)
+        if not entry:
+            return None
+        if float(entry.get('expires_at') or 0) < now:
+            _CENTER_HOME_PROXY_CACHE.pop(cache_key, None)
+            return None
+        payload = copy.deepcopy(entry.get('payload') or {})
+        payload['local_cache_hit'] = True
+        payload['local_cache_ttl_seconds'] = max(0, int(float(entry.get('expires_at') or now) - now))
+        return payload
+
+
+def _center_home_proxy_cache_set(cache_key, payload: Dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        return
+    now = time.time()
+    with _CENTER_HOME_PROXY_CACHE_LOCK:
+        _CENTER_HOME_PROXY_CACHE[cache_key] = {
+            'expires_at': now + _CENTER_HOME_PROXY_CACHE_TTL_SECONDS,
+            'payload': copy.deepcopy(payload),
+        }
 
 
 def _boolish(value, default=False):
@@ -1636,7 +1667,18 @@ def api_center_sources():
 def api_center_sources_home():
     try:
         client = SharedCenterClient()
-        resp = client.list_display_home(limit_per_section=int(request.args.get('limit_per_section') or 10))
+        limit_per_section = max(1, min(int(request.args.get('limit_per_section') or 10), 20))
+        force_refresh = _boolish(
+            request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
+            False,
+        )
+        cache_key = (client.base_url, client.device_token, limit_per_section)
+        if not force_refresh:
+            cached = _center_home_proxy_cache_get(cache_key)
+            if cached:
+                return jsonify(cached)
+
+        resp = client.list_display_home(limit_per_section=limit_per_section)
 
         def _decorate_center_row(row):
             if not isinstance(row, dict):
@@ -1658,8 +1700,10 @@ def api_center_sources_home():
             items = [_decorate_center_row(row) for row in section.get('items') or [] if isinstance(row, dict)]
             sections.append({**section, 'items': items})
         resp['sections'] = sections
-        resp['items'] = [row for section in sections for row in section.get('items', [])]
-        return jsonify({'success': True, **resp})
+        resp['items'] = []
+        payload = {'success': True, **resp}
+        _center_home_proxy_cache_set(cache_key, payload)
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'items': [], 'sections': []}), 500
 
