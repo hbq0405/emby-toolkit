@@ -98,6 +98,14 @@
                     {{ formatSource(res) }}
                   </n-tag>
 
+                  <n-tag size="small" type="default" :bordered="true" v-if="formatCodec(res) && !isSharedPoolGroup(res)">
+                    {{ formatCodec(res) }}
+                  </n-tag>
+
+                  <n-tag size="small" type="default" :bordered="true" v-if="formatFrameRate(res) && !isSharedPoolGroup(res)">
+                    {{ formatFrameRate(res) }}
+                  </n-tag>
+
                   <n-tag size="small" type="info" :bordered="false" v-if="res.source_channel">
                     来源：{{ res.source_channel }}
                   </n-tag>
@@ -148,6 +156,12 @@
                         </n-tag>
                         <n-tag size="small" type="warning" :bordered="false" v-if="formatSource(version)">
                           {{ formatSource(version) }}
+                        </n-tag>
+                        <n-tag size="small" type="default" :bordered="true" v-if="formatCodec(version)">
+                          {{ formatCodec(version) }}
+                        </n-tag>
+                        <n-tag size="small" type="default" :bordered="true" v-if="formatFrameRate(version)">
+                          {{ formatFrameRate(version) }}
                         </n-tag>
                         <n-tag size="small" type="default" :bordered="true" v-if="version._shared_pool_source_label">
                           {{ version._shared_pool_source_label }}
@@ -527,14 +541,29 @@ const getResourceKey = (resource) => {
   );
 };
 
+const firstCloudValue = (resource, keys = []) => {
+  for (const container of metadataContainers(resource)) {
+    for (const key of keys) {
+      const value = container?.[key];
+      if (Array.isArray(value)) {
+        const joined = value.filter(Boolean).join(', ');
+        if (joined) return joined;
+      } else if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return value;
+      }
+    }
+  }
+  return '';
+};
+
 const formatResolution = (resource) => {
-  const values = resource?.video_resolution || resource?.resolution;
+  const values = firstCloudValue(resource, ['video_resolution', 'resolution', 'resolution_display']);
   if (Array.isArray(values)) return values.filter(Boolean).join(', ');
   return values || '';
 };
 
 const formatSource = (resource) => {
-  const values = resource?.source;
+  const values = firstCloudValue(resource, ['source', 'effect', 'effect_key', 'effect_display', 'hdr_type', 'dynamic_range']);
   const normalize = (value) => {
     const text = String(value || '').trim();
     if (!text || text === 'channel' || text === '共享秒传' || text === '可秒传') return '';
@@ -542,6 +571,21 @@ const formatSource = (resource) => {
   };
   if (Array.isArray(values)) return values.map(normalize).filter(Boolean).join(', ');
   return normalize(values);
+};
+
+const formatCodec = (resource) => {
+  const text = String(firstCloudValue(resource, ['video_codec', 'codec', 'codec_display']) || '').trim();
+  if (!text || ['未知', 'unknown'].includes(text.toLowerCase())) return '';
+  return text;
+};
+
+const formatFrameRate = (resource) => {
+  const raw = firstCloudValue(resource, ['frame_rate', 'fps', 'frame_rate_display']);
+  const text = String(raw || '').trim();
+  if (!text || ['未知', 'unknown'].includes(text.toLowerCase())) return '';
+  if (/fps$/i.test(text)) return text.replace(/\s*fps$/i, 'fps');
+  const n = Number(text);
+  return Number.isFinite(n) && n > 0 ? `${n}fps` : text;
 };
 
 

@@ -9001,9 +9001,31 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
     root_items = []
     old_pids = set()
+    old_cids_to_check = set()
     refresh_target_dirs = set()
     config = get_config()
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+
+    def _remember_old_cid_chain(start_cid, info_data=None):
+        """手动重组移动后，需要检查旧目录及其媒体主目录是否已空。"""
+        current = str(start_cid or '').strip()
+        seen = set()
+        for node in (info_data or {}).get('paths') or []:
+            if not isinstance(node, dict):
+                continue
+            cid_val = str(node.get('file_id') or node.get('cid') or node.get('fid') or '').strip()
+            if cid_val and cid_val != '0':
+                old_cids_to_check.add(cid_val)
+        for _ in range(20):
+            if not current or current == '0' or current in seen:
+                break
+            seen.add(current)
+            old_cids_to_check.add(current)
+            node = P115CacheManager.get_node_info(current)
+            parent_id = str((node or {}).get('parent_id') or '').strip() if node else ''
+            if not parent_id or parent_id == '0':
+                break
+            current = parent_id
 
     for r in records:
         file_id = str(r['file_id'])
@@ -9039,7 +9061,9 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             pick_code = info_data.get('pick_code')
             sha1 = info_data.get('sha1')
 
-        if old_pid: old_pids.add(str(old_pid))
+        if old_pid:
+            old_pids.add(str(old_pid))
+            _remember_old_cid_chain(old_pid, info_data)
 
         root_items.append({
             'fid': file_id,
@@ -9244,12 +9268,9 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                 logger.warning(f"  ➜ 通知 Emby 极速扫描旧路径失败: {e}")
 
     # ★ 网盘擦屁股：直接移交全局垃圾回收器
-    old_cids_to_check = set()
     for r_item in root_items:
         info_data = r_item['_info_data']
-        # 只清理本次资源所在的最底层父目录，绝不把 ETK / 待整理 这种上级目录塞进 GC
         pid = str(r_item.get('pid') or r_item.get('parent_id') or '')
-
         if pid and pid != '0':
             old_cids_to_check.add(pid)
         else:
