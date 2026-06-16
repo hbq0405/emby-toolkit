@@ -414,9 +414,10 @@ class SharedCenterClient:
             'offset': max(0, int(offset or 0)),
         }, timeout=30)
 
-    def list_display_home(self, *, limit_per_section: int = 10, **_ignored) -> Dict[str, Any]:
+    def list_display_home(self, *, limit_per_section: int = 10, force_refresh: bool = False, **_ignored) -> Dict[str, Any]:
         return self._get('/api/v1/sources/display-home', {
             'limit_per_section': max(1, min(int(limit_per_section or 10), 20)),
+            'force_refresh': 1 if force_refresh else 0,
         }, timeout=15)
 
 

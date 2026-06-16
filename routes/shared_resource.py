@@ -1698,7 +1698,7 @@ def api_center_sources_home():
             if cached:
                 return jsonify(cached)
 
-        resp = client.list_display_home(limit_per_section=limit_per_section)
+        resp = client.list_display_home(limit_per_section=limit_per_section, force_refresh=force_refresh)
 
         def _decorate_center_row(row):
             if not isinstance(row, dict):
