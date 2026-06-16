@@ -684,8 +684,11 @@ def _shared_cleanup_select_sources(contexts: List[Dict[str, Any]]) -> List[Dict[
                 if scope == 'sha1':
                     sha1s = [_norm_sha1_for_shared_cleanup(x) for x in _json_list_for_shared_cleanup(ctx.get('sha1s'))]
                     sha1s = [x for x in sha1s if x]
-                    if not sha1s:
+                    pickcodes = [str(x or '').strip() for x in _json_list_for_shared_cleanup(ctx.get('pickcodes')) if str(x or '').strip()]
+                    if not sha1s and not pickcodes:
                         continue
+                    sha1_match_values = sha1s or ['__NO_SHA1__']
+                    pickcode_match_values = pickcodes or ['__NO_PICKCODE__']
                     cursor.execute(f"""
                         SELECT DISTINCT s.*, %s AS offline_reason
                         FROM shared_rapid_sources s
@@ -694,8 +697,10 @@ def _shared_cleanup_select_sources(contexts: List[Dict[str, Any]]) -> List[Dict[
                           AND (
                                 UPPER(COALESCE(s.sha1, '')) = ANY(%s)
                              OR UPPER(COALESCE(f.sha1, '')) = ANY(%s)
+                             OR COALESCE(f.pick_code, '') = ANY(%s)
+                             OR COALESCE(s.rapid_meta_json->>'pick_code', '') = ANY(%s)
                           )
-                    """, (reason, sha1s, sha1s))
+                    """, (reason, sha1_match_values, sha1_match_values, pickcode_match_values, pickcode_match_values))
 
                 elif scope == 'movie':
                     cursor.execute(f"""
@@ -771,10 +776,61 @@ def _shared_cleanup_select_sources(contexts: List[Dict[str, Any]]) -> List[Dict[
     return list(out.values())
 
 
+def _cleanup_shared_sources_for_deleted_file_identities(contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    pickcodes: List[str] = []
+    seen_pcs = set()
+    for ctx in contexts or []:
+        for value in _json_list_for_shared_cleanup(ctx.get('pickcodes')):
+            pc = str(value or '').strip()
+            if pc and pc not in seen_pcs:
+                seen_pcs.add(pc)
+                pickcodes.append(pc)
+
+    if not pickcodes:
+        return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0, 'items': []}
+
+    try:
+        from database import shared_share_db
+        rows = shared_share_db.p115_file_rows_by_sha1_or_pc(pickcodes=pickcodes)
+        fids = [str(row.get('id') or '').strip() for row in rows or [] if str(row.get('id') or '').strip()]
+        if not fids:
+            return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0, 'items': []}
+        from tasks.shared_resource_tasks import disable_shared_sources_for_deleted_fids
+        return disable_shared_sources_for_deleted_fids(
+            fids,
+            reason='media_deleted_file',
+            message='local media file deleted',
+        )
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源删除善后] 按文件身份清理逻辑季分享失败: {e}")
+        return {'ok': False, 'matched': 0, 'disabled': 0, 'failed': 1, 'error': str(e), 'items': []}
+
+
 def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    file_cleanup = _cleanup_shared_sources_for_deleted_file_identities(contexts)
+    if file_cleanup.get('failed'):
+        return {
+            'ok': False,
+            'matched': int(file_cleanup.get('matched') or 0),
+            'disabled': int(file_cleanup.get('disabled') or 0),
+            'failed': int(file_cleanup.get('failed') or 1),
+            'file_cleanup': file_cleanup,
+            'items': (file_cleanup.get('items') or [])[:50],
+        }
+
     rows = _shared_cleanup_select_sources(contexts)
     if not rows:
-        return {'ok': True, 'matched': 0, 'disabled': 0, 'failed': 0}
+        result = {'ok': file_cleanup.get('ok', True), 'matched': 0, 'disabled': 0, 'failed': 0}
+        logical_share_cleanup = file_cleanup.get('logical_share_cleanup') if isinstance(file_cleanup, dict) else None
+        if (
+            file_cleanup.get('matched')
+            or file_cleanup.get('disabled')
+            or file_cleanup.get('failed')
+            or (isinstance(logical_share_cleanup, dict) and logical_share_cleanup.get('checked'))
+        ):
+            result['file_cleanup'] = file_cleanup
+            result['failed'] = int(file_cleanup.get('failed') or 0)
+        return result
 
     try:
         from database import shared_share_db
@@ -824,7 +880,17 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
             local_id, source_kind, center_source_id or '-', title, reason,
         )
 
-    return {'ok': failed == 0, 'matched': len(rows), 'disabled': disabled, 'failed': failed, 'items': items[:50]}
+    total_failed = failed + int(file_cleanup.get('failed') or 0)
+    result = {'ok': total_failed == 0, 'matched': len(rows), 'disabled': disabled, 'failed': total_failed, 'items': items[:50]}
+    logical_share_cleanup = file_cleanup.get('logical_share_cleanup') if isinstance(file_cleanup, dict) else None
+    if (
+        file_cleanup.get('matched')
+        or file_cleanup.get('disabled')
+        or file_cleanup.get('failed')
+        or (isinstance(logical_share_cleanup, dict) and logical_share_cleanup.get('checked'))
+    ):
+        result['file_cleanup'] = file_cleanup
+    return result
 
 def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
@@ -951,6 +1017,16 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         scope='sha1',
                         reason='deleted_sha1',
                         sha1s=removed_sha1s,
+                        pickcodes=removed_pcs,
+                        tmdb_id=tmdb_id,
+                        item_type=db_item_type,
+                    )
+                elif removed_pcs:
+                    _append_shared_cleanup_context(
+                        shared_cleanup_contexts,
+                        scope='sha1',
+                        reason='deleted_pickcode',
+                        pickcodes=removed_pcs,
                         tmdb_id=tmdb_id,
                         item_type=db_item_type,
                     )
