@@ -410,6 +410,11 @@ class SharedCenterClient:
             'offset': max(0, int(offset or 0)),
         }, timeout=30)
 
+    def list_display_home(self, *, limit_per_section: int = 10, **_ignored) -> Dict[str, Any]:
+        return self._get('/api/v1/sources/display-home', {
+            'limit_per_section': max(1, min(int(limit_per_section or 10), 20)),
+        }, timeout=15)
+
 
     def list_display_children(self, *, source_kind: str = '', source_id: str = '', source_ids: List[str] | None = None,
                               hub_id: str = '', limit: int = 5000, offset: int = 0, **_ignored) -> Dict[str, Any]:
@@ -433,7 +438,7 @@ class SharedCenterClient:
 
     def display_detail(self, *, source_kind: str = '', source_id: str = '', hub_id: str = '',
                        tmdb_id: str = '', item_type: str = '', season_number=None,
-                       limit: int = 200, **_ignored) -> Dict[str, Any]:
+                       limit: int = 200, include_people: bool = False, **_ignored) -> Dict[str, Any]:
         """中心资源库卡片详情：点开卡片后取展示元数据、演职员和资源列表。"""
         params = {
             'source_kind': source_kind or '',
@@ -442,6 +447,7 @@ class SharedCenterClient:
             'tmdb_id': tmdb_id or '',
             'item_type': item_type or '',
             'limit': max(1, min(int(limit or 200), 1000)),
+            'include_people': 1 if include_people else 0,
         }
         if season_number not in (None, ''):
             params['season_number'] = season_number

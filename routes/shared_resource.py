@@ -1631,6 +1631,39 @@ def api_center_sources():
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
 
 
+@shared_resource_bp.route('/center/sources/home', methods=['GET'])
+@admin_required
+def api_center_sources_home():
+    try:
+        client = SharedCenterClient()
+        resp = client.list_display_home(limit_per_section=int(request.args.get('limit_per_section') or 10))
+
+        def _decorate_center_row(row):
+            if not isinstance(row, dict):
+                return {}
+            row = dict(row)
+            completed_certified = _center_source_is_completed_certified(row)
+            if completed_certified:
+                row['is_completed_certified'] = True
+                row['is_completed'] = True
+            row['version_summary'] = _center_version_summary(row)
+            if not row.get('size') and row.get('total_size'):
+                row['size'] = row.get('total_size')
+            return _strip_center_display_children(row)
+
+        sections = []
+        for section in resp.get('sections') or []:
+            if not isinstance(section, dict):
+                continue
+            items = [_decorate_center_row(row) for row in section.get('items') or [] if isinstance(row, dict)]
+            sections.append({**section, 'items': items})
+        resp['sections'] = sections
+        resp['items'] = [row for section in sections for row in section.get('items', [])]
+        return jsonify({'success': True, **resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e), 'items': [], 'sections': []}), 500
+
+
 @shared_resource_bp.route('/center/sources/children', methods=['GET'])
 @admin_required
 def api_center_source_children():
@@ -1723,6 +1756,7 @@ def api_center_source_detail():
             item_type=request.args.get('item_type') or '',
             season_number=request.args.get('season_number') or None,
             limit=int(request.args.get('limit') or 200),
+            include_people=str(request.args.get('include_people') or '0').strip().lower() not in {'0', 'false', 'no', 'off'},
         )
 
         def _is_pack_detail_row(row):
@@ -1768,6 +1802,7 @@ def api_center_source_detail():
         return jsonify({'success': True, 'data': resp, **resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'data': {}, 'resources': [], 'versions': [], 'children': []}), 500
+
 
 @shared_resource_bp.route('/center/import', methods=['POST'])
 @admin_required

@@ -89,14 +89,38 @@
               <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="resetCenterSources()">
                 <template #prefix><n-icon :component="SearchIcon" /></template>
               </n-input>
-              <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
-              <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
-              <n-select v-model:value="centerFilters.order_by" :options="centerOrderOptions" style="width: 130px" />
               <n-button type="primary" :loading="centerLoading" @click="resetCenterSources()">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
             <n-spin :show="centerLoading && !centerAppendLoading">
-              <div v-if="groupedCenterSources.length" class="center-card-grid">
+              <template v-if="centerHomeMode && centerHomeSections.length">
+                <div v-for="section in centerHomeSections" :key="section.key" class="center-home-section">
+                  <div class="center-home-section-title">{{ section.title }}</div>
+                  <div class="center-card-grid">
+                    <div
+                      v-for="(row, centerIndex) in section.items"
+                      :key="`${section.key}:${centerTableRowKey(row)}`"
+                      class="center-card-item"
+                    >
+                      <n-card class="center-media-card poster-wall-card" :bordered="false" content-style="padding: 0; position: relative;" @click="openCenterDetail(row)">
+                        <div class="center-poster-wrapper poster-wall-wrapper">
+                          <img v-bind="centerPosterImgAttrs(row, 'w185', centerIndex)" class="center-poster" @error="onCenterPosterError" />
+                          <div v-if="centerRibbonText(row)" :class="['center-ribbon', centerRibbonClass(row)]">
+                            <span>{{ centerRibbonText(row) }}</span>
+                          </div>
+                          <div class="center-card-overlay poster-wall-overlay">
+                            <div class="center-card-text poster-wall-text">
+                              <div class="poster-wall-title-line" :title="centerPosterWallFullTitle(row)">{{ centerPosterWallPrimaryTitle(row) }}</div>
+                              <div v-if="centerPosterWallYear(row)" class="poster-wall-year-line">{{ centerPosterWallYear(row) }}</div>
+                            </div>
+                          </div>
+                        </div>
+                      </n-card>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div v-else-if="groupedCenterSources.length" class="center-card-grid">
                 <div
                   v-for="(row, centerIndex) in groupedCenterSources"
                   :key="centerTableRowKey(row)"
@@ -121,13 +145,13 @@
                 </div>
               </div>
               <div v-else class="center-empty-card">
-                <n-text depth="3">暂无中心资源。可以换个关键词或状态筛选。</n-text>
+                <n-text depth="3">暂无中心资源。可以换个关键词搜索。</n-text>
               </div>
 
               <div ref="centerInfiniteSentinel" class="center-infinite-sentinel">
                 <n-spin v-if="centerAppendLoading" size="small" />
-                <n-text v-else-if="centerHasMore" depth="3">继续下滑加载更多</n-text>
-                <n-text v-else-if="groupedCenterSources.length" depth="3">已加载全部 {{ centerPagination.itemCount || groupedCenterSources.length }} 个资源</n-text>
+                <n-text v-else-if="!centerHomeMode && centerHasMore" depth="3">继续下滑加载更多</n-text>
+                <n-text v-else-if="!centerHomeMode && groupedCenterSources.length" depth="3">已加载全部 {{ centerPagination.itemCount || groupedCenterSources.length }} 个资源</n-text>
               </div>
             </n-spin>
           </n-tab-pane>
@@ -349,20 +373,6 @@
               <div class="detail-overview">
                 {{ centerTmdbMeta(activeCenterDetailRow).overview || activeCenterDetailRow.overview || '暂无简介' }}
               </div>
-              <div v-if="centerDetailPeople(activeCenterDetailRow).length" class="detail-credits detail-people-row">
-                <div
-                  v-for="person in centerDetailPeople(activeCenterDetailRow)"
-                  :key="centerPersonKey(person)"
-                  class="detail-person-card"
-                  :title="centerPersonTooltip(person)"
-                >
-                  <img v-bind="centerProfileImgAttrs(person)" class="detail-person-avatar" @error="onCenterProfileError" />
-                  <div class="detail-person-info">
-                    <div class="detail-person-name">{{ centerPersonName(person) }}</div>
-                    <div class="detail-person-role">{{ centerPersonRoleText(person) }}</div>
-                  </div>
-                </div>
-              </div>
               <div v-if="centerShouldShowDetailSeasonTabs(activeCenterDetailRow)" class="detail-season-tabs">
                 <n-button
                   v-for="season in centerDetailSeasons"
@@ -503,6 +513,7 @@ const summary = ref({ shares: {}, credit: {} });
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
+const centerHomeSections = ref([]);
 const centerBackendGrouped = ref(false);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
@@ -523,10 +534,11 @@ const shareRequestEpisodeText = ref('');
 const groupedCenterSources = computed(() => (
   centerBackendGrouped.value
     ? normalizeBackendCenterSources(centerSources.value || [])
-    : groupCenterSources(centerSources.value || [], centerFilters.order_by)
+    : groupCenterSources(centerSources.value || [], 'latest')
 ));
 const shareFilters = reactive({ keyword: '', status: 'usable', order_by: 'created_desc' });
-const centerFilters = reactive({ keyword: '', status: 'alive,available', item_type: 'all', order_by: 'latest' });
+const centerFilters = reactive({ keyword: '' });
+const centerHomeMode = computed(() => !String(centerFilters.keyword || '').trim());
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const requestStatusOptions = [
   { label: '求共享中', value: 'open' },
@@ -548,13 +560,6 @@ const requestTargetTypeFilterOptions = [
 ];
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
-
-const centerOrderOptions = [
-  { label: '最新共享', value: 'latest' },
-  { label: '热门共享', value: 'popular' },
-  { label: '文件大小', value: 'size' },
-  { label: '名称排序', value: 'name' },
-];
 
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
@@ -645,21 +650,9 @@ const shareStatusOptions = [
   { label: '已停用', value: 'disabled' },
 ];
 
-const centerStatusOptions = [
-  { label: '全部', value: 'alive,available' },
-  { label: '仅可用', value: 'alive' },
-  { label: '一致版', value: 'completed_certified' },
-  { label: '纯净版', value: 'clean_version' },
-  { label: '短剧', value: 'short_drama' },
-];
 const typeOptions = [
   { label: '全部类型', value: 'all' }, { label: '电影', value: 'Movie' },
   { label: '剧集', value: 'Series' }, { label: '季', value: 'Season' }, { label: '单集', value: 'Episode' },
-];
-const centerTypeOptions = [
-  { label: '全部类型', value: 'all' },
-  { label: '电影', value: 'Movie' },
-  { label: '剧集', value: 'Pack' },
 ];
 const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '分集', value: 'Episode' }, { label: '季入口', value: 'Season' },
@@ -3375,7 +3368,6 @@ const importCenterLogicalEpisode = async (version, episode) => {
     delete importingMap[loadingKey];
   }
 };
-// ★ 修改 1：按热度 (success_count) 降序排序
 const centerDetailVersions = computed(() => {
   const row = activeCenterDetailRow.value || {};
   const host = centerIsSeriesGroup(row) ? (centerDetailActiveSeasonRow.value || row) : row;
@@ -3396,11 +3388,9 @@ const centerDetailVersions = computed(() => {
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
-    })
-    .sort((a, b) => (b.success_count || 0) - (a.success_count || 0)); 
+    });
 });
 
-// ★ 修改 2：热度放第一个标签 + 彻底修复 FPS 叠词
 const centerVersionTags = (row) => {
   const summary = centerVersionSummary(row) || {};
   const tags = [];
@@ -3410,10 +3400,7 @@ const centerVersionTags = (row) => {
     centerTagPush(tags, centerVersionEpisodesExpanded(row) ? '收起单集' : '展开单集', 'info', 'logical-episodes');
   }
 
-  // 2. 热度
-  centerTagPush(tags, `🔥 热度 ${row.success_count || 0}`, 'error', 'popularity');
-
-  // 3. 进度显示
+  // 2. 进度显示
   const progress = centerProgressText(row);
   if (progress) {
     const progressLabel = centerIsOngoingHub(row) ? `更新至 ${progress} 集` : progress;
@@ -3422,27 +3409,26 @@ const centerVersionTags = (row) => {
 
   // 共享池完整 / 候选 / 资产 / 可建分享属于中心端调试信息，不在用户前端展示。
 
-  // 4. 基础参数
+  // 3. 基础参数
   centerTagPush(tags, formatCenterSize(row), 'default', 'size');
   centerTagPush(tags, summary.resolution, 'success', 'resolution');
   centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
   centerTagPush(tags, codec, 'default', 'codec');
   
-  // 5. 彻底修复 FPS 叠词 (暴力剔除原有的 fps 字母，统一在最后加一个)
+  // 4. 彻底修复 FPS 叠词 (暴力剔除原有的 fps 字母，统一在最后加一个)
   if (summary.fps) {
     const cleanFps = String(summary.fps).replace(/fps/ig, '').trim();
     if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'default', 'fps');
   }
   
-  // 6. 其他标签
+  // 5. 其他标签
   if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
   else if (isCenterCompletedCertified(row)) centerTagPush(tags, '一致版', 'success', 'completed');
   if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
   if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
   if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
   centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
-  centerTagPush(tags, `${centerUsableResourceCount(row)} 个源`, 'info', 'holders');
   return tags;
 };
 const centerEpisodePreview = () => '';
@@ -3520,6 +3506,7 @@ const centerDetailParams = (row, seasonOverride = null) => {
     season_number: season ?? '',
     // 详情页只取展示元数据 + 版本壳；包内集列表在秒传确认后再请求。
     limit: 120,
+    include_people: 0,
   };
 };
 
@@ -3660,11 +3647,19 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
       clearCenterChildrenLoading();
       centerHasMore.value = true;
     }
+    if (!append && centerHomeMode.value && !forceRefresh) {
+      const res = await axios.get('/api/shared/resources/center/sources/home', { params: { limit_per_section: 10 } });
+      centerHomeSections.value = Array.isArray(res.data?.sections) ? res.data.sections : [];
+      centerSources.value = res.data?.items || [];
+      centerBackendGrouped.value = true;
+      centerPagination.itemCount = Number(res.data?.total || centerSources.value.length || 0);
+      centerHasMore.value = false;
+      setupCenterInfiniteObserver();
+      return;
+    }
+    centerHomeSections.value = [];
     const params = {
       keyword: centerFilters.keyword,
-      item_type: centerFilters.item_type === 'all' ? '' : centerFilters.item_type,
-      status: centerFilters.status,
-      order_by: centerFilters.order_by,
       limit: centerPagination.pageSize,
       offset: (centerPagination.page - 1) * centerPagination.pageSize,
     };
