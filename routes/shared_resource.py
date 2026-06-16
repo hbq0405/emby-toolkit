@@ -28,16 +28,17 @@ logger = logging.getLogger(__name__)
 _CENTER_HOME_PROXY_CACHE: Dict[Any, Dict[str, Any]] = {}
 _CENTER_HOME_PROXY_CACHE_LOCK = threading.RLock()
 _CENTER_HOME_PROXY_CACHE_TTL_SECONDS = 300
+_CENTER_DETAIL_PROXY_CACHE: Dict[Any, Dict[str, Any]] = {}
 
 
-def _center_home_proxy_cache_get(cache_key) -> Dict[str, Any] | None:
+def _center_proxy_cache_get(cache_store: Dict[Any, Dict[str, Any]], cache_key) -> Dict[str, Any] | None:
     now = time.time()
     with _CENTER_HOME_PROXY_CACHE_LOCK:
-        entry = _CENTER_HOME_PROXY_CACHE.get(cache_key)
+        entry = cache_store.get(cache_key)
         if not entry:
             return None
         if float(entry.get('expires_at') or 0) < now:
-            _CENTER_HOME_PROXY_CACHE.pop(cache_key, None)
+            cache_store.pop(cache_key, None)
             return None
         payload = copy.deepcopy(entry.get('payload') or {})
         payload['local_cache_hit'] = True
@@ -45,15 +46,26 @@ def _center_home_proxy_cache_get(cache_key) -> Dict[str, Any] | None:
         return payload
 
 
-def _center_home_proxy_cache_set(cache_key, payload: Dict[str, Any]) -> None:
+def _center_proxy_cache_set(cache_store: Dict[Any, Dict[str, Any]], cache_key, payload: Dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         return
     now = time.time()
     with _CENTER_HOME_PROXY_CACHE_LOCK:
-        _CENTER_HOME_PROXY_CACHE[cache_key] = {
+        if len(cache_store) >= 256:
+            oldest_key = min(cache_store, key=lambda k: cache_store[k].get('expires_at', 0))
+            cache_store.pop(oldest_key, None)
+        cache_store[cache_key] = {
             'expires_at': now + _CENTER_HOME_PROXY_CACHE_TTL_SECONDS,
             'payload': copy.deepcopy(payload),
         }
+
+
+def _center_home_proxy_cache_get(cache_key) -> Dict[str, Any] | None:
+    return _center_proxy_cache_get(_CENTER_HOME_PROXY_CACHE, cache_key)
+
+
+def _center_home_proxy_cache_set(cache_key, payload: Dict[str, Any]) -> None:
+    _center_proxy_cache_set(_CENTER_HOME_PROXY_CACHE, cache_key, payload)
 
 
 def _boolish(value, default=False):
@@ -1792,6 +1804,25 @@ def api_center_source_detail():
     """中心资源库卡片详情：代理中心 display-detail，供详情模态框按需加载。"""
     try:
         client = SharedCenterClient()
+        include_people = str(request.args.get('include_people') or '0').strip().lower() not in {'0', 'false', 'no', 'off'}
+        limit = int(request.args.get('limit') or 200)
+        cache_key = (
+            client.base_url,
+            client.device_token,
+            request.args.get('source_kind') or '',
+            request.args.get('source_id') or '',
+            request.args.get('hub_id') or '',
+            request.args.get('tmdb_id') or '',
+            request.args.get('item_type') or '',
+            request.args.get('season_number') or '',
+            limit,
+            include_people,
+        )
+        if not _boolish(request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'), False):
+            cached = _center_proxy_cache_get(_CENTER_DETAIL_PROXY_CACHE, cache_key)
+            if cached:
+                return jsonify(cached)
+
         resp = client.display_detail(
             source_kind=request.args.get('source_kind') or '',
             source_id=request.args.get('source_id') or '',
@@ -1799,8 +1830,8 @@ def api_center_source_detail():
             tmdb_id=request.args.get('tmdb_id') or '',
             item_type=request.args.get('item_type') or '',
             season_number=request.args.get('season_number') or None,
-            limit=int(request.args.get('limit') or 200),
-            include_people=str(request.args.get('include_people') or '0').strip().lower() not in {'0', 'false', 'no', 'off'},
+            limit=limit,
+            include_people=include_people,
         )
 
         def _is_pack_detail_row(row):
@@ -1843,7 +1874,9 @@ def api_center_source_detail():
         # 顶层 children / pack_items 不再给详情弹窗使用；展开集详情另走 children 接口。
         resp['children'] = []
         resp['pack_items'] = []
-        return jsonify({'success': True, 'data': resp, **resp})
+        payload = {'success': True, 'data': resp, **resp}
+        _center_proxy_cache_set(_CENTER_DETAIL_PROXY_CACHE, cache_key, payload)
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'data': {}, 'resources': [], 'versions': [], 'children': []}), 500
 

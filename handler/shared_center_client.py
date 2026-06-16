@@ -16,6 +16,10 @@ from database import settings_db
 
 logger = logging.getLogger(__name__)
 
+_CENTER_HTTP = requests.Session()
+_CENTER_HTTP.mount('http://', requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=128))
+_CENTER_HTTP.mount('https://', requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=128))
+
 
 
 
@@ -303,7 +307,7 @@ class SharedCenterClient:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        resp = requests.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
+        resp = _CENTER_HTTP.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -311,7 +315,7 @@ class SharedCenterClient:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        resp = requests.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
+        resp = _CENTER_HTTP.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -320,11 +324,11 @@ class SharedCenterClient:
             raise RuntimeError('共享中心地址未配置')
         payload = {'name': str(name or '').strip() or 'ETK Device', 'install_id': str(install_id or '').strip()}
         headers = {'X-Client-Version': _app_version(), 'X-ETK-Version': _app_version(), 'Content-Type': 'application/json', 'User-Agent': _client_user_agent()}
-        resp = requests.post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
+        resp = _CENTER_HTTP.post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
         if resp.status_code == 404 and admin_token:
             admin_headers = dict(headers)
             admin_headers['X-Admin-Token'] = str(admin_token)
-            resp = requests.post(f"{self.base_url}/api/v1/admin/devices/register", headers=admin_headers, json={'name': payload['name']}, **_request_kwargs(20))
+            resp = _CENTER_HTTP.post(f"{self.base_url}/api/v1/admin/devices/register", headers=admin_headers, json={'name': payload['name']}, **_request_kwargs(20))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 

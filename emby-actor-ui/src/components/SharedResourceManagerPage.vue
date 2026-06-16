@@ -504,6 +504,7 @@ const centerBackendGrouped = ref(false);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
 const centerVersionExpandedMap = reactive({});
+const centerPrefetchedDetailKeys = new Set();
 const centerHasMore = ref(true);
 const centerAppendLoading = ref(false);
 const centerInfiniteSentinel = ref(null);
@@ -3492,7 +3493,7 @@ const centerDetailParams = (row, seasonOverride = null) => {
     season_number: season ?? '',
     // 详情页只取展示元数据 + 版本壳；包内集列表在秒传确认后再请求。
     limit: 120,
-    include_people: 0,
+    include_people: 1,
   };
 };
 
@@ -3500,6 +3501,40 @@ const loadCenterSourceDetail = async (row, seasonOverride = null) => {
   const res = await axios.get('/api/shared/resources/center/sources/detail', { params: centerDetailParams(row, seasonOverride) });
   if (res.data?.success === false) throw new Error(res.data?.message || '加载详情失败');
   return res.data?.data || res.data || {};
+};
+
+const prefetchCenterHomeDetails = (sections = []) => {
+  const rows = [];
+  (sections || []).forEach(section => {
+    (section?.items || []).forEach(row => {
+      if (row && typeof row === 'object') rows.push(row);
+    });
+  });
+  const seen = new Set();
+  const targets = [];
+  for (const row of rows) {
+    const season = centerIsSeriesGroup(row) ? centerDefaultDetailSeason(row) : centerSeasonNumber(row);
+    const params = centerDetailParams(row, season);
+    const key = JSON.stringify(params);
+    if (seen.has(key) || centerPrefetchedDetailKeys.has(key)) continue;
+    seen.add(key);
+    targets.push({ row, season, key });
+    if (targets.length >= 18) break;
+  }
+  if (!targets.length) return;
+  window.setTimeout(() => {
+    targets.forEach((target, index) => {
+      window.setTimeout(async () => {
+        if (centerPrefetchedDetailKeys.has(target.key)) return;
+        centerPrefetchedDetailKeys.add(target.key);
+        try {
+          await loadCenterSourceDetail(target.row, target.season);
+        } catch (_) {
+          centerPrefetchedDetailKeys.delete(target.key);
+        }
+      }, index * 250);
+    });
+  }, 300);
 };
 
 const applyCenterDetailPayload = (base, payload, seasonOverride = null) => {
@@ -3643,6 +3678,7 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
       centerPagination.itemCount = Number(res.data?.total || 0);
       centerHasMore.value = false;
       setupCenterInfiniteObserver();
+      prefetchCenterHomeDetails(centerHomeSections.value);
       return;
     }
     centerHomeSections.value = [];
