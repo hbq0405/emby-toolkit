@@ -16,6 +16,10 @@ from database import settings_db
 
 logger = logging.getLogger(__name__)
 
+_CENTER_HTTP = requests.Session()
+_CENTER_HTTP.mount('http://', requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=128))
+_CENTER_HTTP.mount('https://', requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=128))
+
 
 
 
@@ -303,7 +307,7 @@ class SharedCenterClient:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        resp = requests.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
+        resp = _CENTER_HTTP.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -311,7 +315,7 @@ class SharedCenterClient:
         if not self.ready:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
-        resp = requests.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
+        resp = _CENTER_HTTP.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -320,11 +324,11 @@ class SharedCenterClient:
             raise RuntimeError('共享中心地址未配置')
         payload = {'name': str(name or '').strip() or 'ETK Device', 'install_id': str(install_id or '').strip()}
         headers = {'X-Client-Version': _app_version(), 'X-ETK-Version': _app_version(), 'Content-Type': 'application/json', 'User-Agent': _client_user_agent()}
-        resp = requests.post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
+        resp = _CENTER_HTTP.post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
         if resp.status_code == 404 and admin_token:
             admin_headers = dict(headers)
             admin_headers['X-Admin-Token'] = str(admin_token)
-            resp = requests.post(f"{self.base_url}/api/v1/admin/devices/register", headers=admin_headers, json={'name': payload['name']}, **_request_kwargs(20))
+            resp = _CENTER_HTTP.post(f"{self.base_url}/api/v1/admin/devices/register", headers=admin_headers, json={'name': payload['name']}, **_request_kwargs(20))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -410,6 +414,11 @@ class SharedCenterClient:
             'offset': max(0, int(offset or 0)),
         }, timeout=30)
 
+    def list_display_home(self, *, limit_per_section: int = 10, **_ignored) -> Dict[str, Any]:
+        return self._get('/api/v1/sources/display-home', {
+            'limit_per_section': max(1, min(int(limit_per_section or 10), 20)),
+        }, timeout=15)
+
 
     def list_display_children(self, *, source_kind: str = '', source_id: str = '', source_ids: List[str] | None = None,
                               hub_id: str = '', limit: int = 5000, offset: int = 0, **_ignored) -> Dict[str, Any]:
@@ -433,7 +442,7 @@ class SharedCenterClient:
 
     def display_detail(self, *, source_kind: str = '', source_id: str = '', hub_id: str = '',
                        tmdb_id: str = '', item_type: str = '', season_number=None,
-                       limit: int = 200, **_ignored) -> Dict[str, Any]:
+                       limit: int = 200, include_people: bool = False, **_ignored) -> Dict[str, Any]:
         """中心资源库卡片详情：点开卡片后取展示元数据、演职员和资源列表。"""
         params = {
             'source_kind': source_kind or '',
@@ -442,6 +451,7 @@ class SharedCenterClient:
             'tmdb_id': tmdb_id or '',
             'item_type': item_type or '',
             'limit': max(1, min(int(limit or 200), 1000)),
+            'include_people': 1 if include_people else 0,
         }
         if season_number not in (None, ''):
             params['season_number'] = season_number

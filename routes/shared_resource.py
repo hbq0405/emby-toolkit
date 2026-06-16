@@ -2,9 +2,11 @@
 # Rapid v2 共享资源 API：不再创建/管理 115 分享；只登记秒传资源索引与消费中心事件。
 import json
 import logging
+import copy
 import re
 import socket
 import threading
+import time
 import uuid
 from typing import Any, Dict, List
 
@@ -23,6 +25,47 @@ import tasks.shared_resource_tasks as shared_tasks
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
 logger = logging.getLogger(__name__)
+_CENTER_HOME_PROXY_CACHE: Dict[Any, Dict[str, Any]] = {}
+_CENTER_HOME_PROXY_CACHE_LOCK = threading.RLock()
+_CENTER_HOME_PROXY_CACHE_TTL_SECONDS = 300
+_CENTER_DETAIL_PROXY_CACHE: Dict[Any, Dict[str, Any]] = {}
+
+
+def _center_proxy_cache_get(cache_store: Dict[Any, Dict[str, Any]], cache_key) -> Dict[str, Any] | None:
+    now = time.time()
+    with _CENTER_HOME_PROXY_CACHE_LOCK:
+        entry = cache_store.get(cache_key)
+        if not entry:
+            return None
+        if float(entry.get('expires_at') or 0) < now:
+            cache_store.pop(cache_key, None)
+            return None
+        payload = copy.deepcopy(entry.get('payload') or {})
+        payload['local_cache_hit'] = True
+        payload['local_cache_ttl_seconds'] = max(0, int(float(entry.get('expires_at') or now) - now))
+        return payload
+
+
+def _center_proxy_cache_set(cache_store: Dict[Any, Dict[str, Any]], cache_key, payload: Dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        return
+    now = time.time()
+    with _CENTER_HOME_PROXY_CACHE_LOCK:
+        if len(cache_store) >= 256:
+            oldest_key = min(cache_store, key=lambda k: cache_store[k].get('expires_at', 0))
+            cache_store.pop(oldest_key, None)
+        cache_store[cache_key] = {
+            'expires_at': now + _CENTER_HOME_PROXY_CACHE_TTL_SECONDS,
+            'payload': copy.deepcopy(payload),
+        }
+
+
+def _center_home_proxy_cache_get(cache_key) -> Dict[str, Any] | None:
+    return _center_proxy_cache_get(_CENTER_HOME_PROXY_CACHE, cache_key)
+
+
+def _center_home_proxy_cache_set(cache_key, payload: Dict[str, Any]) -> None:
+    _center_proxy_cache_set(_CENTER_HOME_PROXY_CACHE, cache_key, payload)
 
 
 def _boolish(value, default=False):
@@ -1557,19 +1600,27 @@ def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
 def api_center_sources():
     try:
         client = SharedCenterClient()
-        resp = client.list_display_sources(
-            q=request.args.get('q') or request.args.get('keyword') or '',
-            status=request.args.get('status') or 'alive,available',
-            item_type=request.args.get('item_type') or '',
-            tmdb_id=request.args.get('tmdb_id') or '',
-            order_by=request.args.get('order_by') or 'latest',
-            limit=int(request.args.get('limit') or request.args.get('page_size') or 200),
-            offset=int(request.args.get('offset') or 0),
-            force_refresh=_boolish(
-                request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
-                False,
-            ),
-        )
+        q = request.args.get('q') or request.args.get('keyword') or ''
+        tmdb_id = request.args.get('tmdb_id') or ''
+        params = {
+            'q': q,
+            'status': request.args.get('status') or 'alive,available',
+            'item_type': request.args.get('item_type') or '',
+            'tmdb_id': tmdb_id,
+            'order_by': request.args.get('order_by') or 'latest',
+            'limit': int(request.args.get('limit') or request.args.get('page_size') or 200),
+            'offset': int(request.args.get('offset') or 0),
+        }
+        if str(q or '').strip() or str(tmdb_id or '').strip():
+            resp = client.list_cloud_search_sources(**params)
+        else:
+            resp = client.list_display_sources(
+                **params,
+                force_refresh=_boolish(
+                    request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
+                    False,
+                ),
+            )
 
         raw_items = [row for row in (resp.get('items') or []) if isinstance(row, dict)]
         # 中心资源库首屏必须保持“中心端已聚合壳”直出。
@@ -1629,6 +1680,52 @@ def api_center_sources():
         return jsonify({'success': True, **resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
+
+
+@shared_resource_bp.route('/center/sources/home', methods=['GET'])
+@admin_required
+def api_center_sources_home():
+    try:
+        client = SharedCenterClient()
+        limit_per_section = max(1, min(int(request.args.get('limit_per_section') or 10), 20))
+        force_refresh = _boolish(
+            request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
+            False,
+        )
+        cache_key = (client.base_url, client.device_token, limit_per_section)
+        if not force_refresh:
+            cached = _center_home_proxy_cache_get(cache_key)
+            if cached:
+                return jsonify(cached)
+
+        resp = client.list_display_home(limit_per_section=limit_per_section)
+
+        def _decorate_center_row(row):
+            if not isinstance(row, dict):
+                return {}
+            row = dict(row)
+            completed_certified = _center_source_is_completed_certified(row)
+            if completed_certified:
+                row['is_completed_certified'] = True
+                row['is_completed'] = True
+            row['version_summary'] = _center_version_summary(row)
+            if not row.get('size') and row.get('total_size'):
+                row['size'] = row.get('total_size')
+            return _strip_center_display_children(row)
+
+        sections = []
+        for section in resp.get('sections') or []:
+            if not isinstance(section, dict):
+                continue
+            items = [_decorate_center_row(row) for row in section.get('items') or [] if isinstance(row, dict)]
+            sections.append({**section, 'items': items})
+        resp['sections'] = sections
+        resp['items'] = []
+        payload = {'success': True, **resp}
+        _center_home_proxy_cache_set(cache_key, payload)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e), 'items': [], 'sections': []}), 500
 
 
 @shared_resource_bp.route('/center/sources/children', methods=['GET'])
@@ -1715,6 +1812,25 @@ def api_center_source_detail():
     """中心资源库卡片详情：代理中心 display-detail，供详情模态框按需加载。"""
     try:
         client = SharedCenterClient()
+        include_people = str(request.args.get('include_people') or '0').strip().lower() not in {'0', 'false', 'no', 'off'}
+        limit = int(request.args.get('limit') or 200)
+        cache_key = (
+            client.base_url,
+            client.device_token,
+            request.args.get('source_kind') or '',
+            request.args.get('source_id') or '',
+            request.args.get('hub_id') or '',
+            request.args.get('tmdb_id') or '',
+            request.args.get('item_type') or '',
+            request.args.get('season_number') or '',
+            limit,
+            include_people,
+        )
+        if not _boolish(request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'), False):
+            cached = _center_proxy_cache_get(_CENTER_DETAIL_PROXY_CACHE, cache_key)
+            if cached:
+                return jsonify(cached)
+
         resp = client.display_detail(
             source_kind=request.args.get('source_kind') or '',
             source_id=request.args.get('source_id') or '',
@@ -1722,7 +1838,8 @@ def api_center_source_detail():
             tmdb_id=request.args.get('tmdb_id') or '',
             item_type=request.args.get('item_type') or '',
             season_number=request.args.get('season_number') or None,
-            limit=int(request.args.get('limit') or 200),
+            limit=limit,
+            include_people=include_people,
         )
 
         def _is_pack_detail_row(row):
@@ -1765,9 +1882,12 @@ def api_center_source_detail():
         # 顶层 children / pack_items 不再给详情弹窗使用；展开集详情另走 children 接口。
         resp['children'] = []
         resp['pack_items'] = []
-        return jsonify({'success': True, 'data': resp, **resp})
+        payload = {'success': True, 'data': resp, **resp}
+        _center_proxy_cache_set(_CENTER_DETAIL_PROXY_CACHE, cache_key, payload)
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'data': {}, 'resources': [], 'versions': [], 'children': []}), 500
+
 
 @shared_resource_bp.route('/center/import', methods=['POST'])
 @admin_required
