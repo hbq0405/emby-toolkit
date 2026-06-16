@@ -4,26 +4,38 @@ title: Emby Toolkit Wiki
 
 # Emby Toolkit 文档
 
-Emby Toolkit 是一个面向 Emby 媒体库的增强管理工具，围绕元数据补全、演员/角色翻译、合集与订阅、智能追剧、封面生成、实时监控等场景提供自动化能力，并带有 Web 管理界面与任务调度系统。
+Emby Toolkit 是一套面向 Emby 用户的媒体库增强工具。它可以帮你整理 115 网盘文件、生成 STRM、补全元数据、追剧、管理演员订阅、维护合集，并通过共享资源中心和其他用户互通资源。
 
-## 快速入口
+如果你是第一次使用，建议按下面顺序阅读：
 
-- 快速上手：阅读 [快速开始](/zh/guide/quick-start) 与 [Docker 部署](/zh/guide/docker)
-- 配置与运行：查看 [配置项总览](/zh/guide/config) 与 [首次配置](/zh/guide/first-run)
-- 常用能力：
-  - [任务与调度](/zh/guide/scheduler)
-  - [实时监控](/zh/guide/monitor)
-  - [Webhook 接入](/zh/guide/webhook)
-  - [智能追剧](/zh/guide/watchlist)
-  - [演员订阅](/zh/guide/actor-subscriptions)
-  - [自建合集](/zh/guide/custom-collections)
-  - [115 网盘集成](/zh/guide/p115)
+1. [快速开始](/zh/guide/quick-start)：先把服务跑起来。
+2. [首次配置](/zh/guide/first-run)：填好 Emby、TMDb、网络代理等基础配置。
+3. [115 网盘](/zh/guide/p115)：配置整理、STRM、播放直链。
+4. [共享资源中心](/zh/guide/shared-resource)：了解秒传、转存、贡献点和求共享。
+5. [故障排查](/zh/faq/troubleshooting)：遇到问题先看这里。
 
-## 项目定位
+## 你可以用它做什么
 
-- 目标：提升 Emby 媒体库的完整度、统一性与自动化运营能力。
-- 方式：通过任务链、实时监控、Web API 与外部数据源集成，持续补全并维护元数据与合集结构。
+- 自动整理 115 网盘里的电影和剧集。
+- 给 Emby 生成 STRM，让 Emby 像本地媒体一样刮削和播放。
+- 自动补齐中文标题、简介、海报、演员和角色名。
+- 自动追剧，发现新集后订阅或入库。
+- 订阅演员，持续跟踪演员作品。
+- 创建和维护自定义合集。
+- 从共享资源中心秒传或转存别人提供的资源。
+- 通过贡献点和求共享机制，让资源互助更可控。
+- 用 Web 控制台查看任务、日志、配置和资源状态。
 
-## 文档范围
+## 常用入口
 
-本 Wiki 覆盖部署、配置、运行、模块设计、数据库结构与常见问题，内容基于当前仓库代码结构与配置实现。若你只需要功能概览，请从 [功能特性](/zh/introduction/features) 开始。
+- [Web 控制台](/zh/guide/web-ui)
+- [115 网盘](/zh/guide/p115)
+- [共享资源中心](/zh/guide/shared-resource)
+- [智能追剧](/zh/guide/watchlist)
+- [演员订阅](/zh/guide/actor-subscriptions)
+- [任务与调度](/zh/guide/scheduler)
+- [用户与权限](/zh/guide/user-management)
+
+## 阅读提示
+
+这份 Wiki 主要写给普通使用者。你不需要先理解代码、数据库或接口，只需要知道每个功能解决什么问题，以及在 Web 页面里该怎么操作。

@@ -21,7 +21,7 @@ export default defineConfig({
       { text: '快速开始', link: '/zh/guide/quick-start' },
       { text: '部署', link: '/zh/guide/docker' },
       { text: '配置', link: '/zh/guide/config' },
-      { text: '架构', link: '/zh/architecture/overview' },
+      { text: '共享资源', link: '/zh/guide/shared-resource' },
       { text: 'FAQ', link: '/zh/faq/troubleshooting' }
     ],
 
@@ -31,15 +31,7 @@ export default defineConfig({
           text: '项目介绍',
           items: [
             { text: '项目概览', link: '/zh/introduction/what-is' },
-            { text: '功能特性', link: '/zh/introduction/features' }
-          ]
-        },
-        {
-          text: '架构设计',
-          items: [
-            { text: '架构总览', link: '/zh/architecture/overview' },
-            { text: '核心模块', link: '/zh/architecture/modules' },
-            { text: '处理流程', link: '/zh/architecture/processing-flow' }
+            { text: '功能特色', link: '/zh/introduction/features' }
           ]
         },
         {
@@ -55,31 +47,18 @@ export default defineConfig({
           text: '使用指南',
           items: [
             { text: 'Web 控制台', link: '/zh/guide/web-ui' },
+            { text: '115 网盘', link: '/zh/guide/p115' },
+            { text: '共享资源中心', link: '/zh/guide/shared-resource' },
             { text: '任务与调度', link: '/zh/guide/scheduler' },
             { text: '实时监控', link: '/zh/guide/monitor' },
-            { text: '115网盘', link: '/zh/guide/p115' },
-            { text: '反向代理与虚拟库', link: '/zh/guide/reverse-proxy' },
             { text: 'Webhook 接入', link: '/zh/guide/webhook' },
             { text: '智能追剧', link: '/zh/guide/watchlist' },
             { text: '演员订阅', link: '/zh/guide/actor-subscriptions' },
             { text: '自建合集', link: '/zh/guide/custom-collections' },
             { text: '封面生成', link: '/zh/guide/cover-generator' },
             { text: '外部服务集成', link: '/zh/guide/integrations' },
-            { text: '用户与权限', link: '/zh/guide/user-management' }
-          ]
-        },
-        {
-          text: '数据与存储',
-          items: [
-            { text: '数据库结构', link: '/zh/data/database' }
-          ]
-        },
-        {
-          text: '开发与运维',
-          items: [
-            { text: '项目结构', link: '/zh/dev/project-structure' },
-            { text: '本地开发', link: '/zh/dev/local-dev' },
-            { text: 'API 概览', link: '/zh/dev/api-overview' }
+            { text: '用户与权限', link: '/zh/guide/user-management' },
+            { text: '反向代理与虚拟库', link: '/zh/guide/reverse-proxy' }
           ]
         },
         {

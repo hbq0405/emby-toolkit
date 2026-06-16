@@ -192,7 +192,7 @@
       </n-layout-sider>
       <n-layout-content
         class="app-main-content-wrapper"
-        content-style="padding: 24px; transition: background-color 0.3s;"
+        :content-style="mainContentStyle"
         :native-scrollbar="false"
       >
       <div class="page-content-inner-wrapper">
@@ -371,6 +371,11 @@ const props = defineProps({
   taskStatus: Object
 });
 const emit = defineEmits(['update:is-dark', 'update:selected-theme', 'edit-custom-theme']);
+
+const mainContentStyle = computed(() => ({
+  padding: isMobile.value ? '12px' : '24px',
+  transition: 'background-color 0.3s'
+}));
 
 const router = useRouter(); 
 const route = useRoute(); 

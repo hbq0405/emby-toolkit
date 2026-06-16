@@ -179,6 +179,7 @@ body {
 .n-popover .n-card {
   background: var(--modal-solid-bg-color, var(--n-color)) !important;
   border-color: var(--card-border-color, var(--n-border-color)) !important;
+  color: var(--text-color, var(--n-text-color)) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   animation: none !important;
@@ -234,4 +235,94 @@ body {
   background: rgba(143, 180, 255, 0.12) !important;
   border-color: var(--accent-color) !important;
   box-shadow: 0 0 0 1px var(--accent-color) inset, 0 0 18px -8px var(--accent-glow-color) !important;
+}
+
+/* ================= 移动端弹窗兜底 ================= */
+.n-modal {
+  max-width: calc(100vw - 24px) !important;
+}
+
+.n-modal .n-card,
+.n-modal.n-card {
+  max-height: calc(100dvh - 24px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.n-modal .n-card > .n-card__content,
+.n-modal.n-card > .n-card__content {
+  min-height: 0;
+  overflow: auto;
+}
+
+.n-modal .n-card > .n-card__footer,
+.n-modal.n-card > .n-card__footer {
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .n-layout-content {
+    --app-content-padding: 12px;
+  }
+
+  .app-main-content-wrapper {
+    padding: 0 !important;
+  }
+
+  .n-modal {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+  }
+
+  .n-modal .n-card,
+  .n-modal.n-card {
+    max-height: calc(100dvh - 16px) !important;
+  }
+
+  .n-modal .n-card-header,
+  .n-modal.n-card .n-card-header {
+    padding: 14px 16px 10px !important;
+  }
+
+  .n-modal .n-card__content,
+  .n-modal.n-card .n-card__content {
+    padding: 12px 16px !important;
+  }
+
+  .n-modal .n-card__footer,
+  .n-modal.n-card .n-card__footer {
+    padding: 10px 16px 14px !important;
+  }
+
+  .n-modal .n-form-item,
+  .n-modal .n-input,
+  .n-modal .n-select,
+  .n-modal .n-input-number,
+  .n-modal .n-date-picker,
+  .n-modal .n-button:not(.n-button--circle) {
+    max-width: 100%;
+  }
+}
+
+/* ================= 亮色模式弹窗可读性兜底 ================= */
+html:not(.dark) .custom-modal .config-card,
+html:not(.dark) .custom-modal .type-card,
+html:not(.dark) .custom-modal .rule-row,
+html:not(.dark) .custom-modal .n-card[embedded] {
+  --n-color: rgba(255, 255, 255, 0.82) !important;
+  background: rgba(255, 255, 255, 0.82) !important;
+  background-color: rgba(255, 255, 255, 0.82) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  color: var(--text-color, #1f2937) !important;
+}
+
+html:not(.dark) .custom-modal .n-data-table-th,
+html:not(.dark) .custom-modal .n-data-table-td {
+  background: rgba(255, 255, 255, 0.72) !important;
+  color: var(--text-color, #1f2937) !important;
+}
+
+html:not(.dark) .custom-modal .n-data-table-tr:hover .n-data-table-td {
+  background: rgba(79, 124, 255, 0.08) !important;
 }

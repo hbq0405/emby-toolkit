@@ -5150,4 +5150,164 @@ onUnmounted(() => {
   min-width: 74px;
 }
 
+:global(html:not(.dark)) .center-version-detail-card,
+:global(html:not(.dark)) .detail-person-card {
+  background: rgba(255, 255, 255, .78);
+  border-color: rgba(0, 0, 0, .08);
+}
+
+:global(html:not(.dark)) .detail-title {
+  color: var(--text-color, #1f2937);
+}
+
+:global(html:not(.dark)) .detail-meta,
+:global(html:not(.dark)) .detail-overview,
+:global(html:not(.dark)) .detail-credits,
+:global(html:not(.dark)) .detail-person-name {
+  color: rgba(31, 41, 55, .82);
+}
+
+:global(html:not(.dark)) .detail-person-role {
+  color: rgba(31, 41, 55, .58);
+}
+
+:global(html:not(.dark)) .shared-page :deep(.n-data-table-th),
+:global(html:not(.dark)) .shared-page :deep(.n-data-table-td),
+:global(html:not(.dark)) .custom-modal .n-data-table-th,
+:global(html:not(.dark)) .custom-modal .n-data-table-td {
+  background-color: rgba(255, 255, 255, .68) !important;
+  border-color: rgba(0, 0, 0, .08) !important;
+}
+
+:global(html:not(.dark)) .shared-page :deep(.n-data-table-tr:hover .n-data-table-td),
+:global(html:not(.dark)) .custom-modal .n-data-table-tr:hover .n-data-table-td {
+  background-color: rgba(79, 124, 255, .08) !important;
+}
+
+@media (max-width: 768px) {
+  .page-header {
+    align-items: stretch;
+  }
+
+  .page-header > :last-child,
+  .toolbar {
+    width: 100%;
+  }
+
+  .page-header :deep(.n-space),
+  .toolbar :deep(.n-space) {
+    width: 100%;
+  }
+
+  .toolbar :deep(.n-input),
+  .toolbar :deep(.n-select),
+  .toolbar :deep(.n-button) {
+    width: 100% !important;
+  }
+
+  .center-detail-header-new {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .detail-poster {
+    width: min(42vw, 150px);
+    height: auto;
+    aspect-ratio: 2 / 3;
+    flex-basis: auto;
+    align-self: center;
+  }
+
+  .detail-title {
+    font-size: 20px;
+  }
+
+  .detail-year {
+    font-size: 15px;
+  }
+
+  .detail-meta {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .detail-overview {
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+  }
+
+  .detail-person-card {
+    max-width: 100%;
+    min-width: min(100%, 132px);
+  }
+
+  .center-version-detail-card {
+    padding: 10px 12px;
+  }
+
+  .center-version-action,
+  .center-version-action :deep(.n-button) {
+    width: 100%;
+  }
+
+  .share-request-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .share-request-owner {
+    white-space: normal;
+  }
+
+  .share-request-actions,
+  .share-request-actions :deep(.n-button) {
+    width: 100%;
+  }
+
+  .share-request-actions {
+    justify-content: stretch;
+  }
+
+  .share-request-actions :deep(.n-button) {
+    flex: 1 1 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .stat-card {
+    padding: 12px;
+    min-height: 78px;
+  }
+
+  .stat-value {
+    font-size: 20px;
+  }
+
+  .center-card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+    gap: 10px;
+  }
+
+  .poster-wall-overlay {
+    padding: 44px 7px 8px;
+  }
+
+  .poster-wall-title-line {
+    font-size: 12px;
+  }
+
+  .poster-wall-year-line {
+    font-size: 11px;
+  }
+
+  .share-request-card-body {
+    gap: 8px;
+  }
+
+  .share-request-poster {
+    width: 58px;
+    height: 84px;
+  }
+}
+
 </style>
