@@ -5,7 +5,6 @@
     preset="card"
     :title="`云资源搜索: ${mediaTitle}`"
     style="width: 920px; max-width: 96%;"
-    class="cloud-resource-modal"
   >
     <n-spin :show="loading">
       <n-space vertical size="medium">
@@ -22,13 +21,13 @@
           {{ warning }}
         </n-alert>
 
-        <div class="cloud-toolbar">
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
           <n-input
             v-model:value="searchTitle"
             size="small"
             clearable
             placeholder="搜索标题，默认使用当前影视名称"
-            class="cloud-search-input"
+            style="width: 260px;"
             @keyup.enter="fetchResources"
           />
           <n-button size="small" :loading="loading" @click="fetchResources">
@@ -63,7 +62,7 @@
             hoverable
             class="cloud-resource-card"
           >
-            <div class="cloud-resource-row">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
               <div style="min-width: 0; flex: 1;">
                 <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
                   <n-tag
@@ -208,8 +207,8 @@
                 </div>
               </div>
 
-              <div v-if="!isSharedPoolGroup(res)" class="cloud-resource-action">
-                <div class="cloud-resource-action-hint">
+              <div v-if="!isSharedPoolGroup(res)" style="flex-shrink: 0; min-width: 92px; text-align: right;">
+                <div style="font-size: 12px; color: #f0a020; margin-bottom: 6px;">
                   <span v-if="isSharedPool(res)">{{ sharedPoolActionText(res).hint }}</span>
                   <span v-else-if="isChannel(res)">可转存</span>
                   <span v-else-if="res.already_owned">已解锁</span>
@@ -823,38 +822,8 @@ const download = async (resource) => {
 </script>
 
 <style scoped>
-.cloud-toolbar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.cloud-search-input {
-  width: 260px;
-}
-
 .cloud-resource-card :deep(.n-card__content) {
   padding: 12px 14px;
-}
-
-.cloud-resource-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-}
-
-.cloud-resource-action {
-  flex-shrink: 0;
-  min-width: 92px;
-  text-align: right;
-}
-
-.cloud-resource-action-hint {
-  font-size: 12px;
-  color: #f0a020;
-  margin-bottom: 6px;
 }
 
 .cloud-version-list {
@@ -872,11 +841,6 @@ const download = async (resource) => {
   border-radius: 8px;
   background: rgba(12, 18, 42, .42);
   border: 1px solid rgba(148, 177, 255, .14);
-}
-
-:global(html:not(.dark)) .cloud-version-row {
-  background: rgba(255, 255, 255, .78);
-  border-color: rgba(0, 0, 0, .08);
 }
 
 .cloud-version-main {
@@ -897,50 +861,12 @@ const download = async (resource) => {
 }
 
 @media (max-width: 640px) {
-  .cloud-toolbar {
-    align-items: stretch;
-  }
-
-  .cloud-toolbar :deep(.n-button-group) {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: 100%;
-  }
-
-  .cloud-toolbar :deep(.n-button-group .n-button) {
-    width: 100%;
-  }
-
-  .cloud-search-input {
-    width: 100%;
-  }
-
-  .cloud-resource-row {
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .cloud-resource-action {
-    width: 100%;
-    min-width: 0;
-    text-align: left;
-  }
-
-  .cloud-resource-action :deep(.n-button) {
-    width: 100%;
-  }
-
   .cloud-version-row {
     flex-direction: column;
   }
 
   .cloud-version-action {
-    width: 100%;
     text-align: left;
-  }
-
-  .cloud-version-action :deep(.n-button) {
-    width: 100%;
   }
 }
 </style>
