@@ -1314,8 +1314,18 @@ def _source_parent_series_tmdb_id(src: Dict[str, Any], context: Dict[str, Any] =
     return ''
 
 
-def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: str,
-                       media_type: str, original_lang: str = '', has_external_subtitle: bool = False):
+def _washing_new_level(
+    sha1: str,
+    file_name: str,
+    file_size: int,
+    target_cid: str,
+    media_type: str,
+    original_lang: str = '',
+    has_external_subtitle: bool = False,
+    tmdb_id: str = '',
+    season_num=None,
+    episode_num=None,
+):
     try:
         from handler.resubscribe_service import WashingService
         raw_info = WashingService._get_raw_info_by_sha1(sha1)
@@ -1329,11 +1339,16 @@ def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: st
         new_info['_file_size'] = file_size
         new_info['_original_lang'] = original_lang
         new_info['has_external_subtitle'] = has_external_subtitle
-        norm_new = WashingService._normalize_info(new_info)
+        new_info['_media_type'] = media_type
+        new_info['_tmdb_id'] = tmdb_id
+        new_info['_season_num'] = season_num
+        new_info['_episode_num'] = episode_num
         db_media_type = 'Movie' if str(media_type).lower() == 'movie' else 'Series'
         priorities = WashingService._load_priorities(db_media_type, target_cid)
         if not priorities:
             return 999, '未配置优先级规则'
+        new_info['_need_clean_version_check'] = WashingService._priorities_need_clean_version(priorities)
+        norm_new = WashingService._normalize_info(new_info)
         return WashingService.get_level(norm_new, priorities)
     except Exception as e:
         return 999, f'读取洗版优先级失败: {e}'
@@ -1766,6 +1781,9 @@ def _prepare_files_before_rapid_transfer(
             media_type,
             original_lang=original_lang,
             has_external_subtitle=False,
+            tmdb_id=str(tmdb_for_washing),
+            season_num=s_num,
+            episode_num=e_num,
         )
         logger.info(
             f"  ➜ [共享资源] 洗版预检[{idx + 1}/{len(files)}] 评分完成："

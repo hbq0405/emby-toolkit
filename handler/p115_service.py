@@ -7007,10 +7007,15 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             new_info['_file_size'] = _file_size
                             new_info['_original_lang'] = original_lang
                             new_info['has_external_subtitle'] = bool(_has_ext_sub)
-                            norm_new = WashingService._normalize_info(new_info)
+                            new_info['_media_type'] = self.media_type
+                            new_info['_tmdb_id'] = self.tmdb_id
+                            new_info['_season_num'] = _item.get('_season_num')
+                            new_info['_episode_num'] = _item.get('_episode_num')
                             db_media_type = 'Movie' if self.media_type == 'movie' else 'Series'
                             priorities = WashingService._load_priorities(db_media_type, str(target_cid))
                             if priorities:
+                                new_info['_need_clean_version_check'] = WashingService._priorities_need_clean_version(priorities)
+                                norm_new = WashingService._normalize_info(new_info)
                                 level, level_reason = WashingService.get_level(norm_new, priorities)
 
                     if level >= 9999:

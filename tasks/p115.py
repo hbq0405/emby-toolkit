@@ -2392,7 +2392,18 @@ def _lookup_mediainfo_by_sha1(cursor, sha1):
     return dict(row) if row else None
 
 
-def _build_priority_input(raw_info, *, file_name='', file_size=0, original_lang=''):
+def _build_priority_input(
+    raw_info,
+    *,
+    file_name='',
+    file_size=0,
+    original_lang='',
+    media_type='',
+    tmdb_id='',
+    season_num=None,
+    episode_num=None,
+    need_clean_version_check=False,
+):
     from handler.resubscribe_service import WashingService
 
     parsed = WashingService._safe_parse_jsonish(raw_info)
@@ -2415,6 +2426,16 @@ def _build_priority_input(raw_info, *, file_name='', file_size=0, original_lang=
         info['_file_size'] = int(file_size or 0)
     if original_lang:
         info['_original_lang'] = original_lang
+    if media_type:
+        info['_media_type'] = media_type
+    if tmdb_id:
+        info['_tmdb_id'] = tmdb_id
+    if season_num is not None:
+        info['_season_num'] = season_num
+    if episode_num is not None:
+        info['_episode_num'] = episode_num
+    if need_clean_version_check:
+        info['_need_clean_version_check'] = True
     return info
 
 
@@ -2733,6 +2754,11 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                         file_name=file_name,
                         file_size=file_size,
                         original_lang=original_lang,
+                        media_type=media_type,
+                        tmdb_id=row.get('parent_series_tmdb_id') or row.get('tmdb_id') or '',
+                        season_num=row.get('season_number'),
+                        episode_num=row.get('episode_number'),
+                        need_clean_version_check=WashingService._priorities_need_clean_version(priorities),
                     )
                     norm = WashingService._normalize_info(priority_input)
                     level, reason = WashingService.get_level(norm, priorities)
@@ -3004,4 +3030,3 @@ def submit_washing_priority_recalculate_task(item_type='all', limit=None):
         task_name="重算媒体库洗版优先级",
         processor_type='media'
     )
-

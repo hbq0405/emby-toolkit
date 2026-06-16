@@ -178,6 +178,14 @@
                             </span>
                           </div>
                         </n-gi>
+                        <n-gi span="1">
+                          <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 8px; background: var(--n-color-modal); border-radius: 4px;">
+                            <n-switch v-model:value="priority.clean_version" size="small" />
+                            <span style="font-size: 12px; color: var(--n-text-color-3);">
+                              <strong>纯净版</strong>
+                            </span>
+                          </div>
+                        </n-gi>
                         <n-gi>
                           <n-input-group>
                             <n-input-group-label>最小体积</n-input-group-label>
@@ -287,6 +295,8 @@ const getPrioritySummary = (p) => {
   
   const subLabels = getLabels(p.subtitle, subOptions);
   if (subLabels.length) tags.push({ type: 'default', label: '字: ' + subLabels.join(', ') });
+
+  if (p.clean_version) tags.push({ type: 'success', label: '纯净版' });
   
   let sizeStr = '';
   if (p.is_exclude) {
@@ -348,6 +358,7 @@ const saveGroups = async () => {
                  (p.effect && p.effect.length > 0) ||
                  (p.audio && p.audio.length > 0) ||
                  (p.subtitle && p.subtitle.length > 0) ||
+                 p.clean_version ||
                  (p.min_size_gb !== null && p.min_size_gb !== undefined) ||
                  (p.max_size_gb !== null && p.max_size_gb !== undefined);
         });
@@ -442,6 +453,7 @@ const addPriority = () => {
     _uid: newUid,
     is_exclude: false,
     exempt_original_lang: false,
+    clean_version: false,
     resolution: [], codec: [], effect: [], audio: [], subtitle: [], min_size_gb: null, max_size_gb: null
   });
   
