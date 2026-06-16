@@ -94,6 +94,50 @@ class WashingService:
         return {}
 
     @classmethod
+    def _text_has_effect_subtitle_mark(cls, value: Any) -> bool:
+        text = str(value or "").strip().lower()
+        if not text:
+            return False
+        if "\u7279\u6548" in text:
+            return True
+        normalized = (
+            text.replace("_", " ")
+            .replace("-", " ")
+            .replace(".", " ")
+            .replace("/", " ")
+            .replace("(", " ")
+            .replace(")", " ")
+        )
+        tokens = set(normalized.split())
+        return bool({"effect", "effects", "tx"} & tokens)
+
+    @classmethod
+    def _has_effect_subtitle(cls, parsed: Any, media_streams: List[Dict[str, Any]]) -> bool:
+        for stream in media_streams or []:
+            if not isinstance(stream, dict) or str(stream.get("Type", "")).lower() != "subtitle":
+                continue
+            if any(cls._text_has_effect_subtitle_mark(stream.get(key)) for key in ("Title", "DisplayTitle", "title", "display_title")):
+                return True
+
+        if not isinstance(parsed, dict):
+            return False
+
+        for key in ("subtitles", "subtitle_tracks", "subtitle_list", "subtitle"):
+            raw_value = parsed.get(key)
+            if cls._text_has_effect_subtitle_mark(raw_value):
+                return True
+            for item in cls._safe_parse_list(raw_value):
+                if isinstance(item, dict):
+                    if any(
+                        cls._text_has_effect_subtitle_mark(item.get(field))
+                        for field in ("Title", "DisplayTitle", "title", "display_title", "display", "name")
+                    ):
+                        return True
+                elif cls._text_has_effect_subtitle_mark(item):
+                    return True
+        return False
+
+    @classmethod
     def _minutes(cls, value: Any, divisor: float) -> float:
         try:
             return 0.0 if value in (None, "", 0, "0") else float(value) / divisor
@@ -276,6 +320,7 @@ class WashingService:
             "audio_langs": set(),
             "sub_langs": set(),
             "size_gb": 0.0,
+            "has_effect_subtitle": False,
             "is_clean_version": None,
             "clean_version_detail": {},
         }
@@ -395,6 +440,7 @@ class WashingService:
 
         norm["audio_langs"] = {normalize_lang_code(a) for a in raw_audio_langs if a}
         norm["sub_langs"] = {normalize_lang_code(s) for s in raw_sub_langs if s}
+        norm["has_effect_subtitle"] = cls._has_effect_subtitle(parsed, media_streams)
 
         # 5. 体积
         size_bytes = (
@@ -535,6 +581,14 @@ class WashingService:
                     # 普通模式：必须包含想要的字幕。如果有外挂字幕，豁免此检查（假设外挂字幕就是想要的）
                     if not matched_subs and not has_ext_sub: 
                         return False, "缺少必须的字幕"
+
+        if priority_rule.get("subtitle_effect") or priority_rule.get("effect_subtitle"):
+            has_effect_subtitle = bool(norm_info.get("has_effect_subtitle"))
+            if is_exclude:
+                if has_effect_subtitle:
+                    return True, "命中排除条件: 特效字幕"
+            elif not has_effect_subtitle:
+                return False, "缺少特效字幕"
 
         # 6. 体积
         min_size = priority_rule.get("min_size_gb")
