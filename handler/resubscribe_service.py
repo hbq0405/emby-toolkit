@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class WashingService:
     # 洗版按单集判断，首集/尾集可能仍带片头或片尾，不能复用共享资源整季多数投票的保守阈值。
-    CLEAN_VERSION_MIN_DELTA_MINUTES = 1.0
+    CLEAN_VERSION_MIN_DELTA_MINUTES = 1.5
     CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.985
     SHORT_DRAMA_MAX_RUNTIME_MINUTES = 25.0
 
