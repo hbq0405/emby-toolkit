@@ -95,7 +95,13 @@
             <n-spin :show="centerLoading && !centerAppendLoading">
               <template v-if="centerHomeMode && centerHomeSections.length">
                 <div v-for="section in centerHomeSections" :key="section.key" class="center-home-section">
-                  <div class="center-home-section-title">{{ section.title }}</div>
+                  <div class="center-home-section-head">
+                    <div class="center-home-section-title">{{ section.title }}</div>
+                    <n-space size="small">
+                      <n-button size="tiny" quaternary :disabled="centerHomeSectionIndex(section.key) <= 0" @click.stop="moveCenterHomeSection(section.key, -1)">上移</n-button>
+                      <n-button size="tiny" quaternary :disabled="centerHomeSectionIndex(section.key) >= centerHomeSections.length - 1" @click.stop="moveCenterHomeSection(section.key, 1)">下移</n-button>
+                    </n-space>
+                  </div>
                   <div class="center-card-grid">
                     <div
                       v-for="(row, centerIndex) in section.items"
@@ -373,6 +379,17 @@
               <div class="detail-overview">
                 {{ centerTmdbMeta(activeCenterDetailRow).overview || activeCenterDetailRow.overview || '暂无简介' }}
               </div>
+              <div v-if="centerDetailPeople(activeCenterDetailRow).length" class="detail-credits">
+                <div class="detail-people-row">
+                  <div v-for="person in centerDetailPeople(activeCenterDetailRow)" :key="centerPersonKey(person)" class="detail-person-card" :title="centerPersonTooltip(person)">
+                    <img v-bind="centerProfileImgAttrs(person)" class="detail-person-avatar" @error="onCenterProfileError" />
+                    <div class="detail-person-info">
+                      <div class="detail-person-name">{{ centerPersonName(person) }}</div>
+                      <div class="detail-person-role">{{ centerPersonRoleText(person) }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           
@@ -500,6 +517,7 @@ const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
 const centerHomeSections = ref([]);
+const CENTER_HOME_SECTION_ORDER_KEY = 'etk.center.home.section.order.v1';
 const centerBackendGrouped = ref(false);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
@@ -1795,7 +1813,6 @@ const centerNestedParts = (row) => {
 };
 const centerCompletedCertifiedMeta = (row) => {
   // 一致版是 ETK 官方认证标签：新方案只认中心逻辑季包 pool_complete。
-  if (centerIsOngoingHub(row)) return {};
   if (!centerIsCompletedCertifiedSource(row) && !row?.is_completed_certified) return {};
   for (const part of centerNestedParts(row)) {
     const meta = part?.completed_certified_meta_json || part?.completed_certified_meta || {};
@@ -1809,8 +1826,7 @@ const centerCompletedCertifiedMeta = (row) => {
   return {};
 };
 const isCenterCompletedCertified = (row) => Boolean(
-  !centerIsOngoingHub(row)
-  && (centerSeriesAllRegularSeasonsCertified(row) || centerCompletedCertifiedMeta(row).is_completed_certified)
+  centerSeriesAllRegularSeasonsCertified(row) || centerCompletedCertifiedMeta(row).is_completed_certified
 );
 const centerCompletedCertifiedTooltip = (row) => {
   const meta = centerCompletedCertifiedMeta(row);
@@ -2758,7 +2774,6 @@ const centerDisplayTitle = (row) => {
   const season = Number(row?.season_number || 0);
   const episode = Number(row?.episode_number || 0);
   if (typeLabel === '剧集') return base;
-  if (typeLabel === '季' && season > 0 && !/第\s*\d+\s*季/.test(base)) return `${base} 第 ${season} 季`;
   if (typeLabel === '单集') {
     const se = [season ? `S${String(season).padStart(2, '0')}` : '', episode ? `E${String(episode).padStart(2, '0')}` : ''].join('');
     return se ? `${base} ${se}` : base;
@@ -3039,16 +3054,16 @@ const centerPosterMark = (row) => {
 };
 const centerRibbonText = (row) => {
   if (isCenterReplenishRow(row)) return '待补充';
+  if (isCenterCompletedCertified(row)) return '一致版';
   // 剧卡片优先显示连载状态：只要任一普通季连载中就挂“连载中”，特别篇不参与判定。
   if (centerIsOngoingHub(row)) return '连载中';
-  if (isCenterCompletedCertified(row)) return '一致版';
   if (centerIsSeriesGroup(row) || centerIsSeasonLike(row)) return '已完结';
   return '';
 };
 const centerRibbonClass = (row) => {
   if (isCenterReplenishRow(row)) return 'center-ribbon-warning';
-  if (centerIsOngoingHub(row)) return 'center-ribbon-blue';
   if (isCenterCompletedCertified(row)) return 'center-ribbon-green';
+  if (centerIsOngoingHub(row)) return 'center-ribbon-blue';
   return 'center-ribbon-dark';
 };
 const centerCardMetaText = (row) => {
@@ -3658,6 +3673,41 @@ const saveSharedConfig = async () => {
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
+const centerHomeSectionOrder = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CENTER_HOME_SECTION_ORDER_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : [];
+  } catch (_) {
+    return [];
+  }
+};
+const saveCenterHomeSectionOrder = () => {
+  try {
+    localStorage.setItem(CENTER_HOME_SECTION_ORDER_KEY, JSON.stringify(centerHomeSections.value.map(s => String(s?.key || '')).filter(Boolean)));
+  } catch (_) {}
+};
+const applyCenterHomeSectionOrder = (sections = []) => {
+  const list = Array.isArray(sections) ? [...sections] : [];
+  const order = centerHomeSectionOrder();
+  if (!order.length) return list;
+  const index = new Map(order.map((key, i) => [key, i]));
+  return list.sort((a, b) => {
+    const ai = index.has(String(a?.key || '')) ? index.get(String(a?.key || '')) : Number.MAX_SAFE_INTEGER;
+    const bi = index.has(String(b?.key || '')) ? index.get(String(b?.key || '')) : Number.MAX_SAFE_INTEGER;
+    return ai - bi;
+  });
+};
+const centerHomeSectionIndex = (key) => centerHomeSections.value.findIndex(section => String(section?.key || '') === String(key || ''));
+const moveCenterHomeSection = (key, delta) => {
+  const idx = centerHomeSectionIndex(key);
+  const next = idx + delta;
+  if (idx < 0 || next < 0 || next >= centerHomeSections.value.length) return;
+  const list = [...centerHomeSections.value];
+  const [item] = list.splice(idx, 1);
+  list.splice(next, 0, item);
+  centerHomeSections.value = list;
+  saveCenterHomeSectionOrder();
+};
 const loadCenterSources = async (forceRefresh = false, append = false) => {
   if (append) centerAppendLoading.value = true;
   else centerLoading.value = true;
@@ -3672,7 +3722,7 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
       const params = { limit_per_section: 10 };
       if (forceRefresh) params.force_refresh = 1;
       const res = await axios.get('/api/shared/resources/center/sources/home', { params });
-      centerHomeSections.value = Array.isArray(res.data?.sections) ? res.data.sections : [];
+      centerHomeSections.value = applyCenterHomeSectionOrder(Array.isArray(res.data?.sections) ? res.data.sections : []);
       centerSources.value = [];
       centerBackendGrouped.value = true;
       centerPagination.itemCount = Number(res.data?.total || 0);
@@ -4513,6 +4563,12 @@ onUnmounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
   gap: 18px;
   padding: 10px 0 20px;
+}
+.center-home-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 .poster-wall-card {
   border-radius: 12px !important;
