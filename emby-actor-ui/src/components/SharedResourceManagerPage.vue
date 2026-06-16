@@ -373,20 +373,6 @@
               <div class="detail-overview">
                 {{ centerTmdbMeta(activeCenterDetailRow).overview || activeCenterDetailRow.overview || '暂无简介' }}
               </div>
-              <div v-if="centerShouldShowDetailSeasonTabs(activeCenterDetailRow)" class="detail-season-tabs">
-                <n-button
-                  v-for="season in centerDetailSeasons"
-                  :key="centerSeasonTabKey(season)"
-                  size="small"
-                  round
-                  :type="centerDetailSeasonActive(season) ? 'primary' : 'default'"
-                  :secondary="!centerDetailSeasonActive(season)"
-                  :loading="centerDetailSeasonLoading(season)"
-                  @click="switchCenterDetailSeason(season)"
-                >
-                  {{ centerSeasonTabLabel(season) }}
-                </n-button>
-              </div>
             </div>
           </div>
           
@@ -3496,7 +3482,7 @@ const mergeCenterDetailPayload = (base, payload) => {
 const centerDetailParams = (row, seasonOverride = null) => {
   const isSeries = centerIsSeriesGroup(row);
   const overrideProvided = seasonOverride !== null && seasonOverride !== undefined && seasonOverride !== '';
-  const season = centerSeasonTabNumber(overrideProvided ? seasonOverride : (isSeries ? null : centerSeasonNumber(row)));
+  const season = centerSeasonTabNumber(overrideProvided ? seasonOverride : (isSeries ? centerDefaultDetailSeason(row) : centerSeasonNumber(row)));
   return {
     source_kind: isSeries ? 'series_group' : (row?.source_kind || row?.lazy_children_kind || ''),
     source_id: isSeries ? (row?.source_id || row?.source_ref_id || `series:${tmdbIdForRow(row)}`) : (row?.source_id || row?.source_ref_id || ''),
@@ -3541,7 +3527,7 @@ const openCenterDetail = async (row) => {
   centerDetailLoading.value = true;
   try {
     try {
-      const requestedSeason = centerIsSeriesGroup(row) ? null : centerDetailActiveSeason.value;
+      const requestedSeason = centerDetailActiveSeason.value;
       const detailPayload = await loadCenterSourceDetail(row, requestedSeason);
       activeCenterDetailRow.value = applyCenterDetailPayload(row, detailPayload, requestedSeason);
     } catch (e) {
