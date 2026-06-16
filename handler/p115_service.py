@@ -9010,12 +9010,31 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         """手动重组移动后，需要检查旧目录及其媒体主目录是否已空。"""
         current = str(start_cid or '').strip()
         seen = set()
-        for node in (info_data or {}).get('paths') or []:
-            if not isinstance(node, dict):
-                continue
-            cid_val = str(node.get('file_id') or node.get('cid') or node.get('fid') or '').strip()
-            if cid_val and cid_val != '0':
-                old_cids_to_check.add(cid_val)
+
+        def _remember_path_nodes(payload):
+            for node in (payload or {}).get('paths') or (payload or {}).get('path') or []:
+                if not isinstance(node, dict):
+                    continue
+                cid_val = str(node.get('file_id') or node.get('cid') or node.get('fid') or '').strip()
+                if cid_val and cid_val != '0':
+                    old_cids_to_check.add(cid_val)
+
+        def _parent_from_info_payload(payload):
+            payload = payload if isinstance(payload, dict) else {}
+            parent = str(payload.get('parent_id') or payload.get('pid') or '').strip()
+            if parent:
+                return parent
+            path_nodes = payload.get('paths') or payload.get('path') or []
+            if isinstance(path_nodes, list):
+                for node in reversed(path_nodes):
+                    if not isinstance(node, dict):
+                        continue
+                    cid_val = str(node.get('file_id') or node.get('cid') or node.get('fid') or '').strip()
+                    if cid_val and cid_val != '0':
+                        return cid_val
+            return ''
+
+        _remember_path_nodes(info_data)
         for _ in range(20):
             if not current or current == '0' or current in seen:
                 break
@@ -9023,6 +9042,15 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             old_cids_to_check.add(current)
             node = P115CacheManager.get_node_info(current)
             parent_id = str((node or {}).get('parent_id') or '').strip() if node else ''
+            if not parent_id:
+                try:
+                    info_res = client.fs_get_info(current)
+                    if info_res and info_res.get('state') and isinstance(info_res.get('data'), dict):
+                        remote_info = info_res.get('data') or {}
+                        _remember_path_nodes(remote_info)
+                        parent_id = _parent_from_info_payload(remote_info)
+                except Exception as e:
+                    logger.debug(f"  ➜ [批量重组] 回查旧目录父级失败: cid={current}, err={e}")
             if not parent_id or parent_id == '0':
                 break
             current = parent_id
