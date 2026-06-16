@@ -4559,21 +4559,45 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
         episode_no = _safe_int_or_none(candidate.get('episode_number'))
         episode_row = rows.get('episode') or {}
         runtime = _safe_int_or_none(episode_row.get('runtime_minutes'))
-        if not series_id or season_no is None or episode_no is None or runtime is None:
+        if not series_id or season_no is None:
             return {}
-        episode_meta = {
-            'tmdb_id': series_id,
-            'item_type': 'Episode',
-            'season_number': season_no,
-            'episode_number': episode_no,
-            'runtime_minutes': runtime,
+        season_row = rows.get('season') or {}
+        series_row = rows.get('series') or {}
+        series_meta = meta_from_row(
+            tmdb_id=series_id,
+            item_type='Series',
+            season_number=None,
+            row=series_row,
+            fallback_title=candidate.get('title'),
+            fallback_year=candidate.get('release_year'),
+            include_series_fields=True,
+        ) if (series_row or series_id) else {}
+        season_meta = meta_from_row(
+            tmdb_id=series_id,
+            item_type='Season',
+            season_number=season_no,
+            row=season_row,
+            fallback_title=(season_row or {}).get('title') or candidate.get('title'),
+            fallback_year=(season_row or {}).get('release_year') or candidate.get('release_year'),
+            include_series_fields=False,
+        )
+        episode_meta = {}
+        if episode_no is not None and runtime is not None:
+            episode_meta = {
+                'tmdb_id': series_id,
+                'item_type': 'Episode',
+                'season_number': season_no,
+                'episode_number': episode_no,
+                'runtime_minutes': runtime,
+            }
+        items = [x for x in (series_meta, season_meta, episode_meta) if x]
+        bundle = {
+            'display_meta_json': season_meta or series_meta or episode_meta,
+            'display_meta_items_json': items,
         }
-        return {
-            'display_meta_json': episode_meta,
-            'display_meta_items_json': [episode_meta],
-            'people_json': [],
-            'credits_json': [],
-        }
+        # 演职员始终只从 Series 条目取，避免季/集演员污染整剧壳。
+        bundle.update(_build_display_credits_bundle(series_row) if series_row else {'people_json': [], 'credits_json': []})
+        return bundle
 
     series_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     season_no = _safe_int_or_none(candidate.get('season_number'))
@@ -4676,7 +4700,7 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
             'fingerprint_repair': {},
         }
 
-    display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate) if item_type in ('Movie', 'Season') else {}
+    display_meta_bundle = _center_display_meta_bundle_for_candidate(candidate) if item_type in ('Movie', 'Season', 'Episode') else {}
     results = []
     tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     if item_type == 'Movie':

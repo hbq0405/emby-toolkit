@@ -3448,11 +3448,24 @@ const mergeCenterDetailPayload = (base, payload) => {
   };
   const meta = detailData.media_meta || detailData.tmdb_meta || detailData.meta || {};
   const oldMeta = centerTmdbMeta(row) || {};
+  const keepSeasonPoster = !centerIsSeriesGroup(row) && centerIsSeasonLike(row);
+  const basePoster = {
+    poster_path: row.poster_path,
+    poster_url: row.poster_url,
+    poster: row.poster,
+    image: row.image,
+    cover: row.cover,
+  };
   const merged = {
     ...row,
     ...detailData,
     tmdb_meta: { ...oldMeta, ...meta },
   };
+  if (keepSeasonPoster) {
+    for (const [key, value] of Object.entries(basePoster)) {
+      if (value) merged[key] = value;
+    }
+  }
   for (const field of ['poster_path', 'backdrop_path', 'overview', 'title', 'release_year']) {
     if (!merged[field] && meta[field]) merged[field] = meta[field];
   }
