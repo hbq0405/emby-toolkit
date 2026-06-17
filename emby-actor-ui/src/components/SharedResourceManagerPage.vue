@@ -5040,24 +5040,12 @@ onUnmounted(() => {
   --center-detail-meta-color: var(--n-text-color-2, rgba(71, 85, 105, .86));
   --center-detail-text-color: var(--n-text-color, rgba(30, 41, 59, .9));
   --center-detail-muted-color: var(--n-text-color-3, rgba(100, 116, 139, .9));
-  --center-detail-panel-bg: rgba(255, 255, 255, .72);
-  --center-detail-soft-bg: rgba(241, 245, 249, .78);
-  --center-detail-person-bg: rgba(148, 163, 184, .26);
-  --center-detail-border: rgba(148, 163, 184, .36);
-  --center-detail-avatar-bg: rgba(226, 232, 240, .95);
-  --center-detail-shadow: none;
-}
-:global(html.dark) .center-detail-body {
-  --center-detail-title-color: rgba(255, 255, 255, .96);
-  --center-detail-meta-color: rgba(255, 255, 255, .7);
-  --center-detail-text-color: rgba(255, 255, 255, .85);
-  --center-detail-muted-color: rgba(255, 255, 255, .58);
-  --center-detail-panel-bg: rgba(8, 14, 35, .64);
-  --center-detail-soft-bg: rgba(8, 14, 35, .42);
-  --center-detail-person-bg: rgba(15, 23, 42, .72);
-  --center-detail-border: rgba(148, 177, 255, .22);
-  --center-detail-avatar-bg: rgba(255, 255, 255, .1);
-  --center-detail-shadow: 0 10px 26px rgba(0, 0, 0, .18);
+  --center-detail-panel-bg: var(--n-color, var(--card-bg-color, transparent));
+  --center-detail-soft-bg: var(--n-color-embedded, var(--n-color, var(--card-bg-color, transparent)));
+  --center-detail-person-bg: var(--n-color-embedded, var(--n-color, var(--card-bg-color, transparent)));
+  --center-detail-border: var(--n-border-color, var(--card-border-color, rgba(128, 128, 128, .24)));
+  --center-detail-avatar-bg: var(--n-color-embedded, var(--n-color, rgba(128, 128, 128, .12)));
+  --center-detail-shadow: var(--n-box-shadow, none);
 }
 .center-detail-body { display: flex; flex-direction: column; gap: 14px; }
 .center-detail-head {
@@ -5165,7 +5153,7 @@ onUnmounted(() => {
   object-fit: cover;
   box-shadow: 0 8px 22px rgba(0,0,0,0.36);
   flex: 0 0 160px;
-  background-color: #1a1a1a;
+  background-color: var(--center-detail-avatar-bg);
 }
 .detail-info {
   display: flex;

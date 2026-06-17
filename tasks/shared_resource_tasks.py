@@ -4570,7 +4570,31 @@ def _lookup_people_for_display(person_ids: List[int]) -> Dict[int, Dict[str, Any
     return out
 
 
-def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
+def _tmdb_display_credits_for_meta(meta_row: Dict[str, Any]) -> tuple[list, list]:
+    meta_row = meta_row if isinstance(meta_row, dict) else {}
+    tmdb_id = _safe_int(meta_row.get('tmdb_id'), 0)
+    item_type = str(meta_row.get('item_type') or '').strip()
+    api_key = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY) or '').strip()
+    if not tmdb_id or not api_key or item_type not in ('Movie', 'Series'):
+        return [], []
+    try:
+        if item_type == 'Movie':
+            data = tmdb_handler.get_movie_details(tmdb_id, api_key, append_to_response='credits') or {}
+        else:
+            data = tmdb_handler.get_tv_details(
+                tmdb_id,
+                api_key,
+                append_to_response='credits,aggregate_credits',
+                allow_english_fallback=False,
+            ) or {}
+        credits = data.get('credits') or data.get('aggregate_credits') or data.get('casts') or {}
+        return _safe_json_list(credits.get('cast')), _safe_json_list(credits.get('crew'))
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 从 TMDb 补齐展示演员失败: tmdb={tmdb_id}, type={item_type}, err={e}")
+        return [], []
+
+
+def _build_display_credits_bundle(meta_row: Dict[str, Any], *, allow_tmdb_refresh: bool = False) -> Dict[str, Any]:
     """从本地媒体元数据提取“前 9 位主演 + 1 位导演”。
 
     中心端只存轻量展示缓存：人物基础信息进 center_person_metadata，
@@ -4578,6 +4602,19 @@ def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
     """
     actors_raw = _safe_json_list((meta_row or {}).get('actors_json'))
     directors_raw = _safe_json_list((meta_row or {}).get('directors_json'))
+    if allow_tmdb_refresh:
+        actor_ids = {_person_id_from_credit(x) for x in actors_raw if isinstance(x, dict)}
+        actor_ids.discard(None)
+        actor_ids.discard(0)
+        if len(actor_ids) < 9:
+            tmdb_actors, tmdb_crew = _tmdb_display_credits_for_meta(meta_row)
+            if len(tmdb_actors) > len(actors_raw):
+                actors_raw = tmdb_actors
+            if tmdb_crew and len(directors_raw) < 1:
+                directors_raw = [
+                    x for x in tmdb_crew
+                    if isinstance(x, dict) and str(x.get('job') or '').strip() in ('Director', 'Series Director')
+                ]
 
     actor_items = []
     for idx, raw in enumerate(actors_raw):
@@ -4806,6 +4843,8 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
     """
     candidate = candidate if isinstance(candidate, dict) else {}
     item_type = str(candidate.get('item_type') or '').strip()
+    missing_fields = {str(x or '').strip() for x in (candidate.get('missing_fields') or []) if str(x or '').strip()}
+    refresh_credits = 'credits' in missing_fields
     rows = _local_display_meta_rows_for_candidate(candidate)
 
     def compact(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -4881,7 +4920,7 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
             'display_meta_json': movie_meta,
             'display_meta_items_json': [movie_meta] if movie_meta else [],
         }
-        bundle.update(_build_display_credits_bundle(movie_row) if movie_row else {'people_json': [], 'credits_json': []})
+        bundle.update(_build_display_credits_bundle(movie_row, allow_tmdb_refresh=refresh_credits) if movie_row else {'people_json': [], 'credits_json': []})
         return bundle
 
     if item_type == 'Episode':
@@ -4927,7 +4966,7 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
             'display_meta_items_json': items,
         }
         # 演职员始终只从 Series 条目取，避免季/集演员污染整剧壳。
-        bundle.update(_build_display_credits_bundle(series_row) if series_row else {'people_json': [], 'credits_json': []})
+        bundle.update(_build_display_credits_bundle(series_row, allow_tmdb_refresh=refresh_credits) if series_row else {'people_json': [], 'credits_json': []})
         return bundle
 
     series_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
@@ -4968,7 +5007,7 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
         'display_meta_items_json': items,
     }
     # 演职员只从 Series 条目取；没有 Series 行就不上传，避免 Season/分集演员污染整剧壳。
-    bundle.update(_build_display_credits_bundle(series_row) if series_row else {'people_json': [], 'credits_json': []})
+    bundle.update(_build_display_credits_bundle(series_row, allow_tmdb_refresh=refresh_credits) if series_row else {'people_json': [], 'credits_json': []})
     return bundle
 
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid', preuploaded_raw_state: Dict[str, Any] | None = None) -> Dict[str, Any]:
