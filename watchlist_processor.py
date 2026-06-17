@@ -905,7 +905,7 @@ class WatchlistProcessor:
                 skip_logical_share_dispatch=skip_logical_share_dispatch,
             )
             logger.info(
-                "  ➜ [共享资源] 追剧判定后已补传中心剧元数据：%s，items=%s，display_ok=%s，season_total_ok=%s",
+                "  ➜ [共享资源] 已补传中心剧元数据：《%s》 第 %s 集，元数据=%s，总集数=%s",
                 item_name or parent_tmdb_id,
                 len(items),
                 helper_result.get('ok'),
