@@ -1,4 +1,4 @@
-<!-- emby-actor-ui/src/components/settings/GeneralSettingsPage.vue -->
+﻿<!-- frontend/src/components/settings/GeneralSettingsPage.vue -->
 <template>
   <n-layout class="settings-page" :content-style="pageContentStyle">
     <n-space vertical :size="pageSpaceSize" :style="pageSpaceStyle">

@@ -1,4 +1,4 @@
-# 本地开发
+﻿# 本地开发
 
 ## 后端
 
@@ -10,10 +10,10 @@
 
 ## 前端
 
-前端位于 `emby-actor-ui/`：
+前端位于 `frontend/`：
 
 ```bash
-cd emby-actor-ui
+cd frontend
 npm install
 npm run dev
 ```

@@ -1,4 +1,4 @@
-# 项目结构
+﻿# 项目结构
 
 顶层结构概览：
 
@@ -17,7 +17,7 @@ emby-toolkit/
   tasks/                     # 任务与任务链
   database/                  # 数据库模型与初始化
   services/cover_generator/  # 封面生成
-  emby-actor-ui/             # 前端 UI
+  frontend/             # 前端 UI
   docker/entrypoint.sh       # 容器启动逻辑
 ```
 

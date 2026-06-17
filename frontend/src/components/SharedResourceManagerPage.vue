@@ -1,4 +1,4 @@
-<!-- emby-actor-ui/src/components/SharedResourceManagerPage.vue -->
+﻿<!-- frontend/src/components/SharedResourceManagerPage.vue -->
 <template>
   <div class="shared-page">
     <n-space vertical :size="18">
@@ -4048,9 +4048,9 @@ onUnmounted(() => {
 
 /* 中心资源库海报墙：卡面只保留海报、片名年份季号和状态缎带，详情点开再看 */
 .center-card-grid {
-  grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
-  gap: 18px;
-  padding: 10px 0 20px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(142px * var(--card-scale, 1))), 1fr));
+  gap: calc(18px * var(--card-scale, 1));
+  padding: calc(10px * var(--card-scale, 1)) 0 calc(20px * var(--card-scale, 1));
 }
 .center-home-section-head {
   display: flex;
@@ -4059,12 +4059,12 @@ onUnmounted(() => {
   gap: 12px;
 }
 .poster-wall-card {
-  border-radius: 12px !important;
+  border-radius: calc(12px * var(--card-scale, 1)) !important;
   background: rgba(9, 16, 42, .78) !important;
   box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
 }
 .poster-wall-wrapper {
-  border-radius: 12px;
+  border-radius: calc(12px * var(--card-scale, 1));
   background: #0b1230 url('/default-poster.png') center / cover no-repeat;
 }
 .poster-wall-wrapper::after {
@@ -4076,14 +4076,14 @@ onUnmounted(() => {
 }
 .poster-wall-overlay {
   min-height: 34%;
-  padding: 54px 8px 9px;
+  padding: calc(54px * var(--card-scale, 1)) calc(8px * var(--card-scale, 1)) calc(9px * var(--card-scale, 1));
   background: linear-gradient(to top, rgba(0,0,0,.94) 0%, rgba(0,0,0,.58) 54%, rgba(0,0,0,0) 100%);
   justify-content: flex-start;
   z-index: 1;
 }
 .poster-wall-title-line {
   max-width: 100%;
-  font-size: 13px;
+  font-size: calc(13px * var(--card-scale, 1));
   line-height: 1.25;
   font-weight: 800;
   color: #fff;
@@ -4093,8 +4093,8 @@ onUnmounted(() => {
   text-shadow: 0 2px 5px rgba(0,0,0,.75);
 }
 .poster-wall-year-line {
-  margin-top: 2px;
-  font-size: 12px;
+  margin-top: calc(2px * var(--card-scale, 1));
+  font-size: calc(12px * var(--card-scale, 1));
   line-height: 1.15;
   font-weight: 700;
   color: rgba(255,255,255,.86);
@@ -4295,9 +4295,9 @@ onUnmounted(() => {
 /* 中心资源库：海报卡片 + 无限滚动 */
 .center-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 16px;
-  padding: 8px 2px 18px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(148px * var(--card-scale, 1))), 1fr));
+  gap: calc(16px * var(--card-scale, 1));
+  padding: calc(8px * var(--card-scale, 1)) calc(2px * var(--card-scale, 1)) calc(18px * var(--card-scale, 1));
 }
 .center-card-item {
   min-width: 0;
@@ -4306,7 +4306,7 @@ onUnmounted(() => {
 }
 .center-media-card {
   cursor: pointer;
-  border-radius: 12px;
+  border-radius: calc(12px * var(--card-scale, 1));
   overflow: hidden;
   height: 100%;
   background: rgba(12, 18, 42, .66) !important;
@@ -4343,8 +4343,8 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 8px;
-  padding: 56px 8px 8px;
+  gap: calc(8px * var(--card-scale, 1));
+  padding: calc(56px * var(--card-scale, 1)) calc(8px * var(--card-scale, 1)) calc(8px * var(--card-scale, 1));
   background: linear-gradient(to top, rgba(0,0,0,.94) 0%, rgba(0,0,0,.68) 56%, rgba(0,0,0,0) 100%);
   pointer-events: none;
 }
@@ -4458,7 +4458,7 @@ onUnmounted(() => {
 }
 .center-episode-matrix :deep(.n-button) { min-width: 34px; }
 @media (max-width: 768px) {
-  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
+  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(118px * var(--card-scale, 1))), 1fr)); gap: calc(12px * var(--card-scale, 1)); }
   .center-detail-head,
   .center-version-detail-card { flex-direction: column; }
   .center-version-action { align-items: flex-start; }
@@ -4467,17 +4467,17 @@ onUnmounted(() => {
 
 /* 海报墙最终覆盖：保持影视探索式密集海报墙 */
 .center-card-grid {
-  grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
-  gap: 18px;
-  padding: 10px 0 20px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(142px * var(--card-scale, 1))), 1fr));
+  gap: calc(18px * var(--card-scale, 1));
+  padding: calc(10px * var(--card-scale, 1)) 0 calc(20px * var(--card-scale, 1));
 }
 .poster-wall-card {
-  border-radius: 12px !important;
+  border-radius: calc(12px * var(--card-scale, 1)) !important;
   background: rgba(9, 16, 42, .78) !important;
   box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
 }
 .poster-wall-wrapper {
-  border-radius: 12px;
+  border-radius: calc(12px * var(--card-scale, 1));
   background: #0b1230 url('/default-poster.png') center / cover no-repeat;
 }
 .poster-wall-wrapper::after {
@@ -4489,19 +4489,19 @@ onUnmounted(() => {
 }
 .poster-wall-overlay {
   min-height: 34%;
-  padding: 54px 8px 9px;
+  padding: calc(54px * var(--card-scale, 1)) calc(8px * var(--card-scale, 1)) calc(9px * var(--card-scale, 1));
   background: linear-gradient(to top, rgba(0,0,0,.94) 0%, rgba(0,0,0,.58) 54%, rgba(0,0,0,0) 100%);
   justify-content: flex-start;
   z-index: 1;
 }
 .poster-wall-title {
-  font-size: 13px;
+  font-size: calc(13px * var(--card-scale, 1));
   line-height: 1.25;
   -webkit-line-clamp: 3;
   line-clamp: 3;
 }
 @media (max-width: 768px) {
-  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
+  .center-card-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(118px * var(--card-scale, 1))), 1fr)); gap: calc(12px * var(--card-scale, 1)); }
 }
 /* 弹窗头部图文排版 */
 .center-detail-header-new {

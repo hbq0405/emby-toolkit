@@ -1,6 +1,6 @@
-# Web 控制台
+﻿# Web 控制台
 
-Web UI 由 `emby-actor-ui` 构建并由后端提供静态资源，入口默认是：
+Web UI 由 `frontend` 构建并由后端提供静态资源，入口默认是：
 
 - `http://<服务器IP>:5257`
 

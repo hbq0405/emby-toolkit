@@ -1,4 +1,4 @@
-<!-- emby-actor-ui/src/components/ShareRequestCreateModal.vue -->
+﻿<!-- frontend/src/components/ShareRequestCreateModal.vue -->
 <template>
   <n-modal v-model:show="visible" preset="card" title="共享池求共享" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal">
     <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">

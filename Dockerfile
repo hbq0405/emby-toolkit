@@ -1,17 +1,17 @@
-# syntax=docker/dockerfile:1.7
+﻿# syntax=docker/dockerfile:1.7
 ARG BUILDPLATFORM=linux/amd64
 # --- 阶段 1: 构建前端 ---
 FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-build
-WORKDIR /app/emby-actor-ui
-COPY emby-actor-ui/package*.json ./
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
 RUN --mount=type=cache,id=emby-toolkit-npm-cache,target=/root/.npm \
     if [ -f package-lock.json ]; then \
       npm ci --prefer-offline --no-audit --no-fund --legacy-peer-deps; \
     else \
       npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps; \
     fi
-COPY emby-actor-ui/ ./
-RUN --mount=type=cache,id=emby-toolkit-vite-cache,target=/app/emby-actor-ui/node_modules/.vite \
+COPY frontend/ ./
+RUN --mount=type=cache,id=emby-toolkit-vite-cache,target=/app/frontend/node_modules/.vite \
     npm run build
 
 # --- 阶段 2: 构建最终的生产镜像 (★ 优化后 ★) ---
@@ -87,7 +87,7 @@ COPY templates/ ./templates/
 COPY docker/entrypoint.sh /entrypoint.sh
 
 # 从前端构建阶段拷贝编译好的静态文件
-COPY --from=frontend-build /app/emby-actor-ui/dist/. /app/static/
+COPY --from=frontend-build /app/frontend/dist/. /app/static/
 
 # 设置权限和用户 (这部分不变)
 RUN chmod +x /entrypoint.sh && \

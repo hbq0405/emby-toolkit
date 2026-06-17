@@ -1,5 +1,5 @@
 {
-  "name": "emby-actor-ui",
+  "name": "frontend",
   "private": true,
   "version": "10.6.12",
   "type": "module",
