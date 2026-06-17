@@ -1318,20 +1318,20 @@ def _local_existing_logical_share_for_create(group_id: str, manifest_hash: str =
     for item in rows or []:
         if not _share_channel_is_logical(item):
             continue
-        if not str(item.get('share_code') or '').strip():
-            continue
         item_manifest = str(item.get('manifest_hash') or '').strip()
         if manifest_hash and item_manifest == manifest_hash:
             return item
         if _same_logical_share_file_ids(_logical_share_row_file_ids(item), share_ids):
             return item
-    if not manifest_hash:
+    if not manifest_hash and not share_ids:
         return {}
     rows = shared_share_db.list_completed_season_share_channels(statuses=statuses, limit=1000, need_check=False)
     for item in rows or []:
         if not _share_channel_is_logical(item):
             continue
-        if str(item.get('manifest_hash') or '').strip() == manifest_hash and str(item.get('share_code') or '').strip():
+        if manifest_hash and str(item.get('manifest_hash') or '').strip() == manifest_hash:
+            return item
+        if _same_logical_share_file_ids(_logical_share_row_file_ids(item), share_ids):
             return item
     return {}
 
@@ -1582,7 +1582,10 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
     existing_share = _local_existing_logical_share_for_create(group_id, manifest_hash, share_ids)
     if existing_share:
         status = str(existing_share.get('status') or 'pending_review').strip().lower()
-        message = f'本地已存在逻辑季 115 分享，复用已有 share_code：{title}'
+        has_share_code = bool(str(existing_share.get('share_code') or '').strip())
+        message = f'本地已存在逻辑季 115 分享，跳过重复创建：{title}'
+        if has_share_code:
+            message = f'本地已存在逻辑季 115 分享，复用已有分享：{title}'
         report_payload = {
             'status': status if status in {'valid', 'pending_review', 'creating'} else 'pending_review',
             'review_status': existing_share.get('review_status') or ('passed' if status == 'valid' else 'pending'),
