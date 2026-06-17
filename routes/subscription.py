@@ -1334,3 +1334,18 @@ def tg_userbot_login():
 def tg_userbot_logout():
     TGUserBotManager.get_instance().logout()
     return jsonify({"success": True, "message": "已注销并清除凭证"})
+
+@subscription_bp.route('/tg_userbot/clear_session', methods=['POST'])
+@admin_required
+def tg_userbot_clear_session():
+    try:
+        result = TGUserBotManager.get_instance().clear_session_files()
+        deleted = result.get('deleted') or []
+        if deleted:
+            message = f"已清理 TG 登录会话文件：{'、'.join(deleted)}"
+        else:
+            message = "未发现需要清理的 TG 登录会话文件"
+        return jsonify({"success": True, "message": message, "data": result})
+    except Exception as e:
+        logger.error(f"清理 TG 登录会话文件失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": f"清理失败: {e}"}), 500

@@ -461,7 +461,8 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
         proxies = get_proxies_for_requests()
         response = requests.post(api_url, json=payload, timeout=15, proxies=proxies)
         if response.status_code == 200:
-            logger.info(f"  ➜ 成功发送 Telegram 文本消息至 Chat ID: {final_chat_id}")
+            logger.info("  ➜ Telegram 文本消息发送成功。")
+            logger.debug(f"  ➜ Telegram 接收 Chat ID：{final_chat_id}")
             return True
         else:
             logger.error(f"  ➜ 发送 Telegram 文本消息失败, 状态码: {response.status_code}, 响应: {response.text}")
@@ -510,7 +511,8 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
     【全能媒体通知函数】
     根据传入的媒体详情，自动获取图片、组装消息并发送给频道和订阅者。
     """
-    logger.info(f"  ➜ 准备为 '{item_details.get('Name')}' 发送 '{notification_type}' 类型的 Telegram 通知...")
+    notification_name = {'new': '新入库', 'update': '追更入库'}.get(notification_type, notification_type or '媒体')
+    logger.info(f"  ➜ 准备发送 Telegram {notification_name}通知：《{item_details.get('Name') or '未知媒体'}》。")
     
     try:
         # --- 1. 准备基础信息 ---
@@ -658,7 +660,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
                     if str(admin_chat_id) == str(global_channel_id) or str(admin_chat_id) in subscriber_id_set:
                         continue
                     
-                    logger.info(f"  ➜ 正在向管理员 {admin_chat_id} 发送全局入库通知...")
+                    logger.info(f"  ➜ 正在向管理员发送全局入库通知。")
                     if photo_url:
                         send_telegram_photo(admin_chat_id, photo_url, caption)
                     else:

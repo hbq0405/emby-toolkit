@@ -88,7 +88,13 @@ const applyTheme = (themeKey, isDark) => {
       themeConfig = userCustomTheme.value[themeMode];
     }
   } else {
-    themeConfig = themes[themeKey]?.[themeMode] || themes.default[themeMode];
+    if (!themes[themeKey]) {
+      selectedTheme.value = 'default';
+      localStorage.setItem('user-theme', 'default');
+      themeConfig = themes.default[themeMode];
+    } else {
+      themeConfig = themes[themeKey][themeMode];
+    }
   }
 
   app.dispatchEvent(new CustomEvent('update-naive-theme', { detail: themeConfig.naive }));

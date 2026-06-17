@@ -1317,8 +1317,8 @@
                       <n-input v-model:value="configModel.telegram_bot_token" type="password" show-password-on="click" placeholder="从 @BotFather 获取" />
                     </n-form-item-grid-item>
                     
-                    <n-form-item-grid-item label="全局通知频道 ID" path="telegram_channel_id">
-                      <n-input v-model:value="configModel.telegram_channel_id" placeholder="例如: -100123456789，管理员TGID请至个人中心填写" />
+                    <n-form-item-grid-item label="全局通知频道" path="telegram_channel_id">
+                      <n-input v-model:value="configModel.telegram_channel_id" placeholder="例如: https://t.me/embytoolkit，管理员TGID请至个人中心填写" />
                     </n-form-item-grid-item>
 
                     <n-form-item-grid-item label="通知类型" path="telegram_notify_types">

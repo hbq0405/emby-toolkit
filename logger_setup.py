@@ -131,7 +131,7 @@ def add_file_handler(log_directory: str,
         if not any(isinstance(h, ConcurrentRotatingFileHandler) for h in logger.handlers):
             logger.addHandler(file_handler)
             # 在日志中明确打印出当前生效的配置
-            logging.info(f"  ➜ 文件日志功能已配置。轮转策略: {log_size_mb}MB * {log_backups}个备份。日志路径: {log_file_path}")
+            logging.info(f"  ➜ 文件日志已启用：单个日志最大 {log_size_mb}MB，最多保留 {log_backups} 份，路径：{log_file_path}")
         else:
             logging.warning("文件日志处理器已存在，本次不再重复添加。")
 

@@ -105,133 +105,48 @@
   transform: none !important;
   box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.32) !important;
 }
+
+/* 玻璃弹窗：只作用于显式标记 glass-modal 的 n-modal 卡片。
+   从 --card-bg-color 混出半透明背景，避免 --modal-solid-bg-color 把弹窗变实心。 */
+.n-card.glass-modal,
+.n-modal .n-card.glass-modal,
+.n-card.custom-modal.glass-modal,
+.n-modal .n-card.custom-modal.glass-modal {
+  --glass-modal-bg-color: var(--card-bg-color) !important;
+  --glass-modal-bg-color: color-mix(in srgb, var(--card-bg-color) 90%, transparent) !important;
+  --n-color: var(--glass-modal-bg-color) !important;
+  --n-color-modal: var(--glass-modal-bg-color) !important;
+  --n-color-embedded: color-mix(in srgb, var(--glass-modal-bg-color) 82%, transparent) !important;
+  --n-border-color: var(--card-border-color) !important;
+  background: var(--card-bg-color) !important;
+  background: var(--glass-modal-bg-color) !important;
+  background-color: var(--card-bg-color) !important;
+  background-color: var(--glass-modal-bg-color) !important;
+  border: 1px solid var(--card-border-color) !important;
+  color: var(--text-color) !important;
+  box-shadow: 0 18px 60px var(--card-shadow-color), 0 0 36px -12px var(--accent-glow-color) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+  animation: none !important;
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+.n-card.glass-modal > .n-card-header,
+.n-card.glass-modal > .n-card__content,
+.n-card.glass-modal > .n-card__footer {
+  background: transparent !important;
+}
+
+.n-modal-container:has(.glass-modal) .n-modal-mask {
+  background-color: rgba(0, 0, 0, .22) !important;
+  backdrop-filter: blur(2px) !important;
+  -webkit-backdrop-filter: blur(2px) !important;
+}
+
 @keyframes card-fade-in { to { opacity: 1; transform: translateY(0); } }
 .dashboard-card:nth-child(1) { animation-delay: 0.1s; }
 .dashboard-card:nth-child(2) { animation-delay: 0.2s; }
 .dashboard-card:nth-child(3) { animation-delay: 0.3s; }
 .dashboard-card:nth-child(4) { animation-delay: 0.4s; }
 .dashboard-card:nth-child(5) { animation-delay: 0.5s; }
-
-/* ================= 主题背景/玻璃卡片全局接管 =================
-   让 theme.js 的 --app-bg-color / --layout-panel-bg-color / --card-backdrop-filter 真正生效。
-   放在文件末尾，优先级高于前面的通用样式。
-================================================================ */
-:root {
-  /* 不要给 --app-bg-color 写黑色默认值。
-     只有“深空流光”这类需要渐变背景的主题自己提供它；
-     其他主题回退到 Naive Layout 自己的 --n-color，避免亮色模式变黑。 */
-  --layout-panel-bg-color: var(--card-bg-color, rgba(20, 25, 45, 0.55));
-  --card-backdrop-filter: blur(10px);
-}
-
-html,
-body,
-#app {
-  min-height: 100%;
-  background: transparent !important;
-}
-
-body {
-  margin: 0;
-}
-
-/* 顶层 Layout 承接页面背景：
-   - 深空流光：使用 --app-bg-color 渐变；
-   - 其他主题：使用 Naive 自带 --n-color，因此亮色模式不会再黑。 */
-.n-layout {
-  background: var(--app-bg-color, var(--n-color, #f0f2f5)) !important;
-  background-attachment: fixed !important;
-}
-
-/* 内层 Layout / Content 继续透明，才能透出顶层背景 */
-.n-layout .n-layout,
-.n-layout-scroll-container,
-.n-layout-content,
-.app-main-content-wrapper,
-.page-content-inner-wrapper {
-  background: transparent !important;
-}
-
-/* 顶栏、侧栏改成玻璃层，跟随主题变量 */
-.n-layout-header,
-.n-layout-sider {
-  background: var(--layout-panel-bg-color, var(--card-bg-color, rgba(20, 25, 45, 0.55))) !important;
-  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-  border-color: var(--card-border-color) !important;
-}
-
-/* 普通 Naive 卡片也吃主题透明度，不只 dashboard-card 生效 */
-.n-card:not(.modal-card-lite) {
-  background: var(--card-bg-color) !important;
-  border-color: var(--card-border-color) !important;
-  box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
-  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-}
-
-/* ================= 修复：全局 n-card 玻璃化不要误伤 Naive Modal / Dialog / Popover =================
-   n-modal preset="card" 内部本质还是 .n-card；如果只写 .n-card:not(.modal-card-lite)，
-   某些情况下 class 不一定落在内部卡片上，会导致弹窗被透明玻璃样式误伤。
-================================================================ */
-.n-modal .n-card,
-.n-dialog .n-card,
-.n-popover .n-card {
-  background: var(--modal-solid-bg-color, var(--n-color)) !important;
-  border-color: var(--card-border-color, var(--n-border-color)) !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  animation: none !important;
-  transform: none !important;
-  opacity: 1 !important;
-}
-
-/* 自建合集创建/编辑弹窗：允许玻璃化，不再走 modal-card-lite 实心背景 */
-.n-modal .custom-modal,
-.n-card.custom-modal,
-.custom-modal {
-  --n-color: var(--card-bg-color) !important;
-  --n-border-color: var(--card-border-color) !important;
-
-  background: var(--card-bg-color) !important;
-  background-color: var(--card-bg-color) !important;
-  border: 1px solid var(--card-border-color) !important;
-  color: var(--text-color) !important;
-
-  backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
-  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
-
-  box-shadow:
-    0 18px 60px var(--card-shadow-color),
-    0 0 36px -12px var(--accent-glow-color) !important;
-}
-
-/* 弹窗内容区透明 */
-.n-modal .custom-modal .n-card__content,
-.n-modal .custom-modal .n-card__footer,
-.n-modal .custom-modal .n-card-header,
-.custom-modal .n-card__content,
-.custom-modal .n-card__footer,
-.custom-modal .n-card-header {
-  background: transparent !important;
-}
-
-/* 弹窗里的配置小卡片也别实心 */
-.custom-modal .config-card,
-.custom-modal .type-card,
-.custom-modal .rule-row,
-.custom-modal .n-card[embedded] {
-  --n-color: rgba(255, 255, 255, 0.045) !important;
-  background: rgba(255, 255, 255, 0.045) !important;
-  background-color: rgba(255, 255, 255, 0.045) !important;
-  border-color: rgba(148, 177, 255, 0.12) !important;
-  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-}
-
-/* 选中的类型卡片保留一点强调 */
-.custom-modal .type-card.active {
-  background: rgba(143, 180, 255, 0.12) !important;
-  border-color: var(--accent-color) !important;
-  box-shadow: 0 0 0 1px var(--accent-color) inset, 0 0 18px -8px var(--accent-glow-color) !important;
-}

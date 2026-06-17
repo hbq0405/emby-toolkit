@@ -140,8 +140,7 @@ class AITranslator:
                     max_retries=self.openai_max_retries
                 )
                 logger.info(
-                    f"  ➜ OpenAI 初始化成功 "
-                    f"(timeout={self.openai_request_timeout}s, max_retries={self.openai_max_retries})"
+                    f"  ➜ OpenAI 翻译服务已就绪，请求超时 {self.openai_request_timeout} 秒，失败重试 {self.openai_max_retries} 次。"
                 )
             
             elif self.provider == 'zhipuai':

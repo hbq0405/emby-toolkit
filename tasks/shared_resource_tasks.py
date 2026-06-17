@@ -524,7 +524,7 @@ def _ensure_file_preid(file_info: Dict[str, Any]) -> str:
         if chunk:
             preid = hashlib.sha1(chunk).hexdigest().upper()
             _save_preid_to_p115_cache(file_info, preid)
-            logger.info(f"  ➜ [共享资源] 已计算并缓存 preid: {file_info.get('file_name') or file_info.get('name') or file_info.get('sha1')} -> {preid[:12]}...")
+            logger.info(f"  ➜ [共享资源] 已缓存秒传校验片段：{file_info.get('file_name') or file_info.get('name') or file_info.get('sha1')}")
     if preid:
         file_info['preid'] = preid
         meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
@@ -1629,7 +1629,11 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         })
         if ack and event_id:
             client.ack_device_events([event_id], result='ok' if reported else 'failed', message=message[:500])
-        logger.info(f"  ➜ [共享资源] 复用已有逻辑季文件列表分享：{title}，channel={channel_id}，existing={existing_share.get('channel_id')}")
+        logger.info(f"  ➜ [共享资源] 复用已有 115 文件列表分享：《{title}》。")
+        logger.debug(
+            f"  ➜ [共享资源] 复用文件列表分享详情：channel={channel_id}, "
+            f"existing={existing_share.get('channel_id')}"
+        )
         return {
             'ok': bool(reported),
             'event_id': event_id,
@@ -1670,7 +1674,8 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         p115 = P115Service.get_client()
         if not p115:
             raise RuntimeError('115 客户端未初始化')
-        logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：{title}，items={len(share_ids)}，channel={channel_id}")
+        logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：《{title}》，共 {len(share_ids)} 个文件。")
+        logger.debug(f"  ➜ [共享资源] 文件列表分享通道：{channel_id}")
         create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
     except Exception as e:
         failure_status = _logical_share_provider_forbidden_status(str(e))
@@ -1780,7 +1785,14 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
 
     if ack and event_id:
         client.ack_device_events([event_id], result='ok' if reported else 'failed', message=(report_payload['status_message'] or '')[:500])
-    logger.info(f"  ➜ [共享资源] 创建文件列表分享完成：{title}，status={report_payload['status']}，channel={channel_id}")
+    status_text = {
+        'valid': '已生效',
+        'pending_review': '等待 115 审核',
+        'review_failed': '审核未通过',
+        'failed': '创建失败',
+    }.get(report_payload['status'], report_payload['status'] or '状态未知')
+    logger.info(f"  ➜ [共享资源] 115 文件列表分享已创建：《{title}》，状态：{status_text}。")
+    logger.debug(f"  ➜ [共享资源] 文件列表分享上报详情：status={report_payload['status']}, channel={channel_id}")
     return {
         'ok': bool(reported),
         'event_id': event_id,
@@ -4319,7 +4331,8 @@ def _disable_local_episode_sources_for_completed_season(parent_series_tmdb_id: s
             logger.debug(f"  ➜ [共享资源] 本地停用单集源失败: id={row.get('id')}, err={e}")
 
     if disabled:
-        logger.info(f"  ➜ [共享资源] 完结季包已可用，已停用同季单集源: tmdb={parent}, S{season_no:02d}, count={disabled}")
+        logger.info(f"  ➜ [共享资源] 完结季包已可用，已停用第 {season_no} 季的 {disabled} 个单集共享源。")
+        logger.debug(f"  ➜ [共享资源] 停用单集源详情：tmdb={parent}, season={season_no}, count={disabled}")
     return disabled
 
 
@@ -4557,14 +4570,51 @@ def _lookup_people_for_display(person_ids: List[int]) -> Dict[int, Dict[str, Any
     return out
 
 
-def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
-    """从本地媒体元数据提取“前 6 位主演 + 1 位导演”。
+def _tmdb_display_credits_for_meta(meta_row: Dict[str, Any]) -> tuple[list, list]:
+    meta_row = meta_row if isinstance(meta_row, dict) else {}
+    tmdb_id = _safe_int(meta_row.get('tmdb_id'), 0)
+    item_type = str(meta_row.get('item_type') or '').strip()
+    api_key = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY) or '').strip()
+    if not tmdb_id or not api_key or item_type not in ('Movie', 'Series'):
+        return [], []
+    try:
+        if item_type == 'Movie':
+            data = tmdb_handler.get_movie_details(tmdb_id, api_key, append_to_response='credits') or {}
+        else:
+            data = tmdb_handler.get_tv_details(
+                tmdb_id,
+                api_key,
+                append_to_response='credits,aggregate_credits',
+                allow_english_fallback=False,
+            ) or {}
+        credits = data.get('credits') or data.get('aggregate_credits') or data.get('casts') or {}
+        return _safe_json_list(credits.get('cast')), _safe_json_list(credits.get('crew'))
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 从 TMDb 补齐展示演员失败: tmdb={tmdb_id}, type={item_type}, err={e}")
+        return [], []
+
+
+def _build_display_credits_bundle(meta_row: Dict[str, Any], *, allow_tmdb_refresh: bool = False) -> Dict[str, Any]:
+    """从本地媒体元数据提取“前 9 位主演 + 1 位导演”。
 
     中心端只存轻量展示缓存：人物基础信息进 center_person_metadata，
     角色名/排序进 center_media_credits，不镜像完整 TMDb cast。
     """
     actors_raw = _safe_json_list((meta_row or {}).get('actors_json'))
     directors_raw = _safe_json_list((meta_row or {}).get('directors_json'))
+    if allow_tmdb_refresh:
+        actor_ids = {_person_id_from_credit(x) for x in actors_raw if isinstance(x, dict)}
+        actor_ids.discard(None)
+        actor_ids.discard(0)
+        if len(actor_ids) < 9:
+            tmdb_actors, tmdb_crew = _tmdb_display_credits_for_meta(meta_row)
+            if len(tmdb_actors) > len(actors_raw):
+                actors_raw = tmdb_actors
+            if tmdb_crew and len(directors_raw) < 1:
+                directors_raw = [
+                    x for x in tmdb_crew
+                    if isinstance(x, dict) and str(x.get('job') or '').strip() in ('Director', 'Series Director')
+                ]
 
     actor_items = []
     for idx, raw in enumerate(actors_raw):
@@ -4579,7 +4629,7 @@ def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
             raw,
         ))
     actor_items.sort(key=lambda x: x[0])
-    actor_items = actor_items[:6]
+    actor_items = actor_items[:9]
 
     director_items = []
     for idx, raw in enumerate(directors_raw):
@@ -4793,6 +4843,8 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
     """
     candidate = candidate if isinstance(candidate, dict) else {}
     item_type = str(candidate.get('item_type') or '').strip()
+    missing_fields = {str(x or '').strip() for x in (candidate.get('missing_fields') or []) if str(x or '').strip()}
+    refresh_credits = 'credits' in missing_fields
     rows = _local_display_meta_rows_for_candidate(candidate)
 
     def compact(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -4868,7 +4920,7 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
             'display_meta_json': movie_meta,
             'display_meta_items_json': [movie_meta] if movie_meta else [],
         }
-        bundle.update(_build_display_credits_bundle(movie_row) if movie_row else {'people_json': [], 'credits_json': []})
+        bundle.update(_build_display_credits_bundle(movie_row, allow_tmdb_refresh=refresh_credits) if movie_row else {'people_json': [], 'credits_json': []})
         return bundle
 
     if item_type == 'Episode':
@@ -4914,7 +4966,7 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
             'display_meta_items_json': items,
         }
         # 演职员始终只从 Series 条目取，避免季/集演员污染整剧壳。
-        bundle.update(_build_display_credits_bundle(series_row) if series_row else {'people_json': [], 'credits_json': []})
+        bundle.update(_build_display_credits_bundle(series_row, allow_tmdb_refresh=refresh_credits) if series_row else {'people_json': [], 'credits_json': []})
         return bundle
 
     series_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
@@ -4955,7 +5007,7 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
         'display_meta_items_json': items,
     }
     # 演职员只从 Series 条目取；没有 Series 行就不上传，避免 Season/分集演员污染整剧壳。
-    bundle.update(_build_display_credits_bundle(series_row) if series_row else {'people_json': [], 'credits_json': []})
+    bundle.update(_build_display_credits_bundle(series_row, allow_tmdb_refresh=refresh_credits) if series_row else {'people_json': [], 'credits_json': []})
     return bundle
 
 def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: str = 'manual_rapid', preuploaded_raw_state: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -6605,7 +6657,7 @@ def _list_display_meta_backfill_source_rows(limit: int = 500) -> List[Dict[str, 
     for item in fetched.get('items') or []:
         item_type = str(item.get('item_type') or '').strip()
         tmdb_id = str(item.get('tmdb_id') or '').strip()
-        if item_type not in ('Movie', 'Season', 'Episode') or not tmdb_id:
+        if item_type not in ('Movie', 'Series', 'Season', 'Episode') or not tmdb_id:
             continue
         season_no = _safe_int_or_none(item.get('season_number')) if item_type in ('Season', 'Episode') else None
         episode_no = _safe_int_or_none(item.get('episode_number')) if item_type == 'Episode' else None
@@ -6615,7 +6667,7 @@ def _list_display_meta_backfill_source_rows(limit: int = 500) -> List[Dict[str, 
             continue
         rows.append({
             'id': item.get('media_key') or f"center-missing:{item_type}:{tmdb_id}:{season_no or ''}:{episode_no or ''}",
-            'source_kind': 'movie' if item_type == 'Movie' else ('episode' if item_type == 'Episode' else 'season_hub'),
+            'source_kind': 'movie' if item_type == 'Movie' else ('series' if item_type == 'Series' else ('episode' if item_type == 'Episode' else 'season_hub')),
             'center_source_id': '',
             'tmdb_id': tmdb_id,
             'parent_series_tmdb_id': tmdb_id if item_type in ('Season', 'Episode') else '',
@@ -6662,6 +6714,7 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                     'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
                     'actors_json', 'directors_json',
                 )),
+                'credits': has_any(movie, ('actors_json', 'directors_json')),
             }
         elif item_type == 'Episode':
             checks = {
@@ -6685,6 +6738,7 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                     'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
                     'actors_json', 'directors_json',
                 )),
+                'credits': has_any(series, ('actors_json', 'directors_json')),
                 'season_meta': has_any(season, (
                     'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
                     'release_year', 'release_date',

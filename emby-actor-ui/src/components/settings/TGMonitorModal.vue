@@ -46,6 +46,9 @@
                 <n-button v-else type="error" ghost size="small" @click="logoutUserBot">
                   注销账号
                 </n-button>
+                <n-button type="warning" ghost size="small" :loading="isClearingSession" @click="confirmClearUserBotSession">
+                  清理会话
+                </n-button>
               </n-space>
             </n-form-item>
 
@@ -227,12 +230,13 @@ import { HelpCircleOutline } from '@vicons/ionicons5';
 import { 
   NModal, NSpin, NForm, NFormItem, NInput, NSwitch, NCheckboxGroup, NCheckbox, 
   NSpace, NSelect, NDivider, NAlert, NTag, NButton, NInputGroup, useMessage,
-  NCollapse, NCollapseItem, NTooltip, NIcon, NDynamicInput, NGrid, NGridItem,
+  useDialog, NCollapse, NCollapseItem, NTooltip, NIcon, NDynamicInput, NGrid, NGridItem,
   NRadioGroup, NRadio
 } from 'naive-ui';
 import axios from 'axios';
 
 const message = useMessage();
+const dialog = useDialog();
 const showModal = ref(false);
 const isLoading = ref(false);
 const isSaving = ref(false);
@@ -262,6 +266,7 @@ const showCodeInput = ref(false);
 const userBotCode = ref('');
 const isSendingCode = ref(false);
 const isSubmittingCode = ref(false);
+const isClearingSession = ref(false);
 
 // 生成频道下拉选项
 const channelOptions = computed(() => {
@@ -416,6 +421,35 @@ const logoutUserBot = async () => {
   } catch (e) {
     message.error('注销失败');
   }
+};
+
+const clearUserBotSession = async () => {
+  isClearingSession.value = true;
+  try {
+    const res = await axios.post('/api/subscription/tg_userbot/clear_session');
+    if (res.data.success) {
+      message.success(res.data.message || '已清理 TG 登录会话文件');
+      showCodeInput.value = false;
+      userBotCode.value = '';
+      await checkUserBotStatus();
+    } else {
+      message.error(res.data.message || '清理失败');
+    }
+  } catch (e) {
+    message.error(e.response?.data?.message || '清理失败');
+  } finally {
+    isClearingSession.value = false;
+  }
+};
+
+const confirmClearUserBotSession = () => {
+  dialog.warning({
+    title: '清理 TG 登录会话',
+    content: '将停止频道监听服务，并删除配置目录中的 tg_userbot.session 和 tg_userbot.session-journal。清理后需要重新获取验证码登录。',
+    positiveText: '清理会话',
+    negativeText: '取消',
+    onPositiveClick: clearUserBotSession
+  });
 };
 
 defineExpose({ open });
