@@ -1205,6 +1205,14 @@ def task_full_sync_strm_and_subs(processor=None):
                 pc = item.get('pc') or item.get('pick_code') or item.get('pickcode')
                 # 115 返回的文件数据中，pid/cid/parent_id 代表它所在的父目录 ID
                 pid = item.get('pid') or item.get('cid') or item.get('parent_id')
+                if not pid:
+                    ancestors = item.get('ancestors') or item.get('paths') or item.get('path')
+                    if isinstance(ancestors, (list, tuple)):
+                        for anc in reversed(ancestors[:-1]):
+                            if isinstance(anc, dict):
+                                pid = anc.get('id') or anc.get('cid') or anc.get('file_id')
+                                if pid:
+                                    break
                 if not pc or not pid:
                     continue
 
@@ -1328,7 +1336,7 @@ def task_full_sync_strm_and_subs(processor=None):
 
                     valid_local_files.add(os.path.abspath(sub_path))
 
-        def run_cookie_fast_sync(target_cid, category_name, progress):
+        def run_cookie_fast_sync(target_cid, category_name, start_progress, end_progress):
             raw_p115_client = getattr(client, 'raw_client', None)
             if raw_p115_client is None and hasattr(client, 'native_client'):
                 raw_p115_client = client.native_client()
@@ -1342,7 +1350,7 @@ def task_full_sync_strm_and_subs(processor=None):
                 return None
 
             try:
-                update_progress(progress, f"  ➜ 正在使用 Cookie 极速遍历分类 [{category_name}] ...")
+                update_progress(start_progress, f"  ➜ 正在使用 Cookie 极速遍历分类 [{category_name}] ...")
                 iterator = iter_files_with_path_skim(
                     raw_p115_client,
                     int(target_cid),
@@ -1380,7 +1388,9 @@ def task_full_sync_strm_and_subs(processor=None):
                     process_full_sync_items((info,), target_cid, category_name)
                     count += 1
                     if count % 500 == 0:
-                        update_progress(progress, f"  ➜ [{category_name}] Cookie 极速遍历中，已处理 {count} 个文件...")
+                        max_mid_progress = max(start_progress, end_progress - 1)
+                        step_progress = min(max_mid_progress, start_progress + count // 500)
+                        update_progress(step_progress, f"  ➜ [{category_name}] Cookie 极速遍历中，已处理 {count} 个文件...")
 
                 return count
             except Exception as e:
@@ -1407,11 +1417,12 @@ def task_full_sync_strm_and_subs(processor=None):
         for idx, target_cid in enumerate(target_cids):
             category_name = cid_to_rel_path.get(target_cid, "未知分类")
             base_prog = 10 + int((idx / total_targets) * 80)
-            fast_count = run_cookie_fast_sync(target_cid, category_name, base_prog)
+            next_prog = 10 + int(((idx + 1) / total_targets) * 80)
+            fast_count = run_cookie_fast_sync(target_cid, category_name, base_prog, next_prog)
             if processor and getattr(processor, 'is_stop_requested', lambda: False)():
                 return
             if fast_count:
-                update_progress(base_prog, f"  ➜ [{category_name}] Cookie 极速遍历完成：{fast_count} 个文件")
+                update_progress(next_prog, f"  ➜ [{category_name}] Cookie 极速遍历完成：{fast_count} 个文件")
                 continue
             if fast_count == 0:
                 logger.warning(f"  ➜ [{category_name}] Cookie 极速遍历没有返回文件，改用 OpenAPI 复查。")
