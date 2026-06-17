@@ -4571,7 +4571,7 @@ def _lookup_people_for_display(person_ids: List[int]) -> Dict[int, Dict[str, Any
 
 
 def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
-    """从本地媒体元数据提取“前 6 位主演 + 1 位导演”。
+    """从本地媒体元数据提取“前 9 位主演 + 1 位导演”。
 
     中心端只存轻量展示缓存：人物基础信息进 center_person_metadata，
     角色名/排序进 center_media_credits，不镜像完整 TMDb cast。
@@ -4592,7 +4592,7 @@ def _build_display_credits_bundle(meta_row: Dict[str, Any]) -> Dict[str, Any]:
             raw,
         ))
     actor_items.sort(key=lambda x: x[0])
-    actor_items = actor_items[:6]
+    actor_items = actor_items[:9]
 
     director_items = []
     for idx, raw in enumerate(directors_raw):

@@ -2842,7 +2842,7 @@ const centerDetailCreditsText = (row) => {
   const directors = centerDetailPeople(row).filter(p => p._credit_role === 'director');
   const parts = [];
   if (actors.length) {
-    const text = actors.slice(0, 6).map(p => {
+    const text = actors.slice(0, 9).map(p => {
       const name = centerPersonName(p);
       const roleText = centerCharacterRoleText(centerPersonCharacter(p), p);
       return name ? (roleText ? `${name} ${roleText}` : name) : '';
@@ -2860,7 +2860,7 @@ const centerDetailPeople = (row) => {
   const meta = centerTmdbMeta(row);
   const animation = isCenterAnimation(row);
   const actors = centerPeopleList(row.actors || meta.actors)
-    .slice(0, 6)
+    .slice(0, 9)
     .map(p => ({ ...p, _credit_role: 'actor', _is_animation: animation }))
     .filter(centerPersonName);
   const directors = centerPeopleList(row.directors || meta.directors)
@@ -2887,7 +2887,7 @@ const centerDetailPeople = (row) => {
           };
         })
         .filter(centerPersonName)
-        .slice(0, 7);
+        .slice(0, 10);
     }
   }
   // 展示顺序：主演在前，导演最后。
@@ -5035,18 +5035,19 @@ onUnmounted(() => {
   justify-content: center;
   margin: 4px 0 2px;
 }
-.center-detail-modal {
+.center-detail-body {
   --center-detail-title-color: rgba(255, 255, 255, .96);
   --center-detail-meta-color: rgba(255, 255, 255, .7);
   --center-detail-text-color: rgba(255, 255, 255, .85);
   --center-detail-muted-color: rgba(255, 255, 255, .58);
-  --center-detail-panel-bg: rgba(12, 18, 42, .48);
-  --center-detail-soft-bg: rgba(255, 255, 255, .06);
-  --center-detail-person-bg: rgba(8, 14, 35, .42);
-  --center-detail-border: rgba(148, 177, 255, .14);
-  --center-detail-avatar-bg: rgba(255, 255, 255, .08);
+  --center-detail-panel-bg: rgba(8, 14, 35, .64);
+  --center-detail-soft-bg: rgba(8, 14, 35, .42);
+  --center-detail-person-bg: rgba(15, 23, 42, .72);
+  --center-detail-border: rgba(148, 177, 255, .22);
+  --center-detail-avatar-bg: rgba(255, 255, 255, .1);
+  --center-detail-shadow: 0 10px 26px rgba(0, 0, 0, .18);
 }
-:global(html.light) .center-detail-modal {
+:global(html.light) .center-detail-body {
   --center-detail-title-color: rgba(15, 23, 42, .94);
   --center-detail-meta-color: rgba(71, 85, 105, .86);
   --center-detail-text-color: rgba(30, 41, 59, .9);
@@ -5056,6 +5057,7 @@ onUnmounted(() => {
   --center-detail-person-bg: rgba(148, 163, 184, .26);
   --center-detail-border: rgba(148, 163, 184, .36);
   --center-detail-avatar-bg: rgba(226, 232, 240, .95);
+  --center-detail-shadow: none;
 }
 .center-detail-body { display: flex; flex-direction: column; gap: 14px; }
 .center-detail-head {
@@ -5079,6 +5081,7 @@ onUnmounted(() => {
   border-radius: 14px;
   background: var(--center-detail-panel-bg);
   border: 1px solid var(--center-detail-border);
+  box-shadow: var(--center-detail-shadow);
 }
 .center-version-main { min-width: 0; flex: 1; }
 .center-version-title { font-weight: 800; line-height: 1.35; color: var(--center-detail-title-color); }
@@ -5214,6 +5217,7 @@ onUnmounted(() => {
   border-radius: 10px;
   padding: 8px 10px;
   border: 1px solid var(--center-detail-border);
+  box-shadow: var(--center-detail-shadow);
 }
 .detail-people-row {
   display: flex;
@@ -5224,8 +5228,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 7px;
-  min-width: 120px;
-  max-width: 210px;
+  width: 136px;
+  flex: 0 0 136px;
   padding: 4px 7px 4px 4px;
   border-radius: 999px;
   background: var(--center-detail-person-bg);
