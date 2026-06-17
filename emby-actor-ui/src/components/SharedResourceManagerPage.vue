@@ -428,6 +428,8 @@
                 <n-button
                   size="small"
                   type="primary"
+                  secondary
+                  round
                   :loading="importingMap[version.source_id] === 'permanent'"
                   :disabled="centerVersionActionDisabled(version) || isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
                   @click="importCenterSource(version, 'permanent')"
@@ -5036,7 +5038,7 @@ onUnmounted(() => {
   margin: 4px 0 2px;
 }
 .center-detail-body {
-  --center-detail-title-color: var(--n-title-text-color, rgba(15, 23, 42, .94));
+  --center-detail-title-color: var(--n-primary-color, var(--accent-color, var(--n-title-text-color, rgba(15, 23, 42, .94))));
   --center-detail-meta-color: var(--n-text-color-2, rgba(71, 85, 105, .86));
   --center-detail-text-color: var(--n-text-color, rgba(30, 41, 59, .9));
   --center-detail-muted-color: var(--n-text-color-3, rgba(100, 116, 139, .9));
@@ -5064,10 +5066,11 @@ onUnmounted(() => {
 .center-version-detail-card {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 12px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: var(--center-detail-panel-bg);
+  padding: 9px 12px;
+  border-radius: 18px;
+  background: var(--center-detail-person-bg);
   border: 1px solid var(--center-detail-border);
   box-shadow: var(--center-detail-shadow);
 }
@@ -5082,8 +5085,26 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
+.center-version-action :deep(.n-button) {
+  min-width: 56px;
+  font-weight: 700;
+  --n-color: var(--n-primary-color) !important;
+  --n-color-hover: var(--n-primary-color-hover) !important;
+  --n-color-pressed: var(--n-primary-color-pressed) !important;
+  --n-color-focus: var(--n-primary-color-hover) !important;
+  --n-border: 1px solid var(--n-primary-color) !important;
+  --n-border-hover: 1px solid var(--n-primary-color-hover) !important;
+  --n-border-pressed: 1px solid var(--n-primary-color-pressed) !important;
+  --n-border-focus: 1px solid var(--n-primary-color-hover) !important;
+  --n-text-color: var(--n-text-color-primary) !important;
+  --n-text-color-hover: var(--n-text-color-primary) !important;
+  --n-text-color-pressed: var(--n-text-color-primary) !important;
+  --n-text-color-focus: var(--n-text-color-primary) !important;
+}
 .center-version-detail-card-expandable { cursor: pointer; }
-.center-version-detail-card-expandable:hover { border-color: rgba(126, 240, 210, .32); }
+.center-version-detail-card-expandable:hover {
+  border-color: var(--n-primary-color, var(--accent-color, var(--center-detail-border)));
+}
 .center-episode-matrix {
   display: flex;
   flex-wrap: wrap;
@@ -5199,8 +5220,12 @@ onUnmounted(() => {
   overflow: hidden;
   text-align: justify;
 }
-.detail-credits {
+.detail-credits,
+.detail-person-name,
+.detail-person-role {
   color: var(--center-detail-text-color);
+}
+.detail-credits {
   background: var(--center-detail-soft-bg);
   border-radius: 10px;
   padding: 8px 10px;
