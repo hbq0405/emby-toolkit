@@ -1690,10 +1690,6 @@ const centerTitleText = (row) => {
   const rawTitle = row?.title || row?.standard_title || row?.media_title || row?.root_name || row?.file_name || row?.tmdb_id || '';
   return appendYear(centerSeasonBaseTitle(rawTitle, row), row?.release_year);
 };
-const centerTitleNode = (row) => {
-  const text = centerTitleText(row);
-  return h('div', { class: 'main-title center-title-ellipsis', title: text }, text);
-};
 const centerSeriesSeasonRows = (row) => Array.isArray(row?.seasons) ? row.seasons.filter(x => x && typeof x === 'object') : [];
 const centerSeasonIsSpecialNumber = (row) => centerSeasonTabNumber(row) === 0;
 const centerSeasonRowIsOngoing = (row) => {
@@ -1745,9 +1741,7 @@ const centerSeriesAllRegularSeasonsCertified = (row) => {
   const regular = centerSeriesSeasonRows(row).filter(item => !centerSeasonIsSpecialNumber(item));
   return regular.length > 0 && regular.every(centerSeasonRowIsCertified);
 };
-const centerStatusValue = (row) => String(row?.status || '').trim().toLowerCase();
 const centerLogicalPoolComplete = (row) => Boolean(row?.pool_complete || row?.logical_pool_complete || String(row?.status || '').trim().toLowerCase() === 'pool_complete');
-const centerIsCompletedPack = (row) => Boolean((row?.source_kind === 'logical_season' && centerLogicalPoolComplete(row)) || centerLogicalPoolComplete(row));
 const centerIsCompletedCertifiedSource = (row) => Boolean((row?.source_kind === 'logical_season' && centerLogicalPoolComplete(row)) || centerLogicalPoolComplete(row) || row?.is_completed_certified);
 const centerProgressText = (row) => {
   if (row?.progress_text) return String(row.progress_text);
@@ -1756,44 +1750,11 @@ const centerProgressText = (row) => {
   if (current > 0 && total > 0) return `${current}/${total}`;
   return current > 0 ? String(current) : '';
 };
-const centerSeasonText = (row) => {
-  const displayType = centerRowType(row);
-  const label = centerTypeLabel(displayType);
-  const seasonNo = centerSeasonNumber(row);
-  const s = seasonNo > 0 ? `S${String(seasonNo).padStart(2, '0')}` : '';
-  const e = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
-
-  if (label === '电影') return '电影';
-
-  if (label === '季') {
-    const progress = centerProgressText(row);
-    if (centerIsSpecialSeason(row)) return ['特别篇', progress].filter(Boolean).join(' · ') || '特别篇';
-    return [s, progress].filter(Boolean).join(' · ') || '-';
-  }
-
-  if (label === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
-
-  return [label, s ? `${s}${e}` : '', centerProgressText(row)].filter(Boolean).join(' · ') || '-';
-};
 const centerCleanVersionMeta = (row) => {
   const meta = row?.clean_version_meta_json || row?.clean_version_meta || row?.version_summary?.clean_version_meta_json || {};
   return meta && typeof meta === 'object' ? meta : {};
 };
 const isCenterCleanVersion = (row) => Boolean(row?.is_clean_version || centerCleanVersionMeta(row).is_clean_version);
-const centerCleanVersionTooltip = (row) => {
-  const meta = centerCleanVersionMeta(row);
-  const hit = meta.hit_count;
-  const comparable = meta.comparable_count;
-  const avgDelta = meta.avg_delta_minutes;
-  const confidence = row?.clean_version_confidence ?? meta.clean_version_confidence;
-  const minDelta = meta.min_delta_minutes;
-  const parts = ['疑似纯净版'];
-  if (hit != null && comparable != null) parts.push(`命中 ${hit}/${comparable} 集`);
-  if (avgDelta != null) parts.push(`平均短 ${avgDelta} 分钟`);
-  if (minDelta != null) parts.push(`阈值 ${minDelta} 分钟`);
-  if (confidence != null && confidence !== '') parts.push(`置信度 ${Math.round(Number(confidence) * 100)}%`);
-  return parts.join(' · ');
-};
 const centerNestedParts = (row) => {
   const parts = [];
   if (row && typeof row === 'object') parts.push(row);
@@ -1835,15 +1796,6 @@ const centerCompletedCertifiedMeta = (row) => {
 const isCenterCompletedCertified = (row) => Boolean(
   centerSeriesAllRegularSeasonsCertified(row) || centerCompletedCertifiedMeta(row).is_completed_certified
 );
-const centerCompletedCertifiedTooltip = (row) => {
-  const meta = centerCompletedCertifiedMeta(row);
-  const parts = ['已通过中心完整性与版本一致性校验'];
-  const fileCount = meta.file_count ?? row?.file_count ?? row?.pack_item_count;
-  const expected = meta.expected_episode_count ?? row?.expected_episode_count ?? row?.progress_total;
-  if (fileCount != null && expected != null) parts.push(`集数 ${fileCount}/${expected}`);
-  if (meta.message) parts.push(String(meta.message));
-  return parts.join(' · ');
-};
 const centerAnimationMeta = (row) => {
   for (const part of centerNestedParts(row)) {
     const meta = part?.animation_meta_json || part?.animation_meta || {};
@@ -1852,14 +1804,6 @@ const centerAnimationMeta = (row) => {
   return {};
 };
 const isCenterAnimation = (row) => Boolean(centerAnimationMeta(row).is_animation || row?.is_animation);
-const centerAnimationTooltip = (row) => {
-  const meta = centerAnimationMeta(row);
-  const parts = ['动漫'];
-  if (meta.reason === 'tmdb_genres_animation') parts.push('TMDb 类型命中动画');
-  if (meta.source) parts.push(String(meta.source));
-  return parts.join(' · ');
-};
-
 const centerShortDramaMeta = (row) => {
   for (const part of centerNestedParts(row)) {
     const meta = part?.short_drama_meta_json || part?.short_drama_meta || {};
@@ -1868,61 +1812,6 @@ const centerShortDramaMeta = (row) => {
   return {};
 };
 const isCenterShortDrama = (row) => Boolean(centerShortDramaMeta(row).is_short_drama || row?.is_short_drama);
-const centerShortDramaTooltip = (row) => {
-  const meta = centerShortDramaMeta(row);
-  const parts = ['短剧'];
-  const runtime = meta.runtime_minutes ?? meta.avg_runtime_minutes;
-  if (runtime != null) parts.push(`时长 ${runtime} 分钟`);
-  if (meta.hit_count != null && meta.comparable_count != null) parts.push(`命中 ${meta.hit_count}/${meta.comparable_count} 集`);
-  if (meta.max_runtime_minutes != null) parts.push(`阈值 < ${meta.max_runtime_minutes} 分钟`);
-  return parts.join(' · ');
-};
-const centerTypeCell = (row) => {
-  const textNode = h('span', centerSeasonText(row));
-  const tags = [];
-
-  if (centerIsOngoingHub(row)) {
-    tags.push(h(NTag, { size: 'small', round: true, type: 'info', class: 'center-flag-tag' }, { default: () => '连载中' }));
-  }
-
-  if (isCenterCompletedCertified(row) && !centerIsOngoingHub(row)) {
-    tags.push(h(NTooltip, { trigger: 'hover' }, {
-      trigger: () => h(NTag, { size: 'small', round: true, type: 'success', class: 'center-flag-tag' }, { default: () => '一致版' }),
-      default: () => centerCompletedCertifiedTooltip(row),
-    }));
-  }
-
-  if (isCenterAnimation(row)) {
-    tags.push(h(NTooltip, { trigger: 'hover' }, {
-      trigger: () => h(NTag, { size: 'small', round: true, type: 'info', class: 'center-flag-tag' }, { default: () => '动漫' }),
-      default: () => centerAnimationTooltip(row),
-    }));
-  }
-
-  if (isCenterCleanVersion(row)) {
-    const cleanTagNode = h(NTooltip, { trigger: 'hover' }, {
-      trigger: () => h(NTag, { size: 'small', round: true, type: 'warning', class: 'center-flag-tag' }, { default: () => '纯净版' }),
-      default: () => centerCleanVersionTooltip(row),
-    });
-    tags.push(cleanTagNode);
-  }
-
-  if (isCenterShortDrama(row)) {
-    const shortDramaTagNode = h(NTooltip, { trigger: 'hover' }, {
-      trigger: () => h(NTag, { size: 'small', round: true, type: 'success', class: 'center-flag-tag' }, { default: () => '短剧' }),
-      default: () => centerShortDramaTooltip(row),
-    });
-    tags.push(shortDramaTagNode);
-  }
-
-  if (!tags.length) return textNode;
-  return h('span', { class: 'center-type-with-flags' }, [textNode, ...tags]);
-};
-const centerStatusTag = (row) => {
-  const text = row.status_label || statusMap[row.status]?.text || row.status || '未知';
-  const type = row.status_type || statusMap[row.status]?.type || 'default';
-  return h(NTag, { type, size: 'small', round: true }, { default: () => text });
-};
 const centerShareChannel = (row) => row?.share_channel
   || row?.logical_season_share_channel
  
@@ -2552,100 +2441,9 @@ const groupCenterSources = (items, orderBy = 'latest') => {
   return processedGroups;
 };
 
-const renderLineTooltipContent = (value) => {
-  if (Array.isArray(value)) {
-    const lines = value.map(line => String(line || '').trim()).filter(Boolean);
-    if (!lines.length) return null;
-    return h('div', { class: 'center-cell-tooltip-list' }, lines.map((line, idx) =>
-      h('div', { class: 'center-cell-tooltip-line', key: `tooltip-line-${idx}` }, line)
-    ));
-  }
-  const text = String(value || '').trim();
-  if (!text) return null;
-  return h('div', { class: 'center-cell-tooltip-content' }, text);
-};
-
-const lineStack = (items, renderFn, tooltipFn = null) => {
-  const rows = (items || []).map((it, idx) => {
-    const content = renderFn(it, idx);
-    const tooltipValue = tooltipFn ? tooltipFn(it, idx) : null;
-    const tooltipNode = renderLineTooltipContent(tooltipValue);
-    const lineNode = h('div', { class: 'center-version-line', key: `line-${idx}` }, [content]);
-    if (!tooltipNode) return lineNode;
-    return h(NTooltip, { key: idx, trigger: 'hover', placement: 'top', delay: 250 }, {
-      trigger: () => lineNode,
-      default: () => tooltipNode
-    });
-  });
-  return h('div', { class: 'center-version-stack' }, rows);
-};
-
 const trackListToArray = (items) => {
   if (!Array.isArray(items)) return items ? [items] : [];
   return items;
-};
-const languageMap = {
-  eng: '英语', en: '英语', english: '英语',
-  chi: '中文', zho: '中文', zh: '中文', chinese: '中文', cmn: '中文', mandarin: '国语',
-  yue: '粤语', cantonese: '粤语',
-  jpn: '日语', ja: '日语', japanese: '日语',
-  kor: '韩语', ko: '韩语', korean: '韩语',
-  fre: '法语', fra: '法语', fr: '法语', french: '法语',
-  ger: '德语', deu: '德语', de: '德语', german: '德语',
-  spa: '西语', es: '西语', spanish: '西语',
-  rus: '俄语', ru: '俄语', russian: '俄语',
-  tha: '泰语', th: '泰语', thai: '泰语',
-};
-const stripTrackParams = (value) => {
-  let text = String(value || '').trim();
-  if (!text) return '';
-  const lower = text.toLowerCase();
-  if (languageMap[lower]) return languageMap[lower];
-
-  text = text
-    .replace(/（[^）]*）/g, ' ')
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/【[^】]*】/g, ' ')
-    .replace(/默认|default|forced|强制|内封|外挂|外置/ig, ' ')
-    .replace(/\b(truehd|dts[- ]?hd(?: ma)?|dts|e[- ]?ac[- ]?3|ddp|ac[- ]?3|aac|flac|mp3|opus|pcm|pgssub|pgs|subrip|srt|ass|ssa|mov[_ -]?text|webvtt|vobsub|dvdsub|stereo|mono|atmos|dolby|dual mono)\b/ig, ' ')
-    .replace(/\b[0-9](?:\.[0-9])?\s*(?:ch|channels?)\b/ig, ' ')
-    .replace(/\b[257]\.1(?:\.[24])?\b/g, ' ')
-    .replace(/[·/|,，]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const normalized = text.toLowerCase();
-  if (languageMap[normalized]) return languageMap[normalized];
-  if (/简体/.test(text) && !/^中文/.test(text) && !/中英/.test(text)) return `中文简体${text.replace(/简体/g, '').trim() ? ` ${text.replace(/简体/g, '').trim()}` : ''}`.trim();
-  if (/繁体/.test(text) && !/^中文/.test(text) && !/中英/.test(text)) return `中文繁体${text.replace(/繁体/g, '').trim() ? ` ${text.replace(/繁体/g, '').trim()}` : ''}`.trim();
-  return text;
-};
-const trackRawText = (item) => {
-  if (item == null) return '';
-  if (typeof item === 'string') return item;
-  return item.display || item.display_title || item.title || item.name || item.label || item.language || item.lang || '';
-};
-const isDefaultTrack = (item) => {
-  if (item == null) return false;
-  if (typeof item === 'object' && (item.is_default === true || item.default === true || item.selected === true)) return true;
-  return /默认|default/i.test(trackRawText(item));
-};
-const compactTrackText = (items) => {
-  const arr = trackListToArray(items);
-  if (!arr.length) return '-';
-  const selected = arr.find(isDefaultTrack) || arr[0];
-  return stripTrackParams(trackRawText(selected)) || '-';
-};
-const fullTrackTooltipLines = (items) => {
-  return trackListToArray(items)
-    .map(item => {
-      let text = String(trackRawText(item) || '').trim();
-      if (!text) return '';
-      if (isDefaultTrack(item) && !/默认|default/i.test(text)) text = `${text}（默认）`;
-      return text.replace(/\s+/g, ' ').trim();
-    })
-    .filter(Boolean);
 };
 
 const compactEffectText = (value) => {
@@ -2680,90 +2478,6 @@ const centerVersionSummary = (it) => {
 };
 const versionAudioTracks = (it) => centerVersionSummary(it).audio_list || centerVersionSummary(it).audios || centerVersionSummary(it).audio_tracks || centerVersionSummary(it).audio || [];
 const versionSubtitleTracks = (it) => centerVersionSummary(it).subtitle_list || centerVersionSummary(it).subtitles || centerVersionSummary(it).subtitle_tracks || centerVersionSummary(it).subtitle || [];
-const localLibraryInfo = (it) => it?.local_library || {};
-const localLibraryTag = (it) => {
-  const info = localLibraryInfo(it);
-  const status = info.status || 'unknown';
-  const label = info.label || (status === 'full' ? '已入库' : status === 'partial' ? '部分入库' : status === 'none' ? '未入库' : '无法判断');
-  const tagType = info.tag_type || (status === 'full' ? 'success' : status === 'partial' ? 'warning' : 'default');
-  return h(NTag, { size: 'small', round: true, type: tagType, class: 'center-library-tag' }, {
-    default: () => label,
-  });
-};
-const localLibraryTooltipLines = (it) => {
-  const info = localLibraryInfo(it);
-  const lines = [];
-  if (info.label) lines.push(info.label);
-  const files = Array.isArray(info.files) ? info.files : [];
-  const inRows = files.filter(f => f.in_library);
-  const outRows = files.filter(f => !f.in_library && f.sha1);
-  const unknownRows = files.filter(f => !f.sha1);
-  const pushRows = (title, rows, limit = 16) => {
-    if (!rows.length) return;
-    lines.push(`${title}：`);
-    rows.slice(0, limit).forEach(f => {
-      const source = Array.isArray(f.library_sources) && f.library_sources.length ? ` · ${f.library_sources.join('+')}` : '';
-      lines.push(`  ${f.label || f.file_name || f.sha1 || '-'}${source}`);
-    });
-    if (rows.length > limit) lines.push(`  ……另有 ${rows.length - limit} 个`);
-  };
-  pushRows('已入库', inRows);
-  pushRows('未秒传', outRows);
-  pushRows('无法判断 SHA1', unknownRows, 8);
-  if (!lines.length) lines.push('未返回本地秒传状态');
-  return lines;
-};
-
-const hideCenterPackParams = (it) => centerIsOngoingHub(it);
-const centerParamText = (it, value = '') => hideCenterPackParams(it) ? '-' : (value || '-');
-
-const centerColumns = [
-  { title: '片名', key: 'title', width: 240, fixed: 'left', render: row => h('div', { class: 'center-title-cell' }, [
-    centerTitleNode(row),
-    metaLine(row)
-  ]) },
-  // 主行只展示片名；从类型列开始按 versions 拆分多行展示多版本。
-  { title: '类型', key: 'item_type', width: 210, render: row => lineStack(row.versions, it => centerTypeCell(it)) },
-  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).resolution))) },
-  { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
-    const v = centerVersionSummary(it) || {};
-    return h('span', centerParamText(it, [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ')));
-  }) },
-  { title: 'HDR / 杜比', key: 'effect', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-effect-compact' }, hideCenterPackParams(it) ? '-' : compactEffectText(centerVersionSummary(it).effect)), it => hideCenterPackParams(it) ? '' : (centerVersionSummary(it).effect || '')) },
-  { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', centerParamText(it, centerVersionSummary(it).fps))) },
-  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionAudioTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionAudioTracks(it))) },
-  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, hideCenterPackParams(it) ? '-' : compactTrackText(versionSubtitleTracks(it))), it => hideCenterPackParams(it) ? '' : fullTrackTooltipLines(versionSubtitleTracks(it))) },
-  { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', hideCenterPackParams(it) ? '-' : formatCenterSize(it))) },
-  { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
-  { title: '资源数', key: 'version_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${centerUsableResourceCount(it)} 个`)) },
-  { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
-  { title: '操作', key: 'actions', width: 120, fixed: 'right', render: row => lineStack(row.versions, it => {
-    const isImportingPermanent = importingMap[it.source_id] === 'permanent';
-    const isPreparingReplenish = importingMap[it.source_id] === 'replenish';
-    if (isCenterReplenishRow(it)) {
-      if (canCenterReplenishRow(it)) {
-        return h(NButton, {
-          size: 'small',
-          type: 'primary',
-          secondary: true,
-          loading: isPreparingReplenish,
-          disabled: Boolean(importingMap[it.source_id]) && !isPreparingReplenish,
-          onClick: () => openManualShareForCenterReplenish(it)
-        }, { default: () => '补充' });
-      }
-      return centerReplenishActionNode();
-    }
-    return h(NButton, {
-      size: 'small',
-      type: 'primary',
-      secondary: true,
-      loading: isImportingPermanent,
-      disabled: Boolean(importingMap[it.source_id]) && !isImportingPermanent,
-      onClick: () => importCenterSource(it, 'permanent')
-    }, { default: () => centerTransferActionText(it) });
-  }) },
-];
-
 const centerTmdbMeta = (row) => {
   if (!row || typeof row !== 'object') return {};
   const meta = (row.tmdb_meta && typeof row.tmdb_meta === 'object') ? row.tmdb_meta : {};
@@ -4501,6 +4215,18 @@ onUnmounted(() => {
 .shared-page { padding: 0; }
 .dashboard-card { border-radius: 14px; overflow: hidden; }
 .shared-list-card { overflow: visible; }
+.glass-modal {
+  background: color-mix(in srgb, var(--n-color, var(--card-bg-color, #fff)) 82%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--n-border-color, rgba(128, 128, 128, .28)) 74%, transparent) !important;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .08) !important;
+  backdrop-filter: blur(22px) saturate(1.28);
+  -webkit-backdrop-filter: blur(22px) saturate(1.28);
+}
+.glass-modal :deep(.n-card-header),
+.glass-modal :deep(.n-card__content),
+.glass-modal :deep(.n-card__footer) {
+  background: transparent !important;
+}
 .shared-list-card :deep(.n-card__content),
 .shared-list-card :deep(.n-tabs),
 .shared-list-card :deep(.n-tab-pane),
