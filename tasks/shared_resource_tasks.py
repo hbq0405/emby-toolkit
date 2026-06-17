@@ -6618,7 +6618,7 @@ def _list_display_meta_backfill_source_rows(limit: int = 500) -> List[Dict[str, 
     for item in fetched.get('items') or []:
         item_type = str(item.get('item_type') or '').strip()
         tmdb_id = str(item.get('tmdb_id') or '').strip()
-        if item_type not in ('Movie', 'Season', 'Episode') or not tmdb_id:
+        if item_type not in ('Movie', 'Series', 'Season', 'Episode') or not tmdb_id:
             continue
         season_no = _safe_int_or_none(item.get('season_number')) if item_type in ('Season', 'Episode') else None
         episode_no = _safe_int_or_none(item.get('episode_number')) if item_type == 'Episode' else None
@@ -6628,7 +6628,7 @@ def _list_display_meta_backfill_source_rows(limit: int = 500) -> List[Dict[str, 
             continue
         rows.append({
             'id': item.get('media_key') or f"center-missing:{item_type}:{tmdb_id}:{season_no or ''}:{episode_no or ''}",
-            'source_kind': 'movie' if item_type == 'Movie' else ('episode' if item_type == 'Episode' else 'season_hub'),
+            'source_kind': 'movie' if item_type == 'Movie' else ('series' if item_type == 'Series' else ('episode' if item_type == 'Episode' else 'season_hub')),
             'center_source_id': '',
             'tmdb_id': tmdb_id,
             'parent_series_tmdb_id': tmdb_id if item_type in ('Season', 'Episode') else '',
@@ -6675,6 +6675,7 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                     'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
                     'actors_json', 'directors_json',
                 )),
+                'credits': has_any(movie, ('actors_json', 'directors_json')),
             }
         elif item_type == 'Episode':
             checks = {
@@ -6698,6 +6699,7 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                     'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
                     'actors_json', 'directors_json',
                 )),
+                'credits': has_any(series, ('actors_json', 'directors_json')),
                 'season_meta': has_any(season, (
                     'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
                     'release_year', 'release_date',
