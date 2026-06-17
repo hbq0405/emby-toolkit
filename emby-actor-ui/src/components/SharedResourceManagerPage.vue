@@ -5035,6 +5035,28 @@ onUnmounted(() => {
   justify-content: center;
   margin: 4px 0 2px;
 }
+.center-detail-modal {
+  --center-detail-title-color: rgba(255, 255, 255, .96);
+  --center-detail-meta-color: rgba(255, 255, 255, .7);
+  --center-detail-text-color: rgba(255, 255, 255, .85);
+  --center-detail-muted-color: rgba(255, 255, 255, .58);
+  --center-detail-panel-bg: rgba(12, 18, 42, .48);
+  --center-detail-soft-bg: rgba(255, 255, 255, .06);
+  --center-detail-person-bg: rgba(8, 14, 35, .42);
+  --center-detail-border: rgba(148, 177, 255, .14);
+  --center-detail-avatar-bg: rgba(255, 255, 255, .08);
+}
+:global(html.light) .center-detail-modal {
+  --center-detail-title-color: rgba(15, 23, 42, .94);
+  --center-detail-meta-color: rgba(71, 85, 105, .86);
+  --center-detail-text-color: rgba(30, 41, 59, .9);
+  --center-detail-muted-color: rgba(100, 116, 139, .9);
+  --center-detail-panel-bg: rgba(255, 255, 255, .72);
+  --center-detail-soft-bg: rgba(241, 245, 249, .78);
+  --center-detail-person-bg: rgba(148, 163, 184, .26);
+  --center-detail-border: rgba(148, 163, 184, .36);
+  --center-detail-avatar-bg: rgba(226, 232, 240, .95);
+}
 .center-detail-body { display: flex; flex-direction: column; gap: 14px; }
 .center-detail-head {
   display: flex;
@@ -5043,8 +5065,8 @@ onUnmounted(() => {
   gap: 14px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: rgba(128,128,128,.075);
-  border: 1px solid rgba(148, 177, 255, .14);
+  background: var(--center-detail-soft-bg);
+  border: 1px solid var(--center-detail-border);
 }
 .center-detail-title { font-size: 18px; font-weight: 800; line-height: 1.35; }
 .center-detail-sub { margin-top: 4px; font-size: 12px; opacity: .68; }
@@ -5055,11 +5077,11 @@ onUnmounted(() => {
   gap: 12px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: rgba(12, 18, 42, .48);
-  border: 1px solid rgba(148, 177, 255, .14);
+  background: var(--center-detail-panel-bg);
+  border: 1px solid var(--center-detail-border);
 }
 .center-version-main { min-width: 0; flex: 1; }
-.center-version-title { font-weight: 800; line-height: 1.35; }
+.center-version-title { font-weight: 800; line-height: 1.35; color: var(--center-detail-title-color); }
 .center-version-tracks,
 .center-version-episodes {
   margin-top: 7px;
@@ -5077,7 +5099,7 @@ onUnmounted(() => {
   gap: 6px;
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid rgba(148, 177, 255, .12);
+  border-top: 1px solid var(--center-detail-border);
 }
 .center-episode-matrix :deep(.n-button) { min-width: 34px; }
 @media (max-width: 768px) {
@@ -5153,7 +5175,7 @@ onUnmounted(() => {
   font-size: 24px;
   font-weight: 800;
   line-height: 1.2;
-  color: #fff;
+  color: var(--center-detail-title-color);
 }
 .detail-year {
   font-size: 18px;
@@ -5163,7 +5185,7 @@ onUnmounted(() => {
 }
 .detail-meta {
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--center-detail-meta-color);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -5178,7 +5200,7 @@ onUnmounted(() => {
 .detail-overview {
   font-size: 13px;
   line-height: 1.6;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--center-detail-text-color);
   display: -webkit-box;
   -webkit-line-clamp: 5;
   line-clamp: 5;
@@ -5187,10 +5209,11 @@ onUnmounted(() => {
   text-align: justify;
 }
 .detail-credits {
-  color: rgba(255, 255, 255, 0.78);
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--center-detail-text-color);
+  background: var(--center-detail-soft-bg);
   border-radius: 10px;
   padding: 8px 10px;
+  border: 1px solid var(--center-detail-border);
 }
 .detail-people-row {
   display: flex;
@@ -5205,15 +5228,15 @@ onUnmounted(() => {
   max-width: 210px;
   padding: 4px 7px 4px 4px;
   border-radius: 999px;
-  background: rgba(8, 14, 35, .42);
-  border: 1px solid rgba(148, 177, 255, .12);
+  background: var(--center-detail-person-bg);
+  border: 1px solid var(--center-detail-border);
 }
 .detail-person-avatar {
   width: 34px;
   height: 34px;
   border-radius: 50%;
   object-fit: cover;
-  background: rgba(255,255,255,.08);
+  background: var(--center-detail-avatar-bg);
   flex: 0 0 auto;
 }
 .detail-person-info {
@@ -5223,7 +5246,7 @@ onUnmounted(() => {
 .detail-person-name {
   font-size: 12px;
   font-weight: 700;
-  color: rgba(255,255,255,.92);
+  color: var(--center-detail-title-color);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5231,7 +5254,7 @@ onUnmounted(() => {
 .detail-person-role {
   margin-top: 2px;
   font-size: 11px;
-  color: rgba(255,255,255,.58);
+  color: var(--center-detail-muted-color);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

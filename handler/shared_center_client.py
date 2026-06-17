@@ -567,10 +567,10 @@ class SharedCenterClient:
         if compressed_count and raw_bytes_total and compressed_bytes_total:
             ratio = compressed_bytes_total / max(raw_bytes_total, 1)
             logger.info(
-                f"  ➜ [共享资源] RAW 批量压缩上传准备完成："
-                f"zstd={compressed_count}/{len(payload_items)}, "
-                f"{raw_bytes_total / 1024 / 1024:.1f}MB -> {compressed_bytes_total / 1024 / 1024:.1f}MB, "
-                f"ratio={ratio:.2%}"
+                f"  ➜ [共享资源] 媒体信息已压缩，准备批量上传："
+                f"{compressed_count}/{len(payload_items)} 个文件，"
+                f"{raw_bytes_total / 1024 / 1024:.1f}MB 压缩到 {compressed_bytes_total / 1024 / 1024:.1f}MB，"
+                f"压缩后约为原来的 {ratio:.0%}。"
             )
 
         try:

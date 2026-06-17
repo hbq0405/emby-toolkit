@@ -217,9 +217,9 @@ def _flush_mp_batch(key):
     tmdb_id, media_type, season_num, episode_num = key
     title = files[0].get('title') or ''
 
+    video_text = "包含视频" if task.get('has_video', False) else "仅字幕或附属文件"
     logger.info(
-        f"  ➜ [MP合并整理] 缓冲结束，开始处理 {len(files)} 个文件 "
-        f"(包含视频: {task.get('has_video', False)}) -> ID:{tmdb_id}"
+        f"  ➜ [MP合并整理] 缓冲结束，开始处理 {len(files)} 个文件，{video_text}，TMDb：{tmdb_id}"
     )
 
     try:
@@ -288,7 +288,8 @@ def _process_mp_passthrough_immediate(file_info):
 
     _fix_mp_tv_parent_id(client, file_info)
 
-    logger.info(f"  ➜ [MP直出] 开始处理单文件: {file_name} -> ID:{tmdb_id}")
+    logger.info(f"  ➜ [MP直出] 开始处理单文件：{file_name}。")
+    logger.debug(f"  ➜ [MP直出] 单文件处理详情：TMDb={tmdb_id}, 类型={media_type}")
 
     try:
         organizer = SmartOrganizer(client, tmdb_id, media_type, title)
@@ -398,7 +399,7 @@ def _run_shared_auto_share_batch_detached(task_name: str, register_items: List[d
                 trigger_shared_rapid_register_for_library_item,
             )
 
-            logger.info(f"  ➜ [共享资源] 入库即登记共享源: {task_name}，items={len(items)}")
+            logger.info(f"  ➜ [共享资源] 入库后自动登记共享源：{task_name}，共 {len(items)} 个文件。")
             if len(items) > 1:
                 batch_result = trigger_shared_rapid_register_batch_for_library_items(None, items) or {}
                 try:
@@ -406,16 +407,16 @@ def _run_shared_auto_share_batch_detached(task_name: str, register_items: List[d
                 except Exception:
                     pass
                 failed_total += int(batch_result.get('failed', 0) or 0)
+                raw_result = batch_result.get('raw_batch_result') or {}
                 logger.info(
-                    "  ➜ [共享资源] 已按批次预上传 RAW：%s，items=%s，raw_uploaded=%s，raw_ready=%s，raw_skipped=%s",
+                    "  ➜ [共享资源] 媒体信息预上传完成：%s，本次上传 %s 个，中心已有 %s 个，可用于秒传校验 %s 个。",
                     task_name,
-                    len(items),
-                    ((batch_result.get('raw_batch_result') or {}).get('uploaded_count') or 0),
-                    ((batch_result.get('raw_batch_result') or {}).get('count') or 0),
-                    ((batch_result.get('raw_batch_result') or {}).get('skipped_existing') or 0),
+                    raw_result.get('uploaded_count') or 0,
+                    raw_result.get('skipped_existing') or 0,
+                    raw_result.get('count') or 0,
                 )
                 logger.info(
-                    "  ➜ [共享资源] 入库共享源登记完成: %s，items=%s，created=%s，failed=%s",
+                    "  ➜ [共享资源] 入库共享源登记完成：%s，共 %s 个文件，成功 %s 个，失败 %s 个。",
                     task_name,
                     len(items),
                     created_total,
@@ -446,7 +447,7 @@ def _run_shared_auto_share_batch_detached(task_name: str, register_items: List[d
                     )
 
             logger.info(
-                "  ➜ [共享资源] 入库共享源登记完成: %s，items=%s，created=%s，failed=%s",
+                "  ➜ [共享资源] 入库共享源登记完成：%s，共 %s 个文件，成功 %s 个，失败 %s 个。",
                 task_name,
                 len(items),
                 created_total,
@@ -640,7 +641,7 @@ def _repair_webhook_p115_fingerprints_for_emby_ids(
 
         logger.info(
             f"  ➜ [指纹补齐] 正在为《{item_name_for_log}》执行 115 指纹体检，"
-            f"记录数: {len(rows_to_repair)}"
+            f"共 {len(rows_to_repair)} 条记录。"
         )
 
         from tasks.p115_fingerprint_helpers import repair_p115_fingerprints_for_rows
@@ -862,7 +863,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 
                 if lib_id:
                     # 既然数据都在手里了，不需要延迟，直接干！
-                    logger.info(f"  ➜ [自动打标] 基于数据库最新元数据 (库ID:{lib_id}, 分级:{us_rating}) ...")
+                    logger.info(f"  ➜ [自动打标] 基于数据库最新元数据执行自动打标，分级：{us_rating}。")
+                    logger.debug(f"  ➜ [自动打标] 媒体库 ID：{lib_id}")
                     # 这里的 lib_name 传个占位符即可，不影响逻辑，只影响日志
                     _handle_immediate_tagging_with_lib(item_id, item_name_for_log, lib_id, "DB_Source", known_rating=us_rating)
                 else:
@@ -897,9 +899,13 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
 
                 # 新集指纹体检与共享源登记均已在 Webhook 中完成；watchlist_processor 只负责追剧状态刷新。
+                refresh_scope_text = (
+                    f"本次只刷新 {len(precise_new_episode_ids)} 个新增分集。"
+                    if precise_new_episode_ids
+                    else "本次刷新整部剧集。"
+                )
                 logger.info(
-                    f"  ➜ [智能追剧] 触发单项刷新..."
-                    f"{' (透传新增分集: ' + str(len(precise_new_episode_ids)) + ' 个)' if precise_new_episode_ids else ''}"
+                    f"  ➜ [智能追剧] 触发单项刷新：{refresh_scope_text}"
                 )
                 task_manager.submit_task(
                     task_process_watchlist,
@@ -1062,7 +1068,8 @@ def _process_batch_webhook_events():
 
 def _trigger_metadata_update_task(item_id, item_name):
     """触发元数据同步任务"""
-    logger.info(f"  ➜ 防抖计时器到期，为 '{item_name}' (ID: {item_id}) 执行元数据缓存同步任务。")
+    logger.info(f"  ➜ 防抖计时器到期，开始同步《{item_name}》的元数据缓存。")
+    logger.debug(f"  ➜ 元数据缓存同步对象：item_id={item_id}")
     task_manager.submit_task(
         task_sync_all_metadata,
         task_name=f"元数据同步: {item_name}",
@@ -1132,7 +1139,8 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
         _dispatch_item(item_id, item_name, item_type)
         return
 
-    logger.info(f"  ➜ [预检] 开始处理 '{item_name}' (ID:{item_id}) 的媒体信息...")
+    logger.info(f"  ➜ [预检] 开始检查《{item_name}》的媒体信息。")
+    logger.debug(f"  ➜ [预检] 媒体信息检查对象：item_id={item_id}")
 
     app_config = config_manager.APP_CONFIG
     emby_url = app_config.get("emby_server_url")
@@ -1583,11 +1591,11 @@ def emby_webhook():
                 mp_classify_enabled = bool(config.get(constants.CONFIG_OPTION_115_MP_CLASSIFY, False))
                 
                 if mp_classify_enabled:
-                    logger.info(f"  ➜ [{log_prefix}] 收到文件: {file_name}，MP直出模式已开启，跳过缓冲直接处理...")
+                    logger.info(f"  ➜ [{log_prefix}] 收到文件：{file_name}。MP 直出已开启，直接处理。")
                     spawn(_process_mp_passthrough_immediate, file_info)
                     return jsonify({"status": "processing_single_file_passthrough"}), 200
                 else:
-                    logger.info(f"  ➜ [{log_prefix}] 收到文件: {file_name}，进入合并缓冲池...")
+                    logger.info(f"  ➜ [{log_prefix}] 收到文件：{file_name}。已加入合并缓冲池，等待同集字幕或其他版本。")
                     _enqueue_mp_file(file_info)
                     return jsonify({"status": "processing_single_file"}), 200
             else:
@@ -1803,7 +1811,8 @@ def emby_webhook():
                 )
                 
                 if not details:
-                    logger.info(f"  ➜ 合集 '{collection_name}' (ID: {collection_id}) 已在 Emby 中消失 (可能是变空自动删除)，同步删除本地记录...")
+                    logger.info(f"  ➜ 合集《{collection_name}》已在 Emby 中消失，正在同步删除本地记录。")
+                    logger.debug(f"  ➜ 已消失合集 ID：{collection_id}")
                     tmdb_collection_db.delete_native_collection_by_emby_id(collection_id)
                 else:
                     logger.debug(f"  ➜ 合集 '{collection_name}' 依然存在，无需操作。")

@@ -478,7 +478,7 @@ class MediaProcessor:
                 temp_id = match.group(1)
                 if is_valid_tmdb_id(temp_id):
                     tmdb_id = temp_id
-                    logger.info(f"  ➜ [实时监控] 成功提取 TMDb ID: {tmdb_id}")
+                    logger.info(f"  ➜ [实时监控] 已从路径识别到 TMDb：{tmdb_id}")
             if not tmdb_id:
                 # 优化：先尝试从目录名提取搜索信息
                 def is_season_folder(name: str) -> bool:
@@ -522,7 +522,7 @@ class MediaProcessor:
                 results = tmdb.search_media(search_query, self.tmdb_api_key, item_type=search_type, year=search_year)
                 if results:
                     tmdb_id = str(results[0].get('id'))
-                    logger.info(f"  ➜ [实时监控] 搜索匹配成功: {results[0].get('title') or results[0].get('name')} (ID: {tmdb_id})")
+                    logger.info(f"  ➜ [实时监控] 搜索匹配成功：《{results[0].get('title') or results[0].get('name')}》，TMDb：{tmdb_id}")
                 else:
                     logger.warning(f"  ➜ [实时监控] 搜索失败，无法处理: {search_query}")
                     return None
@@ -610,7 +610,8 @@ class MediaProcessor:
 
                                         # 4. 调用 maintenance_db 清理 Emby 相关的数据库记录和缓存
                                         for e_id in emby_ids:
-                                            logger.info(f"  ➜ [洗版替换] 清理旧版媒体库记录 (EmbyID: {e_id})")
+                                            logger.info("  ➜ [洗版替换] 正在清理旧版媒体库记录。")
+                                            logger.debug(f"  ➜ [洗版替换] 旧版 Emby ID：{e_id}")
                                             maintenance_db.cleanup_deleted_media_item(
                                                 item_id=str(e_id), 
                                                 item_name=old_title, 
@@ -696,7 +697,8 @@ class MediaProcessor:
 
             # 2. 决策逻辑分支 (只要数据库有数据且有演员，就是完美命中)
             if db_record and db_actors:
-                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})。正在从数据库恢复元数据并生成 NFO...")
+                logger.info("  ➜ [实时监控] 命中本地元数据缓存，开始恢复元数据并生成 NFO。")
+                logger.debug(f"  ➜ [实时监控] 缓存命中详情：TMDb={tmdb_id}")
                 try:
                     # 1. 生成主 payload
                     from tasks.helpers import reconstruct_metadata_from_db
@@ -822,7 +824,8 @@ class MediaProcessor:
                 except Exception as e:
                     logger.error(f"  ➜ [实时监控] 从数据库恢复 NFO 失败: {e}，将回退到在线刮削。")
             else:
-                logger.info(f"  ➜ [实时监控] 数据库无有效缓存 (ID:{tmdb_id})，准备执行 TMDb 在线刮削...")
+                logger.info("  ➜ [实时监控] 本地元数据缓存不可用，改用 TMDb 在线刮削。")
+                logger.debug(f"  ➜ [实时监控] 在线刮削详情：TMDb={tmdb_id}")
 
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理
@@ -833,7 +836,8 @@ class MediaProcessor:
 
             if not should_skip_full_processing:
                 time.sleep(random.uniform(0.5, 2.0))
-                logger.info(f"  ➜ [实时监控] 正在获取 TMDb 详情并执行核心处理 (ID: {tmdb_id})...")
+                logger.info("  ➜ [实时监控] 开始获取 TMDb 详情并处理媒体。")
+                logger.debug(f"  ➜ [实时监控] TMDb 详情处理对象：TMDb={tmdb_id}")
                 
                 if item_type == "Movie":
                     details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
@@ -3898,7 +3902,7 @@ class MediaProcessor:
                         if entry and entry.get("tmdb_person_id"):
                             tmdb_id_from_map = str(entry.get("tmdb_person_id"))
                             if tmdb_id_from_map not in final_cast_map:
-                                logger.info(f"    ├─ 匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                logger.info(f"    ├─ 豆瓣演员“{d_actor.get('Name')}”已通过豆瓣映射匹配，加入最终演员表。")
                                 cached_metadata_map = self.actor_db_manager.get_full_actor_details_by_tmdb_ids(cursor, [int(tmdb_id_from_map)])
                                 cached_metadata = cached_metadata_map.get(int(tmdb_id_from_map), {})
                                 new_actor_entry = {
@@ -3975,7 +3979,7 @@ class MediaProcessor:
                                         if final_check_row:
                                             emby_pid_from_final_check = dict(final_check_row).get("emby_person_id")
                                             if tmdb_id_from_find not in final_cast_map:
-                                                logger.info(f"    ├─ 匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
+                                                logger.info(f"    ├─ 豆瓣演员“{d_actor.get('Name')}”已通过 TMDb 反查匹配，加入最终演员表。")
                                                 new_actor_entry = {
                                                     "id": tmdb_id_from_find, "name": d_actor.get("Name"),
                                                     "character": d_actor.get("Role"), "order": 999,
@@ -4375,7 +4379,8 @@ class MediaProcessor:
         2. 修复并强化了“翻译缓存反哺”功能。
         3. 增加了在写入文件前的强制“最终格式化”步骤，确保前缀永远正确。
         """
-        logger.info(f"  ➜ 手动处理流程启动：ItemID: {item_id} ('{item_name}')")
+        logger.info(f"  ➜ 手动处理流程启动：《{item_name}》。")
+        logger.debug(f"  ➜ 手动处理对象：ItemID={item_id}")
         
         try:
             item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
@@ -4547,7 +4552,8 @@ class MediaProcessor:
                     
                     # --- B. 处理新增演员 ---
                     else:
-                        logger.info(f"    ├─ 发现新演员: '{actor_from_frontend.get('name')}' (TMDb ID: {tmdb_id_str})，开始补全元数据...")
+                        logger.info(f"    ├─ 发现新演员：{actor_from_frontend.get('name')}，开始补全元数据。")
+                        logger.debug(f"    ├─ 新演员 TMDb ID：{tmdb_id_str}")
                         person_details = all_new_actors_metadata.get(int(tmdb_id_str))
                         if not person_details:
                             person_details_from_api = tmdb.get_person_details_tmdb(tmdb_id_str, self.tmdb_api_key)
@@ -4816,7 +4822,8 @@ class MediaProcessor:
                 timestamp_sec = max(60, int(duration_sec * 0.15))
                 timestamp_sec = min(timestamp_sec, int(duration_sec - 10))
 
-            logger.info(f"  ➜ [视频截图] 截取画面 (时间点: {timestamp_sec}s, HDR: {'是' if is_hdr else '否'}, DV P5: {'是' if is_dovi_p5 else '否'}) -> {os.path.basename(thumb_save_path)}")
+            logger.info(f"  ➜ [视频截图] 准备截取缩略图：{os.path.basename(thumb_save_path)}，时间点 {timestamp_sec} 秒。")
+            logger.debug(f"  ➜ [视频截图] 截图参数：HDR={'是' if is_hdr else '否'}, DV P5={'是' if is_dovi_p5 else '否'}")
 
             # =========================================================
             # ★ 5. 构建单次极速滤镜 (终极画质 + 极速版)

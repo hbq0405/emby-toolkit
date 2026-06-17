@@ -2502,7 +2502,8 @@ class P115Service:
                         with _GLOBAL_DIR_LOCK:
                             _GLOBAL_DIR_CACHE[cache_key] = existed_cid
 
-                        logger.info(f"  ➜ [115] DB缓存未命中，但远程目录已存在，已回填缓存: {folder_name} -> {existed_cid}")
+                        logger.info(f"  ➜ [115整理] 本地目录缓存未命中，但远程目录已存在，已回填：{folder_name}")
+                        logger.debug(f"  ➜ [115整理] 回填远程目录 CID：{existed_cid}")
 
                         return {
                             "state": True,
@@ -2559,7 +2560,8 @@ class P115Service:
                                 with _GLOBAL_DIR_LOCK:
                                     _GLOBAL_DIR_CACHE[cache_key] = existed_cid
 
-                                logger.info(f"  ➜ [115] 目录已存在，已回收 CID: {folder_name} -> {existed_cid}")
+                                logger.info(f"  ➜ [115整理] 目录已存在，已复用并回收本次新建目录：{folder_name}")
+                                logger.debug(f"  ➜ [115整理] 已存在目录 CID：{existed_cid}")
 
                                 return {
                                     "state": True,
@@ -2665,7 +2667,7 @@ class P115Service:
                                 resp['data'].setdefault('total', len(pairs))
                                 resp['data'].setdefault('success_count', len(pairs))
                                 resp['data'].setdefault('failed_count', 0)
-                            logger.info(f"  ➜ [批量重命名] Cookie 批量接口成功处理 {len(pairs)} 个文件。")
+                            logger.info(f"  ➜ [批量重命名] 已通过 115 批量接口重命名 {len(pairs)} 个文件。")
                             return resp
 
                         logger.warning(
@@ -2856,7 +2858,7 @@ class P115Service:
                                     if path_name: display_name = path_name
                             except: pass
 
-                            logger.info(f"  ➜ [Cookie] 成功获取直链 -> {display_name}")
+                            logger.info(f"  ➜ [115直链] 已获取下载直链：{display_name}")
 
                             # ★ 将文件名一起存入缓存
                             _DIRECT_URL_CACHE[cache_key] = {
@@ -2899,7 +2901,7 @@ class P115Service:
                             if file_info and 'url' in file_info and 'url' in file_info['url']:
                                 direct_url = file_info['url']['url']
                                 display_name = file_info.get('file_name', pick_code)
-                                logger.info(f"  ➜ [OpenAPI] 成功获取直链 -> {display_name}")
+                                logger.info(f"  ➜ [115直链] 已通过 OpenAPI 获取下载直链：{display_name}")
                                 _DIRECT_URL_CACHE[cache_key] = {
                                     'url': direct_url,
                                     'name': display_name,
@@ -3950,7 +3952,7 @@ class P115CacheManager:
                             [preid, *update_args],
                         )
                     conn.commit()
-                logger.info(f"  ➜ [115缓存] 已计算并缓存 preid: {file_name or sha1 or pick_code} -> {preid[:12]}...")
+                logger.info(f"  ➜ [115缓存] 已缓存秒传校验片段：{file_name or sha1 or pick_code}")
             except Exception as e:
                 logger.debug(f"  ➜ [115缓存] 回写 p115_filesystem_cache.preid 失败: {e}")
         return preid
@@ -5242,7 +5244,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                     history_cid = str(row['target_cid'])
                                     # ★ 核心修复：校验记忆是否失效
                                     if _is_cid_valid_in_rules(history_cid):
-                                        logger.info(f"  ➜ [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {history_cid})")
+                                        logger.info(f"  ➜ [分季记忆体] 第 {season_num} 季曾整理到“{row['category_name']}”，本次沿用该分类。")
+                                        logger.debug(f"  ➜ [分季记忆体] 沿用历史目录：CID={history_cid}")
                                         self.is_from_memory = True # 打上记忆命中标记
                                         return history_cid
                                     else:
@@ -5263,7 +5266,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 history_cid = str(row['target_cid'])
                                 # ★ 核心修复：校验记忆是否失效
                                 if _is_cid_valid_in_rules(history_cid):
-                                    logger.info(f"  ➜ [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {history_cid})")
+                                    logger.info(f"  ➜ [记忆体] 该媒体曾整理到“{row['category_name']}”，本次沿用该分类。")
+                                    logger.debug(f"  ➜ [记忆体] 沿用历史目录：CID={history_cid}")
                                     self.is_from_memory = True # 打上记忆命中标记
                                     return history_cid
                                 else:
@@ -5275,7 +5279,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         for rule in self.rules:
             if not rule.get('enabled', True): continue
             if self._match_rule(rule):
-                logger.info(f"  ➜ [115] 命中规则: {rule.get('name')} -> 目录: {rule.get('dir_name')}")
+                logger.info(f"  ➜ [115整理] 命中规则“{rule.get('name')}”，目标目录：{rule.get('dir_name')}")
                 return rule.get('cid')
         return None
 
@@ -5609,10 +5613,10 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 if raw_probe_episode is not None:
                     episode_source = 'raw_ffprobe'
             if (raw_probe_season is not None or raw_probe_episode is not None) and not silent_log:
+                season_text = f"第 {int(raw_probe_season)} 季" if raw_probe_season is not None else "季号未知"
+                episode_text = f"第 {int(raw_probe_episode)} 集" if raw_probe_episode is not None else "集号未知"
                 logger.info(
-                    f"  ➜ [媒体信息辅助识别] 命中缓存季集号 -> "
-                    f"S{int(raw_probe_season if raw_probe_season is not None else 1):02d}"
-                    f"E{int(raw_probe_episode if raw_probe_episode is not None else 0):02d} | {original_name}"
+                    f"  ➜ [媒体信息辅助识别] 已从媒体信息识别到 {season_text}{episode_text}：{original_name}"
                 )
 
         if is_tv and (season_num is None or episode_num is None):
@@ -6025,7 +6029,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         tmdb_id = str(matched_movie['id'])
                         sub_type = 'movie'
                         sub_title = matched_movie.get('title')
-                        logger.info(f"    ├─ 官方合集匹配成功: {sub_name} -> {sub_title} (ID:{tmdb_id})")
+                        logger.info(f"    ├─ 官方合集匹配成功：{sub_name}，识别为《{sub_title}》。")
+                        logger.debug(f"    ├─ 官方合集匹配 TMDb：{tmdb_id}")
 
                 # 3. 终极兜底：无官方合集时的文件名暴力解析搜索
                 if not tmdb_id and not collection_movies:
@@ -6042,7 +6047,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 tmdb_id = str(results[0]['id'])
                                 sub_type = 'movie'
                                 sub_title = results[0].get('title') or results[0].get('name')
-                                logger.info(f"    ├─ 搜索成功: {sub_title} (ID:{tmdb_id})")
+                                logger.info(f"    ├─ 搜索成功：识别为《{sub_title}》。")
+                                logger.debug(f"    ├─ 搜索命中 TMDb：{tmdb_id}")
                         except Exception as e:
                             logger.debug(f"    ├─ 搜索出错: {e}")
                 
@@ -6067,7 +6073,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             for (tmdb_id, sub_type, sub_title), group_data in grouped_sub_items.items():
                 items = group_data.get("items") or []
                 group_hints = group_data.get("recognition_hints") or {}
-                logger.info(f"    ├─ 准备批量整理合集子项: {sub_title} -> ID:{tmdb_id} (共 {len(items)} 个文件)")
+                logger.info(f"    ├─ 准备批量整理合集子项：《{sub_title}》，共 {len(items)} 个文件。")
+                logger.debug(f"    ├─ 合集子项整理 TMDb：{tmdb_id}")
                 try:
                     organizer = SmartOrganizer(
                         self.client,
@@ -6282,7 +6289,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         
                         if results and len(results) > 0:
                             new_tmdb_id = str(results[0]['id'])
-                            logger.info(f"  ➜ [智能纠错] 成功重新搜索并纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
+                            logger.info(f"  ➜ [智能纠错] 已重新识别为剧集：《{results[0].get('name')}》。")
+                            logger.debug(f"  ➜ [智能纠错] 新 TMDb：{new_tmdb_id}")
                             self.tmdb_id = new_tmdb_id
                             self.raw_metadata = self._fetch_raw_metadata()
                             self.details = self.raw_metadata
@@ -6373,7 +6381,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 break
                 except: pass
 
-        logger.info(f"  ➜ [115] 开始整理: {root_name} -> {std_root_name}")
+        logger.info(f"  ➜ [115整理] 开始整理：{root_name}，目标目录：{std_root_name}")
 
         final_home_cid = None
         current_parent_cid = dest_parent_cid
@@ -7171,14 +7179,14 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             rejected_episodes.add((s_num, e_num))
                         continue
                     elif action == 'SKIP':
-                        logger.info(f"  ➜ [洗版跳过] {new_name} -> {reason}")
+                        logger.info(f"  ➜ [洗版跳过] {new_name}，原因：{reason}")
                         unrecognized_fids.append(item.get('fid') or item.get('file_id'))
                         # 剧集才按 S/E 记黑名单，电影不能写入 (None, None)。
                         if self.media_type == 'tv' and s_num is not None and e_num is not None:
                             rejected_episodes.add((s_num, e_num))
                         continue
                     elif action == 'REPLACE':
-                        logger.info(f"  ➜ [洗版替换] {new_name} -> {reason}")
+                        logger.info(f"  ➜ [洗版替换] {new_name}，原因：{reason}")
                         item['_washing_snapshot'] = _build_washing_snapshot(item, new_name, reason, file_size, has_ext_sub)
                         if not _register_batch_washing_candidate(item, new_name, action, reason, file_size):
                             continue
@@ -7188,7 +7196,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             fids_to_delete.update(existing_movie_vids)
                         valid_items.append(item)
                     elif action == 'ACCEPT':
-                        logger.info(f"  ➜ [洗版入库] {new_name} -> {reason}")
+                        logger.info(f"  ➜ [洗版入库] {new_name}，原因：{reason}")
                         item['_washing_snapshot'] = _build_washing_snapshot(item, new_name, reason, file_size, has_ext_sub)
                         if not _register_batch_washing_candidate(item, new_name, action, reason, file_size):
                             continue
@@ -7367,7 +7375,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 display_target = std_root_name
                 if valid_items and valid_items[0].get('_s_name'):
                     display_target = f"{std_root_name} - {valid_items[0]['_s_name']}"
-                logger.info(f"  ➜ [批量移动] 成功将 {len(move_fids)} 个文件移动至 -> {display_target}")
+                logger.info(f"  ➜ [批量移动] 已将 {len(move_fids)} 个文件移动到：{display_target}")
                 
                 # -----------------------------------------------------------
                 # ★ 4. 执行重命名
@@ -7417,9 +7425,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
                     if success_count > 0:
                         if mode == 'cookie_batch':
-                            logger.info(f"  ➜ [批量重命名] 成功批量重命名 {success_count}/{len(rename_items)} 个文件。")
+                            logger.info(f"  ➜ [批量重命名] 重命名完成：成功 {success_count} 个，共 {len(rename_items)} 个。")
                         else:
-                            logger.info(f"  ➜ [逐条重命名] 成功重命名 {success_count}/{len(rename_items)} 个文件。")
+                            logger.info(f"  ➜ [逐条重命名] 重命名完成：成功 {success_count} 个，共 {len(rename_items)} 个。")
 
                     for x in rename_items:
                         fail_res = failures.get(x['fid'])
@@ -7563,7 +7571,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 
                                 with open(strm_filepath, 'w', encoding='utf-8') as f:
                                     f.write(strm_content)
-                                logger.info(f"  ➜ STRM 已生成 -> {strm_filename}")
+                                logger.info(f"  ➜ 已生成 STRM：{strm_filename}")
                                 
                                 try:
                                     from monitor_service import enqueue_file_actively
@@ -7585,7 +7593,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                         if mediainfo_text:
                                             with open(mediainfo_filepath, 'w', encoding='utf-8') as f:
                                                 f.write(mediainfo_text)
-                                            logger.info(f"  ➜ 媒体信息文件已生成 -> {mediainfo_filename}")
+                                            logger.info(f"  ➜ 已生成媒体信息文件：{mediainfo_filename}")
                                         else:
                                             logger.debug(f"  ➜ 跳过媒体信息文件生成，未命中本地缓存: {new_filename}")
                                     except Exception as e:
@@ -7851,7 +7859,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
                 with open(strm_filepath, "w", encoding="utf-8") as f:
                     f.write(strm_content)
-                logger.info(f"  ➜ [MP直出] STRM 已生成 -> {strm_filename}")
+                logger.info(f"  ➜ [MP直出] 已生成 STRM：{strm_filename}")
 
                 # ★★★ 主动推送给实时监控队列，防止底层文件系统事件丢失 ★★★
                 try:
@@ -7889,7 +7897,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             mediainfo_filepath = os.path.join(local_dir, mediainfo_filename)
                             with open(mediainfo_filepath, "w", encoding="utf-8") as f:
                                 f.write(mediainfo_text)
-                            logger.info(f"  ➜ [MP直出] 媒体信息已生成 -> {mediainfo_filename}")
+                            logger.info(f"  ➜ [MP直出] 已生成媒体信息文件：{mediainfo_filename}")
                     except Exception as e:
                         logger.error(f"  ➜ [MP直出] 生成媒体信息失败: {e}")
 
@@ -7907,7 +7915,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             with open(sub_filepath, "wb") as f:
                                 for chunk in resp.iter_content(chunk_size=8192):
                                     f.write(chunk)
-                            logger.info(f"  ➜ [MP直出] 字幕下载完成 -> {original_name}")
+                            logger.info(f"  ➜ [MP直出] 字幕已下载：{original_name}")
                 except Exception as e:
                     logger.error(f"  ➜ [MP直出] 下载字幕失败: {e}")
 
@@ -8424,16 +8432,18 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             else:
                 media_type = probe_type
                 official_title = _fetch_title_by_id(tmdb_id, media_type)
-                se_text = ''
+                probe_type_text = '剧集' if probe_type == 'tv' else '电影' if probe_type == 'movie' else str(probe_type or '未知类型')
+                se_parts = []
                 if probe_identity.get('season_number') not in (None, ''):
-                    se_text += f", S{int(probe_identity.get('season_number')):02d}"
+                    se_parts.append(f"第 {int(probe_identity.get('season_number'))} 季")
                 if probe_identity.get('episode_number') not in (None, ''):
-                    se_text += f"E{int(probe_identity.get('episode_number')):02d}"
+                    se_parts.append(f"第 {int(probe_identity.get('episode_number'))} 集")
+                se_text = "，" + "".join(se_parts) if se_parts else ""
                 logger.info(
-                    f"  ➜ [媒体信息辅助识别] 命中共享媒体信息缓存: "
-                    f"TMDb:{tmdb_id}, type:{media_type}{se_text}"
-                    f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
+                    f"  ➜ [媒体信息辅助识别] 命中共享媒体信息缓存：TMDb {tmdb_id}，类型：{probe_type_text}{se_text}"
                 )
+                if probe_identity.get('original_language'):
+                    logger.debug(f"  ➜ [媒体信息辅助识别] 原始语言：{probe_identity.get('original_language')}")
                 return tmdb_id, media_type, official_title or filename
 
     if normalized_hints.get('tmdb_id') and normalized_hints.get('confidence') == 'high':
@@ -8615,7 +8625,8 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             )
             
             if mp_res:
-                logger.info(f"  ➜ [MP辅助识别] 成功命中: {mp_res[2]} (ID:{mp_res[0]})")
+                logger.info(f"  ➜ [MP辅助识别] 已识别为《{mp_res[2]}》。")
+                logger.debug(f"  ➜ [MP辅助识别] 命中详情：TMDb={mp_res[0]}")
                 _MP_PARSE_CACHE[target_name] = mp_res
                 return mp_res
             
@@ -9129,13 +9140,14 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         if details: title = details.get('title') or details.get('name') or title
     except: pass
 
-    logger.info(f"  ➜ [批量重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
+    logger.info(f"  ➜ [批量重组] 开始定向整理《{title}》，共 {len(root_items)} 个文件。")
+    logger.debug(f"  ➜ [批量重组] 定向整理详情：TMDb={tmdb_id}")
 
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     organizer.is_manual_correct = True
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)
-        logger.info(f"  ➜ [批量重组] 已强制指定季号: Season {organizer.forced_season}")
+        logger.info(f"  ➜ [批量重组] 已指定整理到第 {organizer.forced_season} 季。")
 
     # ★ 核心：将列表直接传给 execute，底层会自动打包成一次 115 API 移动请求！
     success = organizer.execute(root_items, target_cid)
@@ -9158,7 +9170,8 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                 reason=f'手动重组修复 RAW {dirty_count} 个共享记录',
                 delay=8.0,
             )
-            logger.info(f"  ➜ [批量重组] 共享 RAW 覆盖上传触发结果: {kick}")
+            logger.info(f"  ➜ [批量重组] 已触发 {dirty_count} 条共享媒体信息重传。")
+            logger.debug(f"  ➜ [批量重组] 共享媒体信息重传触发结果：{kick}")
     except Exception as e:
         logger.debug(f"  ➜ [批量重组] 标记共享 RAW 重传失败: {e}")
 

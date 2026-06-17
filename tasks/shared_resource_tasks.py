@@ -524,7 +524,7 @@ def _ensure_file_preid(file_info: Dict[str, Any]) -> str:
         if chunk:
             preid = hashlib.sha1(chunk).hexdigest().upper()
             _save_preid_to_p115_cache(file_info, preid)
-            logger.info(f"  ➜ [共享资源] 已计算并缓存 preid: {file_info.get('file_name') or file_info.get('name') or file_info.get('sha1')} -> {preid[:12]}...")
+            logger.info(f"  ➜ [共享资源] 已缓存秒传校验片段：{file_info.get('file_name') or file_info.get('name') or file_info.get('sha1')}")
     if preid:
         file_info['preid'] = preid
         meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
@@ -1629,7 +1629,11 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         })
         if ack and event_id:
             client.ack_device_events([event_id], result='ok' if reported else 'failed', message=message[:500])
-        logger.info(f"  ➜ [共享资源] 复用已有逻辑季文件列表分享：{title}，channel={channel_id}，existing={existing_share.get('channel_id')}")
+        logger.info(f"  ➜ [共享资源] 复用已有 115 文件列表分享：《{title}》。")
+        logger.debug(
+            f"  ➜ [共享资源] 复用文件列表分享详情：channel={channel_id}, "
+            f"existing={existing_share.get('channel_id')}"
+        )
         return {
             'ok': bool(reported),
             'event_id': event_id,
@@ -1670,7 +1674,8 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         p115 = P115Service.get_client()
         if not p115:
             raise RuntimeError('115 客户端未初始化')
-        logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：{title}，items={len(share_ids)}，channel={channel_id}")
+        logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：《{title}》，共 {len(share_ids)} 个文件。")
+        logger.debug(f"  ➜ [共享资源] 文件列表分享通道：{channel_id}")
         create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
     except Exception as e:
         failure_status = _logical_share_provider_forbidden_status(str(e))
@@ -1780,7 +1785,14 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
 
     if ack and event_id:
         client.ack_device_events([event_id], result='ok' if reported else 'failed', message=(report_payload['status_message'] or '')[:500])
-    logger.info(f"  ➜ [共享资源] 创建文件列表分享完成：{title}，status={report_payload['status']}，channel={channel_id}")
+    status_text = {
+        'valid': '已生效',
+        'pending_review': '等待 115 审核',
+        'review_failed': '审核未通过',
+        'failed': '创建失败',
+    }.get(report_payload['status'], report_payload['status'] or '状态未知')
+    logger.info(f"  ➜ [共享资源] 115 文件列表分享已创建：《{title}》，状态：{status_text}。")
+    logger.debug(f"  ➜ [共享资源] 文件列表分享上报详情：status={report_payload['status']}, channel={channel_id}")
     return {
         'ok': bool(reported),
         'event_id': event_id,
@@ -4319,7 +4331,8 @@ def _disable_local_episode_sources_for_completed_season(parent_series_tmdb_id: s
             logger.debug(f"  ➜ [共享资源] 本地停用单集源失败: id={row.get('id')}, err={e}")
 
     if disabled:
-        logger.info(f"  ➜ [共享资源] 完结季包已可用，已停用同季单集源: tmdb={parent}, S{season_no:02d}, count={disabled}")
+        logger.info(f"  ➜ [共享资源] 完结季包已可用，已停用第 {season_no} 季的 {disabled} 个单集共享源。")
+        logger.debug(f"  ➜ [共享资源] 停用单集源详情：tmdb={parent}, season={season_no}, count={disabled}")
     return disabled
 
 

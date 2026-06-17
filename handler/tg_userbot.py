@@ -38,6 +38,7 @@ class TGUserBotManager:
         self.thread = None
         self.is_running = False
         self.session_path = os.path.join(config_manager.PERSISTENT_DATA_PATH, 'tg_userbot.session')
+        self.session_journal_path = self.session_path + '-journal'
         self.phone_code_hash = None
 
     @classmethod
@@ -907,6 +908,20 @@ class TGUserBotManager:
             asyncio.run_coroutine_threadsafe(_logout(), self.loop).result(timeout=5)
         if os.path.exists(self.session_path):
             os.remove(self.session_path)
+
+    def clear_session_files(self):
+        """停止 UserBot 并删除本地 Telegram 登录会话文件。"""
+        self.stop()
+        deleted = []
+        missing = []
+        for path in (self.session_path, self.session_journal_path):
+            name = os.path.basename(path)
+            if os.path.exists(path):
+                os.remove(path)
+                deleted.append(name)
+            else:
+                missing.append(name)
+        return {"deleted": deleted, "missing": missing}
 
 
 # =================================================================

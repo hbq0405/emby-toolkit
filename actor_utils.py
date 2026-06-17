@@ -178,7 +178,7 @@ def evaluate_cast_processing_quality(
             logger.debug(f"  ➜ 惩罚: 数量正常，不进行惩罚。")
     
     final_score_rounded = round(avg_score, 1)
-    logger.info(f"  ➜ 最终评分: {final_score_rounded:.1f} ---")
+    logger.info(f"  ➜ 演员表质量评分：{final_score_rounded:.1f} 分。")
     return final_score_rounded
 
 # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
@@ -517,7 +517,11 @@ def enrich_all_actor_aliases_task(
 
                                         target_tmdb_id = target_actor['tmdb_person_id']
                                         source_tmdb_id = source_actor['tmdb_person_id']
-                                        logger.info(f"  ➜ 准备合并：源(tmdb:{source_tmdb_id}) -> 目标(tmdb:{target_tmdb_id}, imdb:{imdb_id})")
+                                        logger.info("  ➜ 准备合并演员记录。")
+                                        logger.debug(
+                                            f"  ➜ 演员合并详情：源 TMDb={source_tmdb_id}, "
+                                            f"目标 TMDb={target_tmdb_id}, IMDb={imdb_id}"
+                                        )
 
                                         # --- 定义一个可重用的、安全的ID合并函数 ---
                                         def safe_merge_id(id_field_name: str, id_value: Any, target_id: int):
