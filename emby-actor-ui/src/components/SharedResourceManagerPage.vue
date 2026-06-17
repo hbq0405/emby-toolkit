@@ -428,7 +428,6 @@
                 <n-button
                   size="small"
                   type="primary"
-                  secondary
                   round
                   :loading="importingMap[version.source_id] === 'permanent'"
                   :disabled="centerVersionActionDisabled(version) || isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
@@ -3423,16 +3422,16 @@ const centerVersionTags = (row) => {
   // 共享池完整 / 候选 / 资产 / 可建分享属于中心端调试信息，不在用户前端展示。
 
   // 3. 基础参数
-  centerTagPush(tags, formatCenterSize(row), 'default', 'size');
+  centerTagPush(tags, formatCenterSize(row), 'info', 'size'); // 改为 info
   centerTagPush(tags, summary.resolution, 'success', 'resolution');
   centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
-  centerTagPush(tags, codec, 'default', 'codec');
+  centerTagPush(tags, codec, 'info', 'codec'); // 改为 info
   
-  // 4. 彻底修复 FPS 叠词 (暴力剔除原有的 fps 字母，统一在最后加一个)
+  // 4. 彻底修复 FPS 叠词
   if (summary.fps) {
     const cleanFps = String(summary.fps).replace(/fps/ig, '').trim();
-    if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'default', 'fps');
+    if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'info', 'fps'); // 改为 info
   }
   
   // 5. 其他标签
@@ -5085,22 +5084,6 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
-.center-version-action :deep(.n-button) {
-  min-width: 56px;
-  font-weight: 700;
-  --n-color: var(--n-primary-color) !important;
-  --n-color-hover: var(--n-primary-color-hover) !important;
-  --n-color-pressed: var(--n-primary-color-pressed) !important;
-  --n-color-focus: var(--n-primary-color-hover) !important;
-  --n-border: 1px solid var(--n-primary-color) !important;
-  --n-border-hover: 1px solid var(--n-primary-color-hover) !important;
-  --n-border-pressed: 1px solid var(--n-primary-color-pressed) !important;
-  --n-border-focus: 1px solid var(--n-primary-color-hover) !important;
-  --n-text-color: var(--n-text-color-primary) !important;
-  --n-text-color-hover: var(--n-text-color-primary) !important;
-  --n-text-color-pressed: var(--n-text-color-primary) !important;
-  --n-text-color-focus: var(--n-text-color-primary) !important;
-}
 .center-version-detail-card-expandable { cursor: pointer; }
 .center-version-detail-card-expandable:hover {
   border-color: var(--n-primary-color, var(--accent-color, var(--center-detail-border)));
@@ -5263,7 +5246,7 @@ onUnmounted(() => {
 .detail-person-name {
   font-size: 12px;
   font-weight: 700;
-  color: var(--center-detail-title-color);
+  color: var(--center-detail-text-color); /* 改为 text-color */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
