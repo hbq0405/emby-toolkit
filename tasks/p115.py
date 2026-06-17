@@ -1193,6 +1193,199 @@ def task_full_sync_strm_and_subs(processor=None):
 
             return None
 
+        def process_full_sync_items(items, target_cid, category_name):
+            nonlocal files_generated, subs_downloaded
+            for item in items:
+                # 兼容 OpenAPI、Cookie 和 p115client 标准化字段
+                name = item.get('fn') or item.get('n') or item.get('file_name') or item.get('name', '')
+                ext = name.split('.')[-1].lower() if '.' in name else ''
+                if ext not in allowed_exts:
+                    continue
+
+                pc = item.get('pc') or item.get('pick_code') or item.get('pickcode')
+                # 115 返回的文件数据中，pid/cid/parent_id 代表它所在的父目录 ID
+                pid = item.get('pid') or item.get('cid') or item.get('parent_id')
+                if not pc or not pid:
+                    continue
+
+                rel_dir = item.get('_etk_rel_dir') or resolve_local_dir(pid, target_cid)
+                if not rel_dir:
+                    logger.warning(f"  ➜ 彻底无法推导路径，跳过文件: {name} (pid: {pid})")
+                    continue
+
+                current_local_path = os.path.join(local_root, rel_dir)
+                os.makedirs(current_local_path, exist_ok=True)
+
+                # 处理视频 STRM
+                if ext in known_video_exts:
+                    raw_size = item.get('fs') or item.get('size')
+                    file_size = _parse_115_size(raw_size)
+                    safe_file_size = int(file_size) if str(file_size).isdigit() else 0
+
+                    if 0 < safe_file_size < MIN_VIDEO_SIZE:
+                        size_mb = safe_file_size / (1024 * 1024)
+                        logger.debug(f"  ➜ [全量同步] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，跳过生成 STRM: {name}")
+                        continue
+                    strm_name = os.path.splitext(name)[0] + ".strm"
+                    strm_path = os.path.join(current_local_path, strm_name)
+
+                    # 动态计算 STRM 内容 (支持挂载模式与直链模式)
+                    if not etk_url.startswith('http'):
+                        mount_prefix = etk_url
+                        mount_path = os.path.join(mount_prefix, rel_dir, name)
+                        content = mount_path.replace('\\', '/')
+                    else:
+                        content = f"{etk_url}/api/p115/play/{pc}"
+                        if rename_config.get('strm_url_fmt') == 'with_name':
+                            content = f"{content}/{name}"
+
+                    need_write = True
+                    if os.path.exists(strm_path):
+                        try:
+                            with open(strm_path, 'r', encoding='utf-8') as f:
+                                old_content = f.read().strip()
+                                if old_content == content:
+                                    need_write = False
+                                else:
+                                    logger.debug(f"  ➜ [更新] 内容不一致触发覆盖 -> 旧: [{old_content}] | 新: [{content}]")
+                        except Exception:
+                            pass
+
+                    if need_write:
+                        with open(strm_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        if not os.path.exists(strm_path):
+                            logger.debug(f"  ➜ [新增] 生成 STRM: {strm_name}")
+                        files_generated += 1
+
+                    valid_local_files.add(os.path.abspath(strm_path))
+
+                    fid = item.get('fid') or item.get('file_id') or item.get('id')
+                    sha1 = item.get('sha1') or item.get('sha')
+
+                    # 生成 Mediainfo (等同 MP 直出逻辑)
+                    if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
+                        mediainfo_filename = os.path.splitext(name)[0] + "-mediainfo.json"
+                        mediainfo_filepath = os.path.join(current_local_path, mediainfo_filename)
+
+                        if need_write or not os.path.exists(mediainfo_filepath):
+                            try:
+                                mediainfo_text = None
+                                if sha1:
+                                    mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
+
+                                if not mediainfo_text:
+                                    prober = _StandaloneProber(client)
+                                    probe_item = {'fid': fid, 'pc': pc, 'sha1': sha1, 'fn': name, 'fs': raw_size}
+                                    mediainfo_obj = prober._probe_mediainfo_with_ffprobe(probe_item, sha1=sha1, silent_log=True)
+                                    if mediainfo_obj:
+                                        probe_sha1 = sha1 or probe_item.get('sha1')
+                                        if probe_sha1:
+                                            probe_sha1 = str(probe_sha1).upper()
+                                            P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
+                                            sha1 = probe_sha1
+                                        mediainfo_text = json.dumps(mediainfo_obj, ensure_ascii=False, indent=2)
+
+                                if mediainfo_text:
+                                    with open(mediainfo_filepath, "w", encoding="utf-8") as f:
+                                        f.write(mediainfo_text)
+                                    logger.info(f"  ➜ [全量同步] 媒体信息已生成 -> {mediainfo_filename}")
+                            except Exception as e:
+                                logger.error(f"  ➜ [全量同步] 生成媒体信息失败: {e}")
+
+                        if os.path.exists(mediainfo_filepath):
+                            valid_local_files.add(os.path.abspath(mediainfo_filepath))
+
+                    # 写入本地数据库缓存 (p115_filesystem_cache)
+                    if pc and fid:
+                        file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
+                        P115CacheManager.save_file_cache(
+                            fid=fid, parent_id=pid, name=name,
+                            sha1=sha1, pick_code=pc,
+                            local_path=file_local_path, size=file_size
+                        )
+
+                # 处理字幕下载
+                elif ext in known_sub_exts and download_subs:
+                    sub_path = os.path.join(current_local_path, name)
+                    if not os.path.exists(sub_path):
+                        try:
+                            import requests
+                            url_obj = client.download_url(pc, user_agent="Mozilla/5.0")
+                            if url_obj:
+                                headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
+                                resp = requests.get(str(url_obj), stream=True, timeout=15, headers=headers)
+                                resp.raise_for_status()
+                                with open(sub_path, 'wb') as f:
+                                    for chunk in resp.iter_content(8192):
+                                        f.write(chunk)
+                                logger.info(f"  ⬇️ [增量] 下载字幕: {name}")
+                                subs_downloaded += 1
+                        except Exception as e:
+                            logger.error(f"  ➜ 下载字幕失败 [{name}]: {e}")
+
+                    valid_local_files.add(os.path.abspath(sub_path))
+
+        def fetch_cookie_fast_items(target_cid, category_name, progress):
+            raw_p115_client = getattr(client, 'raw_client', None)
+            if raw_p115_client is None and hasattr(client, 'native_client'):
+                raw_p115_client = client.native_client()
+            if not raw_p115_client:
+                return None
+
+            try:
+                from p115client.tool.iterdir import iter_files_with_path_skim
+            except Exception as e:
+                logger.debug(f"  ➜ Cookie 极速遍历组件不可用，改用 OpenAPI 拉取：{e}")
+                return None
+
+            try:
+                update_progress(progress, f"  ➜ 正在使用 Cookie 极速遍历分类 [{category_name}] ...")
+                iterator = iter_files_with_path_skim(
+                    raw_p115_client,
+                    int(target_cid),
+                    with_ancestors=True,
+                    max_workers=2,
+                )
+
+                items = []
+                for info in iterator:
+                    if processor and getattr(processor, 'is_stop_requested', lambda: False)():
+                        return []
+                    fid = info.get('fid') or info.get('file_id') or info.get('id')
+                    is_dir = info.get('is_dir') or info.get('ico') == 'folder' or str(info.get('fc', '')) == '0'
+                    if not fid or is_dir:
+                        continue
+
+                    ancestors = info.get('ancestors') or info.get('paths') or info.get('path')
+                    if isinstance(ancestors, (list, tuple)):
+                        start_idx = -1
+                        for i, anc in enumerate(ancestors):
+                            if isinstance(anc, dict):
+                                anc_id = str(anc.get('id') or anc.get('cid') or anc.get('file_id') or anc.get('parent_id') or '')
+                                if anc_id == str(target_cid):
+                                    start_idx = i + 1
+                                    break
+                        if start_idx != -1:
+                            sub_folders = []
+                            for anc in ancestors[start_idx:-1]:
+                                if isinstance(anc, dict):
+                                    n = anc.get('name') or anc.get('file_name') or anc.get('fn')
+                                    if n:
+                                        sub_folders.append(str(n).strip())
+                            info['_etk_rel_dir'] = os.path.join(category_name, *sub_folders) if sub_folders else category_name
+
+                    items.append(info)
+
+                return items
+            except Exception as e:
+                text = str(e)
+                if '405' in text or '403' in text or 'Method Not Allowed' in text:
+                    logger.warning("  ➜ Cookie 极速遍历被 115 拒绝，自动改用 OpenAPI 慢速拉取。")
+                else:
+                    logger.warning(f"  ➜ Cookie 极速遍历失败，自动改用 OpenAPI 慢速拉取：{e}")
+                return None
+
         # =================================================================
         # 阶段 2: 分类目录级全局拉取 (耗时: 秒级/分钟级)
         # =================================================================
@@ -1209,7 +1402,17 @@ def task_full_sync_strm_and_subs(processor=None):
         for idx, target_cid in enumerate(target_cids):
             category_name = cid_to_rel_path.get(target_cid, "未知分类")
             base_prog = 10 + int((idx / total_targets) * 80)
-            update_progress(base_prog, f"  ➜ 正在全局拉取分类 [{category_name}] 下的所有文件...")
+            fast_items = fetch_cookie_fast_items(target_cid, category_name, base_prog)
+            if processor and getattr(processor, 'is_stop_requested', lambda: False)():
+                return
+            if fast_items:
+                update_progress(base_prog, f"  ➜ [{category_name}] Cookie 极速遍历完成：{len(fast_items)} 个文件")
+                process_full_sync_items(fast_items, target_cid, category_name)
+                continue
+            if fast_items == []:
+                logger.warning(f"  ➜ [{category_name}] Cookie 极速遍历没有返回文件，改用 OpenAPI 复查。")
+
+            update_progress(base_prog, f"  ➜ 正在使用 OpenAPI 拉取分类 [{category_name}] 下的所有文件...")
             
             for f_type in fetch_types:
                 type_name = "视频" if f_type == 4 else "文档/字幕"
@@ -1231,143 +1434,7 @@ def task_full_sync_strm_and_subs(processor=None):
                         if not data: break
                         
                         logger.info(f"  ➜ [{category_name}] - [{type_name}] 获取第 {page} 页 ({len(data)} 个文件)...")
-                        
-                        for item in data:
-                            # 兼容 OpenAPI 键名
-                            name = item.get('fn') or item.get('n') or item.get('file_name', '')
-                            ext = name.split('.')[-1].lower() if '.' in name else ''
-                            if ext not in allowed_exts: continue
-                            
-                            pc = item.get('pc') or item.get('pick_code')
-                            # 115 返回的文件数据中，pid/cid 代表它所在的父目录 ID
-                            pid = item.get('pid') or item.get('cid') or item.get('parent_id')
-                            if not pc or not pid: continue
-                            
-                            # ★ 瞬间推导本地路径 (使用终极修复版函数)
-                            rel_dir = resolve_local_dir(pid, target_cid)
-                                
-                            if not rel_dir: 
-                                logger.warning(f"  ➜ 彻底无法推导路径，跳过文件: {name} (pid: {pid})")
-                                continue 
-                                
-                            current_local_path = os.path.join(local_root, rel_dir)
-                            os.makedirs(current_local_path, exist_ok=True)
-                            
-                            # 处理视频 STRM
-                            if ext in known_video_exts:
-                                raw_size = item.get('fs') or item.get('size')
-                                file_size = _parse_115_size(raw_size)
-                                safe_file_size = int(file_size) if str(file_size).isdigit() else 0
-                                
-                                if 0 < safe_file_size < MIN_VIDEO_SIZE:
-                                    size_mb = safe_file_size / (1024 * 1024)
-                                    logger.debug(f"  ➜ [全量同步] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，跳过生成 STRM: {name}")
-                                    continue # 直接跳过当前文件，不生成 STRM 也不写缓存
-                                strm_name = os.path.splitext(name)[0] + ".strm"
-                                strm_path = os.path.join(current_local_path, strm_name)
-                                
-                                # ==================================================
-                                # ★ 动态计算 STRM 内容 (支持挂载模式与直链模式)
-                                # ==================================================
-                                if not etk_url.startswith('http'):
-                                    # 挂载模式
-                                    mount_prefix = etk_url
-                                    mount_path = os.path.join(mount_prefix, rel_dir, name)
-                                    content = mount_path.replace('\\', '/')
-                                else:
-                                    # 默认的 ETK 302 直链模式
-                                    content = f"{etk_url}/api/p115/play/{pc}"
-                                    if rename_config.get('strm_url_fmt') == 'with_name':
-                                        content = f"{content}/{name}"
-                                
-                                need_write = True
-                                if os.path.exists(strm_path):
-                                    try:
-                                        with open(strm_path, 'r', encoding='utf-8') as f:
-                                            old_content = f.read().strip()
-                                            if old_content == content: 
-                                                need_write = False
-                                            else:
-                                                logger.debug(f"  ➜ [更新] 内容不一致触发覆盖 -> 旧: [{old_content}] | 新: [{content}]")
-                                    except Exception as e: pass
-                                            
-                                if need_write:
-                                    with open(strm_path, 'w', encoding='utf-8') as f: f.write(content)
-                                    if not os.path.exists(strm_path):
-                                        logger.debug(f"  ➜ [新增] 生成 STRM: {strm_name}")
-                                    files_generated += 1
-                                    
-                                valid_local_files.add(os.path.abspath(strm_path))
-                                
-                                fid = item.get('fid') or item.get('file_id')
-                                sha1 = item.get('sha1') or item.get('sha')
-                                
-                                # ==================================================
-                                # ★ 生成 Mediainfo (等同 MP 直出逻辑)
-                                # ==================================================
-                                if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
-                                    mediainfo_filename = os.path.splitext(name)[0] + "-mediainfo.json"
-                                    mediainfo_filepath = os.path.join(current_local_path, mediainfo_filename)
-                                    
-                                    if need_write or not os.path.exists(mediainfo_filepath):
-                                        try:
-                                            mediainfo_text = None
-                                            if sha1:
-                                                mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
-
-                                            if not mediainfo_text:
-                                                prober = _StandaloneProber(client)
-                                                probe_item = {'fid': fid, 'pc': pc, 'sha1': sha1, 'fn': name, 'fs': raw_size}
-                                                mediainfo_obj = prober._probe_mediainfo_with_ffprobe(probe_item, sha1=sha1, silent_log=True)
-                                                if mediainfo_obj:
-                                                    probe_sha1 = sha1 or probe_item.get('sha1')
-                                                    if probe_sha1:
-                                                        probe_sha1 = str(probe_sha1).upper()
-                                                        P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
-                                                        sha1 = probe_sha1
-                                                    mediainfo_text = json.dumps(mediainfo_obj, ensure_ascii=False, indent=2)
-
-                                            if mediainfo_text:
-                                                with open(mediainfo_filepath, "w", encoding="utf-8") as f:
-                                                    f.write(mediainfo_text)
-                                                logger.info(f"  ➜ [全量同步] 媒体信息已生成 -> {mediainfo_filename}")
-                                        except Exception as e:
-                                            logger.error(f"  ➜ [全量同步] 生成媒体信息失败: {e}")
-                                            
-                                    # 无论是否刚刚生成，只要开启了开关，就加入有效名单防止被删
-                                    if os.path.exists(mediainfo_filepath):
-                                        valid_local_files.add(os.path.abspath(mediainfo_filepath))
-
-                                # ==================================================
-                                # ★ 写入本地数据库缓存 (p115_filesystem_cache)
-                                # ==================================================
-                                if pc and fid:
-                                    file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
-                                    P115CacheManager.save_file_cache(
-                                        fid=fid, parent_id=pid, name=name, 
-                                        sha1=sha1, pick_code=pc, 
-                                        local_path=file_local_path, size=file_size 
-                                    )
-                                    
-                            # 处理字幕下载
-                            elif ext in known_sub_exts and download_subs:
-                                sub_path = os.path.join(current_local_path, name)
-                                if not os.path.exists(sub_path):
-                                    try:
-                                        import requests
-                                        url_obj = client.download_url(pc, user_agent="Mozilla/5.0")
-                                        if url_obj:
-                                            headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
-                                            resp = requests.get(str(url_obj), stream=True, timeout=15, headers=headers)
-                                            resp.raise_for_status()
-                                            with open(sub_path, 'wb') as f:
-                                                for chunk in resp.iter_content(8192): f.write(chunk)
-                                            logger.info(f"  ⬇️ [增量] 下载字幕: {name}")
-                                            subs_downloaded += 1
-                                    except Exception as e:
-                                        logger.error(f"  ➜ 下载字幕失败 [{name}]: {e}")
-                                        
-                                valid_local_files.add(os.path.abspath(sub_path))
+                        process_full_sync_items(data, target_cid, category_name)
 
                         if len(data) < limit: break
                         offset += limit
