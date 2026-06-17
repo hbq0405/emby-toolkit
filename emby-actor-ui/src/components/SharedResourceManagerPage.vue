@@ -451,8 +451,8 @@
 import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import axios from 'axios';
 import {
-  NAlert, NButton, NCard, NCheckbox, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputGroup, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
+  NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
+  NInputGroup, NModal, NSelect, NSpace, NSpin, NSwitch,
   NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
 import {
@@ -460,10 +460,6 @@ import {
   SearchOutline as SearchIcon,
   SyncOutline as SyncIcon,
   SettingsOutline as SettingsIcon,
-  FolderOpenOutline as FolderIcon,
-  ArrowBackOutline as ArrowBackIcon,
-  TrashOutline as TrashIcon,
-  CloudUploadOutline as PromoteIcon,
   ShareSocialOutline as ShareIcon,
   CloseCircleOutline as CancelIcon
 } from '@vicons/ionicons5';
@@ -1692,57 +1688,43 @@ const centerTitleText = (row) => {
 };
 const centerSeriesSeasonRows = (row) => Array.isArray(row?.seasons) ? row.seasons.filter(x => x && typeof x === 'object') : [];
 const centerSeasonIsSpecialNumber = (row) => centerSeasonTabNumber(row) === 0;
-const centerSeasonRowIsOngoing = (row) => {
+const centerStatusText = (row) => String(
+  row?.season_status_label
+  || row?.display_status_label
+  || row?.status_label
+  || ''
+).trim();
+const centerStatusCode = (row) => String(
+  row?.season_status
+  || row?.display_status
+  || row?.watching_status
+  || ''
+).trim().toLowerCase();
+const centerIsCompletedByServer = (row) => {
   if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
-  const current = Number(row.progress_current || row.episode_available || row.file_count || 0);
-  const total = Number(row.progress_total || row.episode_total || row.expected_episode_count || 0);
-  if (total > 0 && current >= total) return false;
-  const kind = String(row.source_kind || row.lazy_children_kind || '').trim().toLowerCase();
-  const status = String(row.season_status || '').trim().toLowerCase();
-  return Boolean(row.is_ongoing_hub || kind === 'season_hub' || status === 'ongoing');
+  const label = centerStatusText(row);
+  const code = centerStatusCode(row);
+  return Boolean(
+    row.is_completed
+    || row.is_completed_certified
+    || code === 'completed'
+    || code === 'ended'
+    || /已完结|完结|一致版/.test(label)
+  );
 };
-const centerSeriesHasOngoingSeason = (row) => centerIsSeriesGroup(row) && centerSeriesSeasonRows(row).some(centerSeasonRowIsOngoing);
 const centerIsOngoingHub = (row) => {
   if (!row || typeof row !== 'object' || centerIsSpecialSeason(row)) return false;
-  if (centerSeriesHasOngoingSeason(row)) return true;
-  return Boolean(row?.is_ongoing_hub || row?.source_kind === 'season_hub' || row?.season_status === 'ongoing');
-};
-const centerSeasonRowIsCompleted = (row) => {
-  if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
-  const kind = String(row.source_kind || row.lazy_children_kind || '').trim().toLowerCase();
-  const status = String(row.status || '').trim().toLowerCase();
-  const seasonStatus = String(row.season_status || '').trim().toLowerCase();
-  const current = Number(row.progress_current || row.episode_available || row.file_count || 0);
-  const total = Number(row.progress_total || row.episode_total || row.expected_episode_count || 0);
+  if (centerIsCompletedByServer(row)) return false;
+  const label = centerStatusText(row);
+  const code = centerStatusCode(row);
   return Boolean(
-    (kind === 'logical_season' && (row.pool_complete || row.logical_pool_complete || status === 'pool_complete'))
-    || (total > 0 && current >= total)
-    || row.is_completed_certified
-    || row.is_completed
-    || seasonStatus === 'completed'
+    row.is_ongoing_series
+    || row.is_ongoing_hub
+    || code === 'ongoing'
+    || code === 'airing'
+    || /连载中|更新中|未完结/.test(label)
   );
 };
-const centerSeasonRowIsCertified = (row) => {
-  if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
-  const meta = row.completed_certified_meta_json || row.completed_certified_meta || {};
-  return Boolean(
-    centerIsCompletedCertifiedSource(row)
-    || row.is_completed_certified
-    || (meta && typeof meta === 'object' && meta.is_completed_certified)
-  );
-};
-const centerSeriesAllRegularSeasonsCompleted = (row) => {
-  if (!centerIsSeriesGroup(row)) return false;
-  const regular = centerSeriesSeasonRows(row).filter(item => !centerSeasonIsSpecialNumber(item));
-  return regular.length > 0 && regular.every(centerSeasonRowIsCompleted);
-};
-const centerSeriesAllRegularSeasonsCertified = (row) => {
-  if (!centerIsSeriesGroup(row)) return false;
-  const regular = centerSeriesSeasonRows(row).filter(item => !centerSeasonIsSpecialNumber(item));
-  return regular.length > 0 && regular.every(centerSeasonRowIsCertified);
-};
-const centerLogicalPoolComplete = (row) => Boolean(row?.pool_complete || row?.logical_pool_complete || String(row?.status || '').trim().toLowerCase() === 'pool_complete');
-const centerIsCompletedCertifiedSource = (row) => Boolean((row?.source_kind === 'logical_season' && centerLogicalPoolComplete(row)) || centerLogicalPoolComplete(row) || row?.is_completed_certified);
 const centerProgressText = (row) => {
   if (row?.progress_text) return String(row.progress_text);
   const current = Number(row?.progress_current || row?.pack_item_count || row?.file_count || 0);
@@ -1780,22 +1762,15 @@ const centerNestedParts = (row) => {
   return parts;
 };
 const centerCompletedCertifiedMeta = (row) => {
-  // 一致版是 ETK 官方认证标签：新方案只认中心逻辑季包 pool_complete。
-  if (!centerIsCompletedCertifiedSource(row) && !row?.is_completed_certified) return {};
   for (const part of centerNestedParts(row)) {
     const meta = part?.completed_certified_meta_json || part?.completed_certified_meta || {};
     if (part?.is_completed_certified || meta?.is_completed_certified) {
       return meta && typeof meta === 'object' ? meta : { is_completed_certified: true };
     }
   }
-  if (centerIsCompletedCertifiedSource(row)) {
-    return { is_completed_certified: true, certified_by: 'logical_season_pool', status: row?.status, expected_episode_count: row?.episode_total || row?.progress_total, file_count: row?.episode_available || row?.file_count };
-  }
   return {};
 };
-const isCenterCompletedCertified = (row) => Boolean(
-  centerSeriesAllRegularSeasonsCertified(row) || centerCompletedCertifiedMeta(row).is_completed_certified
-);
+const isCenterCompletedCertified = (row) => Boolean(centerCompletedCertifiedMeta(row).is_completed_certified);
 const centerAnimationMeta = (row) => {
   for (const part of centerNestedParts(row)) {
     const meta = part?.animation_meta_json || part?.animation_meta || {};
@@ -1851,13 +1826,6 @@ const centerIsLogicalSeasonRow = (row) => {
 };
 const centerIsLogicalShadowOnly = (row) => centerIsLogicalSeasonRow(row) && !row?.logical_import_available;
 const centerHasLogicalGroup = (row) => Boolean(centerLogicalGroupId(row) || row?.pool_complete || row?.logical_pool_complete);
-const centerLogicalNumber = (row, ...keys) => {
-  for (const key of keys) {
-    const value = Number(row?.[key] ?? row?.logical_group?.[key]);
-    if (Number.isFinite(value) && value > 0) return value;
-  }
-  return 0;
-};
 const centerHasValidShareChannel = (row) => {
   const status = String(centerShareChannel(row)?.status || row?.share_channel_status || row?.logical_group?.share_channel_status || '').toLowerCase();
   return Boolean(
@@ -1874,50 +1842,6 @@ const centerHasValidShareChannel = (row) => {
 };
 const centerTransferActionText = (row) => centerHasValidShareChannel(row) ? '转存' : '秒传';
 const centerVersionActionDisabled = (row) => false;
-const centerSourceText = (row) => {
-  // 中心端历史字段不完全统一：自动维护创建、手动创建、频道/影巢外部源可能分别落在
-  // source_provider / source_label / provider / origin / create_mode 等字段里。这里不要缺省成“手动共享”，
-  // 否则自动共享只要字段名换了就会被误判。
-  const pickText = (value) => {
-    if (value == null) return '';
-    if (typeof value === 'object') {
-      return [
-        value.source_provider, value.source_provider_label, value.source_label, value.provider, value.origin,
-        value.share_source, value.source_type, value.share_type, value.create_mode, value.created_by, value.task_type, value.submitter_type, value.label, value.name,
-      ].filter(v => v != null).join(' ');
-    }
-    return String(value);
-  };
-  const rawParts = [
-    row?.source_provider, row?.provider, row?.origin, row?.share_origin, row?.share_source, row?.source_type,
-    row?.create_mode, row?.created_by, row?.creator_type, row?.submitter_type, row?.register_from, row?.register_source,
-    row?.task_source, row?.task_type, row?.client_source, row?.share_kind, row?.source, row?.shared_source, row?.extra, row?.raw,
-  ].map(pickText).filter(Boolean);
-  const labelParts = [row?.source_provider_label, row?.source_label].map(pickText).filter(Boolean);
-  const rawText = rawParts.join(' ').toLowerCase();
-  const labelText = labelParts.join(' ').toLowerCase();
-  const allText = `${rawText} ${labelText}`;
-
-  if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || /(backup_mirror|backup_share|auto_backup_share|backup|备份共享|备份源|镜像共享)/i.test(allText)) return '备份共享';
-  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动共享';
-  if (/(rapid_auto_library|rapid_all_library|auto|自动|入库自动|一键全库|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动共享';
-  if (/(hdhive|影巢)/i.test(allText)) return '影巢';
-  if (/(tg_channel|telegram|频道)/i.test(allText)) return '频道';
-  if (/(manual|user_share|logical_season|手动|人工|完结季源|完结季收藏)/i.test(allText) || row?.is_manual_share) return '手动共享';
-
-  const label = labelParts.join(' ').trim();
-  return label || '本机共享';
-};
-const centerSourceTag = (row) => {
-  const text = centerSourceText(row);
-  const type = text === '自动共享' ? 'warning' : (text === '手动共享' ? 'default' : 'info');
-  return h(NTag, { type, size: 'small', round: true }, { default: () => text });
-};
-const versionSummaryText = (row) => {
-  const v = centerVersionSummary(row) || {};
-  const parts = [v.resolution, v.effect, v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : '', v.fps].filter(Boolean);
-  return parts.length ? parts.join(' · ') : (row.quality || '未知版本');
-};
 const formatCenterSize = (row) => {
   // 修复：优先使用外层的 size，对于季包来说，外层 size 是 SQL SUM 出来的整包总大小
   const size = Number(row.size || 0);
@@ -1929,48 +1853,7 @@ const formatCenterSize = (row) => {
   
   return '-';
 };
-const listCell = (items, limit = 3) => {
-  const arr = (items || []).map(x => typeof x === 'string' ? x : (x.display || [x.language, x.codec, x.channels ? `${x.channels}ch` : '', x.title].filter(Boolean).join(' '))).filter(Boolean);
-  if (!arr.length) return '-';
-  const shown = arr.slice(0, limit);
-  const more = arr.length > limit ? ` +${arr.length - limit}` : '';
-  return h('div', { class: 'center-track-list', title: arr.join('\n') }, [
-    ...shown.map((x, idx) => h('div', { class: 'center-track-line', key: idx }, x)),
-    more ? h('div', { class: 'sub-title' }, more) : null
-  ]);
-};
 const isCenterReplenishRow = (row) => String(row?.status || '').trim().toLowerCase() === 'replenish';
-const centerUsableResourceCount = (row) => {
-  if (isCenterReplenishRow(row)) return 0;
-  if (centerHasLogicalGroup(row)) {
-    const logicalCount = centerLogicalNumber(row, 'logical_candidate_count', 'candidate_count', 'logical_client_complete_count', 'client_complete_count');
-    if (logicalCount > 0) return logicalCount;
-  }
-  // 资源数显示的是可签名 holder 数，不是版本数。
-  // version_count 只表示同一标题/同一集下有几个画质版本，不能反映秒传后新增的资源副本。
-  for (const key of ['resource_count', 'usable_resource_count', 'available_holder_count', 'holder_count']) {
-    const value = Number(row?.[key]);
-    if (Number.isFinite(value) && value > 0) return value;
-  }
-  const parts = [...(Array.isArray(row?.pack_items) ? row.pack_items : []), ...(Array.isArray(row?.children) ? row.children : [])];
-  const childCounts = parts
-    .map(item => Number(item?.resource_count || item?.usable_resource_count || item?.available_holder_count || item?.holder_count || 0))
-    .filter(value => Number.isFinite(value) && value > 0);
-  if (childCounts.length) return Math.min(...childCounts);
-  return 1;
-};
-const canCenterReplenishRow = (row) => {
-  if (!isCenterReplenishRow(row)) return false;
-  const info = localLibraryInfo(row);
-  if (!info?.is_fully_in_library && info?.status !== 'full') return false;
-  const files = Array.isArray(info.files) ? info.files : [];
-  if (files.length && !files.some(f => f?.sha1)) return false;
-  return true;
-};
-const centerReplenishActionNode = () => h(NTooltip, { trigger: 'hover', placement: 'top' }, {
-  trigger: () => h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '等待补充' }),
-  default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源；本机没有完整相同资源时不能补充。'
-});
 
 const inferRapidSourceKind = (row) => {
   const direct = String(row?.source_kind || row?.kind || '').trim().toLowerCase();
@@ -2084,35 +1967,6 @@ const importCenterSource = (row, mode) => {
 };
 
 
-
-const openManualShareForCenterReplenish = async (row) => {
-  if (!canCenterReplenishRow(row)) {
-    message.warning('本机没有完整相同资源，不能补充');
-    return;
-  }
-  const loadingKey = row.source_id || row.group_key || `${row.tmdb_id || ''}-${row.season_number || ''}-${row.episode_number || ''}`;
-  importingMap[loadingKey] = 'replenish';
-  try {
-    const res = await axios.post('/api/shared/resources/center/replenish/prepare', { source: row });
-    const candidate = res.data?.data;
-    if (!candidate?.resolvable || !candidate.root_fid) {
-      return message.error(res.data?.message || '未能定位可补充资源');
-    }
-    activeLocalShareRequest.value = null;
-    activeCenterReplenishSource.value = row;
-    resetManualShareForm();
-    activeCenterReplenishSource.value = row;
-    mediaSearchKeyword.value = centerTitleText(row);
-    mediaCandidates.value = [candidate];
-    showManualShareModal.value = true;
-    chooseMediaCandidate(candidate);
-    message.success(res.data?.message || '已自动填入补充资源，请确认后登记共享源');
-  } catch (e) {
-    message.error(e.response?.data?.message || '准备补充资源失败');
-  } finally {
-    delete importingMap[loadingKey];
-  }
-};
 
 const centerGroupKey = (row) => {
   const type = centerRowType(row);
@@ -2673,11 +2527,6 @@ const centerPosterWallSeasonLabel = (row) => {
   if (n === null) return '';
   return n === 0 ? '特别篇' : `第 ${n} 季`;
 };
-const centerShouldShowDetailSeasonTabs = (row) => {
-  const nums = centerAvailableSeasonNumbers(row);
-  // 只有“唯一一季且是第一季”才隐藏；只有特别篇或只有第 2/3 季也要显示出来。
-  return !(nums.length === 1 && nums[0] === 1) && nums.length > 0;
-};
 const centerSeasonCount = (row) => {
   const explicit = Number(row?.season_count || row?.number_of_seasons || 0);
   if (Number.isFinite(explicit) && explicit > 0) return explicit;
@@ -2700,7 +2549,6 @@ const centerPosterWallFullTitle = (row) => {
   const year = centerPosterWallYear(row);
   return year ? `${title}（${year}）` : title;
 };
-const centerPosterWallTitle = (row) => centerPosterWallFullTitle(row);
 
 const centerPosterUrlCache = new Map();
 
@@ -2772,21 +2620,17 @@ const onCenterPosterError = (event) => {
   if (!target) return;
   if (!target.src.endsWith('/default-poster.png')) target.src = '/default-poster.png';
 };
-const centerPosterMark = (row) => {
-  const title = String(centerDisplayTitle(row) || '').replace(/[（(]\d{4}[）)]/g, '').trim();
-  return title.slice(0, 2) || '共享';
-};
 const centerRibbonText = (row) => {
   if (isCenterReplenishRow(row)) return '待补充';
   if (isCenterCompletedCertified(row)) return '一致版';
-  // 剧卡片优先显示连载状态：只要任一普通季连载中就挂“连载中”，特别篇不参与判定。
+  if (centerIsCompletedByServer(row)) return '已完结';
   if (centerIsOngoingHub(row)) return '连载中';
-  if (centerIsSeriesGroup(row) || centerIsSeasonLike(row)) return '已完结';
   return '';
 };
 const centerRibbonClass = (row) => {
   if (isCenterReplenishRow(row)) return 'center-ribbon-warning';
   if (isCenterCompletedCertified(row)) return 'center-ribbon-green';
+  if (centerIsCompletedByServer(row)) return 'center-ribbon-dark';
   if (centerIsOngoingHub(row)) return 'center-ribbon-blue';
   return 'center-ribbon-dark';
 };
@@ -2838,48 +2682,6 @@ const centerTrackFeatureTags = (row) => {
   if (/双语|雙語/.test(subText)) centerTagPush(tags, '双语', 'info', 'sub-bilingual');
   return tags;
 };
-const centerPrimaryVersion = (row) => {
-  const versions = Array.isArray(row?.versions) && row.versions.length ? row.versions : [row];
-  return versions.find(v => !centerIsLazyPlaceholder(v)) || row;
-};
-const centerPrimaryActionRow = (row) => {
-  const versions = Array.isArray(row?.versions) && row.versions.length ? row.versions : [row];
-  return versions.find(v => !isCenterReplenishRow(v) && centerRapidSourceId(v)) || null;
-};
-const centerPrimaryActionKey = (row) => {
-  const action = centerPrimaryActionRow(row);
-  return action ? centerRapidSourceId(action) : '';
-};
-const centerCardActionLoading = (row) => {
-  const key = centerPrimaryActionKey(row);
-  return Boolean(key && importingMap[key]);
-};
-const centerCardActionDisabled = (row) => !centerPrimaryActionRow(row) || centerCardActionLoading(row);
-const centerCardTags = (row) => {
-  const primary = centerPrimaryVersion(row) || row;
-  const summary = centerVersionSummary(primary) || {};
-  const tags = [];
-  centerTagPush(tags, '115秒传', 'success', 'rapid');
-  const progress = centerProgressText(row);
-  if (progress) centerTagPush(tags, progress, 'info', 'progress');
-  const seasonCount = centerIsSeriesGroup(row) ? centerSeasonCount(row) : 0;
-  const singleSeasonLabel = centerIsSeriesGroup(row) ? centerSingleSeasonLabel(row) : '';
-  if (seasonCount > 1) centerTagPush(tags, `共 ${seasonCount} 季`, 'info', 'season-count');
-  else if (singleSeasonLabel) centerTagPush(tags, singleSeasonLabel, 'info', 'single-season');
-  if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
-  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '一致版', 'success', 'completed');
-  if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
-  if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
-  if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
-  if (!hideCenterPackParams(primary)) {
-    centerTagPush(tags, formatCenterSize(primary), 'default', 'size');
-    centerTagPush(tags, summary.resolution, 'success', 'resolution');
-    centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
-  }
-  centerTrackFeatureTags(primary).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
-  return tags.slice(0, 9);
-};
-
 const centerSeasonTabNumber = (season) => {
   const raw = (season && typeof season === 'object')
     ? (season.season_number ?? season.active_season_number ?? season.default_season_number)
@@ -2893,16 +2695,6 @@ const centerSeasonTabSortValue = (season) => {
   if (n === null) return 99999;
   // 特别篇标签按惯例放最前面；默认资源列表仍由 centerDefaultDetailSeason 固定优先第一季。
   return n === 0 ? -1 : n;
-};
-const centerSeasonTabKey = (season) => {
-  const n = centerSeasonTabNumber(season);
-  return `season:${n ?? centerVersionKey(season)}`;
-};
-const centerSeasonTabLabel = (season) => {
-  const n = centerSeasonTabNumber(season);
-  if (n === 0) return '特别篇';
-  if (n !== null) return `第 ${n} 季`;
-  return season?.season_label || season?.season_title || '未知季';
 };
 const centerDetailSeasonListFromRow = (row) => {
   const raw = Array.isArray(row?.seasons) ? row.seasons.filter(Boolean) : [];
@@ -2943,14 +2735,6 @@ const centerDefaultDetailSeason = (row) => {
   if (nums.length) return nums[0];
   return centerSeasonNumber(row);
 };
-const centerDetailSeasons = computed(() => centerDetailSeasonListFromRow(activeCenterDetailRow.value));
-const centerDetailSeasonActive = (season) => {
-  const n = centerSeasonTabNumber(season);
-  if (n === null) return false;
-  const current = centerSeasonTabNumber(centerDetailActiveSeason.value ?? centerDefaultDetailSeason(activeCenterDetailRow.value));
-  return current === n;
-};
-const centerDetailSeasonLoading = (season) => centerDetailLoading.value && centerDetailSeasonActive(season);
 const centerDetailActiveSeasonRow = computed(() => {
   const row = activeCenterDetailRow.value || {};
   if (!centerIsSeriesGroup(row)) return row;
@@ -2971,15 +2755,6 @@ const centerDetailActiveSeasonRow = computed(() => {
   };
 });
 
-const centerDetailModalTitle = computed(() => {
-  if (!activeCenterDetailRow.value) return '中心资源详情';
-  const title = centerDisplayTitle(activeCenterDetailRow.value);
-  const validVersions = centerDetailVersions.value.filter(v => v && !centerIsLazyPlaceholder(v));
-  if (validVersions.length > 1) {
-    return `${title} · 包含 ${validVersions.length} 个版本`;
-  }
-  return title;
-});
 const centerVersionKey = (row) => String(centerTableRowKey(row) || row?._version_merge_key || row?.sha1 || row?.manifest_hash || row?.file_name || Math.random());
 
 const parseCenterJsonObject = (value) => {
@@ -3157,7 +2932,6 @@ const centerVersionTags = (row) => {
   centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   return tags;
 };
-const centerEpisodePreview = () => '';
 const mergeCenterDetailPayload = (base, payload) => {
   const row = { ...(base || {}) };
   const data = payload?.data && typeof payload.data === 'object' ? payload.data : (payload || {});
@@ -3320,29 +3094,6 @@ const openCenterDetail = async (row) => {
     } catch (e) {
       console.warn('[共享资源] 加载中心详情失败，退回列表壳:', e);
     }
-  } finally {
-    centerDetailLoading.value = false;
-  }
-};
-
-const switchCenterDetailSeason = async (season) => {
-  const seasonNo = centerSeasonTabNumber(season);
-  const row = activeCenterDetailRow.value;
-  if (seasonNo === null || !row || !centerIsSeriesGroup(row)) return;
-  if (centerDetailActiveSeason.value === seasonNo) return;
-  centerDetailActiveSeason.value = seasonNo;
-  const cached = centerDetailSeasonListFromRow(row).find(item => centerSeasonTabNumber(item) === seasonNo);
-  const cachedHasResources = cached && ['resources', 'versions', 'items'].some(key => Array.isArray(cached[key]) && cached[key].length > 0);
-  if (cachedHasResources) {
-    return;
-  }
-  centerDetailLoading.value = true;
-  try {
-    const detailPayload = await loadCenterSourceDetail(row, seasonNo);
-    activeCenterDetailRow.value = applyCenterDetailPayload(row, detailPayload, seasonNo);
-  } catch (e) {
-    console.warn('[共享资源] 切换中心详情季失败:', e);
-    window.$message?.error?.(e?.message || '切换季资源失败');
   } finally {
     centerDetailLoading.value = false;
   }
@@ -4444,34 +4195,6 @@ onUnmounted(() => {
 
 
 
-.center-track-list {
-  line-height: 1.45;
-  font-size: 12px;
-  white-space: normal;
-}
-.center-track-line {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-.center-track-compact,
-.center-effect-compact {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-
-.center-version-stack { display: flex; flex-direction: column; gap: 8px; }
-.center-version-line { min-height: 24px; display: flex; align-items: center; }
-.center-cell-tooltip-content { white-space: pre-line; max-width: 320px; line-height: 1.6; }
-.center-cell-tooltip-list { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
-.center-cell-tooltip-line { white-space: nowrap; line-height: 1.6; }
-.center-library-tag { max-width: 128px; }
-
 /* 共享资源管理：表格玻璃化 */
 .shared-page :deep(.n-data-table) {
   --n-th-color: rgba(255, 255, 255, 0.045) !important;
@@ -4581,18 +4304,6 @@ onUnmounted(() => {
 }
 
 
-.center-type-with-flags {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.center-flag-tag {
-  transform: scale(.92);
-  transform-origin: left center;
-}
-
-
 /* 中心资源库：海报卡片 + 无限滚动 */
 .center-card-grid {
   display: grid;
@@ -4635,19 +4346,6 @@ onUnmounted(() => {
   transition: transform .28s ease;
 }
 .center-media-card:hover .center-poster { transform: scale(1.045); }
-.center-poster-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 8px;
-  color: rgba(255,255,255,.86);
-  text-shadow: 0 2px 6px rgba(0,0,0,.35);
-}
-.center-poster-mark { font-size: 28px; font-weight: 800; letter-spacing: .08em; }
-.center-poster-sub { font-size: 12px; opacity: .65; }
 .center-card-overlay {
   position: absolute;
   left: 0;
@@ -4663,71 +4361,19 @@ onUnmounted(() => {
   pointer-events: none;
 }
 .center-card-text { min-width: 0; flex: 1; }
-.center-card-title {
-  color: #fff;
-  font-weight: 800;
-  font-size: 13px;
-  line-height: 1.25;
-  text-shadow: 0 2px 5px rgba(0,0,0,.78);
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  overflow: hidden;
-}
-.center-card-meta {
-  margin-top: 3px;
-  color: rgba(255,255,255,.78);
-  font-size: 11px;
-  line-height: 1.25;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 2px 5px rgba(0,0,0,.75);
-}
-.center-card-tags,
 .center-version-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 6px;
 }
-.center-card-tags :deep(.n-tag) {
-  max-width: 92px;
-}
-
 .center-version-tags :deep(.n-tag) {
   max-width: none;
 }
-.center-card-tags :deep(.n-tag__content) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .center-version-tags :deep(.n-tag__content) {
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
-}
-.center-card-actions {
-  flex: 0 0 auto;
-  pointer-events: auto;
-  display: flex;
-  align-items: flex-end;
-}
-.center-resource-badge {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  color: #7ef0d2;
-  font-size: 11px;
-  font-weight: 800;
-  background: rgba(0, 0, 0, .62);
-  border: 1px solid rgba(126, 240, 210, .34);
-  z-index: 2;
 }
 .center-ribbon {
   position: absolute;
@@ -4985,15 +4631,4 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.detail-season-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  padding-top: 2px;
-}
-.detail-season-tabs :deep(.n-button) {
-  min-width: 74px;
-}
-
 </style>
