@@ -3966,18 +3966,6 @@ onUnmounted(() => {
 .shared-page { padding: 0; }
 .dashboard-card { border-radius: 14px; overflow: hidden; }
 .shared-list-card { overflow: visible; }
-.glass-modal {
-  background: color-mix(in srgb, var(--n-color, var(--card-bg-color, #fff)) 82%, transparent) !important;
-  border: 1px solid color-mix(in srgb, var(--n-border-color, rgba(128, 128, 128, .28)) 74%, transparent) !important;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .08) !important;
-  backdrop-filter: blur(22px) saturate(1.28);
-  -webkit-backdrop-filter: blur(22px) saturate(1.28);
-}
-.glass-modal :deep(.n-card-header),
-.glass-modal :deep(.n-card__content),
-.glass-modal :deep(.n-card__footer) {
-  background: transparent !important;
-}
 .shared-list-card :deep(.n-card__content),
 .shared-list-card :deep(.n-tabs),
 .shared-list-card :deep(.n-tab-pane),
