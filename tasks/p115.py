@@ -1328,7 +1328,7 @@ def task_full_sync_strm_and_subs(processor=None):
 
                     valid_local_files.add(os.path.abspath(sub_path))
 
-        def fetch_cookie_fast_items(target_cid, category_name, progress):
+        def run_cookie_fast_sync(target_cid, category_name, progress):
             raw_p115_client = getattr(client, 'raw_client', None)
             if raw_p115_client is None and hasattr(client, 'native_client'):
                 raw_p115_client = client.native_client()
@@ -1350,10 +1350,10 @@ def task_full_sync_strm_and_subs(processor=None):
                     max_workers=2,
                 )
 
-                items = []
+                count = 0
                 for info in iterator:
                     if processor and getattr(processor, 'is_stop_requested', lambda: False)():
-                        return []
+                        return 0
                     fid = info.get('fid') or info.get('file_id') or info.get('id')
                     is_dir = info.get('is_dir') or info.get('ico') == 'folder' or str(info.get('fc', '')) == '0'
                     if not fid or is_dir:
@@ -1377,9 +1377,12 @@ def task_full_sync_strm_and_subs(processor=None):
                                         sub_folders.append(str(n).strip())
                             info['_etk_rel_dir'] = os.path.join(category_name, *sub_folders) if sub_folders else category_name
 
-                    items.append(info)
+                    process_full_sync_items((info,), target_cid, category_name)
+                    count += 1
+                    if count % 500 == 0:
+                        update_progress(progress, f"  ➜ [{category_name}] Cookie 极速遍历中，已处理 {count} 个文件...")
 
-                return items
+                return count
             except Exception as e:
                 text = str(e)
                 if '405' in text or '403' in text or 'Method Not Allowed' in text:
@@ -1404,14 +1407,13 @@ def task_full_sync_strm_and_subs(processor=None):
         for idx, target_cid in enumerate(target_cids):
             category_name = cid_to_rel_path.get(target_cid, "未知分类")
             base_prog = 10 + int((idx / total_targets) * 80)
-            fast_items = fetch_cookie_fast_items(target_cid, category_name, base_prog)
+            fast_count = run_cookie_fast_sync(target_cid, category_name, base_prog)
             if processor and getattr(processor, 'is_stop_requested', lambda: False)():
                 return
-            if fast_items:
-                update_progress(base_prog, f"  ➜ [{category_name}] Cookie 极速遍历完成：{len(fast_items)} 个文件")
-                process_full_sync_items(fast_items, target_cid, category_name)
+            if fast_count:
+                update_progress(base_prog, f"  ➜ [{category_name}] Cookie 极速遍历完成：{fast_count} 个文件")
                 continue
-            if fast_items == []:
+            if fast_count == 0:
                 logger.warning(f"  ➜ [{category_name}] Cookie 极速遍历没有返回文件，改用 OpenAPI 复查。")
 
             update_progress(base_prog, f"  ➜ 正在使用 OpenAPI 拉取分类 [{category_name}] 下的所有文件...")
