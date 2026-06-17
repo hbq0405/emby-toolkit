@@ -5195,7 +5195,7 @@ onUnmounted(() => {
 .detail-overview {
   font-size: 13px;
   line-height: 1.6;
-  color: var(--center-detail-text-color);
+  color: var(--n-text-color-1, rgba(255, 255, 255, 0.85)) !important;
   display: -webkit-box;
   -webkit-line-clamp: 5;
   line-clamp: 5;
@@ -5246,7 +5246,7 @@ onUnmounted(() => {
 .detail-person-name {
   font-size: 12px;
   font-weight: 700;
-  color: var(--center-detail-text-color); /* 改为 text-color */
+  color: var(--n-text-color-1, rgba(255, 255, 255, 0.85)) !important;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
