@@ -111,7 +111,9 @@
 .n-card.glass-modal,
 .n-modal .n-card.glass-modal,
 .n-card.custom-modal.glass-modal,
-.n-modal .n-card.custom-modal.glass-modal {
+.n-modal .n-card.custom-modal.glass-modal,
+.n-dialog.glass-modal,
+.n-modal .n-dialog.glass-modal {
   --glass-modal-bg-color: var(--card-bg-color) !important;
   --glass-modal-bg-color: color-mix(in srgb, var(--card-bg-color) 90%, transparent) !important;
   --n-color: var(--glass-modal-bg-color) !important;
@@ -134,11 +136,15 @@
 
 .n-card.glass-modal > .n-card-header,
 .n-card.glass-modal > .n-card__content,
-.n-card.glass-modal > .n-card__footer {
+.n-card.glass-modal > .n-card__footer,
+.n-dialog.glass-modal > .n-dialog__title,
+.n-dialog.glass-modal > .n-dialog__content,
+.n-dialog.glass-modal > .n-dialog__action {
   background: transparent !important;
 }
 
-.n-modal-container:has(.glass-modal) .n-modal-mask {
+.n-modal-container:has(.glass-modal) .n-modal-mask,
+.n-modal-container:has(.n-dialog.glass-modal) .n-modal-mask {
   background-color: rgba(0, 0, 0, .22) !important;
   backdrop-filter: blur(2px) !important;
   -webkit-backdrop-filter: blur(2px) !important;

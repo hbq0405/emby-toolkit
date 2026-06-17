@@ -6,6 +6,7 @@
     preset="card"
     style="width: 95%; max-width: 1200px;"
     :title="subscriptionData ? `订阅详情 - ${subscriptionData.actor_name}` : '加载中...'"
+    class="custom-modal glass-modal"
     :bordered="false"
     size="huge"
   >

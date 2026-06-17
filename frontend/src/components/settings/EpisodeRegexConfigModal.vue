@@ -4,7 +4,7 @@
     preset="card"
     title="配置季集号识别正则"
     :style="modalStyle"
-    class="episode-regex-modal"
+    class="episode-regex-modal custom-modal glass-modal"
   >
     <n-space vertical :size="14">
       <n-alert type="warning" :show-icon="true">
@@ -233,6 +233,7 @@
     preset="card"
     title="导入季集号识别规则"
     :style="importModalStyle"
+    class="custom-modal glass-modal"
   >
     <n-space vertical :size="12">
       <n-alert type="info" :show-icon="true">

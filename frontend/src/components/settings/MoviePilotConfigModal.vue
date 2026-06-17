@@ -1,6 +1,6 @@
 <!-- src/components/settings/MoviePilotConfigModal.vue -->
 <template>
-  <n-modal v-model:show="showModal" preset="card" title="配置 MoviePilot" style="width: 600px;">
+  <n-modal v-model:show="showModal" preset="card" title="配置 MoviePilot" style="width: 600px;" class="custom-modal glass-modal">
     <n-spin :show="loading">
       <n-form label-placement="left" label-width="140">
         <n-form-item label="MoviePilot URL">

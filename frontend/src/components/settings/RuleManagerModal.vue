@@ -6,6 +6,7 @@
     preset="card" 
     title="115 分类规则管理" 
     style="width: 800px; max-width: 95%; height: 80vh;"
+    class="custom-modal glass-modal"
     content-style="display: flex; flex-direction: column; overflow: hidden;" 
   >
     <template #header-extra>
@@ -99,7 +100,7 @@
   </n-modal>
 
   <!-- 规则编辑模态框 -->
-  <n-modal v-model:show="showRuleModal" preset="card" title="编辑分类规则" style="width: 650px;">
+  <n-modal v-model:show="showRuleModal" preset="card" title="编辑分类规则" style="width: 650px;" class="custom-modal glass-modal">
     <n-form label-placement="left" label-width="100">
       <n-form-item label="规则名称">
         <n-input v-model:value="currentRule.name" placeholder="例如：漫威电影宇宙" />

@@ -6,6 +6,7 @@
     preset="card"
     style="width: 90%; max-width: 700px;"
     title="TMDb 探索助手 ✨"
+    class="custom-modal glass-modal"
     :bordered="false"
     size="huge"
   >

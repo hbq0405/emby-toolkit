@@ -5,6 +5,7 @@
     preset="card"
     style="width: 90%; max-width: 600px;"
     title="添加演员订阅"
+    class="custom-modal glass-modal"
     :bordered="false"
     size="huge"
     :on-after-leave="resetState"

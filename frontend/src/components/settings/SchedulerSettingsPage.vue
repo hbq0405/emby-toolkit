@@ -253,7 +253,7 @@
     <!-- ======================================================================= -->
 
     <!-- 高频任务链配置模态框 -->
-    <n-modal v-model:show="showHighFreqChainConfigModal" class="custom-card" preset="card" title="配置高频刷新任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
+    <n-modal v-model:show="showHighFreqChainConfigModal" class="custom-card custom-modal glass-modal" preset="card" title="配置高频刷新任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
       <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">请勾选需要定时执行的任务，并拖动调整顺序。</n-alert>
       <div class="task-chain-list" ref="draggableContainerHighFreq">
         <n-tooltip v-for="task in configuredHighFreqTaskSequence" :key="task.key" trigger="hover" placement="right">
@@ -278,7 +278,7 @@
     </n-modal>
 
     <!-- 低频任务链配置模态框 -->
-    <n-modal v-model:show="showLowFreqChainConfigModal" class="custom-card" preset="card" title="配置低频维护任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
+    <n-modal v-model:show="showLowFreqChainConfigModal" class="custom-card custom-modal glass-modal" preset="card" title="配置低频维护任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
       <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">请勾选需要定时执行的任务，并拖动调整顺序。</n-alert>
       <div class="task-chain-list" ref="draggableContainerLowFreq">
         <n-tooltip v-for="task in configuredLowFreqTaskSequence" :key="task.key" trigger="hover" placement="right">
@@ -303,7 +303,7 @@
     </n-modal>
 
     <!-- ★★★ 新增：TG 菜单配置模态框 ★★★ -->
-    <n-modal v-model:show="showTgMenuConfigModal" class="custom-card" preset="card" title="配置 Telegram 快捷菜单" style="width: 90%; max-width: 600px;" :mask-closable="false">
+    <n-modal v-model:show="showTgMenuConfigModal" class="custom-card custom-modal glass-modal" preset="card" title="配置 Telegram 快捷菜单" style="width: 90%; max-width: 600px;" :mask-closable="false">
       <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
         请勾选需要在 Telegram 机器人菜单中显示的任务，并拖动调整顺序。<br/>
         注意：Telegram 限制菜单命令最多显示 100 个，建议只保留常用任务。
@@ -331,7 +331,7 @@
     </n-modal>
 
     <!-- 通用模式选择模态框 -->
-    <n-modal v-model:show="showSyncModeModal" preset="dialog" title="选择处理模式" :mask-closable="false">
+    <n-modal v-model:show="showSyncModeModal" preset="dialog" title="选择处理模式" :mask-closable="false" class="glass-modal">
       <n-text>您希望如何执行此任务？</n-text>
       <template #action>
         <n-button @click="showSyncModeModal = false">取消</n-button>

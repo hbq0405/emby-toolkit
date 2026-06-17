@@ -1,6 +1,6 @@
 <!-- src/components/settings/HDHiveConfigModal.vue -->
 <template>
-  <n-modal v-model:show="showModal" preset="card" title="配置 影巢 (HDHive)" style="width: 720px;">
+  <n-modal v-model:show="showModal" preset="card" title="配置 影巢 (HDHive)" style="width: 720px;" class="custom-modal glass-modal">
     <n-spin :show="loading">
       
       <!-- 顶部提示 -->

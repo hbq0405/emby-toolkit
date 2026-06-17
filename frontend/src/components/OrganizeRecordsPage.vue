@@ -73,7 +73,7 @@
     </n-card>
 
     <!-- 手动整理 / 纠错模态框 -->
-    <n-modal v-model:show="showEditModal" preset="card" :style="modalStyle" title="手动整理 / 纠错" :bordered="false">
+    <n-modal v-model:show="showEditModal" preset="card" :style="modalStyle" title="手动整理 / 纠错" class="custom-modal glass-modal" :bordered="false">
       <template #header-extra>
         <n-tag :type="editForm.status === 'success' ? 'info' : 'warning'" size="small">
           {{ editForm.ids.length > 1 ? '批量重组' : (editForm.status === 'success' ? '纠正信息' : '手动识别') }}

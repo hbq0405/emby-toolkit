@@ -5,6 +5,7 @@
     preset="card"
     :title="`云资源搜索: ${mediaTitle}`"
     style="width: 920px; max-width: 96%;"
+    class="custom-modal glass-modal"
   >
     <n-spin :show="loading">
       <n-space vertical size="medium">
@@ -194,21 +195,21 @@
                   </div>
                 </div>
 
-                <div v-if="formatQuality(res) && !isSharedPool(res)" style="font-size: 13px; color: #555; line-height: 1.5; margin-bottom: 4px;">
+                <div v-if="formatQuality(res) && !isSharedPool(res)" class="cloud-meta-line">
                   📦 {{ formatQuality(res) }}
                 </div>
 
-                <div v-if="res.remark && !isSharedPool(res)" style="font-size: 12px; color: #777; line-height: 1.5; word-break: break-all;">
+                <div v-if="res.remark && !isSharedPool(res)" class="cloud-remark-line">
                   📝 {{ res.remark }}
                 </div>
 
-                <div v-if="res.message_date" style="font-size: 12px; color: #999; margin-top: 4px;">
+                <div v-if="res.message_date" class="cloud-date-line">
                   🕘 {{ res.message_date }}
                 </div>
               </div>
 
               <div v-if="!isSharedPoolGroup(res)" style="flex-shrink: 0; min-width: 92px; text-align: right;">
-                <div style="font-size: 12px; color: #f0a020; margin-bottom: 6px;">
+                <div class="cloud-action-hint">
                   <span v-if="isSharedPool(res)">{{ sharedPoolActionText(res).hint }}</span>
                   <span v-else-if="isChannel(res)">可转存</span>
                   <span v-else-if="res.already_owned">已解锁</span>
@@ -822,8 +823,43 @@ const download = async (resource) => {
 </script>
 
 <style scoped>
+.cloud-resource-card {
+  background: color-mix(in srgb, var(--card-bg-color, rgba(12, 18, 42, .66)) 86%, transparent) !important;
+  border: 1px solid var(--card-border-color, rgba(148, 177, 255, .14)) !important;
+  color: var(--text-color) !important;
+}
+
 .cloud-resource-card :deep(.n-card__content) {
   padding: 12px 14px;
+}
+
+.cloud-meta-line {
+  font-size: 13px;
+  color: var(--text-color);
+  opacity: .82;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.cloud-remark-line {
+  font-size: 12px;
+  color: var(--text-color);
+  opacity: .72;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.cloud-date-line {
+  font-size: 12px;
+  color: var(--text-color);
+  opacity: .58;
+  margin-top: 4px;
+}
+
+.cloud-action-hint {
+  font-size: 12px;
+  color: var(--n-warning-color, #f0a020);
+  margin-bottom: 6px;
 }
 
 .cloud-version-list {
@@ -839,8 +875,8 @@ const download = async (resource) => {
   gap: 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(12, 18, 42, .42);
-  border: 1px solid rgba(148, 177, 255, .14);
+  background: color-mix(in srgb, var(--card-bg-color, rgba(12, 18, 42, .42)) 72%, transparent);
+  border: 1px solid var(--card-border-color, rgba(148, 177, 255, .14));
 }
 
 .cloud-version-main {
@@ -856,7 +892,7 @@ const download = async (resource) => {
 
 .cloud-version-action-hint {
   font-size: 12px;
-  color: #f0a020;
+  color: var(--n-warning-color, #f0a020);
   margin-bottom: 6px;
 }
 

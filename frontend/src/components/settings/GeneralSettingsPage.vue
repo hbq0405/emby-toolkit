@@ -1359,7 +1359,7 @@
     </n-space>
     
     <!-- ★★★ Cookie 扫码获取弹窗 ★★★ -->
-    <n-modal v-model:show="showCookieModal" preset="card" title="扫码获取 Cookie" :style="modalStyle(400)" :mask-closable="false">
+    <n-modal v-model:show="showCookieModal" preset="card" title="扫码获取 Cookie" :style="modalStyle(400)" :mask-closable="false" class="custom-modal glass-modal">
       <n-space vertical>
         <n-alert type="info" :show-icon="true" style="margin-bottom: 10px;">
           请选择扫码的客户端类型。推荐使用 <b>支付宝小程序</b>，风控概率最低。
@@ -1428,7 +1428,7 @@
     </n-modal>
 
     <!-- ★★★ 115 扫码登录弹窗 ★★★ -->
-    <n-modal v-model:show="showQrcodeModal" preset="card" title="115 扫码登录" :style="modalStyle(350)" :mask-closable="false">
+    <n-modal v-model:show="showQrcodeModal" preset="card" title="115 扫码登录" :style="modalStyle(350)" :mask-closable="false" class="custom-modal glass-modal">
       <div style="text-align: center; padding: 20px 0;">
         <!-- 加载中状态 -->
         <n-spin v-if="qrcodeStatus === 'loading'" size="large">
@@ -1474,7 +1474,7 @@
       </template>
     </n-modal>
     <!-- ★★★ 移植：115 目录选择器 Modal ★★★ -->
-    <n-modal v-model:show="showFolderPopover" preset="card" title="选择 115 目录" :style="modalStyle(450)" :bordered="false">
+    <n-modal v-model:show="showFolderPopover" preset="card" title="选择 115 目录" :style="modalStyle(450)" :bordered="false" class="custom-modal glass-modal">
       <div class="folder-browser">
         <!-- 顶部导航 -->
         <div class="browser-header">
@@ -1559,7 +1559,7 @@
     </n-modal>
 
     <!-- ★★★ 本地物理目录选择器弹窗 ★★★ -->
-    <n-modal v-model:show="showLocalFolderModal" preset="card" title="选择本地路径" :style="modalStyle(600)">
+    <n-modal v-model:show="showLocalFolderModal" preset="card" title="选择本地路径" :style="modalStyle(600)" class="custom-modal glass-modal">
       <n-spin :show="loadingLocalFolders">
         <n-space vertical>
           <!-- 顶部路径输入与刷新 -->
@@ -1617,7 +1617,7 @@
   </n-layout>
   
   <!-- 导出选项模态框 -->
-  <n-modal v-model:show="exportModalVisible" preset="dialog" title="选择要导出的数据表" :style="modalStyle(520)">
+  <n-modal v-model:show="exportModalVisible" preset="dialog" title="选择要导出的数据表" :style="modalStyle(520)" class="glass-modal">
     <n-space justify="end" style="margin-bottom: 10px;">
       <n-button text type="primary" @click="selectAllForExport">全选</n-button>
       <n-button text type="primary" @click="deselectAllForExport">全不选</n-button>
@@ -1638,7 +1638,7 @@
     </template>
   </n-modal>
   <!-- 导入选项模态框 -->
-  <n-modal v-model:show="importModalVisible" preset="dialog" title="恢复数据库备份" :style="modalStyle(520)">
+  <n-modal v-model:show="importModalVisible" preset="dialog" title="恢复数据库备份" :style="modalStyle(520)" class="glass-modal">
     <n-space vertical>
       <div><p><strong>文件名:</strong> {{ fileToImport?.name }}</p></div>
       
@@ -1683,7 +1683,7 @@
   </n-modal>
 
   <!-- 清空指定表模态框 -->
-  <n-modal v-model:show="clearTablesModalVisible" preset="dialog" title="清空指定数据表" :style="modalStyle(520)">
+  <n-modal v-model:show="clearTablesModalVisible" preset="dialog" title="清空指定数据表" :style="modalStyle(520)" class="glass-modal">
     <n-space justify="end" style="margin-bottom: 10px;">
       <n-button text type="primary" @click="selectAllForClear">全选</n-button>
       <n-button text type="primary" @click="deselectAllForClear">全不选</n-button>
@@ -1711,7 +1711,7 @@
   </n-modal>
 
   <!-- ★★★ 自定义 STRM 正则模态框 ★★★ -->
-    <n-modal v-model:show="showCustomRegexModal" preset="card" title="配置自定义提取正则" :style="modalStyle(650)">
+    <n-modal v-model:show="showCustomRegexModal" preset="card" title="配置自定义提取正则" :style="modalStyle(650)" class="custom-modal glass-modal">
       <n-alert type="warning" :show-icon="true" style="margin-bottom: 16px;">
         <b>正则编写规则：</b><br/>
         必须使用小括号 <code>()</code> 将 115 的 PC 码包裹起来作为<b>第一个捕获组</b>。<br/>
@@ -1747,7 +1747,7 @@
     </n-modal>
 
   <!-- ★★★ 批量替换 STRM 模态框 ★★★ -->
-    <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" :style="modalStyle(650)">
+    <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" :style="modalStyle(650)" class="custom-modal glass-modal">
       
       <n-alert type="info" :show-icon="true" style="margin-bottom: 16px;">
         <b>ETK 标准格式示例 (不带文件名后缀)：</b><br/>
@@ -1812,6 +1812,7 @@
     preset="dialog" 
     title="确认重置Emby数据"
     :style="modalStyle(520)"
+    class="glass-modal"
   >
     <n-alert title="高危操作警告" type="warning" style="margin-bottom: 15px;">
       <p style="margin: 0 0 8px 0;">此操作将 <strong>清空所有Emby相关数据</strong>。</p>
@@ -1824,7 +1825,7 @@
     </template>
   </n-modal>
   <!-- AI 提示词配置模态框 -->
-  <n-modal v-model:show="promptModalVisible" preset="dialog" title="配置 AI 提示词" :style="modalStyle(800)">
+  <n-modal v-model:show="promptModalVisible" preset="dialog" title="配置 AI 提示词" :style="modalStyle(800)" class="glass-modal">
     <n-alert type="info" style="margin-bottom: 16px;">
       您可以自定义发送给 AI 的系统指令（System Prompt）。<br>
       <b>注意：</b> 请保留关键的 JSON 输出格式要求，否则会导致解析失败。支持使用 <code>{title}</code> 等占位符。
@@ -1917,7 +1918,7 @@
     </template>
   </n-modal>
   <!-- ★★★ Pro 激活模态框 ★★★ -->
-  <n-modal v-model:show="showProModal" preset="card" :title="isTransferMode ? '🔄 换绑 Pro 设备' : (configModel?.is_pro_active ? '💎 续期 Pro 高级版' : '💎 升级 Pro 高级版')" :style="modalStyle(500)">
+  <n-modal v-model:show="showProModal" preset="card" :title="isTransferMode ? '🔄 换绑 Pro 设备' : (configModel?.is_pro_active ? '💎 续期 Pro 高级版' : '💎 升级 Pro 高级版')" :style="modalStyle(500)" class="custom-modal glass-modal">
       <n-space vertical :size="20">
         
         <!-- 正常激活/续期模式显示的 UI -->

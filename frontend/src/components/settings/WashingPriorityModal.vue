@@ -1,6 +1,6 @@
 <!-- src/components/settings/WashingPriorityModal.vue -->
 <template>
-  <n-modal v-model:show="showModal" preset="card" title="阶梯洗版优先级配置" style="width: 1000px; max-width: 95vw;">
+  <n-modal v-model:show="showModal" preset="card" title="阶梯洗版优先级配置" style="width: 1000px; max-width: 95vw;" class="custom-modal glass-modal">
     <n-spin :show="loading">
       <n-layout has-sider style="height: 650px; border: 1px solid var(--n-divider-color); border-radius: 8px;">
         

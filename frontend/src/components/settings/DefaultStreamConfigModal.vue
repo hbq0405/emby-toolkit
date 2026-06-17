@@ -3,7 +3,7 @@
     v-model:show="showModal"
     preset="card"
     title="默认音轨与字幕配置"
-    class="stream-config-modal"
+    class="stream-config-modal custom-modal glass-modal"
     style="width: 1120px; max-width: 96vw;"
   >
     <n-spin :show="loading">

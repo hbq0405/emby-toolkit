@@ -1,6 +1,6 @@
 <!-- src/components/ThemeEditor.vue -->
 <template>
-  <n-modal :show="show" preset="card" style="width: 90%; max-width: 800px;" title="主题设计工坊" :bordered="false" size="huge" :mask-closable="false" @update:show="handleClose">
+  <n-modal :show="show" preset="card" style="width: 90%; max-width: 800px;" title="主题设计工坊" class="custom-modal glass-modal" :bordered="false" size="huge" :mask-closable="false" @update:show="handleClose">
     <template #header-extra>
       <n-space>
         <n-popconfirm

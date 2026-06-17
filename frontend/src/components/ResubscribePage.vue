@@ -240,7 +240,7 @@
       :season-number="hdhiveMedia?.season_number"
       @download-success="handleHDHiveDownloadSuccess"
     />
-    <n-modal v-model:show="showSettingsModal" preset="card" style="width: 90%; max-width: 800px;" title="规则设定">
+    <n-modal v-model:show="showSettingsModal" preset="card" style="width: 90%; max-width: 800px;" title="规则设定" class="custom-modal glass-modal">
       <ResubscribeSettingsPage @saved="handleSettingsSaved" />
     </n-modal>
   </n-layout>

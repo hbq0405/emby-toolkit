@@ -5,6 +5,7 @@
     preset="card"
     title="默认订阅配置"
     style="width: 600px;"
+    class="custom-modal glass-modal"
     @update:show="$emit('update:show', $event)"
   >
     <n-spin :show="loading">

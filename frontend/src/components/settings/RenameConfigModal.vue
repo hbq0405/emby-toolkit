@@ -1,6 +1,6 @@
 <!-- src/components/settings/RenameConfigModal.vue -->
 <template>
-  <n-modal v-model:show="isVisible" preset="card" title="自定义重命名规则" style="width: 900px; max-width: 95%;">
+  <n-modal v-model:show="isVisible" preset="card" title="自定义重命名规则" style="width: 900px; max-width: 95%;" class="custom-modal glass-modal">
     <n-spin :show="loading">
       
       <!-- 顶部：配置区域 -->
