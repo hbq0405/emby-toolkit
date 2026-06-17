@@ -4537,6 +4537,15 @@ class P115DeleteBuffer:
 
     @classmethod
     def add(cls, fids=None, base_cids=None, check_save_path=False):
+        if check_save_path:
+            config = get_config()
+            auto_clean = config.get(constants.CONFIG_OPTION_115_AUTO_CLEAN_EMPTY_DIRS, True)
+            if not auto_clean:
+                logger.info("  ➜ [清理空目录] 自动检查待整理目录已关闭，跳过本次全局垃圾回收。")
+                check_save_path = False
+                if not fids and not base_cids:
+                    return
+
         with cls._lock:
             if fids:
                 cls._fids_to_delete.update(fids)

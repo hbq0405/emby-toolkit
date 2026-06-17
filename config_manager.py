@@ -204,6 +204,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION: (constants.CONFIG_SECTION_115, 'boolean', False),
     constants.CONFIG_OPTION_115_DOWNLOAD_SUBS: (constants.CONFIG_SECTION_115, 'boolean', True),
     constants.CONFIG_OPTION_115_LOCAL_CLEANUP: (constants.CONFIG_SECTION_115, 'boolean', False),
+    constants.CONFIG_OPTION_115_AUTO_CLEAN_EMPTY_DIRS: (constants.CONFIG_SECTION_115, 'boolean', True),
     constants.CONFIG_OPTION_115_MEDIAINFO_CENTER: (constants.CONFIG_SECTION_115, "boolean", False),
     constants.CONFIG_OPTION_115_APP_ID: (constants.CONFIG_SECTION_115, 'string', ""),
     constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED: (constants.CONFIG_SECTION_115, "boolean", False),

@@ -56,6 +56,35 @@ KNOWN_SKIP_EXTS = {'clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo'}
 MIN_BIG_PACKAGE_VIDEO_SIZE = 50 * 1024 * 1024
 
 
+def _is_path_style_strm_for_file(content, file_name):
+    text = str(content or "").strip()
+    if not text or not file_name:
+        return False
+
+    lower_text = text.lower()
+    if lower_text.startswith(("http://", "https://")) or "/api/p115/play/" in lower_text:
+        return False
+
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text) and not lower_text.startswith("file://"):
+        return False
+
+    if lower_text.startswith("file://"):
+        text = text[7:]
+
+    text = text.split("?", 1)[0].split("#", 1)[0].replace("\\", "/").rstrip("/")
+    existing_name = os.path.basename(text)
+    if not existing_name:
+        return False
+
+    try:
+        from urllib.parse import unquote
+        existing_name = unquote(existing_name)
+    except Exception:
+        pass
+
+    return existing_name == file_name
+
+
 def _normalize_batch_recognition_hints(hints, *, is_tv=False, preserve_episode=False):
     """
     批量整理时，组级 hints 只能安全复用标题/TMDb/季级信息。
@@ -1281,12 +1310,17 @@ def task_full_sync_strm_and_subs(processor=None):
                                         content = f"{content}/{name}"
                                 
                                 need_write = True
+                                preserved_existing_path_strm = False
                                 if os.path.exists(strm_path):
                                     try:
                                         with open(strm_path, 'r', encoding='utf-8') as f:
                                             old_content = f.read().strip()
                                             if old_content == content: 
                                                 need_write = False
+                                            elif not etk_url.startswith('http') and _is_path_style_strm_for_file(old_content, name):
+                                                need_write = False
+                                                preserved_existing_path_strm = True
+                                                logger.debug(f"  ➜ [保留] 已存在路径模式 STRM，跳过覆盖: {strm_name}")
                                             else:
                                                 logger.debug(f"  ➜ [更新] 内容不一致触发覆盖 -> 旧: [{old_content}] | 新: [{content}]")
                                     except Exception as e: pass
@@ -1305,7 +1339,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                 # ==================================================
                                 # ★ 生成 Mediainfo (等同 MP 直出逻辑)
                                 # ==================================================
-                                if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
+                                if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False) and not preserved_existing_path_strm:
                                     mediainfo_filename = os.path.splitext(name)[0] + "-mediainfo.json"
                                     mediainfo_filepath = os.path.join(current_local_path, mediainfo_filename)
                                     
