@@ -5036,10 +5036,10 @@ onUnmounted(() => {
   margin: 4px 0 2px;
 }
 .center-detail-body {
-  --center-detail-title-color: rgba(15, 23, 42, .94);
-  --center-detail-meta-color: rgba(71, 85, 105, .86);
-  --center-detail-text-color: rgba(30, 41, 59, .9);
-  --center-detail-muted-color: rgba(100, 116, 139, .9);
+  --center-detail-title-color: var(--n-title-text-color, rgba(15, 23, 42, .94));
+  --center-detail-meta-color: var(--n-text-color-2, rgba(71, 85, 105, .86));
+  --center-detail-text-color: var(--n-text-color, rgba(30, 41, 59, .9));
+  --center-detail-muted-color: var(--n-text-color-3, rgba(100, 116, 139, .9));
   --center-detail-panel-bg: rgba(255, 255, 255, .72);
   --center-detail-soft-bg: rgba(241, 245, 249, .78);
   --center-detail-person-bg: rgba(148, 163, 184, .26);
