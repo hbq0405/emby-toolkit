@@ -1398,10 +1398,12 @@ def _center_source_is_completed_certified(row: Dict[str, Any]) -> bool:
     source_kind = str(row.get('source_kind') or '').strip().lower()
     status = str(row.get('status') or '').strip().lower()
     logical_complete = bool(row.get('logical_pool_complete') or row.get('pool_complete') or status == 'pool_complete')
-    if source_kind == 'season_hub' or row.get('is_ongoing_hub'):
+    if source_kind == 'season_hub':
         return False
     if source_kind == 'logical_season':
         return logical_complete
+    if row.get('is_ongoing_hub') and not logical_complete:
+        return False
     if logical_complete:
         return True
     return bool(_center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json'))
@@ -1708,6 +1710,11 @@ def api_center_sources_home():
             if completed_certified:
                 row['is_completed_certified'] = True
                 row['is_completed'] = True
+                row['completed_certified_meta_json'] = _center_flag_meta(row, 'is_completed_certified', 'completed_certified_meta_json') or {
+                    'is_completed_certified': True,
+                    'certified_by': 'logical_season_pool',
+                    'status': row.get('status'),
+                }
             row['version_summary'] = _center_version_summary(row)
             if not row.get('size') and row.get('total_size'):
                 row['size'] = row.get('total_size')

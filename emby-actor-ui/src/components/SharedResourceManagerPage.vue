@@ -1765,7 +1765,7 @@ const centerCompletedCertifiedMeta = (row) => {
   for (const part of centerNestedParts(row)) {
     const meta = part?.completed_certified_meta_json || part?.completed_certified_meta || {};
     if (part?.is_completed_certified || meta?.is_completed_certified) {
-      return meta && typeof meta === 'object' ? meta : { is_completed_certified: true };
+      return meta && typeof meta === 'object' ? { ...meta, is_completed_certified: true } : { is_completed_certified: true };
     }
   }
   return {};
