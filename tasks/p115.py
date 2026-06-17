@@ -1268,7 +1268,9 @@ def task_full_sync_strm_and_subs(processor=None):
                         mediainfo_filename = os.path.splitext(name)[0] + "-mediainfo.json"
                         mediainfo_filepath = os.path.join(current_local_path, mediainfo_filename)
 
-                        if need_write or not os.path.exists(mediainfo_filepath):
+                        if os.path.exists(mediainfo_filepath):
+                            valid_local_files.add(os.path.abspath(mediainfo_filepath))
+                        else:
                             try:
                                 mediainfo_text = None
                                 if sha1:
@@ -1293,8 +1295,8 @@ def task_full_sync_strm_and_subs(processor=None):
                             except Exception as e:
                                 logger.error(f"  ➜ [全量同步] 生成媒体信息失败: {e}")
 
-                        if os.path.exists(mediainfo_filepath):
-                            valid_local_files.add(os.path.abspath(mediainfo_filepath))
+                            if os.path.exists(mediainfo_filepath):
+                                valid_local_files.add(os.path.abspath(mediainfo_filepath))
 
                     # 写入本地数据库缓存 (p115_filesystem_cache)
                     if pc and fid:
@@ -2115,33 +2117,33 @@ def task_monitor_115_life_events(processor=None):
                         try:
                             mediainfo_filename = os.path.splitext(file_name)[0] + "-mediainfo.json"
                             mediainfo_filepath = os.path.join(current_local_path, mediainfo_filename)
-                            
-                            mediainfo_text = None
-                            if file_sha1:
-                                mediainfo_text = P115CacheManager.get_mediainfo_cache_text(file_sha1)
+                            if not os.path.exists(mediainfo_filepath):
+                                mediainfo_text = None
+                                if file_sha1:
+                                    mediainfo_text = P115CacheManager.get_mediainfo_cache_text(file_sha1)
 
-                            if not mediainfo_text:
-                                prober = _StandaloneProber(client)
-                                probe_item = {
-                                    'fid': file_id, 'file_id': file_id,
-                                    'pc': pick_code, 'pick_code': pick_code,
-                                    'sha1': file_sha1,
-                                    'fn': file_name, 'file_name': file_name,
-                                    'fs': file_size, 'size': file_size
-                                }
-                                mediainfo_obj = prober._probe_mediainfo_with_ffprobe(probe_item, sha1=file_sha1, silent_log=False)
-                                if mediainfo_obj:
-                                    probe_sha1 = file_sha1 or probe_item.get('sha1') or probe_item.get('sha')
-                                    if probe_sha1:
-                                        probe_sha1 = str(probe_sha1).upper()
-                                        P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
-                                        file_sha1 = probe_sha1
-                                    mediainfo_text = json.dumps(mediainfo_obj, ensure_ascii=False, indent=2)
+                                if not mediainfo_text:
+                                    prober = _StandaloneProber(client)
+                                    probe_item = {
+                                        'fid': file_id, 'file_id': file_id,
+                                        'pc': pick_code, 'pick_code': pick_code,
+                                        'sha1': file_sha1,
+                                        'fn': file_name, 'file_name': file_name,
+                                        'fs': file_size, 'size': file_size
+                                    }
+                                    mediainfo_obj = prober._probe_mediainfo_with_ffprobe(probe_item, sha1=file_sha1, silent_log=False)
+                                    if mediainfo_obj:
+                                        probe_sha1 = file_sha1 or probe_item.get('sha1') or probe_item.get('sha')
+                                        if probe_sha1:
+                                            probe_sha1 = str(probe_sha1).upper()
+                                            P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
+                                            file_sha1 = probe_sha1
+                                        mediainfo_text = json.dumps(mediainfo_obj, ensure_ascii=False, indent=2)
 
-                            if mediainfo_text:
-                                with open(mediainfo_filepath, "w", encoding="utf-8") as f:
-                                    f.write(mediainfo_text)
-                                logger.info(f"  ➜ [事件] 媒体信息已生成 -> {mediainfo_filename}")
+                                if mediainfo_text:
+                                    with open(mediainfo_filepath, "w", encoding="utf-8") as f:
+                                        f.write(mediainfo_text)
+                                    logger.info(f"  ➜ [事件] 媒体信息已生成 -> {mediainfo_filename}")
                         except Exception as e:
                             logger.error(f"  ➜ [事件] 生成媒体信息失败: {e}")
                     
