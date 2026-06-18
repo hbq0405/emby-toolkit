@@ -17,6 +17,7 @@ class WashingService:
     SHORT_DRAMA_MAX_RUNTIME_MINUTES = 25.0
     AI_TRANSLATABLE_SUBTITLE_LANGS = {"eng", "en", "jpn", "ja", "kor", "ko"}
     CHINESE_SUBTITLE_LANGS = {"chi", "yue"}
+    AI_SUBTITLE_TEMPORARY_LEVEL_DELTA = 0.1
 
     @classmethod
     def _safe_parse_jsonish(cls, val: Any) -> Any:
@@ -514,6 +515,7 @@ class WashingService:
     def _match_priority(cls, norm_info: dict, priority_rule: dict) -> tuple[bool, str]:
         is_exclude = priority_rule.get('is_exclude', False)
         exempt_original_lang = priority_rule.get('exempt_original_lang', False)
+        ai_subtitle_temporary = False
 
         # 1. 分辨率
         req_res = priority_rule.get("resolution", [])
@@ -612,6 +614,7 @@ class WashingService:
                     if not matched_subs and not has_ext_sub: 
                         if not cls._can_ai_translate_missing_chinese_subtitle(norm_info, effective_req_sub):
                             return False, "缺少必须的字幕"
+                        ai_subtitle_temporary = True
 
         if priority_rule.get("subtitle_effect") or priority_rule.get("effect_subtitle"):
             has_effect_subtitle = bool(norm_info.get("has_effect_subtitle"))
@@ -659,10 +662,13 @@ class WashingService:
             return False, "未命中任何排除条件"
         else:
             # 普通模式，跑完了所有的 if 都没有 return False，说明全部满足，成功命中
+            if ai_subtitle_temporary:
+                norm_info["ai_subtitle_temporary"] = True
+                norm_info["ai_subtitle_temporary_reason"] = "缺少正式中文字幕，已按 AI 翻译临时替代放行"
             return True, "匹配成功"
 
     @classmethod
-    def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
+    def get_level(cls, norm_info: dict, priorities: list) -> tuple[float, str]:
         fail_reasons = []
         normal_priority_index = 0
         
@@ -672,13 +678,21 @@ class WashingService:
             
             if not is_exclude:
                 normal_priority_index += 1
-                
+
+            norm_info.pop("ai_subtitle_temporary", None)
+            norm_info.pop("ai_subtitle_temporary_reason", None)
             is_match, reason = cls._match_priority(norm_info, p_rule)
             
             if is_match:
                 if is_exclude:
                     return -1, f"规则组[{group_name}] {reason}" 
                 # ★ 格式化输出：规则组->电影->优先级 3
+                if norm_info.get("ai_subtitle_temporary"):
+                    temporary_level = round(normal_priority_index + cls.AI_SUBTITLE_TEMPORARY_LEVEL_DELTA, 1)
+                    return temporary_level, (
+                        f"规则组[{group_name}] -> 优先级 {temporary_level}"
+                        f"（AI 字幕临时替代，等待正式中字版洗版）"
+                    )
                 return normal_priority_index, f"规则组[{group_name}] -> 优先级 {normal_priority_index}"
             
             if not is_exclude:
@@ -958,7 +972,7 @@ class WashingService:
         norm_new = cls._normalize_info(new_video_info)
         level, reason = cls.get_level(norm_new, priorities)
         result["ok"] = True
-        result["level"] = int(level) if level is not None else None
+        result["level"] = float(level) if level is not None else None
         result["reason"] = reason
         return result
 
@@ -1069,7 +1083,7 @@ class WashingService:
 
             old_level, _ = cls.get_level(norm_old, priorities)
             
-            if old_level <= 0:
+            if old_level is None or old_level <= 0:
                 old_level = 999
 
             if old_level < best_old_level:

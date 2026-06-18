@@ -1686,7 +1686,7 @@ class MediaProcessor:
         def _washing_best_sort_key(row):
             level = row.get('level')
             try:
-                level = int(level)
+                level = float(level)
             except Exception:
                 return 10 ** 9
             return level if level > 0 else 10 ** 8 + abs(level)
@@ -1747,7 +1747,9 @@ class MediaProcessor:
 
                 level = row.get('washing_level')
                 try:
-                    level = int(level) if level is not None else None
+                    level = float(level) if level is not None else None
+                    if level is not None and level.is_integer():
+                        level = int(level)
                 except Exception:
                     level = None
 
@@ -1768,6 +1770,7 @@ class MediaProcessor:
                     'media_type': snapshot.get('media_type') or '',
                     'identity': snapshot.get('identity') or {},
                     'evaluated_at': snapshot.get('evaluated_at'),
+                    'ai_subtitle_temporary': bool(snapshot.get('ai_subtitle_temporary')),
                 })
 
             best = min(versions, key=_washing_best_sort_key) if versions else None
@@ -1783,7 +1786,8 @@ class MediaProcessor:
                     'sha1': best.get('sha1'),
                     'target_cid': best.get('target_cid'),
                     'media_type': best.get('media_type'),
-                    'evaluated_at': best.get('evaluated_at')
+                    'evaluated_at': best.get('evaluated_at'),
+                    'ai_subtitle_temporary': bool(best.get('ai_subtitle_temporary')),
                 })
             else:
                 record['washing_level'] = None

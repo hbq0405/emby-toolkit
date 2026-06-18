@@ -243,7 +243,7 @@ def init_db():
                         active_washing BOOLEAN DEFAULT FALSE,
 
                         -- 洗版优先级快照（主动洗版门禁用）
-                        washing_level INTEGER,
+                        washing_level NUMERIC,
                         washing_snapshot_json JSONB DEFAULT '{}'::jsonb,
 
                         -- 内部管理字段
@@ -457,7 +457,7 @@ def init_db():
                         pick_code TEXT,
                         preid TEXT,               -- 文件前 128KB SHA1，用于 115 秒传 upload/init
                         size BIGINT DEFAULT 0,
-                        washing_level INTEGER,
+                        washing_level NUMERIC,
                         washing_snapshot_json JSONB DEFAULT '{}'::jsonb,
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), -- 最后同步时间
                         
@@ -661,7 +661,7 @@ def init_db():
                             "pick_code": "TEXT",
                             "preid": "TEXT",
                             "size": "BIGINT DEFAULT 0",
-                            "washing_level": "INTEGER",
+                            "washing_level": "NUMERIC",
                             "washing_snapshot_json": "JSONB DEFAULT '{}'::jsonb"
                         },
                         'p115_mediainfo_cache': {
@@ -681,7 +681,7 @@ def init_db():
                         'media_metadata': {
                             "imdb_id": "TEXT",
                             "tagline": "TEXT",
-                            "washing_level": "INTEGER",
+                            "washing_level": "NUMERIC",
                             "washing_snapshot_json": "JSONB DEFAULT '{}'::jsonb"
                         },
                         'resubscribe_rules': {
@@ -800,6 +800,8 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_pick_code ON p115_filesystem_cache (pick_code) WHERE pick_code IS NOT NULL AND pick_code <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_preid ON p115_filesystem_cache (preid) WHERE preid IS NOT NULL AND preid <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_local_path ON p115_filesystem_cache (local_path) WHERE local_path IS NOT NULL AND local_path <> '';")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ALTER COLUMN washing_level TYPE NUMERIC USING washing_level::numeric;")
+                    cursor.execute("ALTER TABLE media_metadata ALTER COLUMN washing_level TYPE NUMERIC USING washing_level::numeric;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_washing_level ON p115_filesystem_cache (washing_level) WHERE washing_level IS NOT NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_washing_level ON media_metadata (washing_level) WHERE washing_level IS NOT NULL AND in_library = TRUE;")
 

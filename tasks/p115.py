@@ -2312,14 +2312,16 @@ def _ensure_washing_priority_snapshot_columns():
         with conn.cursor() as cursor:
             cursor.execute("""
                 ALTER TABLE p115_filesystem_cache
-                ADD COLUMN IF NOT EXISTS washing_level INTEGER,
+                ADD COLUMN IF NOT EXISTS washing_level NUMERIC,
                 ADD COLUMN IF NOT EXISTS washing_snapshot_json JSONB DEFAULT '{}'::jsonb;
             """)
             cursor.execute("""
                 ALTER TABLE media_metadata
-                ADD COLUMN IF NOT EXISTS washing_level INTEGER,
+                ADD COLUMN IF NOT EXISTS washing_level NUMERIC,
                 ADD COLUMN IF NOT EXISTS washing_snapshot_json JSONB DEFAULT '{}'::jsonb;
             """)
+            cursor.execute("ALTER TABLE p115_filesystem_cache ALTER COLUMN washing_level TYPE NUMERIC USING washing_level::numeric;")
+            cursor.execute("ALTER TABLE media_metadata ALTER COLUMN washing_level TYPE NUMERIC USING washing_level::numeric;")
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mm_washing_level
                 ON media_metadata (washing_level)
@@ -2789,6 +2791,7 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
 
         level = None
         reason = '未计算'
+        ai_subtitle_temporary = False
 
         raw_row = _lookup_mediainfo_by_sha1(cursor, sha1) if sha1 else None
         if not raw_row or raw_row.get('mediainfo_json') in (None, '', [], {}):
@@ -2833,12 +2836,14 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                     )
                     norm = WashingService._normalize_info(priority_input)
                     level, reason = WashingService.get_level(norm, priorities)
+                    ai_subtitle_temporary = bool(norm.get('ai_subtitle_temporary'))
                     if inferred_target_cid and target_cid == inferred_target_cid and inferred_category_path:
                         reason = f"{reason}（分类路径: {inferred_category_path}）"
                     stats['evaluated_versions'] += 1
             except Exception as e:
                 level = 0
                 reason = f'重算异常: {e}'
+                ai_subtitle_temporary = False
                 logger.warning(f"  ➜ [洗版优先级重算] 版本评分失败 sha1={sha1[:12]}...: {e}", exc_info=True)
 
         if inferred_target_cid and target_cid == inferred_target_cid and organize_target_cid != inferred_target_cid:
@@ -2869,6 +2874,7 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
             'media_type': media_type,
             'target_cid': target_cid,
             'evaluated_at': evaluated_at,
+            'ai_subtitle_temporary': bool(ai_subtitle_temporary),
         }
         versions.append(version)
 
@@ -2878,7 +2884,8 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
                 'target_cid': target_cid or None,
                 'media_type': media_type,
                 'identity': identity,
-                'evaluated_at': evaluated_at
+                'evaluated_at': evaluated_at,
+                'ai_subtitle_temporary': bool(version.get('ai_subtitle_temporary')),
             }
             cursor.execute("""
                 UPDATE p115_filesystem_cache
@@ -2893,12 +2900,16 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
             ))
 
     def _best_sort_key(v):
-        lvl = v.get('level')
-        if isinstance(lvl, int) and lvl > 0:
+        raw_level = v.get('level')
+        try:
+            lvl = float(raw_level) if raw_level is not None else None
+        except Exception:
+            lvl = None
+        if lvl is not None and lvl > 0:
             return (0, lvl)
         if lvl is None:
             return (2, 999999)
-        return (1, abs(int(lvl or 0)))
+        return (1, abs(float(lvl or 0)))
 
     best = sorted(versions, key=_best_sort_key)[0] if versions else {}
     best_level = best.get('level') if best else None
@@ -2909,7 +2920,8 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
         'sha1': best.get('sha1') if best else None,
         'target_cid': best.get('target_cid') if best else None,
         'media_type': media_type,
-        'evaluated_at': evaluated_at
+        'evaluated_at': evaluated_at,
+        'ai_subtitle_temporary': bool(best.get('ai_subtitle_temporary')) if best else False,
     }
 
     cursor.execute("""

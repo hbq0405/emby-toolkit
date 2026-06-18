@@ -3379,7 +3379,9 @@ class P115CacheManager:
                             'size': size,
                         })
                     try:
-                        washing_level = int(washing_level) if washing_level not in (None, '', [], {}) else None
+                        washing_level = float(washing_level) if washing_level not in (None, '', [], {}) else None
+                        if washing_level is not None and washing_level.is_integer():
+                            washing_level = int(washing_level)
                     except Exception:
                         washing_level = None
                     washing_snapshot_json = washing_snapshot_json if isinstance(washing_snapshot_json, dict) else {}
@@ -3740,8 +3742,9 @@ class P115CacheManager:
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_level INTEGER")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_level NUMERIC")
                     cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS washing_snapshot_json JSONB DEFAULT '{}'::jsonb")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache ALTER COLUMN washing_level TYPE NUMERIC USING washing_level::numeric")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_washing_level ON p115_filesystem_cache (washing_level) WHERE washing_level IS NOT NULL")
                     conn.commit()
         except Exception as e:
@@ -7039,10 +7042,11 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
             def _batch_washing_level_from_reason(_reason):
                 text = str(_reason or '')
-                m = re.search(r'优先级\s*([0-9]+)', text)
+                m = re.search(r'优先级\s*([0-9]+(?:\.[0-9]+)?)', text)
                 if m:
                     try:
-                        return int(m.group(1))
+                        value = float(m.group(1))
+                        return int(value) if value.is_integer() else value
                     except Exception:
                         pass
                 # 手动重组/特权替换可能没有优先级文本；这种情况下不按规则等级压制，
@@ -7055,7 +7059,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 except Exception:
                     size_int = 0
                 # level 越小越好；同级体积越大越优。
-                return (int(_level or 9999), -size_int)
+                return (float(_level or 9999), -size_int)
 
             def _build_washing_snapshot(_item, _new_name, _reason='', _file_size=0, _has_ext_sub=False):
                 """给 p115_filesystem_cache 写入洗版优先级快照。失败只返回空快照，不影响整理。"""
@@ -7063,6 +7067,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     file_sha1 = _item.get('sha1') or _item.get('sha')
                     level = _batch_washing_level_from_reason(_reason)
                     level_reason = str(_reason or '').strip()
+                    ai_subtitle_temporary = bool('AI 字幕临时替代' in level_reason or 'AI字幕临时替代' in level_reason)
 
                     # reason 里没有优先级时，现场按 RAW 再算一次，保证非 replace/手动重组也能留下快照。
                     if level >= 9999 and file_sha1:
@@ -7088,6 +7093,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 new_info['_need_clean_version_check'] = WashingService._priorities_need_clean_version(priorities)
                                 norm_new = WashingService._normalize_info(new_info)
                                 level, level_reason = WashingService.get_level(norm_new, priorities)
+                                ai_subtitle_temporary = bool(norm_new.get('ai_subtitle_temporary'))
 
                     if level >= 9999:
                         return {}
@@ -7103,13 +7109,14 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         })
                     from datetime import datetime, timezone
                     return {
-                        'washing_level': int(level),
+                        'washing_level': level,
                         'washing_snapshot_json': {
                             'reason': level_reason or f'优先级 {level}',
                             'target_cid': str(target_cid or ''),
                             'media_type': 'movie' if self.media_type == 'movie' else 'series',
                             'identity': identity,
-                            'evaluated_at': datetime.now(timezone.utc).isoformat()
+                            'evaluated_at': datetime.now(timezone.utc).isoformat(),
+                            'ai_subtitle_temporary': bool(ai_subtitle_temporary),
                         }
                     }
                 except Exception as e:

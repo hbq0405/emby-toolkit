@@ -34,6 +34,43 @@ PRO_PRICING_FALLBACK_TIERS = [
 
 # 2. 定义路由
 
+def _normalize_pro_tier(value: str = '') -> str:
+    text = str(value or '').strip().upper()
+    if text in {'M', 'MONTH', 'MONTHLY', '月卡'}:
+        return 'M'
+    if text in {'Q', 'QUARTER', 'QUARTERLY', '季卡'}:
+        return 'Q'
+    if text in {'Y', 'YEAR', 'YEARLY', '年卡'}:
+        return 'Y'
+    if text in {'L', 'LIFETIME', 'FOREVER', '永久', '终身'}:
+        return 'L'
+    if text in {'C', 'TRIAL', '体验', '体验卡'}:
+        return 'C'
+    return ''
+
+
+def _extract_pro_tier(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return ''
+    for key in ('pro_tier', 'tier', 'level', 'card_type', 'tier_code', 'plan'):
+        tier = _normalize_pro_tier(payload.get(key))
+        if tier:
+            return tier
+    return ''
+
+
+def _save_pro_state(*, license_key: str = '', expire_time: str = '', tier: str = ''):
+    if license_key:
+        settings_db.save_setting("pro_license_key", license_key)
+    if expire_time:
+        settings_db.save_setting("pro_expire_time", expire_time)
+    normalized_tier = _normalize_pro_tier(tier)
+    if normalized_tier:
+        settings_db.save_setting("pro_tier", normalized_tier)
+    config_manager.APP_CONFIG['is_pro_active'] = True
+    config_manager.APP_CONFIG['pro_expire_time'] = expire_time
+    config_manager.APP_CONFIG['pro_tier'] = normalized_tier
+
 def _fallback_pro_pricing(message=None):
     data = {
         "success": True,
@@ -748,16 +785,11 @@ def activate_pro():
         result = resp.json()
         
         if result.get("success") and result.get("is_pro"):
-            # 1. 验证通过，保存卡密和到期时间到本地数据库
-            settings_db.save_setting("pro_license_key", license_key)
             expire_time = result.get("expire_time", "2099-12-31T23:59:59Z")
-            settings_db.save_setting("pro_expire_time", expire_time)
+            tier = _extract_pro_tier(result)
+            _save_pro_state(license_key=license_key, expire_time=expire_time, tier=tier)
             
-            # 2. 更新内存状态
-            config_manager.APP_CONFIG['is_pro_active'] = True
-            config_manager.APP_CONFIG['pro_expire_time'] = expire_time
-            
-            logger.info(f"  ➜ Pro 激活成功！到期时间: {expire_time}")
+            logger.info(f"  ➜ Pro 激活成功！等级: {tier or '-'}，到期时间: {expire_time}")
             return jsonify({"success": True, "message": result.get("msg", "激活成功！")})
         else:
             # 验证失败
@@ -795,14 +827,11 @@ def transfer_pro():
         result = resp.json()
         
         if result.get("success") and result.get("is_pro"):
-            settings_db.save_setting("pro_license_key", license_key)
             expire_time = result.get("expire_time", "2099-12-31T23:59:59Z")
-            settings_db.save_setting("pro_expire_time", expire_time)
+            tier = _extract_pro_tier(result)
+            _save_pro_state(license_key=license_key, expire_time=expire_time, tier=tier)
             
-            config_manager.APP_CONFIG['is_pro_active'] = True
-            config_manager.APP_CONFIG['pro_expire_time'] = expire_time
-            
-            logger.info(f"  ➜ Pro 设备换绑成功！到期时间: {expire_time}")
+            logger.info(f"  ➜ Pro 设备换绑成功！等级: {tier or '-'}，到期时间: {expire_time}")
             return jsonify({"success": True, "message": result.get("msg", "换绑成功！")})
         else:
             return jsonify({"success": False, "message": result.get("msg", "换绑失败")}), 400

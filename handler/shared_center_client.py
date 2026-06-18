@@ -85,7 +85,11 @@ def build_current_pro_quota_report_payload() -> Dict[str, Any]:
         license_key = _setting_text(key)
         if license_key:
             break
-    tier = _normalize_pro_tier(app_cfg.get('pro_tier') or app_cfg.get('pro_level') or app_cfg.get('pro_card_type')) or _infer_pro_tier_from_license(license_key)
+    tier = (
+        _normalize_pro_tier(app_cfg.get('pro_tier') or app_cfg.get('pro_level') or app_cfg.get('pro_card_type'))
+        or _normalize_pro_tier(_setting_text('pro_tier') or _setting_text('pro_level') or _setting_text('pro_card_type'))
+        or _infer_pro_tier_from_license(license_key)
+    )
     app_is_pro_active = bool(app_cfg.get('is_pro_active', False))
     pro_expire_time = str(app_cfg.get('pro_expire_time') or '').strip() or _setting_text('pro_expire_time')
     expire_state = _pro_expire_state(pro_expire_time)

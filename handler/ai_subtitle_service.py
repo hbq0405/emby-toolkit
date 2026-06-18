@@ -194,7 +194,7 @@ def _media_assets_for_emby_id(row: Dict[str, Any], emby_item_id: str) -> List[Di
 def _washing_requires_chinese_subtitle(row: Dict[str, Any]) -> bool:
     try:
         level = row.get("washing_level")
-        level = int(level) if level is not None else None
+        level = float(level) if level is not None else None
     except Exception:
         level = None
     if not level or level <= 0:

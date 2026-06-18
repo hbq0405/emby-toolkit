@@ -2533,7 +2533,7 @@ def _local_episode_washing_snapshot(parent_series_tmdb_id: Any, season_number: A
 
 def _is_inventory_best_washing_level(snapshot: Dict[str, Any]) -> bool:
     try:
-        return int((snapshot or {}).get('washing_level')) == 1
+        return float((snapshot or {}).get('washing_level')) == 1.0
     except Exception:
         return False
 

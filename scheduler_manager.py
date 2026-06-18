@@ -469,11 +469,23 @@ class SchedulerManager:
                     payload = {"action": "check", "server_id": server_id}
                     resp = requests.post(verify_url, json=payload, timeout=10).json()
                     if resp.get("success") and resp.get("is_pro"):
+                        tier = str(
+                            resp.get("pro_tier")
+                            or resp.get("tier")
+                            or resp.get("level")
+                            or resp.get("card_type")
+                            or resp.get("tier_code")
+                            or ""
+                        ).strip().upper()
                         config_manager.APP_CONFIG['is_pro_active'] = True
                         config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "")
+                        config_manager.APP_CONFIG['pro_tier'] = tier
+                        if tier:
+                            settings_db.save_setting("pro_tier", tier)
                         # logger.debug("  ➜ Pro 状态有效。")
                     else:
                         config_manager.APP_CONFIG['is_pro_active'] = False
+                        config_manager.APP_CONFIG['pro_tier'] = ''
                         logger.warning(f"  ➜ Pro 状态已失效或过期！已降级为免费版。原因: {resp.get('msg')}")
                 except Exception as e:
                     pass
