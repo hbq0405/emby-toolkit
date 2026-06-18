@@ -22,7 +22,7 @@ TEXT_SUBTITLE_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "te
 CHINESE_LANGS = {"chi", "zho", "zh", "chs", "cht", "cmn", "yue", "zh-cn", "zh-hans", "zh-tw", "zh-hant"}
 TRANSLATABLE_LANGS = {"eng", "en", "jpn", "ja", "kor", "ko"}
 VIDEO_EXTS = {".mkv", ".mp4", ".mov", ".avi", ".ts", ".m2ts", ".iso", ".wmv", ".rmvb"}
-EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT = 90
+EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT = 150
 
 
 def process_ai_subtitle_translation_for_emby_items(
