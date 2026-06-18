@@ -109,14 +109,12 @@ def build_current_pro_quota_report_payload() -> Dict[str, Any]:
         server_id = str(getattr(extensions, 'EMBY_SERVER_ID', '') or '').strip()
     except Exception:
         server_id = ''
-    install_id = str(cfg.get('p115_shared_install_id') or '').strip()
     return {
         'is_pro_active': effective_is_pro_active,
         'pro_tier': tier,
         'pro_expire_time': pro_expire_time,
         'pro_license_hash': _sha256_or_empty(license_key),
         'pro_server_id_hash': _sha256_or_empty(server_id),
-        'install_id_hash': _sha256_or_empty(install_id),
         'client_version': _app_version(),
         'auth_source': 'client_local_license_grace' if auth_grace else 'client_app_config',
         'auth_state': auth_state,
@@ -319,16 +317,18 @@ class SharedCenterClient:
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
-    def register_device(self, name: str = '', install_id: str = '', admin_token: str = '') -> Dict[str, Any]:
+    def register_device(self, name: str = '') -> Dict[str, Any]:
         if not self.base_url:
             raise RuntimeError('共享中心地址未配置')
-        payload = {'name': str(name or '').strip() or 'ETK Device', 'install_id': str(install_id or '').strip()}
+        server_id_hash = _current_server_id_hash()
+        if not server_id_hash:
+            raise RuntimeError('无法读取 Emby ServerID，不能注册共享中心设备')
+        payload = {
+            'name': str(name or '').strip() or 'ETK Device',
+            'server_id_hash': server_id_hash,
+        }
         headers = {'X-Client-Version': _app_version(), 'X-ETK-Version': _app_version(), 'Content-Type': 'application/json', 'User-Agent': _client_user_agent()}
         resp = _CENTER_HTTP.post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
-        if resp.status_code == 404 and admin_token:
-            admin_headers = dict(headers)
-            admin_headers['X-Admin-Token'] = str(admin_token)
-            resp = _CENTER_HTTP.post(f"{self.base_url}/api/v1/admin/devices/register", headers=admin_headers, json={'name': payload['name']}, **_request_kwargs(20))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 

@@ -240,22 +240,6 @@
               <template #unchecked>关闭</template>
             </n-switch>
           </n-form-item>
-          <n-form-item label="中心地址">
-            <n-input v-model:value="sharedConfigForm.p115_shared_center_url" placeholder="https://shared.55565576.xyz" />
-          </n-form-item>
-          <n-form-item label="安装实例 ID">
-            <n-input v-model:value="sharedConfigForm.p115_shared_install_id" disabled placeholder="自动生成，用于恢复设备 Token 和继承签名身份" />
-            <template #feedback>用于中心端识别同一安装实例。请勿清空；Token 丢失时会依靠它恢复原设备身份。</template>
-          </n-form-item>
-          <n-form-item label="设备 Token">
-            <n-input-group>
-              <n-input v-model:value="sharedConfigForm.p115_shared_device_token" type="password" show-password-on="click" placeholder="注册设备后自动写入，也可手动粘贴" />
-              <n-button v-if="needsCenterDeviceToken" type="warning" ghost :loading="registeringDevice" @click="registerCenterDevice">
-                {{ centerDeviceRegisterButtonText }}
-              </n-button>
-            </n-input-group>
-            <template #feedback>{{ centerDeviceTokenHelpText }}</template>
-          </n-form-item>
           <n-form-item label="禁止单集秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_disable_episode_transfer">
               <template #checked>不秒传单集</template>
@@ -877,24 +861,15 @@ const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink
 
 const centerDeviceId = computed(() => String((summary.value.credit || {}).device_id || '').trim());
 const sharedDeviceToken = computed(() => String(sharedConfigForm.p115_shared_device_token || '').trim());
-const sharedInstallId = computed(() => String(sharedConfigForm.p115_shared_install_id || '').trim());
 const hasCenterDevice = computed(() => Boolean(centerDeviceId.value));
 const hasSharedDeviceToken = computed(() => Boolean(sharedDeviceToken.value));
 const needsCenterDeviceToken = computed(() => !hasSharedDeviceToken.value);
-const centerDeviceRegisterButtonText = computed(() => (sharedInstallId.value || centerDeviceId.value) ? '恢复 Token' : '注册设备');
+const centerDeviceRegisterButtonText = computed(() => centerDeviceId.value ? '重新连接' : '连接中心');
 const centerDeviceTokenAlertText = computed(() => {
   if (hasCenterDevice.value) {
-    return '共享资源中心设备记录还在，但本地设备 Token 缺失。点击“恢复 Token”会使用安装实例 ID 向中心重新获取 Token，并继承原设备的共享源和签名身份。';
+    return '共享资源中心设备记录还在，但本地连接凭据缺失。点击“重新连接”会使用 Emby ServerID 取回同一设备身份。';
   }
-  return '共享资源中心尚未注册设备。点击“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献点、登记共享、秒传中心资源。';
-});
-const centerDeviceTokenHelpText = computed(() => {
-  if (needsCenterDeviceToken.value) {
-    return (sharedInstallId.value || centerDeviceId.value)
-      ? '本地 Token 为空。点击“恢复 Token”会保留安装实例 ID，并向中心重新获取原设备 Token。'
-      : '本地尚未注册中心设备。点击“注册设备”会创建安装实例 ID 并写入设备 Token。';
-  }
-  return '设备 Token 已配置。普通用户不再提供“重置设备”入口，避免误操作导致设备身份和贡献点异常。';
+  return '共享资源中心尚未连接。点击“连接中心”后，系统会使用 Emby ServerID 注册中心身份。';
 });
 
 const firstFiniteNumber = (...values) => {
@@ -3671,13 +3646,13 @@ const setupCenterInfiniteObserver = () => {
 
 const registerCenterDevice = async () => {
   if (hasSharedDeviceToken.value) {
-    message.info('设备 Token 已存在，无需重新注册；如 Token 确认丢失，请先清空并保存配置后再恢复。');
+    message.info('共享资源中心已连接，无需重复操作。');
     return;
   }
   registeringDevice.value = true;
   try {
     const res = await axios.post('/api/shared/resources/center/device/register', {});
-    message.success(res.data?.message || (sharedInstallId.value || centerDeviceId.value ? '设备 Token 已恢复' : '中心设备已注册'));
+    message.success(res.data?.message || (centerDeviceId.value ? '共享资源中心已重新连接' : '共享资源中心已连接'));
     await Promise.allSettled([loadSharedConfig(), loadSummary(), loadLedger(), loadCenterSources()]);
   } catch (e) {
     message.error(e.response?.data?.message || '注册/恢复中心设备失败');
@@ -3688,7 +3663,7 @@ const registerCenterDevice = async () => {
 
 const refreshCredit = async () => {
   if (needsCenterDeviceToken.value) {
-    message.warning('设备 Token 缺失，请先注册或恢复设备 Token。');
+    message.warning('共享资源中心未连接，请先连接中心。');
     return;
   }
   refreshingCredit.value = true;
