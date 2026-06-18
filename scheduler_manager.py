@@ -406,10 +406,10 @@ class SchedulerManager:
             logger.info("  ➜ 共享资源未启用，本次不设置共享分享状态同步定时任务。")
             return
 
-        install_id = cfg.get('p115_shared_install_id', '')
-        if install_id:
-            # 每 10 分钟一次，并按设备稳定错峰，避免全部客户端同一分钟打中心。
-            base_minute = int(hashlib.md5(install_id.encode()).hexdigest(), 16) % 10
+        server_id = str(getattr(extensions, 'EMBY_SERVER_ID', '') or '').strip()
+        if server_id:
+            # 每 10 分钟一次，并按 Emby ServerID 稳定错峰，避免全部客户端同一分钟打中心。
+            base_minute = int(hashlib.md5(server_id.encode()).hexdigest(), 16) % 10
         else:
             base_minute = random.randint(0, 9)
 

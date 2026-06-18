@@ -117,8 +117,6 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data['p115_shared_block_short_drama_transfer'] = _boolish(data.get('p115_shared_block_short_drama_transfer'), False)
     data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
     install_id = str(data.get('p115_shared_install_id') or '').strip()
-    if not install_id:
-        install_id = uuid.uuid4().hex
     data['p115_shared_install_id'] = install_id
     return settings_db.save_shared_resource_config(data)
 
@@ -1935,27 +1933,24 @@ def api_center_import():
 @admin_required
 def api_register_center_device():
     cfg = _shared_resource_config_payload()
-    install_id = str(cfg.get('p115_shared_install_id') or '').strip() or uuid.uuid4().hex
     existing_token = str(cfg.get('p115_shared_device_token') or '').strip()
     if existing_token:
-        # 这个接口只负责“首次注册”。已注册设备不要再从页面或脚本反复申请 token，
-        # 避免把“重置设备”当成刷基础贡献点入口。token 真损坏时，先在配置里清空 token 再注册。
-        cfg['p115_shared_install_id'] = install_id
+        # 这个接口只负责“首次注册”。已注册设备不要再从页面或脚本反复申请 token。
+        # 连接凭据真损坏时，先在配置里清空，中心端会按 Emby ServerID 重发同一设备的新凭据。
         cfg['p115_shared_resource_enabled'] = True
         saved = _save_shared_config(cfg)
         return jsonify({
             'success': True,
-            'message': '共享中心设备已注册，无需重复注册；如设备 Token 已损坏，请先在配置中清空 Token 后重新注册。',
+            'message': '共享资源中心已连接，无需重复操作；如连接凭据损坏，请清空后按 ServerID 重新连接。',
             'data': saved,
-            'device': {'device_token': existing_token, 'install_id': install_id, 'already_registered': True},
+            'device': {'device_token': existing_token, 'already_registered': True},
         })
     name = socket.gethostname() or 'ETK Device'
     try:
         client = SharedCenterClient()
-        resp = client.register_device(name=name, install_id=install_id)
+        resp = client.register_device(name=name)
         cfg.update({
             'p115_shared_device_token': resp.get('device_token') or '',
-            'p115_shared_install_id': install_id,
             'p115_shared_resource_enabled': True,
         })
         saved = _save_shared_config(cfg)
