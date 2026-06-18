@@ -168,6 +168,7 @@ CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE = "ai_translate_actor_role"               
 CONFIG_OPTION_AI_TRANSLATE_TITLE = "ai_translate_title"         # 是否翻译标题
 CONFIG_OPTION_AI_TRANSLATE_OVERVIEW = "ai_translate_overview"   # 是否翻译简介
 CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW = "ai_translate_episode_overview"   # 是否翻译集简介
+CONFIG_OPTION_AI_TRANSLATE_SUBTITLE = "ai_translate_subtitle"   # 是否启用 AI 字幕翻译
 CONFIG_OPTION_AI_RECOGNITION = "ai_recognition"                 # 是否启用AI辅助识别
 CONFIG_OPTION_AI_JOKE_FALLBACK = "ai_joke_fallback"             # 剧集无简介生成小笑话
 

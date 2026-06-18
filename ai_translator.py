@@ -182,7 +182,130 @@ class AITranslator:
             return self._translate_transliterate_mode(unique_texts)
         else:
             return self._translate_fast_mode(unique_texts)
-        
+
+    def translate_subtitle_lines(
+        self,
+        lines: List[str],
+        title: Optional[str] = None,
+        year: Optional[int] = None,
+        source_language: str = "",
+    ) -> List[str]:
+        """
+        翻译字幕文本行，保持输入顺序。
+        只处理纯文本字幕，不做 OCR，也不改时间轴。
+        """
+        if not lines:
+            return []
+
+        indexed_lines = []
+        results = [""] * len(lines)
+        for idx, text in enumerate(lines):
+            raw = str(text or "")
+            if raw.strip():
+                indexed_lines.append({"index": idx, "text": raw})
+            else:
+                results[idx] = raw
+
+        if not indexed_lines:
+            return results
+
+        CHUNK_SIZE = 60
+        chunks = [indexed_lines[i:i + CHUNK_SIZE] for i in range(0, len(indexed_lines), CHUNK_SIZE)]
+        if len(chunks) > 1:
+            logger.info(f"  ➜ [字幕翻译] 需要翻译 {len(indexed_lines)} 行字幕，分为 {len(chunks)} 个批次。")
+
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            payload = {
+                "context": {
+                    "title": title or "",
+                    "year": year,
+                    "source_language": source_language or "",
+                },
+                "lines": chunk,
+            }
+            translated_map = self._translate_subtitle_chunk(payload)
+            for item in chunk:
+                idx = item["index"]
+                translated = translated_map.get(str(idx))
+                if translated is None:
+                    translated = translated_map.get(idx)
+                results[idx] = translated if isinstance(translated, str) and translated.strip() else item["text"]
+            if chunk_index < len(chunks):
+                time.sleep(0.5)
+
+        return results
+
+    def _translate_subtitle_chunk(self, payload: Dict[str, Any]) -> Dict[Any, str]:
+        if not self.client:
+            return {}
+
+        system_prompt = (
+            "你是字幕翻译器。只把输入中的文本字幕翻译成简体中文，"
+            "不要解释，不要添加额外内容，不要改动序号和时间轴，不要合并或拆分行。"
+            "如果原文已经是中文，原样返回。"
+            "只返回 JSON 对象，格式为 {\"translations\": {\"0\": \"...\", \"1\": \"...\"}}。"
+        )
+        user_prompt = json.dumps(payload, ensure_ascii=False)
+
+        try:
+            response_content = ""
+            if self.provider == 'openai':
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    timeout=self.openai_request_timeout,
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'zhipuai':
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'gemini':
+                config = types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                    system_instruction=system_prompt,
+                )
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=user_prompt,
+                    config=config,
+                )
+                response_content = resp.text
+
+            result = _safe_json_loads(response_content)
+            if not isinstance(result, dict):
+                return {}
+            translations = result.get("translations")
+            if isinstance(translations, dict):
+                return translations
+            if isinstance(translations, list):
+                mapped = {}
+                for item in translations:
+                    if not isinstance(item, dict):
+                        continue
+                    key = item.get("index")
+                    value = item.get("translation") or item.get("text")
+                    if key is not None and isinstance(value, str):
+                        mapped[key] = value
+                return mapped
+            return {}
+        except Exception as e:
+            logger.error(f"  ➜ [字幕翻译] 翻译失败: {e}", exc_info=True)
+            return {}
+
     def _get_prompt(self, key: str) -> str:
         """
         优先从数据库获取用户自定义提示词，如果没有则使用 utils 中的默认值。

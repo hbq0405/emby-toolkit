@@ -1092,6 +1092,11 @@
                             </n-checkbox>
                           </n-gi>
                           <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_translate_subtitle">
+                              翻译字幕
+                            </n-checkbox>
+                          </n-gi>
+                          <n-gi>
                             <n-checkbox v-model:checked="configModel.ai_vector">
                               生成媒体向量
                             </n-checkbox>
