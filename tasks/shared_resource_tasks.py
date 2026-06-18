@@ -1145,6 +1145,40 @@ def _completed_share_recent_list_items(p115, *, max_pages: int = 20, limit: int 
     return out
 
 
+def _completed_share_full_list_scan(p115, *, max_pages: int = 50, limit: int = 100) -> Dict[str, Any]:
+    if not hasattr(p115, 'share_list'):
+        return {'items': [], 'complete': False, 'pages': 0, 'page_limit': 0}
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    page_limit = max(1, min(int(max_pages or 50), 50))
+    page_size = max(1, min(int(limit or 100), 100))
+    pages = 0
+    complete = False
+    for page in range(page_limit):
+        offset = page * page_size
+        try:
+            resp = p115.share_list({'limit': page_size, 'offset': offset, 'show_cancel_share': 1, 'order': 'create_time', 'asc': 0})
+        except Exception as e:
+            logger.debug(f"  ➜ [完结季分享] 全量拉取 115 分享列表失败：offset={offset}, err={e}")
+            break
+        items = _completed_share_list_items(resp)
+        pages += 1
+        if not items:
+            complete = True
+            break
+        for item in items:
+            code = _completed_share_code_from_list_item(item)
+            marker = code or id(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            out.append(item)
+        if len(items) < page_size:
+            complete = True
+            break
+    return {'items': out, 'complete': complete, 'pages': pages, 'page_limit': page_limit}
+
+
 def _completed_share_list_item_title(item: Dict[str, Any]) -> str:
     item = item if isinstance(item, dict) else {}
     for key in ('share_title', 'shareTitle', 'file_name', 'fileName', 'name', 'title'):
@@ -1857,7 +1891,8 @@ def _direct_center_share_sync_heartbeat(payload: Dict[str, Any]) -> Dict[str, An
 
 
 def _report_share_sync_heartbeat(summary: Dict[str, Any] = None, *, status: str = 'ok',
-                                 valid_logical_share_channels: List[Dict[str, Any]] | None = None) -> Dict[str, Any]:
+                                 valid_logical_share_channels: List[Dict[str, Any]] | None = None,
+                                 valid_logical_share_channels_full: bool = False) -> Dict[str, Any]:
     """向中心端签到：客户端分享同步任务硬编码 10 分钟一次，中心三次缺失判离线。"""
     if not _enabled():
         return {'ok': False, 'skipped': True, 'message': '共享资源未启用'}
@@ -1870,6 +1905,7 @@ def _report_share_sync_heartbeat(summary: Dict[str, Any] = None, *, status: str 
     }
     if valid_logical_share_channels is not None:
         payload['valid_logical_share_channels'] = valid_logical_share_channels
+        payload['valid_logical_share_channels_full'] = bool(valid_logical_share_channels_full)
     client = SharedCenterClient()
     method = getattr(client, 'share_sync_heartbeat', None)
     if callable(method):
@@ -2023,40 +2059,46 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
 
                 list_item = share_list_map.get(share_code) or {}
                 # 只使用批量 share_list 的结果；不再对每个 share_code 调 /share/shareinfo。
-                # share_list 查不到或字段不明确时保持本地原状态。逻辑季 valid 会继续补报中心，
-                # 用本地保存的 share_code/share_url 修复中心端缺转存凭证的问题。
+                # 高频任务只处理明确返回的状态变化；share_list 查不到或字段不明确时保持本地原状态。
+                # 该设备分享是否缺失由共享维护任务的全量对账负责，避免部分列表误判导致中心端反复派发创建分享。
                 if list_item:
                     status_info = _completed_share_status_from_list_item(list_item, current_status=row_status)
-                    status_source = 'share_list'
                     list_file_count = _completed_share_list_item_file_count(list_item)
                     list_total_size = _completed_share_list_item_total_size(list_item)
                 else:
-                    status_info = {
-                        'status': 'expired',
-                        'review_status': 'expired',
-                        'message': '115 分享列表未找到该 share_code，按本地分享已不存在处理',
-                        'explicit': True,
-                        'not_found_in_share_list': True,
-                    }
-                    status_source = 'share_list_not_found'
-                    list_file_count = 0
-                    list_total_size = 0
+                    keep_status = str(row.get('status') or '').strip() or 'pending_review'
+                    keep_review = str(row.get('review_status') or '').strip() or ('passed' if keep_status == 'valid' else 'pending')
+                    msg = '本轮 115 分享列表未命中该 share_code，保持本地状态，等待共享维护任务全量对账'
+                    saved = shared_share_db.update_completed_season_share_channel(
+                        channel_id,
+                        status=keep_status,
+                        review_status=keep_review,
+                        status_message=msg,
+                        raw_json={
+                            'share_list_item': {},
+                            'status_source': 'share_list_partial_miss',
+                            'center_status_skipped': True,
+                            'reason': 'partial_share_list_miss',
+                        },
+                        last_checked_at='NOW()',
+                    )
+                    items.append({
+                        'channel_id': channel_id,
+                        'source_id': source_id,
+                        'status': keep_status,
+                        'ok': True,
+                        'skipped_center_update': True,
+                        'reason': 'partial_share_list_miss',
+                        'local': saved,
+                    })
+                    continue
 
                 raw_status_json = {
                     'share_list_item': list_item,
-                    'status_source': status_source,
+                    'status_source': 'share_list',
                 }
 
-                implicit_logical_valid_repair = (
-                    _share_channel_is_logical(row)
-                    and str(status_info.get('status') or row_status or '').strip().lower() == 'valid'
-                    and str(row.get('share_code') or '').strip()
-                )
-                full_logical_credential_resync = bool(
-                    _share_channel_is_logical(row)
-                    and str(row.get('share_code') or '').strip()
-                )
-                if not status_info.get('explicit') and not implicit_logical_valid_repair and not full_logical_credential_resync:
+                if not status_info.get('explicit'):
                     keep_status = str(row.get('status') or '').strip() or 'pending_review'
                     keep_review = str(row.get('review_status') or '').strip() or ('passed' if keep_status == 'valid' else 'pending')
                     msg = (
@@ -2100,10 +2142,7 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                 # 这些只更新本地 last_checked_at，不再制造 completed_season_share_status_update。
                 terminal_status = status in {'expired', 'review_failed'}
                 status_changed = bool(row_status and row_status != status)
-                is_logical_channel = _share_channel_is_logical(row)
-                # 逻辑季分享每轮都补报完整凭证和状态，中心端按幂等上报处理。
-                # 这样可以修复中心端丢 share_code/share_url 的脏数据，不再依赖“状态变化”。
-                should_report_center = bool(terminal_status or status_changed or (is_logical_channel and share_code))
+                should_report_center = bool(terminal_status or status_changed)
 
                 if should_report_center:
                     center_resp = _update_center_share_channel_status(client, row, channel_id, {
@@ -2385,6 +2424,71 @@ def repair_logical_season_share_channels_from_115(*, max_pages: int = 20, dry_ru
             'items': backfilled_items[:20],
             'ambiguous_items': ambiguous_items[:10],
             'deleted_items': deleted_items[:20],
+        }
+    finally:
+        _COMPLETED_SHARE_SYNC_LOCK.release()
+
+
+def reconcile_logical_season_share_channels_full(*, max_pages: int = 50) -> Dict[str, Any]:
+    """共享维护任务使用的全量 115 分享对账；高频同步不要调用。"""
+    if not _enabled():
+        return {'ok': False, 'message': '共享资源未启用', 'checked': 0}
+    if not _COMPLETED_SHARE_SYNC_LOCK.acquire(blocking=False):
+        return {'ok': True, 'skipped': True, 'message': '已有分享状态同步正在运行', 'checked': 0}
+    try:
+        from handler.p115_service import P115Service
+        p115 = P115Service.get_client()
+        if not p115:
+            return {'ok': False, 'message': '115 客户端未初始化', 'checked': 0}
+
+        scan = _completed_share_full_list_scan(p115, max_pages=max_pages, limit=100)
+        share_items = scan.get('items') if isinstance(scan, dict) else []
+        share_items = [item for item in (share_items or []) if _completed_share_code_from_list_item(item)]
+        if not scan.get('complete'):
+            return {
+                'ok': False,
+                'message': '115 分享列表未完整扫完，本轮不做全量清理',
+                'checked': len(share_items),
+                'pages': scan.get('pages', 0),
+                'page_limit': scan.get('page_limit', max_pages),
+            }
+
+        raw_rows = shared_share_db.list_completed_season_share_channels(
+            statuses=['creating', 'pending_review', 'valid'],
+            limit=5000,
+            need_check=False,
+        )
+        local_codes = {
+            str(r.get('share_code') or '').strip()
+            for r in (raw_rows or [])
+            if _share_channel_is_logical(r) and str(r.get('share_code') or '').strip()
+        }
+        valid_channels = []
+        for item in share_items:
+            share_code = _completed_share_code_from_list_item(item)
+            if not share_code or share_code not in local_codes:
+                continue
+            status_info = _completed_share_status_from_list_item(item, current_status='valid')
+            if str(status_info.get('status') or '').strip().lower() != 'valid':
+                continue
+            valid_channels.append({'share_code': share_code})
+
+        heartbeat = _report_share_sync_heartbeat(
+            {
+                'stage': 'maintenance_full_reconcile',
+                'scanned_115': len(share_items),
+                'valid_logical_share_channels': len(valid_channels),
+                'pages': scan.get('pages', 0),
+            },
+            valid_logical_share_channels=valid_channels,
+            valid_logical_share_channels_full=True,
+        )
+        return {
+            'ok': not (isinstance(heartbeat, dict) and heartbeat.get('ok') is False),
+            'checked': len(share_items),
+            'valid_logical_share_channels': len(valid_channels),
+            'pages': scan.get('pages', 0),
+            'heartbeat': heartbeat,
         }
     finally:
         _COMPLETED_SHARE_SYNC_LOCK.release()
@@ -7020,6 +7124,11 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
             parts.append(f"未登记违规分享清理={share_repair.get('deleted_untracked_invalid')}")
         if share_repair.get('ambiguous'):
             parts.append(f"分享回填待确认={share_repair.get('ambiguous')}")
+    share_reconcile = result.get('logical_season_share_full_reconcile') if isinstance(result.get('logical_season_share_full_reconcile'), dict) else {}
+    if share_reconcile:
+        parts.append(f"分享全量对账={share_reconcile.get('valid_logical_share_channels', 0)}/{share_reconcile.get('checked', 0)}")
+        if not share_reconcile.get('ok') and share_reconcile.get('message'):
+            parts.append(f"分享全量对账跳过={share_reconcile.get('message')}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
     for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'display_meta_backfill_error', 'logical_season_share_repair_error', 'credit_error'):
@@ -7058,6 +7167,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['logical_season_share_repair'] = repair_logical_season_share_channels_from_115(max_pages=20, dry_run=False)
     except Exception as e:
         result['logical_season_share_repair_error'] = str(e)
+    try:
+        result['logical_season_share_full_reconcile'] = reconcile_logical_season_share_channels_full(max_pages=50)
+    except Exception as e:
+        result['logical_season_share_full_reconcile_error'] = str(e)
     try:
         result['credit'] = _sync_center_credit()
     except Exception as e:
@@ -7111,15 +7224,12 @@ def task_shared_share_status_sync_high_freq(processor=None, maintenance_silent: 
 
     final_heartbeat = {}
     if share_sync.get('ok'):
-        valid_channels = share_sync.get('valid_logical_share_channels') or []
         try:
             final_heartbeat = _report_share_sync_heartbeat(
                 {
                     'stage': 'task_done',
                     'checked': share_sync.get('checked', 0),
-                    'valid_logical_share_channels': len(valid_channels),
                 },
-                valid_logical_share_channels=valid_channels,
             )
         except Exception as e:
             final_heartbeat = {'ok': False, 'error': str(e)}
