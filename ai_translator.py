@@ -1,6 +1,7 @@
 # ai_translator.py
 import json
 import re
+import threading
 import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
@@ -13,6 +14,8 @@ except ImportError:
     np = None
 
 logger = logging.getLogger(__name__)
+
+_AI_API_LOCK = threading.Lock()
 
 def _safe_json_loads(text: str) -> Optional[Dict]:
     """
@@ -159,6 +162,11 @@ class AITranslator:
             logger.error(f"{self.provider.capitalize()} client 初始化失败: {e}")
             raise
 
+    def _call_ai_api(self, caller):
+        """同一进程内串行化 AI API 请求，避免单个 API Key 被并发打爆。"""
+        with _AI_API_LOCK:
+            return caller()
+
     def translate(self, text: str) -> Optional[str]:
         if not text or not text.strip():
             return text
@@ -209,7 +217,7 @@ class AITranslator:
         if not indexed_lines:
             return results
 
-        CHUNK_SIZE = 60
+        CHUNK_SIZE = 25
         chunks = [indexed_lines[i:i + CHUNK_SIZE] for i in range(0, len(indexed_lines), CHUNK_SIZE)]
         if len(chunks) > 1:
             logger.info(f"  ➜ [字幕翻译] 需要翻译 {len(indexed_lines)} 行字幕，分为 {len(chunks)} 个批次。")
@@ -250,7 +258,7 @@ class AITranslator:
         try:
             response_content = ""
             if self.provider == 'openai':
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -259,10 +267,10 @@ class AITranslator:
                     response_format={"type": "json_object"},
                     temperature=0.0,
                     timeout=self.openai_request_timeout,
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'zhipuai':
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -270,7 +278,7 @@ class AITranslator:
                     ],
                     response_format={"type": "json_object"},
                     temperature=0.0,
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'gemini':
                 config = types.GenerateContentConfig(
@@ -278,11 +286,11 @@ class AITranslator:
                     temperature=0.0,
                     system_instruction=system_prompt,
                 )
-                resp = self.client.models.generate_content(
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(
                     model=self.model,
                     contents=user_prompt,
                     config=config,
-                )
+                ))
                 response_content = resp.text
 
             result = _safe_json_loads(response_content)
@@ -328,7 +336,7 @@ class AITranslator:
             response_content = ""
             if self.provider == 'openai':
                 if not self.client: return None
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -336,12 +344,12 @@ class AITranslator:
                     ],
                     response_format={"type": "json_object"},
                     temperature=0.3 
-                )
+                ))
                 response_content = resp.choices[0].message.content
 
             elif self.provider == 'zhipuai':
                  if not self.client: return None
-                 resp = self.client.chat.completions.create(
+                 resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -349,7 +357,7 @@ class AITranslator:
                     ],
                     response_format={"type": "json_object"},
                     temperature=0.3
-                )
+                ))
                  response_content = resp.choices[0].message.content
             
             elif self.provider == 'gemini':
@@ -359,11 +367,11 @@ class AITranslator:
                     temperature=0.3,
                     system_instruction=system_prompt
                 )
-                resp = self.client.models.generate_content(
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(
                     model=self.model,
                     contents=user_prompt,
                     config=config
-                )
+                ))
                 response_content = resp.text
 
             result = _safe_json_loads(response_content)
@@ -389,22 +397,22 @@ class AITranslator:
         try:
             response_content = ""
             if self.provider == 'openai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.3
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'zhipuai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.3
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'gemini' and self.client:
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3, system_instruction=system_prompt)
-                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(model=self.model, contents=user_prompt, config=config))
                 response_content = resp.text
 
             result = _safe_json_loads(response_content)
@@ -432,22 +440,22 @@ class AITranslator:
         try:
             response_content = ""
             if self.provider == 'openai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.3
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'zhipuai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.3
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'gemini' and self.client:
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3, system_instruction=system_prompt)
-                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(model=self.model, contents=user_prompt, config=config))
                 response_content = resp.text
 
             result = _safe_json_loads(response_content)
@@ -473,22 +481,22 @@ class AITranslator:
         try:
             response_content = ""
             if self.provider == 'openai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.3
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'zhipuai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.3
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'gemini' and self.client:
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3, system_instruction=system_prompt)
-                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(model=self.model, contents=user_prompt, config=config))
                 response_content = resp.text
 
             result = _safe_json_loads(response_content)
@@ -514,22 +522,22 @@ class AITranslator:
         try:
             response_content = ""
             if self.provider == 'openai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.8 # 稍微调高温度，让笑话更有创意
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'zhipuai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.8
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'gemini' and self.client:
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.8, system_instruction=system_prompt)
-                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(model=self.model, contents=user_prompt, config=config))
                 response_content = resp.text
 
             result = _safe_json_loads(response_content)
@@ -553,22 +561,22 @@ class AITranslator:
         try:
             response_content = ""
             if self.provider == 'openai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.1
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'zhipuai' and self.client:
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                     response_format={"type": "json_object"}, temperature=0.1
-                )
+                ))
                 response_content = resp.choices[0].message.content
             elif self.provider == 'gemini' and self.client:
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1, system_instruction=system_prompt)
-                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(model=self.model, contents=user_prompt, config=config))
                 response_content = resp.text
 
             result = _safe_json_loads(response_content)
@@ -685,7 +693,7 @@ class AITranslator:
         system_prompt = self._get_prompt("fast_mode")
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._call_ai_api(lambda: self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -694,7 +702,7 @@ class AITranslator:
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 timeout=self.openai_request_timeout
-            )
+            ))
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
@@ -707,7 +715,7 @@ class AITranslator:
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
         try:
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._call_ai_api(lambda: self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -716,7 +724,7 @@ class AITranslator:
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 timeout=self.openai_request_timeout
-            )
+            ))
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
@@ -729,7 +737,7 @@ class AITranslator:
         system_prompt = self._get_prompt("fast_mode") 
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
-            response = self.client.chat.completions.create(
+            response = self._call_ai_api(lambda: self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -737,7 +745,7 @@ class AITranslator:
                 ],
                 temperature=0.0,
                 response_format={"type": "json_object"}
-            )
+            ))
             response_content = response.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
@@ -750,7 +758,7 @@ class AITranslator:
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
         try:
-            response = self.client.chat.completions.create(
+            response = self._call_ai_api(lambda: self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -758,7 +766,7 @@ class AITranslator:
                 ],
                 temperature=0.0,
                 response_format={"type": "json_object"}
-            )
+            ))
             response_content = response.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
@@ -777,11 +785,11 @@ class AITranslator:
             system_instruction=system_prompt
         )
         try:
-            response = self.client.models.generate_content(
+            response = self._call_ai_api(lambda: self.client.models.generate_content(
                 model=self.model,
                 contents=user_prompt,
                 config=config
-            )
+            ))
             return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"  ➜ [翻译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
@@ -799,11 +807,11 @@ class AITranslator:
             system_instruction=system_prompt
         )
         try:
-            response = self.client.models.generate_content(
+            response = self._call_ai_api(lambda: self.client.models.generate_content(
                 model=self.model,
                 contents=user_prompt,
                 config=config
-            )
+            ))
             return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"  ➜ [顾问模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
@@ -815,7 +823,7 @@ class AITranslator:
         system_prompt = self._get_prompt("transliterate_mode") # ★★★
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._call_ai_api(lambda: self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -824,7 +832,7 @@ class AITranslator:
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 timeout=self.openai_request_timeout
-            )
+            ))
             response_content = chat_completion.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
@@ -837,7 +845,7 @@ class AITranslator:
         system_prompt = self._get_prompt("transliterate_mode") 
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
-            response = self.client.chat.completions.create(
+            response = self._call_ai_api(lambda: self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -845,7 +853,7 @@ class AITranslator:
                 ],
                 temperature=0.0,
                 response_format={"type": "json_object"}
-            )
+            ))
             response_content = response.choices[0].message.content
             return _safe_json_loads(response_content) or {}
         except Exception as e:
@@ -864,11 +872,11 @@ class AITranslator:
             system_instruction=system_prompt
         )
         try:
-            response = self.client.models.generate_content(
+            response = self._call_ai_api(lambda: self.client.models.generate_content(
                 model=self.model,
                 contents=user_prompt,
                 config=config
-            )
+            ))
             return _safe_json_loads(response.text) or {}
         except Exception as e:
             logger.error(f"  ➜ [音译模式-Gemini] 翻译时发生错误: {e}", exc_info=True)
@@ -889,18 +897,18 @@ class AITranslator:
                 if not model_to_use:
                     model_to_use = "text-embedding-3-small"
 
-                response = self.client.embeddings.create(
+                response = self._call_ai_api(lambda: self.client.embeddings.create(
                     input=text,
                     model=model_to_use 
-                )
+                ))
                 return response.data[0].embedding
 
             elif self.provider == 'zhipuai':
                 model_to_use = self.embedding_model if self.embedding_model else "embedding-2"
-                response = self.client.embeddings.create(
+                response = self._call_ai_api(lambda: self.client.embeddings.create(
                     model=model_to_use,
                     input=text
-                )
+                ))
                 return response.data[0].embedding
 
             elif self.provider == 'gemini':
@@ -989,7 +997,7 @@ class AITranslator:
         try:
             response_text = ""
             if self.provider == 'openai':
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -997,11 +1005,11 @@ class AITranslator:
                     ],
                     response_format={"type": "json_object"}, 
                     temperature=0.6 
-                )
+                ))
                 response_text = resp.choices[0].message.content
 
             elif self.provider == 'zhipuai':
-                resp = self.client.chat.completions.create(
+                resp = self._call_ai_api(lambda: self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -1009,7 +1017,7 @@ class AITranslator:
                     ],
                     response_format={"type": "json_object"},
                     temperature=0.5
-                )
+                ))
                 response_text = resp.choices[0].message.content
             
             elif self.provider == 'gemini':
@@ -1018,11 +1026,11 @@ class AITranslator:
                     temperature=0.5,
                     system_instruction=system_prompt
                 )
-                resp = self.client.models.generate_content(
+                resp = self._call_ai_api(lambda: self.client.models.generate_content(
                     model=self.model,
                     contents=user_content,
                     config=config
-                )
+                ))
                 response_text = resp.text
 
             result = _safe_json_loads(response_text)
