@@ -177,6 +177,42 @@ class P115MediaAnalyzerMixin:
                 logger.debug(f"  ➜ [ffprobe] 缺少 pick_code，跳过: {original_name}")
             return None
 
+        if str(original_name or "").lower().endswith(".iso"):
+            try:
+                from handler.p115_iso_analyzer import probe_bluray_iso
+
+                if not silent_log:
+                    logger.info(f"  ➜ [ISO媒体信息] 开始在线解析蓝光原盘：{original_name}")
+
+                probe_data = probe_bluray_iso(self.client, file_node, sha1=sha1)
+                if probe_data:
+                    probe_data = self._inject_etk_probe_context(
+                        probe_data,
+                        file_node=file_node,
+                        metadata_context=metadata_context,
+                        sha1=sha1
+                    )
+                    emby_json = self._build_emby_mediainfo_from_ffprobe(
+                        probe_data,
+                        file_node,
+                        sha1=sha1
+                    )
+                    if emby_json:
+                        stats = probe_data.get("_iso_probe") or {}
+                        if not silent_log:
+                            logger.info(
+                                "  ➜ [ISO媒体信息] 解析完成：%s，主片=%s，播放列表=%s，耗时=%.1fs，Range=%s次",
+                                original_name,
+                                stats.get("main_clip") or "-",
+                                stats.get("main_playlist") or "-",
+                                float(stats.get("elapsed_sec") or 0),
+                                stats.get("range_requests") or 0,
+                            )
+                        return emby_json, probe_data
+            except Exception as e:
+                if not silent_log:
+                    logger.warning(f"  ➜ [ISO媒体信息] 专用解析失败，回退 ffprobe：{original_name} -> {e}")
+
         try:
             import shutil
             import subprocess

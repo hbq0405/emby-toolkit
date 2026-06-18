@@ -5190,6 +5190,17 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             rule_actor_ids = [int(a['id']) for a in rule['actors'] if 'id' in a]
             _evaluate(any(aid in self.raw_metadata.get('actor_ids', []) for aid in rule_actor_ids))
 
+        # 2.11 文件扩展名
+        if rule.get('file_extensions'):
+            source_name = getattr(self, 'current_sorting_filename', '') or ''
+            current_ext = os.path.splitext(str(source_name))[1].lower().lstrip('.')
+            rule_exts = {
+                str(ext).strip().lower().lstrip('.')
+                for ext in rule.get('file_extensions') or []
+                if str(ext).strip()
+            }
+            _evaluate(bool(current_ext and current_ext in rule_exts))
+
         # ==========================================
         # 3. 最终结果判定
         # ==========================================
@@ -6325,6 +6336,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         # ★ 统一在这里获取最终的 target_cid！(因为 details 已经补齐了时长，media_type 也可能被纠错了，season 也提取了)
         if not getattr(self, 'is_manual_correct', False):
+            self.current_sorting_filename = parse_name
             new_target_cid = self.get_target_cid(season_num=getattr(self, 'forced_season', None))
             if new_target_cid and str(new_target_cid) != str(target_cid):
                 logger.info(f"  ➜ [智能分类] 目标目录已根据最新元数据(时长/类型/连载状态)修正！")

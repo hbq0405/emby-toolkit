@@ -196,6 +196,10 @@
          <n-select v-model:value="currentRule.ratings" multiple filterable :options="ratingOptions" placeholder="包含任一分级即可" />
       </n-form-item>
 
+      <n-form-item label="文件扩展名">
+         <n-select v-model:value="currentRule.file_extensions" multiple filterable tag :options="fileExtensionOptions" placeholder="例如 iso、mkv、m2ts" />
+      </n-form-item>
+
       <n-form-item label="年份范围">
         <n-input-group>
           <n-input-number v-model:value="currentRule.year_min" :min="1900" :max="2099" placeholder="起始" :show-button="false" style="width: 50%" />
@@ -258,6 +262,9 @@ const countryOptions = ref([]);
 const languageOptions = ref([]);
 const keywordOptions = ref([]);
 const ratingOptions = ref([]);
+const fileExtensionOptions = [
+  'iso', 'mkv', 'mp4', 'm2ts', 'ts', 'avi', 'mov', 'wmv', 'rmvb', 'flv', 'mpg', 'mpeg'
+].map(ext => ({ label: ext, value: ext }));
 
 // 演员搜索相关
 const actorOptions = ref([]);
@@ -352,7 +359,7 @@ const addRule = () => {
   currentRule.value = { 
     id: Date.now(), name: '', cid: '', enabled: true, match_mode: 'and',
     media_type: 'all', genres: [], countries: [], languages: [], 
-    studios: [], keywords: [], ratings: [], actors: [], watching_status: 'all',
+    studios: [], keywords: [], ratings: [], file_extensions: [], actors: [], watching_status: 'all',
     year_min: null, year_max: null, runtime_min: null, runtime_max: null, min_rating: 0
   };
   actorOptions.value = [];
@@ -363,6 +370,7 @@ const editRule = (rule) => {
   currentRule.value = JSON.parse(JSON.stringify(rule));
   if (!currentRule.value.watching_status) currentRule.value.watching_status = 'all';
   if (!currentRule.value.actors) currentRule.value.actors = [];
+  if (!currentRule.value.file_extensions) currentRule.value.file_extensions = [];
   actorOptions.value = currentRule.value.actors; // 回显已选演员
   showRuleModal.value = true;
 };
@@ -433,6 +441,7 @@ const getRuleSummary = (rule) => {
   if (rule.studios?.length) parts.push(`工作室:${rule.studios.join(',')}`);
   if (rule.keywords?.length) parts.push(`关键词:${rule.keywords.join(',')}`);
   if (rule.ratings?.length) parts.push(`分级:${rule.ratings.join(',')}`);
+  if (rule.file_extensions?.length) parts.push(`扩展名:${rule.file_extensions.join(',')}`);
 
   // 3. 需要反查 Label 的字段 (存储的是 ID/Code)
   // 类型 (ID -> 中文)
