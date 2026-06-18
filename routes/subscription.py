@@ -565,6 +565,15 @@ def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
         seen.add(label)
         tags.append({"label": label, "type": tag_type, "bordered": bool(bordered)})
 
+    # 中心端已经负责业务标签口径；客户端只负责展示。
+    # 旧中心端没有 tag_labels 时，再走本地兜底识别。
+    skip = {"已完结", "完结", "已认证完结", "完结认证", "连载中", "可用"}
+    center_labels = [label for label in _shared_pool_plain_tag_labels(item) if label not in skip]
+    if center_labels:
+        for label in center_labels:
+            add(label, "default", True)
+        return tags
+
     if _shared_pool_flag_enabled(item, "is_clean_version", "clean_version_meta_json"):
         add("纯净版", "warning", False)
     if _shared_pool_flag_enabled(item, "is_short_drama", "short_drama_meta_json"):
@@ -581,7 +590,6 @@ def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
         add("双语", "info", False)
 
     # 保留中心端扩展标签；已完结/连载中由现有 _completion_label 单独展示，避免重复。
-    skip = {"已完结", "完结", "已认证完结", "完结认证", "连载中", "可用"}
     for label in _shared_pool_plain_tag_labels(item):
         if label in skip:
             continue
@@ -729,6 +737,13 @@ def _shared_pool_version_rows(resource):
         # 版本行里的 source_id / sha1 / summary / size 才代表真正要秒传的版本。
         merged.update(representative)
         merged.pop("versions", None)
+        # tag_labels / 纯净版 / 短剧 / 动漫是具体版本标签，不能继承聚合父行。
+        for key in (
+            "tag_labels", "is_clean_version", "clean_version_meta_json",
+            "is_short_drama", "short_drama_meta_json", "is_animation", "animation_meta_json",
+        ):
+            if key not in representative:
+                merged.pop(key, None)
         # children/pack_items 仍保持懒加载，不从列表卡片里携带大对象。
         if not representative.get("children"):
             merged.pop("children", None)
@@ -746,8 +761,6 @@ def _shared_pool_version_rows(resource):
             "progress_current", "progress_total", "progress_text", "season_number", "tmdb_id",
             "has_children", "children_loaded", "lazy_children_kind", "children_count", "child_count",
             "pack_item_count", "is_completed_certified", "is_completed", "is_ongoing_hub",
-            "is_clean_version", "clean_version_meta_json", "is_short_drama", "short_drama_meta_json",
-            "is_animation", "animation_meta_json", "tag_labels",
             "share_channel", "logical_season_share_channel", "completed_share_channel",
             "has_share_channel", "share_channel_status", "has_valid_share_channel",
             "share_transfer_available", "preferred_transfer_mode", "transfer_mode",
