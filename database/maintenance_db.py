@@ -7,6 +7,7 @@ from psycopg2.extras import Json, execute_values
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+from collections import defaultdict
 
 from .connection import get_db_connection
 from .log_db import LogDBManager
@@ -19,6 +20,178 @@ logger = logging.getLogger(__name__)
 # 模块: 维护数据访问
 # ======================================================================
 # --- 通用维护函数 ---
+
+def _coerce_json_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+def _is_chinese_media(original_language: Optional[str], countries_json: Any) -> bool:
+    orig_lang = str(original_language or '').lower()
+    if orig_lang in {'zh', 'cn', 'zh-cn', 'zh-tw', 'zh-hk', 'yue', 'cmn'}:
+        return True
+
+    countries = _coerce_json_list(countries_json)
+    return any(str(country).upper() in {'CN', 'HK', 'TW', 'MO'} for country in countries)
+
+def _dedupe_asset_versions_by_emby_id(asset_details: Any) -> List[Dict[str, Any]]:
+    unique_versions = {}
+    for version in _coerce_json_list(asset_details):
+        if not isinstance(version, dict):
+            continue
+        emby_id = version.get('emby_item_id')
+        if emby_id:
+            unique_versions[str(emby_id)] = version
+    return list(unique_versions.values())
+
+def _build_cleanup_index_versions_payload(versions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    from tasks.cleanup import _get_properties_for_comparison
+
+    payload = []
+    for version in versions:
+        props = _get_properties_for_comparison(version)
+        payload.append({
+            'id': version.get('emby_item_id'),
+            'path': version.get('path'),
+            'filesize': version.get('size_bytes', 0),
+            'quality': props.get('quality'),
+            'resolution': props.get('resolution'),
+            'effect': props.get('effect'),
+            'video_bitrate_mbps': props.get('video_bitrate_mbps'),
+            'bit_depth': props.get('bit_depth'),
+            'frame_rate': props.get('frame_rate'),
+            'runtime_minutes': props.get('runtime_minutes'),
+            'codec': props.get('codec'),
+            'subtitle_count': props.get('subtitle_count'),
+            'subtitle_languages': props.get('subtitle_languages')
+        })
+    return payload
+
+def _determine_cleanup_best_version_payload(
+    versions: List[Dict[str, Any]],
+    item_name: str = "",
+    is_chinese_media: bool = False,
+) -> Any:
+    from tasks.cleanup import _get_properties_for_comparison, _determine_best_version_by_rules
+    from database import settings_db
+
+    cleanup_config = settings_db.get_setting('media_cleanup_config') or {}
+    keep_one_per_res = cleanup_config.get('keep_one_per_res')
+    if keep_one_per_res is None:
+        keep_one_per_res = settings_db.get_setting('media_cleanup_keep_one_per_res') or False
+
+    if not keep_one_per_res:
+        return _determine_best_version_by_rules(
+            versions,
+            item_name=item_name,
+            is_chinese_media=is_chinese_media,
+        )
+
+    res_groups = defaultdict(list)
+    for version in versions:
+        props = _get_properties_for_comparison(version)
+        res_groups[props.get('resolution', 'unknown')].append(version)
+
+    best_ids = set()
+    for resolution, group_versions in res_groups.items():
+        best_in_group = _determine_best_version_by_rules(
+            group_versions,
+            item_name=f"{item_name} ({resolution})",
+            is_chinese_media=is_chinese_media,
+        )
+        if best_in_group:
+            best_ids.add(best_in_group)
+
+    return list(best_ids)
+
+def _sync_cleanup_index_for_media_row(
+    cursor,
+    tmdb_id: str,
+    item_type: str,
+    item_name: str,
+    asset_details_json: Any,
+    original_language: Optional[str] = None,
+    countries_json: Any = None,
+) -> Dict[str, int]:
+    """
+    Keep cleanup_index in lockstep with media_metadata after an Emby item is deleted.
+    Returns lightweight stats for logging/tests.
+    """
+    versions = _dedupe_asset_versions_by_emby_id(asset_details_json)
+
+    if len(versions) <= 1:
+        cursor.execute(
+            """
+            DELETE FROM cleanup_index
+            WHERE tmdb_id = %s
+              AND item_type = %s
+              AND status IN ('pending', 'ignored')
+            """,
+            (tmdb_id, item_type)
+        )
+        return {'deleted': cursor.rowcount, 'updated': 0, 'remaining_versions': len(versions)}
+
+    versions_payload = _build_cleanup_index_versions_payload(versions)
+    best_payload = _determine_cleanup_best_version_payload(
+        versions,
+        item_name=item_name,
+        is_chinese_media=_is_chinese_media(original_language, countries_json),
+    )
+
+    cursor.execute(
+        """
+        UPDATE cleanup_index
+        SET versions_info_json = %s::jsonb,
+            best_version_json = %s::jsonb,
+            last_updated_at = NOW()
+        WHERE tmdb_id = %s
+          AND item_type = %s
+          AND status IN ('pending', 'ignored')
+        """,
+        (
+            json.dumps(versions_payload, ensure_ascii=False),
+            json.dumps(best_payload, ensure_ascii=False),
+            tmdb_id,
+            item_type,
+        )
+    )
+    return {'deleted': 0, 'updated': cursor.rowcount, 'remaining_versions': len(versions)}
+
+def _delete_cleanup_index_for_media_scope(cursor, tmdb_id: str, item_type: str) -> int:
+    if item_type == 'Series':
+        cursor.execute(
+            """
+            DELETE FROM cleanup_index ci
+            USING media_metadata mm
+            WHERE ci.tmdb_id = mm.tmdb_id
+              AND ci.item_type = mm.item_type
+              AND ci.status IN ('pending', 'ignored')
+              AND (
+                    (mm.tmdb_id = %s AND mm.item_type = 'Series')
+                 OR (mm.parent_series_tmdb_id = %s AND mm.item_type IN ('Season', 'Episode'))
+              )
+            """,
+            (tmdb_id, tmdb_id)
+        )
+    else:
+        cursor.execute(
+            """
+            DELETE FROM cleanup_index
+            WHERE tmdb_id = %s
+              AND item_type = %s
+              AND status IN ('pending', 'ignored')
+            """,
+            (tmdb_id, item_type)
+        )
+
+    return cursor.rowcount
+
 def clear_table(table_name: str) -> int:
     """清空指定的数据库表，返回删除的行数。"""
     
@@ -925,7 +1098,8 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
         def remove_id_from_metadata(cursor, target_emby_id):
             # 1. 查找包含该 ID 的记录 (锁定行)
             cursor.execute("""
-                SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number, episode_number,
+                SELECT tmdb_id, item_type, title, original_language, countries_json,
+                       parent_series_tmdb_id, season_number, episode_number,
                        emby_item_ids_json, asset_details_json, file_sha1_json, file_pickcode_json
                 FROM media_metadata
                 WHERE emby_item_ids_json @> %s::jsonb
@@ -980,6 +1154,25 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 json.dumps(pcs, ensure_ascii=False),
                 row['tmdb_id'], row['item_type']
             ))
+
+            cleanup_sync = _sync_cleanup_index_for_media_row(
+                cursor,
+                row['tmdb_id'],
+                row['item_type'],
+                row.get('title') or item_name,
+                assets,
+                row.get('original_language'),
+                row.get('countries_json'),
+            )
+            if cleanup_sync.get('deleted') or cleanup_sync.get('updated'):
+                logger.info(
+                    "  ➜ [媒体去重] 已同步清理索引: TMDB=%s Type=%s, 剩余版本=%s, 更新=%s, 删除=%s",
+                    row['tmdb_id'],
+                    row['item_type'],
+                    cleanup_sync.get('remaining_versions'),
+                    cleanup_sync.get('updated'),
+                    cleanup_sync.get('deleted'),
+                )
 
             return (
                 len(emby_ids),
@@ -1046,6 +1239,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     "UPDATE media_metadata SET in_library = FALSE WHERE tmdb_id = %s AND item_type = %s",
                     (tmdb_id, db_item_type)
                 )
+                deleted_current_cleanup_indexes = _delete_cleanup_index_for_media_scope(cursor, tmdb_id, db_item_type)
+                if deleted_current_cleanup_indexes > 0:
+                    logger.info(f"  ➜ [媒体去重] 已清理当前媒体失效去重索引 {deleted_current_cleanup_indexes} 条。")
 
                 # 2. 根据类型决定后续逻辑
                 if db_item_type in ['Movie', 'Series']:
@@ -1089,6 +1285,21 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         """,
                         (parent_tmdb_id, season_num)
                     )
+                    cursor.execute(
+                        """
+                        DELETE FROM cleanup_index ci
+                        USING media_metadata mm
+                        WHERE ci.tmdb_id = mm.tmdb_id
+                          AND ci.item_type = mm.item_type
+                          AND ci.status IN ('pending', 'ignored')
+                          AND mm.parent_series_tmdb_id = %s
+                          AND mm.season_number = %s
+                          AND mm.item_type = 'Episode'
+                        """,
+                        (parent_tmdb_id, season_num)
+                    )
+                    if cursor.rowcount > 0:
+                        logger.info(f"  ➜ [媒体去重] 已清理该季分集失效去重索引 {cursor.rowcount} 条。")
                     
                     cursor.execute(
                         "DELETE FROM resubscribe_index WHERE tmdb_id = %s AND item_type = 'Season' AND season_number = %s",
@@ -1151,6 +1362,21 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             """,
                             (parent_tmdb_id, season_num)
                         )
+                        cursor.execute(
+                            """
+                            DELETE FROM cleanup_index ci
+                            USING media_metadata mm
+                            WHERE ci.tmdb_id = mm.tmdb_id
+                              AND ci.item_type = mm.item_type
+                              AND ci.status IN ('pending', 'ignored')
+                              AND mm.parent_series_tmdb_id = %s
+                              AND mm.season_number = %s
+                              AND mm.item_type IN ('Season', 'Episode')
+                            """,
+                            (parent_tmdb_id, season_num)
+                        )
+                        if cursor.rowcount > 0:
+                            logger.info(f"  ➜ [媒体去重] 已清理该季失效去重索引 {cursor.rowcount} 条。")
                         cursor.execute(
                             """
                             DELETE FROM resubscribe_index 
@@ -1254,6 +1480,14 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             (target_tmdb_id_for_full_cleanup,)
                         )
                         logger.info(f"  ➜ 已级联标记该剧集下的 {cursor.rowcount} 个子项(季/集)为离线。")
+
+                        deleted_cleanup_indexes = _delete_cleanup_index_for_media_scope(
+                            cursor,
+                            target_tmdb_id_for_full_cleanup,
+                            'Series',
+                        )
+                        if deleted_cleanup_indexes > 0:
+                            logger.info(f"  ➜ [媒体去重] 已清理该剧集失效去重索引 {deleted_cleanup_indexes} 条。")
 
                     if target_item_type_for_full_cleanup == 'Series':
                         # 同时重置 Series 和 Season 的状态，但【绝对保留】已完结(Completed)状态！
