@@ -83,7 +83,7 @@ TASK_HELP_TEXTS = {
     'system-auto-update': '检查并执行系统容器自动更新，适合需要保持 ETK 最新版本时使用。',
     'recalculate_library_washing_priorities': '重新计算媒体库中每个媒体的洗版优先级，适合调整洗版规则或新增优先级因素后使用。',
     'manual-correct-organize-records': '将整理记录按用户指定的 TMDb、媒体类型、季号和目标目录重新整理；走媒体任务队列。',
-    'retry-ai-subtitle-temporary': '扫描洗版等级为 X.1 且缺少 zh-Hans 外挂字幕的电影/分集，测速后按文件大小动态翻译 AI 字幕。',
+    'retry-ai-subtitle-temporary': '扫描缺失中字的媒体项，进行 AI 字幕翻译。触发条件：洗版规则要求必须中字，但入库时检测到有可供翻译的源语言字幕。存量请先重算洗版优先级。',
 }
 
 
@@ -311,7 +311,6 @@ def get_task_registry(context: str = 'all'):
         'shared-resource-maintenance': (task_shared_resource_maintenance, "共享资源维护", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
-        'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
@@ -327,6 +326,7 @@ def get_task_registry(context: str = 'all'):
         'refresh-collections': (task_refresh_collections, "刷新原生合集", 'media', False),
         'update-resubscribe-cache': (task_update_resubscribe_cache, "刷新媒体整理", 'media', False),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', False),
+        'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', False),
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', False),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
         'fill-studio-images': (task_fill_studio_images, "补全工作室图标", 'media', False),

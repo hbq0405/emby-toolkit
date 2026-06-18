@@ -19,8 +19,8 @@ def task_retry_ai_subtitle_temporary_items(processor, limit: int = 0):
     task_manager.update_status_from_thread(0, "正在扫描 AI 字幕临时项...")
     rows = _load_temporary_subtitle_rows(limit)
     if not rows:
-        logger.info("  ➜ [AI字幕补救] 未找到需要检查的临时字幕项。")
-        task_manager.update_status_from_thread(100, "AI 字幕补救完成：没有需要检查的条目。")
+        logger.info("  ➜ [AI字幕翻译] 未找到需要检查的临时字幕项。")
+        task_manager.update_status_from_thread(100, "AI 字幕翻译完成：没有需要检查的条目。")
         return
 
     candidates = []
@@ -66,10 +66,10 @@ def task_retry_ai_subtitle_temporary_items(processor, limit: int = 0):
     total = len(unique_candidates)
     if total == 0:
         message = (
-            f"AI 字幕补救完成：检查 {len(rows)} 条，"
+            f"AI 字幕翻译完成：检查 {len(rows)} 条，"
             f"已有外挂字幕 {skipped_with_subtitle} 条，缺少可写入路径 {skipped_no_path} 条。"
         )
-        logger.info("  ➜ [AI字幕补救] %s", message)
+        logger.info("  ➜ [AI字幕翻译] %s", message)
         task_manager.update_status_from_thread(100, message)
         return
 
@@ -80,7 +80,7 @@ def task_retry_ai_subtitle_temporary_items(processor, limit: int = 0):
     eta_text = _format_duration(eta_seconds)
     finish_at = datetime.now() + timedelta(seconds=eta_seconds)
     logger.info(
-        "  ➜ [AI字幕补救] 找到 %s 个缺少 AI 中文外挂字幕的临时项，测速=%s，抽取超时=%ss，预计耗时约 %s，预计完成时间 %s。",
+        "  ➜ [AI字幕翻译] 找到 %s 个缺少 AI 中文外挂字幕的临时项，测速=%s，抽取超时=%ss，预计耗时约 %s，预计完成时间 %s。",
         total,
         speed_text,
         timeout_seconds,
@@ -89,14 +89,14 @@ def task_retry_ai_subtitle_temporary_items(processor, limit: int = 0):
     )
     task_manager.update_status_from_thread(
         1,
-        f"AI 字幕补救准备执行：{total} 条，测速 {speed_text}，预计耗时约 {eta_text}，预计 {finish_at:%H:%M:%S} 完成",
+        f"AI 字幕翻译准备执行：{total} 条，测速 {speed_text}，预计耗时约 {eta_text}，预计 {finish_at:%H:%M:%S} 完成",
     )
     failed = 0
     retried = 0
     generated = 0
     for index, item in enumerate(unique_candidates, start=1):
         if processor and getattr(processor, "is_stop_requested", lambda: False)():
-            logger.info("  ➜ [AI字幕补救] 收到停止信号，已中止。")
+            logger.info("  ➜ [AI字幕翻译] 收到停止信号，已中止。")
             break
 
         progress = int(((index - 1) / total) * 95)
@@ -114,16 +114,16 @@ def task_retry_ai_subtitle_temporary_items(processor, limit: int = 0):
                 generated += 1
             else:
                 failed += 1
-                logger.warning("  ➜ [AI字幕补救] 本轮未生成中文字幕：%s", title)
+                logger.warning("  ➜ [AI字幕翻译] 本轮未生成中文字幕：%s", title)
         except Exception as e:
             failed += 1
-            logger.warning("  ➜ [AI字幕补救] 重试失败，已跳过：%s，错误=%s", title, e, exc_info=True)
+            logger.warning("  ➜ [AI字幕翻译] 重试失败，已跳过：%s，错误=%s", title, e, exc_info=True)
 
     final_message = (
-        f"AI 字幕补救完成：检查 {len(rows)} 条，重试 {retried} 条，生成 {generated} 条，失败 {failed} 条，"
+        f"AI 字幕翻译完成：检查 {len(rows)} 条，重试 {retried} 条，生成 {generated} 条，失败 {failed} 条，"
         f"已有外挂字幕 {skipped_with_subtitle} 条，缺少可写入路径 {skipped_no_path} 条。"
     )
-    logger.info("  ➜ [AI字幕补救] %s", final_message)
+    logger.info("  ➜ [AI字幕翻译] %s", final_message)
     task_manager.update_status_from_thread(100, final_message)
 
 
@@ -198,7 +198,7 @@ def _pick_code_for_asset(row: Dict[str, Any], asset: Dict[str, Any], emby_id: st
 def _measure_115_download_speed(candidates: List[Dict[str, Any]]) -> float:
     pick_code = next((str(item.get("pick_code") or "").strip() for item in candidates if item.get("pick_code")), "")
     if not pick_code:
-        logger.info("  ➜ [AI字幕补救] 未找到可测速的 115 pick_code，使用保守速度估算。")
+        logger.info("  ➜ [AI字幕翻译] 未找到可测速的 115 pick_code，使用保守速度估算。")
         return 8 * 1024 * 1024
 
     try:
@@ -237,10 +237,10 @@ def _measure_115_download_speed(candidates: List[Dict[str, Any]]) -> float:
         elapsed = max(time.monotonic() - started, 0.1)
         downloaded = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
         speed = downloaded / elapsed if downloaded > 0 else 0
-        logger.info("  ➜ [AI字幕补救] 115 直链测速完成：%s，样本 %.1f MB。", _format_speed(speed), downloaded / 1024 / 1024)
+        logger.info("  ➜ [AI字幕翻译] 115 直链测速完成：%s，样本 %.1f MB。", _format_speed(speed), downloaded / 1024 / 1024)
         return speed or 8 * 1024 * 1024
     except Exception as e:
-        logger.warning("  ➜ [AI字幕补救] 115 直链测速失败，使用保守速度估算：%s", e)
+        logger.warning("  ➜ [AI字幕翻译] 115 直链测速失败，使用保守速度估算：%s", e)
         return 8 * 1024 * 1024
     finally:
         try:
