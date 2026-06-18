@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import config_manager
@@ -344,22 +345,29 @@ def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row:
     if not shutil.which("ffprobe") or not shutil.which("ffmpeg"):
         return None
 
-    try:
-        probe = subprocess.run(
-            _ffmpeg_input_args("ffprobe", input_url, user_agent, ["-v", "error", "-print_format", "json", "-show_streams"]),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-            check=False,
-        )
-        data = json.loads(probe.stdout or "{}")
-    except Exception as e:
-        logger.debug(f"  ➜ [AI字幕] ffprobe 检查字幕失败：{e}")
-        return None
+    streams = _cached_text_subtitle_streams(row, asset)
+    if streams:
+        logger.debug(f"  ➜ [AI字幕] 已从媒体信息缓存命中 {len(streams)} 条文本字幕轨道，跳过在线 ffprobe。")
+    else:
+        started = time.monotonic()
+        try:
+            probe = subprocess.run(
+                _ffmpeg_input_args("ffprobe", input_url, user_agent, ["-v", "error", "-print_format", "json", "-show_streams"]),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                check=False,
+            )
+            data = json.loads(probe.stdout or "{}")
+            streams = data.get("streams") or []
+            logger.debug(f"  ➜ [AI字幕] 在线 ffprobe 检查字幕完成，耗时 {time.monotonic() - started:.1f}s。")
+        except Exception as e:
+            logger.debug(f"  ➜ [AI字幕] ffprobe 检查字幕失败：{e}")
+            return None
 
-    for stream in data.get("streams") or []:
+    for stream in streams:
         if str(stream.get("codec_type") or "").lower() != "subtitle":
             continue
         codec = str(stream.get("codec_name") or "").lower()
@@ -380,8 +388,9 @@ def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row:
             ["-map", f"0:{stream.get('index')}", tmp.name],
         )
         try:
+            started = time.monotonic()
             subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=True)
-            logger.info(f"  ➜ [AI字幕] 已从{label}抽取源语言文本字幕。")
+            logger.info(f"  ➜ [AI字幕] 已从{label}抽取源语言文本字幕，耗时 {time.monotonic() - started:.1f}s。")
             return tmp.name, lang, [tmp.name]
         except Exception as e:
             logger.debug(f"  ➜ [AI字幕] 抽取内封文本字幕失败：{e}")
@@ -390,6 +399,45 @@ def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row:
             except Exception:
                 pass
     return None
+
+
+def _cached_text_subtitle_streams(row: Dict[str, Any], asset: Dict[str, Any]) -> List[Dict[str, Any]]:
+    sha1 = _sha1_for_asset(row, asset)
+    if not sha1:
+        return []
+    try:
+        from handler.p115_service import P115CacheManager
+        raw = P115CacheManager.get_raw_ffprobe_cache(sha1) or {}
+    except Exception as e:
+        logger.debug(f"  ➜ [AI字幕] 读取媒体信息缓存失败：sha1={sha1[:12]}...，错误={e}")
+        return []
+    if not isinstance(raw, dict):
+        return []
+    streams = raw.get("streams") or []
+    if not isinstance(streams, list):
+        return []
+    return [
+        s for s in streams
+        if isinstance(s, dict)
+        and str(s.get("codec_type") or "").lower() == "subtitle"
+        and str(s.get("codec_name") or "").lower() in TEXT_SUBTITLE_CODECS
+        and s.get("index") is not None
+    ]
+
+
+def _sha1_for_asset(row: Dict[str, Any], asset: Dict[str, Any]) -> str:
+    sha1 = str(asset.get("sha1") or asset.get("file_sha1") or "").strip().upper()
+    if sha1:
+        return sha1
+
+    emby_id = str(asset.get("emby_item_id") or "").strip()
+    emby_ids = _safe_json(row.get("emby_item_ids_json"), [])
+    sha1s = _safe_json(row.get("file_sha1_json"), [])
+    if emby_id and isinstance(emby_ids, list) and isinstance(sha1s, list) and emby_id in emby_ids:
+        idx = emby_ids.index(emby_id)
+        if idx < len(sha1s) and sha1s[idx]:
+            return str(sha1s[idx]).strip().upper()
+    return ""
 
 
 def _resolve_subtitle_probe_input(media_path: str, asset: Dict[str, Any], row: Dict[str, Any]) -> Tuple[str, str, str]:
