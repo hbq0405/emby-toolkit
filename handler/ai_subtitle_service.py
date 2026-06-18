@@ -199,6 +199,9 @@ def _washing_requires_chinese_subtitle(row: Dict[str, Any]) -> bool:
         level = None
     if not level or level <= 0:
         return False
+    base_level = int(level)
+    if base_level <= 0:
+        return False
 
     snapshot = _safe_json(row.get("washing_snapshot_json"), {})
     if not isinstance(snapshot, dict):
@@ -220,12 +223,12 @@ def _washing_requires_chinese_subtitle(row: Dict[str, Any]) -> bool:
         if not isinstance(rule, dict) or rule.get("is_exclude"):
             continue
         normal_index += 1
-        if normal_index != level:
+        if normal_index != base_level:
             continue
         required_subtitles = rule.get("subtitle") or []
         if isinstance(required_subtitles, str):
             required_subtitles = [required_subtitles]
-        return any(str(x).lower() in {"chi", "zh", "chs", "zh-cn", "zh-hans"} for x in required_subtitles)
+        return any(WashingService._is_chinese_lang(x) for x in required_subtitles)
     return False
 
 
