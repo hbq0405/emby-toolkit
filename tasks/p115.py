@@ -56,6 +56,76 @@ KNOWN_SKIP_EXTS = {'clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo'}
 MIN_BIG_PACKAGE_VIDEO_SIZE = 50 * 1024 * 1024
 
 
+def _normalize_path_style_strm_content(content):
+    text = str(content or "").strip()
+    if not text:
+        return ""
+
+    lower_text = text.lower()
+    if lower_text.startswith(("http://", "https://")) or "/api/p115/play/" in lower_text:
+        return ""
+
+    has_file_scheme = lower_text.startswith("file://")
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text) and not has_file_scheme:
+        return ""
+
+    if has_file_scheme:
+        text = text[7:]
+
+    normalized = text.split("?", 1)[0].split("#", 1)[0].replace("\\", "/").rstrip("/")
+    if (
+        has_file_scheme
+        or normalized.startswith("/")
+        or normalized.startswith("//")
+        or re.match(r"^[a-zA-Z]:/", normalized)
+    ):
+        return normalized
+    return ""
+
+
+def _is_path_style_strm(content):
+    return bool(_normalize_path_style_strm_content(content))
+
+
+def _path_style_strm_conflict_type(old_content, new_content):
+    old_path = _normalize_path_style_strm_content(old_content)
+    new_path = _normalize_path_style_strm_content(new_content)
+    if not old_path or not new_path or old_path == new_path:
+        return ""
+
+    old_dir = os.path.dirname(old_path).replace("\\", "/").rstrip("/")
+    new_dir = os.path.dirname(new_path).replace("\\", "/").rstrip("/")
+    old_base = os.path.basename(old_path)
+    new_base = os.path.basename(new_path)
+    old_stem, old_ext = os.path.splitext(old_base)
+    new_stem, new_ext = os.path.splitext(new_base)
+
+    if old_dir == new_dir and old_stem == new_stem and old_ext.lower() != new_ext.lower():
+        return "same_stem_different_ext"
+    return "path_mismatch"
+
+
+def _p115_response_path_contains_cid(response, target_cid):
+    path_nodes = response.get('path') if isinstance(response, dict) else None
+    if not path_nodes:
+        return True
+
+    target = str(target_cid or '')
+    for node in path_nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(
+            node.get('cid')
+            or node.get('file_id')
+            or node.get('id')
+            or node.get('parent_id')
+            or ''
+        )
+        if node_id == target:
+            return True
+    return False
+
+
 def _normalize_batch_recognition_hints(hints, *, is_tv=False, preserve_episode=False):
     """
     批量整理时，组级 hints 只能安全复用标题/TMDb/季级信息。
@@ -1194,7 +1264,7 @@ def task_full_sync_strm_and_subs(processor=None):
             return None
 
         def process_full_sync_items(items, target_cid, category_name):
-            nonlocal files_generated, subs_downloaded
+            nonlocal files_generated, subs_downloaded, path_strm_preserved
             for item in items:
                 # 兼容 OpenAPI、Cookie 和 p115client 标准化字段
                 name = item.get('fn') or item.get('n') or item.get('file_name') or item.get('name', '')
@@ -1240,12 +1310,26 @@ def task_full_sync_strm_and_subs(processor=None):
                             content = f"{content}/{name}"
 
                     need_write = True
+                    preserved_existing_path_strm = False
                     if os.path.exists(strm_path):
                         try:
                             with open(strm_path, 'r', encoding='utf-8') as f:
                                 old_content = f.read().strip()
                                 if old_content == content:
                                     need_write = False
+                                elif not etk_url.startswith('http') and _is_path_style_strm(old_content):
+                                    need_write = False
+                                    preserved_existing_path_strm = True
+                                    path_strm_preserved += 1
+                                    conflict_type = _path_style_strm_conflict_type(old_content, content)
+                                    if conflict_type:
+                                        path_strm_conflicts[conflict_type] = path_strm_conflicts.get(conflict_type, 0) + 1
+                                        if conflict_type == 'same_stem_different_ext':
+                                            logger.warning(f"  ➜ [冲突] 已存在路径模式 STRM，同名不同后缀，已跳过覆盖: {strm_name} | 旧: [{old_content}] | 新: [{content}]")
+                                        else:
+                                            logger.warning(f"  ➜ [冲突] 已存在路径模式 STRM，路径不一致，已跳过覆盖: {strm_name} | 旧: [{old_content}] | 新: [{content}]")
+                                    else:
+                                        logger.debug(f"  ➜ [保留] 已存在路径模式 STRM，跳过覆盖: {strm_name}")
                                 else:
                                     logger.debug(f"  ➜ [更新] 内容不一致触发覆盖 -> 旧: [{old_content}] | 新: [{content}]")
                         except Exception:
@@ -1264,7 +1348,7 @@ def task_full_sync_strm_and_subs(processor=None):
                     sha1 = item.get('sha1') or item.get('sha')
 
                     # 生成 Mediainfo (等同 MP 直出逻辑)
-                    if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
+                    if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False) and not preserved_existing_path_strm:
                         mediainfo_filename = os.path.splitext(name)[0] + "-mediainfo.json"
                         mediainfo_filepath = os.path.join(current_local_path, mediainfo_filename)
 
@@ -1398,6 +1482,11 @@ def task_full_sync_strm_and_subs(processor=None):
         valid_local_files = set()
         files_generated = 0
         subs_downloaded = 0
+        path_strm_preserved = 0
+        path_strm_conflicts = {
+            'same_stem_different_ext': 0,
+            'path_mismatch': 0,
+        }
         
         fetch_types = [4] # 4=视频
         if download_subs: fetch_types.append(1) # 1=文档(含字幕)
@@ -1407,6 +1496,7 @@ def task_full_sync_strm_and_subs(processor=None):
         for idx, target_cid in enumerate(target_cids):
             category_name = cid_to_rel_path.get(target_cid, "未知分类")
             base_prog = 10 + int((idx / total_targets) * 80)
+            target_invalid = False
             fast_count = run_cookie_fast_sync(target_cid, category_name, base_prog)
             if processor and getattr(processor, 'is_stop_requested', lambda: False)():
                 return
@@ -1434,6 +1524,14 @@ def task_full_sync_strm_and_subs(processor=None):
                             logger.error(f"  ➜ API 返回异常状态 (可能触发流控): {res}")
                             sync_has_errors = True
                             break
+                        if not _p115_response_path_contains_cid(res, target_cid):
+                            logger.warning(
+                                f"  ➜ [{category_name}] OpenAPI 返回路径不包含目标 cid={target_cid}，"
+                                "可能远端目录已删除或本地缓存过期，已跳过该分类的兜底同步。"
+                            )
+                            sync_has_errors = True
+                            target_invalid = True
+                            break
                         data = res.get('data', [])
                         if not data: break
                         
@@ -1448,8 +1546,17 @@ def task_full_sync_strm_and_subs(processor=None):
                         logger.error(f"  ➜ 全局拉取异常 (cid={target_cid}, type={f_type}): {e}")
                         sync_has_errors = True
                         break
+                if target_invalid:
+                    break
 
         logger.info(f"  ➜ 增量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
+        if path_strm_preserved:
+            logger.info(
+                "  ➜ 路径模式 STRM 保护：跳过覆盖 %s 个，其中同名不同后缀 %s 个，路径不一致 %s 个。",
+                path_strm_preserved,
+                path_strm_conflicts.get('same_stem_different_ext', 0),
+                path_strm_conflicts.get('path_mismatch', 0),
+            )
 
         # =================================================================
         # 阶段 3: 本地失效文件清理 (耗时: 秒级)
