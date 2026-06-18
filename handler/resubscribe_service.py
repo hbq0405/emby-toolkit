@@ -15,7 +15,6 @@ class WashingService:
     CLEAN_VERSION_MIN_DELTA_MINUTES = 1.5
     CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.985
     SHORT_DRAMA_MAX_RUNTIME_MINUTES = 25.0
-    AI_TRANSLATABLE_SUBTITLE_LANGS = {"eng", "en", "jpn", "ja", "kor", "ko"}
     CHINESE_SUBTITLE_LANGS = {"chi", "yue"}
     AI_SUBTITLE_TEMPORARY_LEVEL_DELTA = 0.1
 
@@ -73,7 +72,7 @@ class WashingService:
         if cls._is_chinese_lang(original_lang):
             return False
         sub_langs = {normalize_lang_code(x) for x in (norm_info.get("sub_langs") or set()) if x}
-        return bool(sub_langs & cls.AI_TRANSLATABLE_SUBTITLE_LANGS)
+        return any(not cls._is_chinese_lang(x) for x in sub_langs)
 
     @classmethod
     def _extract_media_source_info(cls, info: Any) -> Dict[str, Any]:

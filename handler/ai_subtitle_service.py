@@ -22,6 +22,7 @@ TEXT_SUBTITLE_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "te
 CHINESE_LANGS = {"chi", "zho", "zh", "chs", "cht", "cmn", "yue", "zh-cn", "zh-hans", "zh-tw", "zh-hant"}
 TRANSLATABLE_LANGS = {"eng", "en", "jpn", "ja", "kor", "ko"}
 VIDEO_EXTS = {".mkv", ".mp4", ".mov", ".avi", ".ts", ".m2ts", ".iso", ".wmv", ".rmvb"}
+EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT = 90
 
 
 def process_ai_subtitle_translation_for_emby_items(
@@ -370,6 +371,7 @@ def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row:
             logger.debug(f"  ➜ [AI字幕] ffprobe 检查字幕失败：{e}")
             return None
 
+    candidates = []
     for stream in streams:
         if str(stream.get("codec_type") or "").lower() != "subtitle":
             continue
@@ -380,27 +382,41 @@ def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row:
         lang = _normalize_lang(tags.get("language") or "")
         if _is_chinese_language(lang):
             continue
+        candidates.append((stream, lang))
 
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: (0 if x[1] in TRANSLATABLE_LANGS else 1, int(x[0].get("index") or 0)))
+    logger.info(f"  ➜ [AI字幕] 找到 {len(candidates)} 条可尝试的源语言文本字幕轨道，成功抽取一条后立即翻译。")
+
+    for stream, lang in candidates:
         tmp = tempfile.NamedTemporaryFile(prefix="etk-ai-sub-", suffix=".srt", delete=False)
         tmp.close()
+        stream_index = stream.get("index")
         cmd = _ffmpeg_input_args(
             "ffmpeg",
             input_url,
             user_agent,
             ["-y", "-loglevel", "error"],
-            ["-map", f"0:{stream.get('index')}", tmp.name],
+            ["-map", f"0:{stream_index}", tmp.name],
         )
         try:
             started = time.monotonic()
-            subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=True)
-            logger.info(f"  ➜ [AI字幕] 已从{label}抽取源语言文本字幕，耗时 {time.monotonic() - started:.1f}s。")
+            logger.info(f"  ➜ [AI字幕] 正在抽取源语言字幕轨道：轨道={stream_index}，语言={lang or '未知'}，来源={label}")
+            subprocess.run(cmd, capture_output=True, text=True, timeout=EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT, check=True)
+            logger.info(f"  ➜ [AI字幕] 已从{label}抽取源语言文本字幕，轨道={stream_index}，语言={lang or '未知'}，耗时 {time.monotonic() - started:.1f}s。")
             return tmp.name, lang, [tmp.name]
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                f"  ➜ [AI字幕] 抽取字幕轨道超时，继续尝试下一条：轨道={stream_index}，语言={lang or '未知'}，超时={EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT}s"
+            )
         except Exception as e:
-            logger.debug(f"  ➜ [AI字幕] 抽取内封文本字幕失败：{e}")
-            try:
-                os.remove(tmp.name)
-            except Exception:
-                pass
+            logger.debug(f"  ➜ [AI字幕] 抽取内封文本字幕失败，继续尝试下一条：轨道={stream_index}，语言={lang or '未知'}，错误={e}")
+        try:
+            os.remove(tmp.name)
+        except Exception:
+            pass
     return None
 
 
