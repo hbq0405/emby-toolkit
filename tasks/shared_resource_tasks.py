@@ -1182,6 +1182,22 @@ def _completed_share_list_item_file_count(item: Dict[str, Any]) -> int:
     return 0
 
 
+def _completed_share_list_item_total_size(item: Dict[str, Any]) -> int:
+    item = item if isinstance(item, dict) else {}
+    for key in (
+        'total_size', 'totalSize', 'share_size', 'shareSize', 'size',
+        'file_size', 'fileSize', 'file_size_bytes', 'fileSizeBytes',
+        'bytes', 'total_bytes', 'totalBytes',
+    ):
+        size = _rapid_size_to_int(item.get(key), 0)
+        if size > 0:
+            return size
+    data = item.get('data')
+    if isinstance(data, dict):
+        return _completed_share_list_item_total_size(data)
+    return 0
+
+
 def _completed_share_list_item_url(item: Dict[str, Any], share_code: str = '') -> str:
     item = item if isinstance(item, dict) else {}
     for key in ('share_url', 'shareUrl', 'url', 'share_link', 'shareLink'):
@@ -1435,8 +1451,8 @@ def _logical_share_report_payload_from_row(row: Dict[str, Any], channel_id: str,
         'root_fid': row.get('root_fid') or report_payload.get('root_fid') or '',
         'root_cid': row.get('root_cid') or report_payload.get('root_cid') or '',
         'root_name': row.get('root_name') or report_payload.get('root_name') or '',
-        'file_count': row.get('file_count') or report_payload.get('file_count') or 0,
-        'total_size': row.get('total_size') or report_payload.get('total_size') or 0,
+        'file_count': report_payload.get('file_count') or row.get('file_count') or 0,
+        'total_size': report_payload.get('total_size') or row.get('total_size') or 0,
     })
     raw = report_payload.get('raw_json') if isinstance(report_payload.get('raw_json'), dict) else {}
     raw = dict(raw or {})
@@ -1619,8 +1635,8 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
             'root_fid': existing_share.get('root_fid') or '',
             'root_cid': existing_share.get('root_cid') or '',
             'root_name': existing_share.get('root_name') or title,
-            'file_count': existing_share.get('file_count') or payload.get('file_count') or 0,
-            'total_size': existing_share.get('total_size') or payload.get('total_size') or 0,
+            'file_count': payload.get('file_count') or existing_share.get('file_count') or 0,
+            'total_size': payload.get('total_size') or existing_share.get('total_size') or 0,
             'raw_json': {
                 'share_kind': 'logical_season',
                 'event': payload,
@@ -2012,6 +2028,8 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                 if list_item:
                     status_info = _completed_share_status_from_list_item(list_item, current_status=row_status)
                     status_source = 'share_list'
+                    list_file_count = _completed_share_list_item_file_count(list_item)
+                    list_total_size = _completed_share_list_item_total_size(list_item)
                 else:
                     status_info = {
                         'status': 'expired',
@@ -2021,6 +2039,8 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                         'not_found_in_share_list': True,
                     }
                     status_source = 'share_list_not_found'
+                    list_file_count = 0
+                    list_total_size = 0
 
                 raw_status_json = {
                     'share_list_item': list_item,
@@ -2090,6 +2110,8 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                         'status': status,
                         'review_status': status_info.get('review_status') or '',
                         'status_message': msg,
+                        'file_count': list_file_count or row.get('file_count') or 0,
+                        'total_size': list_total_size or row.get('total_size') or 0,
                         'raw_json': {**raw_status_json, 'report_source': 'full_logical_share_credential_resync'},
                     })
                     saved = shared_share_db.update_completed_season_share_channel(
@@ -2097,6 +2119,8 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                         status=status,
                         review_status=status_info.get('review_status') or '',
                         status_message=msg,
+                        file_count=list_file_count or row.get('file_count') or 0,
+                        total_size=list_total_size or row.get('total_size') or 0,
                         raw_json={**raw_status_json, 'center_status_response': center_resp},
                         last_checked_at='NOW()',
                         last_reported_at='NOW()',
@@ -2108,6 +2132,8 @@ def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any
                         status=status,
                         review_status=status_info.get('review_status') or '',
                         status_message=msg,
+                        file_count=list_file_count or row.get('file_count') or 0,
+                        total_size=list_total_size or row.get('total_size') or 0,
                         raw_json={**raw_status_json, 'center_status_skipped': True, 'reason': 'status_unchanged'},
                         last_checked_at='NOW()',
                     )
@@ -2235,6 +2261,7 @@ def repair_logical_season_share_channels_from_115(*, max_pages: int = 20, dry_ru
             }
             share_title = _completed_share_list_item_title(item) or row.get('share_title') or row.get('root_name') or ''
             file_count = _completed_share_list_item_file_count(item) or _completed_share_row_expected_file_count(row)
+            total_size = _completed_share_list_item_total_size(item) or row.get('total_size') or 0
             share_url = _completed_share_list_item_url(item, share_code)
             root_fid = _completed_share_list_item_root_id(item, 'root_fid', 'rootFid', 'fid', 'file_id', 'fileId') or row.get('root_fid') or ''
             root_cid = _completed_share_list_item_root_id(item, 'root_cid', 'rootCid', 'cid', 'parent_id', 'parentId') or row.get('root_cid') or ''
@@ -2260,6 +2287,7 @@ def repair_logical_season_share_channels_from_115(*, max_pages: int = 20, dry_ru
                 root_cid=root_cid,
                 root_name=row.get('root_name') or share_title,
                 file_count=file_count,
+                total_size=total_size,
                 status=status,
                 review_status=review_status,
                 status_message=message,
@@ -2281,6 +2309,7 @@ def repair_logical_season_share_channels_from_115(*, max_pages: int = 20, dry_ru
                     'status': status,
                     'review_status': review_status,
                     'status_message': message,
+                    'total_size': total_size,
                     'raw_json': {
                         'share_kind': 'logical_season',
                         'report_source': 'local_share_backfill',
