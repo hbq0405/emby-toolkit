@@ -5225,6 +5225,24 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     return True
             return False
 
+        # 文件扩展名是文件级分类条件，必须优先于同 TMDb 的历史整理记忆。
+        current_ext = os.path.splitext(str(getattr(self, 'current_sorting_filename', '') or ''))[1].lower().lstrip('.')
+        if current_ext:
+            for rule in self.rules:
+                if not rule.get('enabled', True) or not rule.get('file_extensions'):
+                    continue
+                rule_exts = {
+                    str(ext).strip().lower().lstrip('.')
+                    for ext in rule.get('file_extensions') or []
+                    if str(ext).strip()
+                }
+                if current_ext in rule_exts and self._match_rule(rule):
+                    logger.info(
+                        f"  ➜ [115整理] 命中文件扩展名规则“{rule.get('name')}”，"
+                        f"扩展名：{current_ext}，目标目录：{rule.get('dir_name')}"
+                    )
+                    return rule.get('cid')
+
         # ★★★ 1. 查历史记录 (记忆功能 - 升级为分季隔离 + 规则校验版) ★★★
         if not ignore_memory:
             try:
