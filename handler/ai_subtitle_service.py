@@ -47,6 +47,10 @@ def process_ai_subtitle_translation_for_emby_items(
                 logger.debug(f"  ➜ [AI字幕] 未找到媒体元数据，跳过：EmbyID={emby_item_id}")
                 continue
 
+            if _is_chinese_original_media(row):
+                logger.debug(f"  ➜ [AI字幕] 华语媒体不触发字幕翻译，跳过：《{row.get('title') or item_name_for_log}》")
+                continue
+
             if not _washing_requires_chinese_subtitle(row):
                 logger.debug(f"  ➜ [AI字幕] 洗版规则未要求中文字幕，跳过：《{row.get('title') or item_name_for_log}》")
                 continue
@@ -115,15 +119,20 @@ def _load_media_row_by_emby_id(emby_item_id: str) -> Optional[Dict[str, Any]]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT tmdb_id, item_type, title, release_year, season_number, episode_number,
-                       parent_series_tmdb_id, asset_details_json, emby_item_ids_json,
-                       file_pickcode_json, file_sha1_json,
-                       washing_level, washing_snapshot_json
-                FROM media_metadata
-                WHERE in_library IS TRUE
-                  AND item_type IN ('Movie', 'Episode')
-                  AND emby_item_ids_json @> %s::jsonb
-                ORDER BY date_added DESC NULLS LAST
+                SELECT m.tmdb_id, m.item_type, m.title, m.release_year, m.season_number, m.episode_number,
+                       m.parent_series_tmdb_id, m.asset_details_json, m.emby_item_ids_json,
+                       m.file_pickcode_json, m.file_sha1_json,
+                       m.washing_level, m.washing_snapshot_json,
+                       COALESCE(NULLIF(m.original_language, ''), NULLIF(parent.original_language, '')) AS original_language
+                FROM media_metadata m
+                LEFT JOIN media_metadata parent
+                  ON m.item_type = 'Episode'
+                 AND parent.item_type = 'Series'
+                 AND parent.tmdb_id = m.parent_series_tmdb_id
+                WHERE m.in_library IS TRUE
+                  AND m.item_type IN ('Movie', 'Episode')
+                  AND m.emby_item_ids_json @> %s::jsonb
+                ORDER BY m.date_added DESC NULLS LAST
                 LIMIT 1
                 """,
                 (json.dumps([str(emby_item_id)]),),
@@ -161,6 +170,10 @@ def _safe_json(value: Any, default: Any) -> Any:
         except Exception:
             return default
     return value
+
+
+def _is_chinese_original_media(row: Dict[str, Any]) -> bool:
+    return _is_chinese_language(str((row or {}).get("original_language") or ""))
 
 
 def _media_assets_for_emby_id(row: Dict[str, Any], emby_item_id: str) -> List[Dict[str, Any]]:
@@ -539,10 +552,16 @@ def _normalize_lang(lang: str) -> str:
         "kr": "kor",
         "korean": "kor",
         "zh": "chi",
+        "cn": "chi",
+        "zh-cn": "chi",
+        "zh-hans": "chi",
+        "zh-tw": "chi",
+        "zh-hant": "chi",
         "zho": "chi",
         "chs": "chi",
         "cht": "chi",
         "cmn": "chi",
+        "yue": "chi",
     }
     return mapping.get(text, text)
 

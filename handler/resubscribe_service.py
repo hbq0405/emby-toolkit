@@ -15,6 +15,8 @@ class WashingService:
     CLEAN_VERSION_MIN_DELTA_MINUTES = 1.5
     CLEAN_VERSION_MAX_RUNTIME_RATIO = 0.985
     SHORT_DRAMA_MAX_RUNTIME_MINUTES = 25.0
+    AI_TRANSLATABLE_SUBTITLE_LANGS = {"eng", "en", "jpn", "ja", "kor", "ko"}
+    CHINESE_SUBTITLE_LANGS = {"chi", "yue"}
 
     @classmethod
     def _safe_parse_jsonish(cls, val: Any) -> Any:
@@ -43,6 +45,34 @@ class WashingService:
     def _safe_parse_list(cls, val: Any) -> List[Any]:
         parsed = cls._safe_parse_jsonish(val)
         return parsed if isinstance(parsed, list) else []
+
+    @classmethod
+    def _is_chinese_lang(cls, lang: Any) -> bool:
+        normalized = normalize_lang_code(str(lang or ""))
+        return normalized in cls.CHINESE_SUBTITLE_LANGS or str(lang or "").strip().lower() in {
+            "zh", "zho", "chs", "cht", "cmn", "cn", "zh-cn", "zh-hans", "zh-tw", "zh-hant",
+        }
+
+    @classmethod
+    def _ai_subtitle_translation_enabled(cls) -> bool:
+        try:
+            import config_manager
+            import constants
+            return bool(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_TRANSLATE_SUBTITLE, False))
+        except Exception:
+            return False
+
+    @classmethod
+    def _can_ai_translate_missing_chinese_subtitle(cls, norm_info: dict, effective_req_sub: set) -> bool:
+        if not cls._ai_subtitle_translation_enabled():
+            return False
+        if not effective_req_sub or not any(cls._is_chinese_lang(x) for x in effective_req_sub):
+            return False
+        original_lang = normalize_lang_code(norm_info.get("original_lang") or "")
+        if cls._is_chinese_lang(original_lang):
+            return False
+        sub_langs = {normalize_lang_code(x) for x in (norm_info.get("sub_langs") or set()) if x}
+        return bool(sub_langs & cls.AI_TRANSLATABLE_SUBTITLE_LANGS)
 
     @classmethod
     def _extract_media_source_info(cls, info: Any) -> Dict[str, Any]:
@@ -580,7 +610,8 @@ class WashingService:
                 else:
                     # 普通模式：必须包含想要的字幕。如果有外挂字幕，豁免此检查（假设外挂字幕就是想要的）
                     if not matched_subs and not has_ext_sub: 
-                        return False, "缺少必须的字幕"
+                        if not cls._can_ai_translate_missing_chinese_subtitle(norm_info, effective_req_sub):
+                            return False, "缺少必须的字幕"
 
         if priority_rule.get("subtitle_effect") or priority_rule.get("effect_subtitle"):
             has_effect_subtitle = bool(norm_info.get("has_effect_subtitle"))
