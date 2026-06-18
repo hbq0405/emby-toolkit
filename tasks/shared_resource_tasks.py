@@ -6712,6 +6712,7 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                 'poster_path': has_image(movie, 'poster_path', 'poster_url', 'image', 'cover'),
                 'backdrop_path': has_image(movie, 'backdrop_path', 'backdrop_url', 'background'),
                 'overview': has_any(movie, ('overview',)),
+                'rating_refresh': has_any(movie, ('rating', 'vote_average')),
                 'movie_meta': has_any(movie, (
                     'title', 'original_title', 'overview', 'poster_path', 'backdrop_path',
                     'release_year', 'release_date', 'rating', 'genres_json', 'original_language',
@@ -6734,6 +6735,7 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                 'season_backdrop_path': has_image(season, 'backdrop_path', 'backdrop_url', 'background'),
                 'series_backdrop_path': has_image(series, 'backdrop_path', 'backdrop_url', 'background'),
                 'overview': has_any(season, ('overview',)) or has_any(series, ('overview',)),
+                'rating_refresh': has_any(series, ('rating', 'vote_average')),
                 'season_overview': has_any(season, ('overview',)),
                 'series_overview': has_any(series, ('overview',)),
                 'series_meta': has_any(series, (

@@ -2660,6 +2660,43 @@ const centerTagPush = (arr, label, type = 'default', key = '') => {
   if (arr.some(x => x.label === text)) return;
   arr.push({ key: key || text, label: text, type });
 };
+const centerProvidedTags = (row) => {
+  const labels = Array.isArray(row?.tag_labels) ? row.tag_labels : [];
+  return labels
+    .map(item => {
+      if (item && typeof item === 'object') {
+        const label = String(item.label || item.name || item.text || '').trim();
+        return label ? { label, type: item.type || 'default', key: item.key || `center-${label}` } : null;
+      }
+      const label = String(item || '').trim();
+      return label ? { label, type: 'default', key: `center-${label}` } : null;
+    })
+    .filter(Boolean);
+};
+const centerTagColorPalette = ['primary', 'info', 'success', 'warning', 'error'];
+const centerStableHash = (value) => {
+  const text = String(value || '');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+};
+const colorizeCenterTags = (tags, row) => {
+  const used = new Set();
+  const seed = centerVersionKey(row);
+  return (tags || []).map((tag, index) => {
+    let colorIndex = centerStableHash(`${seed}:${tag.key || tag.label}:${index}`) % centerTagColorPalette.length;
+    if (used.size < centerTagColorPalette.length) {
+      for (let i = 0; i < centerTagColorPalette.length && used.has(centerTagColorPalette[colorIndex]); i += 1) {
+        colorIndex = (colorIndex + 1) % centerTagColorPalette.length;
+      }
+    }
+    const type = centerTagColorPalette[colorIndex];
+    used.add(type);
+    return { ...tag, type };
+  });
+};
 const trackTagText = (item) => {
   if (item == null) return '';
   if (typeof item === 'string') return item;
@@ -2923,14 +2960,18 @@ const centerVersionTags = (row) => {
     if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'info', 'fps'); // 改为 info
   }
   
-  // 5. 其他标签
-  if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
-  else if (isCenterCompletedCertified(row)) centerTagPush(tags, '一致版', 'success', 'completed');
-  if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
-  if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
-  if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
-  centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
-  return tags;
+  // 5. 业务标签优先使用中心端口径；旧中心端没下发时才兜底。
+  const centerLabels = centerProvidedTags(row);
+  centerLabels.forEach(t => centerTagPush(tags, t.label, t.type, t.key));
+  if (!centerLabels.length) {
+    if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
+    else if (isCenterCompletedCertified(row)) centerTagPush(tags, '一致版', 'success', 'completed');
+    if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
+    if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
+    if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
+    centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
+  }
+  return colorizeCenterTags(tags, row);
 };
 const mergeCenterDetailPayload = (base, payload) => {
   const row = { ...(base || {}) };
