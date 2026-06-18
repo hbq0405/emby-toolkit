@@ -2728,6 +2728,7 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
         'missing_identity': 0,
         'no_priority_rules': 0,
         'backfilled_target_cid': 0,
+        'ai_subtitle_temporary': 0,
     }
 
     if count <= 0:
@@ -2913,6 +2914,8 @@ def _evaluate_washing_level_for_row(cursor, row, *, only_update_p115=True):
 
     best = sorted(versions, key=_best_sort_key)[0] if versions else {}
     best_level = best.get('level') if best else None
+    if best and best.get('ai_subtitle_temporary'):
+        stats['ai_subtitle_temporary'] += 1
     
     new_mm_snapshot = {
         'versions': versions,
@@ -3001,6 +3004,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
         'missing_identity': 0,
         'no_priority_rules': 0,
         'backfilled_target_cid': 0,
+        'ai_subtitle_temporary': 0,
         'errors': 0,
         'started_at': datetime.utcnow().isoformat() + 'Z',
         'finished_at': None,
@@ -3049,7 +3053,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                 stats['scanned_items'] += 1
                 try:
                     item_stats = _evaluate_washing_level_for_row(cursor, dict(row))
-                    for key in ('evaluated_versions', 'missing_raw', 'missing_identity', 'no_priority_rules', 'backfilled_target_cid'):
+                    for key in ('evaluated_versions', 'missing_raw', 'missing_identity', 'no_priority_rules', 'backfilled_target_cid', 'ai_subtitle_temporary'):
                         stats[key] += int(item_stats.get(key) or 0)
                     stats['updated_items'] += 1
                 except Exception as e:
@@ -3066,7 +3070,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                     status_msg = (
                         f"  ➜ [洗版优先级重算] 进度: {stats['scanned_items']}/{total_rows}，"
                         f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，"
-                        f"未命中规则 {stats['no_priority_rules']}，回填CID {stats['backfilled_target_cid']}"
+                        f"未命中规则 {stats['no_priority_rules']}，AI临时字幕 {stats['ai_subtitle_temporary']}，回填CID {stats['backfilled_target_cid']}"
                     )
                     update_task_status(min(progress, 95), status_msg)
 
@@ -3077,7 +3081,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
                         min(progress, 95),
                         f"  ➜ [洗版优先级重算] 进度: {stats['scanned_items']}/{total_rows}，"
                         f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，"
-                        f"未命中规则 {stats['no_priority_rules']}，回填CID {stats['backfilled_target_cid']}"
+                        f"未命中规则 {stats['no_priority_rules']}，AI临时字幕 {stats['ai_subtitle_temporary']}，回填CID {stats['backfilled_target_cid']}"
                     )
 
             conn.commit()
@@ -3087,7 +3091,7 @@ def task_recalculate_library_washing_priorities(processor=None, item_type='all',
         100,
         f"  ➜ [洗版优先级重算] 完成：总数 {stats['scanned_items']}，"
         f"已更新 {stats['updated_items']}，缺 RAW {stats['missing_raw']}，"
-        f"未命中规则 {stats['no_priority_rules']}，回填CID {stats['backfilled_target_cid']}"
+        f"未命中规则 {stats['no_priority_rules']}，AI临时字幕 {stats['ai_subtitle_temporary']}，回填CID {stats['backfilled_target_cid']}"
     )
     return stats
 

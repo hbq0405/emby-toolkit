@@ -31,8 +31,9 @@ def process_ai_subtitle_translation_for_emby_items(
     emby_url: str = "",
     emby_api_key: str = "",
     emby_user_id: str = "",
+    extract_timeout_seconds: Optional[int] = None,
 ) -> None:
-    """Webhook 入库后的异步字幕翻译入口。"""
+    """AI 字幕翻译入口，由定时/手动任务调用。"""
     if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_TRANSLATE_SUBTITLE, False):
         return
 
@@ -74,7 +75,7 @@ def process_ai_subtitle_translation_for_emby_items(
                         logger.warning(f"  ➜ [AI字幕] AI 服务未就绪，跳过字幕翻译：{e}")
                         return
 
-                result = _translate_one_asset(row, asset, translator)
+                result = _translate_one_asset(row, asset, translator, extract_timeout_seconds=extract_timeout_seconds)
                 if not result:
                     continue
 
@@ -102,6 +103,7 @@ def process_ai_subtitle_translation_for_series(
     emby_url: str = "",
     emby_api_key: str = "",
     emby_user_id: str = "",
+    extract_timeout_seconds: Optional[int] = None,
 ) -> None:
     episode_ids = _load_episode_emby_ids_by_series_tmdb(series_tmdb_id)
     if not episode_ids:
@@ -113,6 +115,7 @@ def process_ai_subtitle_translation_for_series(
         emby_url=emby_url,
         emby_api_key=emby_api_key,
         emby_user_id=emby_user_id,
+        extract_timeout_seconds=extract_timeout_seconds,
     )
 
 
@@ -253,7 +256,12 @@ def _has_chinese_subtitle(asset: Dict[str, Any]) -> bool:
     return False
 
 
-def _translate_one_asset(row: Dict[str, Any], asset: Dict[str, Any], translator: AITranslator) -> bool:
+def _translate_one_asset(
+    row: Dict[str, Any],
+    asset: Dict[str, Any],
+    translator: AITranslator,
+    extract_timeout_seconds: Optional[int] = None,
+) -> bool:
     media_path = str(asset.get("path") or "").strip()
     if not media_path or media_path.startswith(("http://", "https://")):
         logger.debug(f"  ➜ [AI字幕] 媒体路径不可用，跳过：《{row.get('title') or ''}》")
@@ -264,7 +272,12 @@ def _translate_one_asset(row: Dict[str, Any], asset: Dict[str, Any], translator:
         logger.debug(f"  ➜ [AI字幕] 中文字幕文件已存在，跳过：{output_path}")
         return False
 
-    source_path, source_lang, temp_paths = _find_source_subtitle(media_path, asset, row)
+    source_path, source_lang, temp_paths = _find_source_subtitle(
+        media_path,
+        asset,
+        row,
+        extract_timeout_seconds=extract_timeout_seconds,
+    )
     if not source_path:
         logger.debug(f"  ➜ [AI字幕] 未找到可翻译的文本字幕，跳过：《{row.get('title') or ''}》")
         return False
@@ -304,12 +317,22 @@ def _output_subtitle_path(media_path: str) -> str:
     return f"{base}.zh-Hans.srt"
 
 
-def _find_source_subtitle(media_path: str, asset: Dict[str, Any], row: Dict[str, Any]) -> Tuple[Optional[str], str, List[str]]:
+def _find_source_subtitle(
+    media_path: str,
+    asset: Dict[str, Any],
+    row: Dict[str, Any],
+    extract_timeout_seconds: Optional[int] = None,
+) -> Tuple[Optional[str], str, List[str]]:
     source = _find_external_text_subtitle(media_path)
     if source:
         return source[0], source[1], []
 
-    extracted = _extract_embedded_text_subtitle(media_path, asset, row)
+    extracted = _extract_embedded_text_subtitle(
+        media_path,
+        asset,
+        row,
+        extract_timeout_seconds=extract_timeout_seconds,
+    )
     if extracted:
         return extracted
     return None, "", []
@@ -342,7 +365,12 @@ def _find_external_text_subtitle(media_path: str) -> Optional[Tuple[str, str]]:
     return sorted(candidates, key=lambda x: x[0].lower())[0] if candidates else None
 
 
-def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row: Dict[str, Any]) -> Optional[Tuple[str, str, List[str]]]:
+def _extract_embedded_text_subtitle(
+    media_path: str,
+    asset: Dict[str, Any],
+    row: Dict[str, Any],
+    extract_timeout_seconds: Optional[int] = None,
+) -> Optional[Tuple[str, str, List[str]]]:
     input_url, user_agent, label = _resolve_subtitle_probe_input(media_path, asset, row)
     if not input_url:
         return None
@@ -389,6 +417,7 @@ def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row:
 
     candidates.sort(key=lambda x: (0 if x[1] in TRANSLATABLE_LANGS else 1, int(x[0].get("index") or 0)))
     logger.info(f"  ➜ [AI字幕] 找到 {len(candidates)} 条可尝试的源语言文本字幕轨道，成功抽取一条后立即翻译。")
+    timeout_seconds = _normalize_extract_timeout(extract_timeout_seconds)
 
     for stream, lang in candidates:
         tmp = tempfile.NamedTemporaryFile(prefix="etk-ai-sub-", suffix=".srt", delete=False)
@@ -403,21 +432,63 @@ def _extract_embedded_text_subtitle(media_path: str, asset: Dict[str, Any], row:
         )
         try:
             started = time.monotonic()
-            logger.info(f"  ➜ [AI字幕] 正在抽取源语言字幕轨道：轨道={stream_index}，语言={lang or '未知'}，来源={label}")
-            subprocess.run(cmd, capture_output=True, text=True, timeout=EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT, check=True)
-            logger.info(f"  ➜ [AI字幕] 已从{label}抽取源语言文本字幕，轨道={stream_index}，语言={lang or '未知'}，耗时 {time.monotonic() - started:.1f}s。")
+            lang_display = _language_display_name(lang)
+            logger.info(f"  ➜ [AI字幕] 正在抽取源语言字幕轨道：轨道={stream_index}，语言={lang_display}，来源={label}，超时={timeout_seconds}s")
+            subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, check=True)
+            logger.info(f"  ➜ [AI字幕] 已从{label}抽取源语言文本字幕，轨道={stream_index}，语言={lang_display}，耗时 {time.monotonic() - started:.1f}s。")
             return tmp.name, lang, [tmp.name]
         except subprocess.TimeoutExpired:
             logger.warning(
-                f"  ➜ [AI字幕] 抽取字幕轨道超时，继续尝试下一条：轨道={stream_index}，语言={lang or '未知'}，超时={EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT}s"
+                f"  ➜ [AI字幕] 抽取字幕轨道超时，继续尝试下一条：轨道={stream_index}，语言={_language_display_name(lang)}，超时={timeout_seconds}s"
             )
         except Exception as e:
-            logger.debug(f"  ➜ [AI字幕] 抽取内封文本字幕失败，继续尝试下一条：轨道={stream_index}，语言={lang or '未知'}，错误={e}")
+            logger.debug(f"  ➜ [AI字幕] 抽取内封文本字幕失败，继续尝试下一条：轨道={stream_index}，语言={_language_display_name(lang)}，错误={e}")
         try:
             os.remove(tmp.name)
         except Exception:
             pass
     return None
+
+
+def _normalize_extract_timeout(value: Optional[int]) -> int:
+    try:
+        timeout = int(value or 0)
+    except Exception:
+        timeout = 0
+    if timeout <= 0:
+        timeout = EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT
+    return max(60, min(timeout, 3600))
+
+
+def _language_display_name(lang: str) -> str:
+    raw = str(lang or "").strip().lower()
+    normalized = _normalize_lang(raw)
+    if not raw and not normalized:
+        return "未知"
+
+    try:
+        from database import settings_db
+        import utils
+
+        mapping = settings_db.get_setting("language_mapping") or utils.DEFAULT_LANGUAGE_MAPPING
+        if isinstance(mapping, str):
+            mapping = json.loads(mapping)
+    except Exception:
+        mapping = []
+
+    for item in mapping if isinstance(mapping, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        value = str(item.get("value") or "").strip().lower()
+        aliases = item.get("aliases") or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        alias_set = {str(x).strip().lower() for x in aliases if str(x or "").strip()}
+        if label and (raw == value or normalized == value or raw in alias_set or normalized in alias_set):
+            return label
+
+    return lang or "未知"
 
 
 def _cached_text_subtitle_streams(row: Dict[str, Any], asset: Dict[str, Any]) -> List[Dict[str, Any]]:

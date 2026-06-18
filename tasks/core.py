@@ -83,7 +83,7 @@ TASK_HELP_TEXTS = {
     'system-auto-update': '检查并执行系统容器自动更新，适合需要保持 ETK 最新版本时使用。',
     'recalculate_library_washing_priorities': '重新计算媒体库中每个媒体的洗版优先级，适合调整洗版规则或新增优先级因素后使用。',
     'manual-correct-organize-records': '将整理记录按用户指定的 TMDb、媒体类型、季号和目标目录重新整理；走媒体任务队列。',
-    'retry-ai-subtitle-temporary': '扫描洗版等级为 X.1 且缺少 zh-Hans 外挂字幕的电影/分集，重新触发 AI 字幕翻译补救。',
+    'retry-ai-subtitle-temporary': '扫描洗版等级为 X.1 且缺少 zh-Hans 外挂字幕的电影/分集，测速后按文件大小动态翻译 AI 字幕。',
 }
 
 
@@ -304,7 +304,7 @@ def get_task_registry(context: str = 'all'):
         'monitor-115-life-events': (task_monitor_115_life_events, "增量生成STRM", 'media', True),
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
         'repair-p115-fingerprints': (task_repair_p115_fingerprints, "补齐缓存指纹", 'media', True),
-        'retry-ai-subtitle-temporary': (task_retry_ai_subtitle_temporary_items, "AI字幕补救", 'media', True),
+        'retry-ai-subtitle-temporary': (task_retry_ai_subtitle_temporary_items, "AI字幕翻译", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'hdhive-auto-checkin': (task_hdhive_auto_checkin, "影巢自动签到", 'media', True),
         'restore-nfo-and-images': (task_restore_nfo_and_images, "还原NFO和封面", 'media', True),

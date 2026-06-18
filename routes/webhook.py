@@ -725,48 +725,6 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         new_episode_ids=precise_new_episode_ids,
     )
 
-    # AI 字幕翻译只做异步投递，不阻塞入库链路。
-    try:
-        if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_TRANSLATE_SUBTITLE, False):
-            from handler.ai_subtitle_service import (
-                process_ai_subtitle_translation_for_emby_items,
-                process_ai_subtitle_translation_for_series,
-            )
-
-            if item_type == "Movie":
-                spawn(
-                    process_ai_subtitle_translation_for_emby_items,
-                    [item_id],
-                    item_name_for_log,
-                    processor.emby_url,
-                    processor.emby_api_key,
-                    processor.emby_user_id,
-                )
-                logger.info(f"  ➜ [AI字幕] 已投递电影字幕翻译检查：《{item_name_for_log}》")
-            elif item_type == "Series":
-                if precise_new_episode_ids:
-                    spawn(
-                        process_ai_subtitle_translation_for_emby_items,
-                        precise_new_episode_ids,
-                        item_name_for_log,
-                        processor.emby_url,
-                        processor.emby_api_key,
-                        processor.emby_user_id,
-                    )
-                    logger.info(f"  ➜ [AI字幕] 已投递新集字幕翻译检查：《{item_name_for_log}》，分集={len(precise_new_episode_ids)}")
-                elif tmdb_id:
-                    spawn(
-                        process_ai_subtitle_translation_for_series,
-                        str(tmdb_id),
-                        item_name_for_log,
-                        processor.emby_url,
-                        processor.emby_api_key,
-                        processor.emby_user_id,
-                    )
-                    logger.info(f"  ➜ [AI字幕] 已投递整剧字幕翻译检查：《{item_name_for_log}》")
-    except Exception as e:
-        logger.warning(f"  ➜ [AI字幕] 投递字幕翻译检查失败：《{item_name_for_log}》，错误={e}")
-
     # 3. 智能追剧判断 - 初始入库
     if is_new_item and item_type == "Series":
         processor.check_and_add_to_watchlist(item_details)
