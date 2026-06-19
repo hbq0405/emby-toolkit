@@ -35,6 +35,42 @@ def _safe_json(value, limit=800):
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def _json_text(value):
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return str(value)
+
+
+def _log_copy_response(resp):
+    text = _json_text(resp)
+    if isinstance(resp, dict):
+        data = resp.get("data")
+        top_keys = ",".join(map(str, resp.keys()))
+        data_type = type(data).__name__ if data is not None else "None"
+        if isinstance(data, dict):
+            data_hint = "data_keys=" + ",".join(map(str, data.keys()))
+        elif isinstance(data, list):
+            data_hint = f"data_len={len(data)}"
+        else:
+            data_hint = "data_empty"
+        logger.info(
+            "  ➜ [复制播放] 复制接口返回结构：长度=%s，顶层字段=%s，data类型=%s，%s",
+            len(text),
+            top_keys or "-",
+            data_type,
+            data_hint,
+        )
+    else:
+        logger.info("  ➜ [复制播放] 复制接口返回结构：类型=%s，长度=%s", type(resp).__name__, len(text))
+
+    chunk_size = 1800
+    total = max(1, (len(text) + chunk_size - 1) // chunk_size)
+    for index in range(total):
+        chunk = text[index * chunk_size:(index + 1) * chunk_size]
+        logger.info("  ➜ [复制播放] 复制接口完整返回[%s/%s]：%s", index + 1, total, chunk)
+
+
 def _now_ts():
     return time.time()
 
@@ -325,13 +361,18 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         logger.warning("  ➜ [复制播放] 复制接口异常，终止本次点播：%s", e)
         return ""
 
-    logger.info("  ➜ [复制播放] 复制接口返回：%s", _safe_json(copy_resp))
+    _log_copy_response(copy_resp)
     if not isinstance(copy_resp, dict) or not copy_resp.get("state"):
         logger.warning("  ➜ [复制播放] 复制失败，终止本次点播。")
         return ""
 
     clone = {}
     response_clones = _extract_clones_from_copy_response(copy_resp, source_fid=source_fid, temp_cid=temp_cid, fallback_name=display_name)
+    logger.info(
+        "  ➜ [复制播放] 复制返回解析结果：克隆候选=%s，FID候选=%s",
+        len(response_clones),
+        len(_extract_ids_from_copy_response(copy_resp)),
+    )
     if response_clones:
         clone = response_clones[0]
         logger.info(
