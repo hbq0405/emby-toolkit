@@ -131,17 +131,19 @@ def _norm_size(value):
         return 0
 
 
-def _is_same_or_duplicate_name(actual_name, expected_name):
+def _duplicate_name_index(actual_name, expected_name):
     actual = str(actual_name or "").strip()
     expected = str(expected_name or "").strip()
     if not expected:
-        return True
+        return 0
     if actual == expected:
-        return True
+        return 0
     if "." not in expected:
-        return actual.startswith(expected + "(") and actual.endswith(")")
+        match = re.fullmatch(re.escape(expected) + r"\((\d+)\)", actual)
+        return int(match.group(1)) if match else -1
     stem, ext = expected.rsplit(".", 1)
-    return bool(re.fullmatch(re.escape(stem) + r"\(\d+\)\." + re.escape(ext), actual))
+    match = re.fullmatch(re.escape(stem) + r"\((\d+)\)\." + re.escape(ext), actual)
+    return int(match.group(1)) if match else -1
 
 
 def _item_to_clone(item, fallback_parent_id="", fallback_name=""):
@@ -187,25 +189,32 @@ def _list_temp_candidates(client, temp_cid, source_row, file_name):
     return items if isinstance(items, list) else []
 
 
-def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name, exclude_ids=None):
+def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
     expected_name = str(file_name or source_row.get("name") or "").strip()
     expected_size = _norm_size(source_row.get("size"))
-    exclude_ids = {str(x) for x in (exclude_ids or []) if x not in (None, "")}
     items = _list_temp_candidates(client, temp_cid, source_row, file_name)
+    best_item = {}
+    best_index = -1
 
     for item in items:
         item_name = str(item.get("name") or item.get("file_name") or item.get("fn") or "").strip()
         item_size = _norm_size(item.get("size") or item.get("fs"))
         fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
-        if fid in exclude_ids:
-            continue
-        if not _is_same_or_duplicate_name(item_name, expected_name):
+        duplicate_index = _duplicate_name_index(item_name, expected_name)
+        if duplicate_index < 0:
             continue
         if expected_size and item_size and item_size != expected_size:
             continue
-        if fid:
-            return item
-    return {}
+        if fid and duplicate_index >= best_index:
+            best_item = item
+            best_index = duplicate_index
+    if best_item:
+        logger.info(
+            "  ➜ [复制播放] 临时目录命中克隆体：文件=%s，重复序号=%s",
+            best_item.get("name") or best_item.get("file_name") or best_item.get("fn") or "-",
+            best_index,
+        )
+    return best_item
 
 
 def _copy_backend_order():
@@ -221,28 +230,6 @@ def _copy_file_with_backend(client, source_fid, temp_cid, backend):
     if hasattr(client, "fs_copy_backend"):
         return client.fs_copy_backend([source_fid], temp_cid, backend=backend)
     return client.fs_copy([source_fid], temp_cid)
-
-
-def _info_to_clone(info_resp, fallback_parent_id="", fallback_name=""):
-    if not isinstance(info_resp, dict) or not info_resp.get("state"):
-        return {}
-    data = info_resp.get("data") or {}
-    if not isinstance(data, dict):
-        return {}
-    fid = str(data.get("fid") or data.get("file_id") or data.get("id") or "").strip()
-    pc = str(data.get("pick_code") or data.get("pc") or data.get("pickcode") or "").strip()
-    name = str(data.get("name") or data.get("file_name") or data.get("fn") or fallback_name or "").strip()
-    parent_id = str(data.get("parent_id") or data.get("pid") or fallback_parent_id or "").strip()
-    if not fid or not pc:
-        return {}
-    return {
-        "fid": fid,
-        "pick_code": pc,
-        "name": name,
-        "parent_id": parent_id,
-        "sha1": str(data.get("sha1") or data.get("sha") or "").strip().upper(),
-        "size": _norm_size(data.get("size") or data.get("fs")),
-    }
 
 
 def _record_clone(record):
@@ -365,16 +352,6 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
     clone = {}
     last_copy_error = ""
     for backend in _copy_backend_order():
-        before_ids = set()
-        try:
-            for item in _list_temp_candidates(client, temp_cid, source_row, display_name):
-                fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
-                if fid:
-                    before_ids.add(fid)
-            logger.info("  ➜ [复制播放] %s 复制前临时目录已有同名候选：%s 个。", backend, len(before_ids))
-        except Exception as e:
-            logger.debug(f"  ➜ [复制播放] {backend} 复制前临时目录快照失败：{e}")
-
         try:
             copy_resp = _copy_file_with_backend(client, source_fid, temp_cid, backend)
         except Exception as e:
@@ -407,19 +384,8 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
             )
             break
 
-        for fid in response_fids:
-            if fid == source_fid:
-                continue
-            info_resp = client.fs_get_info(fid)
-            logger.debug("  ➜ [复制播放] %s 复制返回 FID 详情：fid=%s，返回=%s", backend, fid, _safe_json(info_resp))
-            clone = _info_to_clone(info_resp, fallback_parent_id=temp_cid, fallback_name=display_name)
-            if clone:
-                break
-        if clone:
-            break
-
         for attempt in range(1, 6):
-            item = _find_clone_in_temp_dir(client, temp_cid, source_row, display_name, exclude_ids=before_ids)
+            item = _find_clone_in_temp_dir(client, temp_cid, source_row, display_name)
             clone = _item_to_clone(item, fallback_parent_id=temp_cid, fallback_name=display_name)
             if clone:
                 logger.info(
@@ -430,13 +396,6 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
                     clone.get("pick_code", "")[:8] + "...",
                 )
                 break
-            clone_fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
-            if clone_fid:
-                info_resp = client.fs_get_info(clone_fid)
-                logger.debug("  ➜ [复制播放] %s 回查克隆 FID 详情：fid=%s，返回=%s", backend, clone_fid, _safe_json(info_resp))
-                clone = _info_to_clone(info_resp, fallback_parent_id=temp_cid, fallback_name=display_name)
-                if clone:
-                    break
             logger.info("  ➜ [复制播放] %s 第 %s 次未查到可播放克隆体，等待后重试。", backend, attempt)
             time.sleep(1)
         if clone:
