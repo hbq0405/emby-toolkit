@@ -13,6 +13,7 @@ from typing import List, Optional, Dict, Any, Tuple
 import concurrent.futures
 from collections import defaultdict
 from gevent import spawn_later
+from datetime import datetime, timezone, timedelta
 # 导入需要的底层模块和共享实例
 import task_manager
 import utils
@@ -26,6 +27,8 @@ from .helpers import parse_full_asset_details, reconstruct_metadata_from_db, tra
 from extensions import UPDATING_METADATA
 
 logger = logging.getLogger(__name__)
+
+SMART_DEEP_METADATA_REFRESH_DAYS = 30
 
 # --- 辅助函数：严格校验 TMDb ID ---
 def is_valid_tmdb_id(tmdb_id) -> bool:
@@ -43,6 +46,45 @@ def is_valid_tmdb_id(tmdb_id) -> bool:
     if int(id_str) <= 0:
         return False
     return True
+
+def _parse_timestamp(value) -> Optional[datetime]:
+    """Parse Emby/Postgres timestamps to aware UTC datetimes for sync diff checks."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith('Z'):
+            text = f"{text[:-1]}+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+def _emby_item_changed_since_sync(item: Dict[str, Any], db_state: Optional[Dict[str, Any]]) -> bool:
+    if not db_state:
+        return True
+    emby_modified = _parse_timestamp(item.get("DateModified"))
+    last_synced = _parse_timestamp(db_state.get("last_synced_at"))
+    if not last_synced:
+        return True
+    if not emby_modified:
+        return False
+    return emby_modified > last_synced
+
+def _is_recently_synced(db_state: Optional[Dict[str, Any]], days: int = SMART_DEEP_METADATA_REFRESH_DAYS) -> bool:
+    if not db_state:
+        return False
+    last_synced = _parse_timestamp(db_state.get("last_synced_at"))
+    if not last_synced:
+        return False
+    return last_synced >= datetime.now(timezone.utc) - timedelta(days=days)
 
 # --- 中文化角色名 ---
 def task_role_translation(processor, force_full_update: bool = False):
@@ -670,13 +712,15 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
         known_online_emby_ids = set() 
         emby_sid_to_tmdb_id = {}    # {emby_series_id: tmdb_id}
         tmdb_key_to_emby_ids = defaultdict(set) 
+        top_level_sync_state = {}
+        emby_sync_state = {}
         
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             # A. 预加载映射
             cursor.execute("""
-                SELECT tmdb_id, item_type, jsonb_array_elements_text(emby_item_ids_json) as eid 
+                SELECT tmdb_id, item_type, last_synced_at, jsonb_array_elements_text(emby_item_ids_json) as eid
                 FROM media_metadata 
                 WHERE item_type IN ('Movie', 'Series')
             """)
@@ -686,15 +730,28 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     emby_sid_to_tmdb_id[e_id] = t_id
                 if t_id:
                     tmdb_key_to_emby_ids[(t_id, i_type)].add(e_id)
+                    top_level_sync_state[e_id] = {
+                        'tmdb_id': t_id,
+                        'item_type': i_type,
+                        'last_synced_at': row.get('last_synced_at')
+                    }
 
             # B. 获取在线状态 (★ 修复：无论是否全量更新，都必须获取在线状态，否则无法检测离线)
             cursor.execute("""
-                SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id
+                SELECT tmdb_id, item_type, parent_series_tmdb_id, last_synced_at,
+                       jsonb_array_elements_text(emby_item_ids_json) AS emby_id
                 FROM media_metadata 
                 WHERE in_library = TRUE
             """)
             for row in cursor.fetchall():
-                known_online_emby_ids.add(row['emby_id'])
+                e_id = row['emby_id']
+                known_online_emby_ids.add(e_id)
+                emby_sync_state[e_id] = {
+                    'tmdb_id': row.get('tmdb_id'),
+                    'item_type': row.get('item_type'),
+                    'parent_series_tmdb_id': row.get('parent_series_tmdb_id'),
+                    'last_synced_at': row.get('last_synced_at')
+                }
             
             cursor.execute("""
                 SELECT COUNT(*) as total, SUM(CASE WHEN in_library THEN 1 ELSE 0 END) as online 
@@ -741,6 +798,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
         skipped_no_tmdb = 0
         skipped_other_type = 0
         skipped_clean = 0
+        skipped_unchanged_deep = 0
+        changed_existing = 0
 
         req_fields = "ProviderIds,Type,DateCreated,Name,OriginalTitle,PremiereDate,CommunityRating,Genres,Studios,Tags,TagItems,DateModified,OfficialRating,ProductionYear,Path,PrimaryImageAspectRatio,Overview,MediaStreams,Container,Size,SeriesId,ParentIndexNumber,IndexNumber,ParentId,RunTimeTicks,_SourceLibraryId"
 
@@ -791,7 +850,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
             if not force_full_update:
                 # ★★★ 内存优化 1: 使用 Set 查找 ★★★
                 if item_id in known_online_emby_ids:
-                    is_clean = True
+                    db_state = emby_sync_state.get(item_id)
+                    is_clean = not _emby_item_changed_since_sync(item, db_state)
             
             if is_clean:
                 skipped_clean += 1
@@ -804,6 +864,16 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
             if item_type in ["Movie", "Series"]:
                 if tmdb_id:
                     composite_key = (str(tmdb_id), item_type)
+                    db_state = top_level_sync_state.get(item_id)
+                    if force_full_update and db_state:
+                        if (
+                            not _emby_item_changed_since_sync(item, db_state)
+                            and _is_recently_synced(db_state)
+                        ):
+                            skipped_unchanged_deep += 1
+                            continue
+                    if db_state:
+                        changed_existing += 1
                     # top_level_items_map[composite_key].append(item) # <--- 删除这行
                     dirty_keys.add(composite_key)
                 else:
@@ -816,6 +886,17 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 # series_to_seasons_map/series_to_episode_map 也不需要了，因为后面会重新 fetch
                 
                 if s_id and s_id in emby_sid_to_tmdb_id:
+                    if force_full_update:
+                        db_state = top_level_sync_state.get(s_id)
+                        if (
+                            db_state
+                            and not _emby_item_changed_since_sync(item, db_state)
+                            and _is_recently_synced(db_state)
+                        ):
+                            skipped_unchanged_deep += 1
+                            continue
+                        if db_state:
+                            changed_existing += 1
                     dirty_keys.add((emby_sid_to_tmdb_id[s_id], 'Series'))
                 elif s_id:
                     pending_children.append((s_id, item_type))
@@ -983,6 +1064,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
         logger.info(f"  ➜ Emby 扫描完成，共扫描 {scan_count} 个项。")
         logger.info(f"    - 已入库: {skipped_clean}")
         logger.info(f"    - 已跳过: {skipped_no_tmdb + skipped_other_type} (含 {skipped_no_tmdb} 个无ID, {skipped_other_type} 个非媒体)")
+        if force_full_update and skipped_unchanged_deep:
+            logger.info(f"    - 深度智能跳过: {skipped_unchanged_deep} 个未变化/近期已同步项")
+        if changed_existing:
+            logger.info(f"    - 检测到已入库变更: {changed_existing} 个")
         logger.info(f"    - 需同步: {len(dirty_keys)}")
 
         # --- 4. 确定处理队列 (无需猜测类型) ---
