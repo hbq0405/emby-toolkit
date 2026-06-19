@@ -15,6 +15,7 @@ from extensions import admin_required
 from database import settings_db
 from handler.p115_service import P115Service, get_config, get_115_api_priority
 import constants
+import config_manager
 from functools import lru_cache, wraps
 
 # 115扫码登录相关变量 (OAuth 2.0 + PKCE 模式)
@@ -917,6 +918,217 @@ def create_115_directory():
             return jsonify({"status": "error", "message": resp.get('error_msg', '创建失败')}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def _p115_folder_id(item):
+    return item.get('fid') or item.get('file_id') or item.get('id') or item.get('cid')
+
+
+def _p115_folder_name(item):
+    return item.get('fn') or item.get('file_name') or item.get('n') or item.get('name')
+
+
+def _p115_list_child_folders(client, parent_cid):
+    resp = client.fs_files({'cid': str(parent_cid), 'limit': 1000})
+    if not resp.get('state'):
+        raise RuntimeError(resp.get('error_msg') or resp.get('message') or '读取 115 目录失败')
+    folders = []
+    for item in resp.get('data') or []:
+        item_type = item.get('fc')
+        if item_type is None:
+            item_type = item.get('file_category')
+        if item_type is None:
+            icon = str(item.get('ico') or item.get('icon') or '').lower()
+            if icon in ('folder', 'dir', 'directory') or str(item.get('is_dir')).lower() in ('1', 'true'):
+                item_type = '0'
+        if str(item_type) != '0':
+            continue
+        cid = _p115_folder_id(item)
+        name = _p115_folder_name(item)
+        if cid is not None and name:
+            folders.append({'cid': str(cid), 'name': str(name)})
+    return folders
+
+
+def _p115_ensure_folder(client, parent_cid, name):
+    name = str(name or '').strip()
+    for folder in _p115_list_child_folders(client, parent_cid):
+        if folder['name'] == name:
+            return {**folder, 'created': False}
+
+    resp = client.fs_mkdir(name, str(parent_cid))
+    if not resp.get('state'):
+        raise RuntimeError(resp.get('error_msg') or resp.get('message') or f'创建目录失败：{name}')
+
+    cid = resp.get('cid')
+    if not cid and isinstance(resp.get('data'), dict):
+        cid = _p115_folder_id(resp['data'])
+    if cid:
+        return {'cid': str(cid), 'name': name, 'created': True}
+
+    for folder in _p115_list_child_folders(client, parent_cid):
+        if folder['name'] == name:
+            return {**folder, 'created': True}
+    raise RuntimeError(f'目录已创建但未能确认 CID：{name}')
+
+
+def _p115_deploy_sorting_rules(category_dirs):
+    base_rules = [
+        ('国漫', 'tv', {'countries': ['中国'], 'genres': [16]}),
+        ('日番', 'tv', {'countries': ['日本'], 'genres': [16]}),
+        ('美漫', 'tv', {'countries': ['美国'], 'genres': [16]}),
+        ('国产片', 'movie', {'countries': ['中国']}),
+        ('日韩片', 'movie', {'countries': ['日本', '韩国']}),
+        ('欧美片', 'movie', {'countries': ['美国', '英国', '法国', '德国', '加拿大']}),
+        ('国产剧', 'tv', {'countries': ['中国']}),
+        ('日韩剧', 'tv', {'countries': ['日本', '韩国']}),
+        ('欧美剧', 'tv', {'countries': ['美国', '英国', '法国', '德国', '加拿大']}),
+    ]
+    rules = []
+    for index, (name, media_type, extra) in enumerate(base_rules, start=1):
+        folder = category_dirs[name]
+        rules.append({
+            'id': f'p115_quick_{index}',
+            'name': name,
+            'cid': folder['cid'],
+            'dir_name': name,
+            'category_path': folder['path'],
+            'enabled': True,
+            'match_mode': 'and',
+            'media_type': media_type,
+            'genres': extra.get('genres', []),
+            'countries': extra.get('countries', []),
+            'languages': [],
+            'studios': [],
+            'keywords': [],
+            'ratings': [],
+            'file_extensions': [],
+            'actors': [],
+            'watching_status': 'all',
+            'year_min': None,
+            'year_max': None,
+            'runtime_min': None,
+            'runtime_max': None,
+            'min_rating': 0,
+        })
+    settings_db.save_setting('p115_sorting_rules', rules)
+    return rules
+
+
+def _p115_deploy_washing_groups(category_dirs):
+    def base_priorities():
+        return [
+            {'resolution': ['4k'], 'codec': [], 'effect': [], 'audio': [], 'subtitle': [], 'subtitle_effect': False, 'clean_version': False, 'min_size_gb': None, 'max_size_gb': None, 'is_exclude': False},
+            {'resolution': ['1080p'], 'codec': [], 'effect': [], 'audio': [], 'subtitle': [], 'subtitle_effect': False, 'clean_version': False, 'min_size_gb': None, 'max_size_gb': None, 'is_exclude': False},
+            {'resolution': ['720p'], 'codec': [], 'effect': [], 'audio': [], 'subtitle': [], 'subtitle_effect': False, 'clean_version': False, 'min_size_gb': None, 'max_size_gb': None, 'is_exclude': False},
+        ]
+
+    groups = []
+    for index, (name, media_type) in enumerate((('动漫', 'Series'), ('电影', 'Movie'), ('剧集', 'Series')), start=1):
+        root = category_dirs[name]
+        groups.append({
+            'id': index,
+            'name': f'{name}基础洗版',
+            'media_type': media_type,
+            'target_cids': [root['cid']],
+            'priorities': base_priorities(),
+        })
+
+    from database.connection import get_db_connection
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("TRUNCATE TABLE washing_priority_groups")
+            for i, group in enumerate(groups):
+                cursor.execute("""
+                    INSERT INTO washing_priority_groups (name, media_type, target_cids, priorities, sort_order)
+                    VALUES (%s, %s, %s::jsonb, %s::jsonb, %s)
+                """, (group['name'], group['media_type'], json.dumps(group['target_cids']), json.dumps(group['priorities']), i))
+            conn.commit()
+    return groups
+
+
+@p115_bp.route('/quick_deploy', methods=['POST'])
+@admin_required
+def quick_deploy_115():
+    """一键部署 115 基础目录、分类、重命名和洗版规则。"""
+    client = P115Service.get_client()
+    if not client:
+        return jsonify({"success": False, "message": "无法初始化 115 客户端，请先完成 115 授权"}), 500
+
+    try:
+        media_root = _p115_ensure_folder(client, '0', 'ETK媒体库')
+        save_root = _p115_ensure_folder(client, '0', 'ETK待整理')
+        unrecognized_root = _p115_ensure_folder(client, '0', 'ETK未识别')
+
+        category_dirs = {
+            '动漫': _p115_ensure_folder(client, media_root['cid'], '动漫'),
+            '电影': _p115_ensure_folder(client, media_root['cid'], '电影'),
+            '剧集': _p115_ensure_folder(client, media_root['cid'], '剧集'),
+        }
+        child_map = {
+            '动漫': ['国漫', '日番', '美漫'],
+            '电影': ['国产片', '日韩片', '欧美片'],
+            '剧集': ['国产剧', '日韩剧', '欧美剧'],
+        }
+        for parent_name, child_names in child_map.items():
+            parent = category_dirs[parent_name]
+            parent['children'] = []
+            parent['path'] = parent_name
+            for child_name in child_names:
+                child = _p115_ensure_folder(client, parent['cid'], child_name)
+                child['path'] = f"{parent_name}/{child_name}"
+                parent['children'].append(child)
+                category_dirs[child_name] = child
+
+        dynamic_config = {
+            constants.CONFIG_OPTION_115_SAVE_PATH_CID: save_root['cid'],
+            constants.CONFIG_OPTION_115_SAVE_PATH_NAME: save_root['name'],
+            constants.CONFIG_OPTION_115_UNRECOGNIZED_CID: unrecognized_root['cid'],
+            constants.CONFIG_OPTION_115_UNRECOGNIZED_NAME: unrecognized_root['name'],
+            constants.CONFIG_OPTION_115_MEDIA_ROOT_CID: media_root['cid'],
+            constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME: media_root['name'],
+            constants.CONFIG_OPTION_115_ENABLE_ORGANIZE: True,
+            constants.CONFIG_OPTION_115_MP_CLASSIFY: False,
+            constants.CONFIG_OPTION_115_API_PRIORITY: get_config().get(constants.CONFIG_OPTION_115_API_PRIORITY, 'openapi'),
+            constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE: get_config().get(constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE, 10),
+            constants.CONFIG_OPTION_115_EXTENSIONS: get_config().get(constants.CONFIG_OPTION_115_EXTENSIONS, ['mkv', 'mp4', 'iso', 'ts', 'm2ts']),
+        }
+        config_manager.save_config(dynamic_config)
+
+        rename_config = {
+            'keep_original_name': False,
+            'main_title_lang': 'zh',
+            'main_year_en': True,
+            'main_tmdb_fmt': '{tmdb=ID}',
+            'season_fmt': 'Season {02}',
+            'file_format': ['s_e'],
+            'file_tmdb_fmt': 'none',
+            'strm_url_fmt': 'standard',
+        }
+        settings_db.save_setting('p115_rename_config', rename_config)
+
+        sorting_rules = _p115_deploy_sorting_rules(category_dirs)
+        washing_groups = _p115_deploy_washing_groups(category_dirs)
+
+        tree = {
+            'media_root': {**media_root, 'children': [category_dirs['动漫'], category_dirs['电影'], category_dirs['剧集']]},
+            'save_root': save_root,
+            'unrecognized_root': unrecognized_root,
+        }
+        return jsonify({
+            'success': True,
+            'message': '115 网盘基础配置已部署完成',
+            'data': {
+                'config': dynamic_config,
+                'tree': tree,
+                'sorting_rules_count': len(sorting_rules),
+                'washing_groups_count': len(washing_groups),
+                'rename_config': rename_config,
+            }
+        })
+    except Exception as e:
+        logger.error(f"  ➜ [115一键部署] 执行失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
 
 @p115_bp.route('/washing_priority_groups', methods=['GET', 'POST'])
 @admin_required

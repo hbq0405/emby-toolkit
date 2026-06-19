@@ -492,6 +492,17 @@
                             <n-text depth="3" style="font-size:0.8em;">支持普通字符串替换和正则表达式替换。</n-text>
                         </template>
                     </n-form-item>
+                    <n-form-item label="基础部署">
+                      <n-space vertical :size="8" style="width: 100%;">
+                        <n-button type="primary" ghost :loading="quickDeployLoading" @click="handleQuickDeploy115">
+                          <template #icon><n-icon :component="FlashIcon" /></template>
+                          115 网盘一键部署
+                        </n-button>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          先完成本卡片授权、接口和 STRM 链接地址等基础项并保存，再一键创建目录、分类、重命名和洗版配置。
+                        </n-text>
+                      </n-space>
+                    </n-form-item>
                   </n-card>
                 </n-gi>
 
@@ -1570,6 +1581,38 @@
           </div>
         </n-space>
       </n-spin>
+    </n-modal>
+
+    <n-modal v-model:show="showQuickDeployResult" preset="card" title="115 网盘一键部署完成" :style="modalStyle(620)" class="custom-modal glass-modal">
+      <n-space vertical :size="16">
+        <n-alert type="success" :show-icon="true">
+          已自动创建基础目录，并写入目录配置、分类配置、重命名配置和洗版配置。
+        </n-alert>
+        <div class="quick-deploy-tree">
+          <div class="quick-deploy-tree-title">115 目录树</div>
+          <ul v-if="quickDeployTree">
+            <li>
+              {{ quickDeployTree.media_root?.name || 'ETK媒体库' }}
+              <ul>
+                <li v-for="parent in quickDeployTree.media_root?.children || []" :key="parent.cid">
+                  {{ parent.name }}
+                  <ul>
+                    <li v-for="child in parent.children || []" :key="child.cid">{{ child.name }}</li>
+                  </ul>
+                </li>
+              </ul>
+            </li>
+            <li>{{ quickDeployTree.save_root?.name || 'ETK待整理' }}</li>
+            <li>{{ quickDeployTree.unrecognized_root?.name || 'ETK未识别' }}</li>
+          </ul>
+        </div>
+        <n-alert type="warning" :show-icon="true">
+          本地 STRM 根目录无法自动判断，请继续手动设置“本地 STRM 根目录”，否则只完成网盘侧部署。
+        </n-alert>
+        <n-space justify="end">
+          <n-button @click="showQuickDeployResult = false">知道了</n-button>
+        </n-space>
+      </n-space>
     </n-modal>
     
     <!-- ★ 引入自定义重命名模态框 -->
@@ -2722,6 +2765,9 @@ const newFolderName = ref('');
 const showCreateFolderInput = ref(false);
 const selectorContext = ref(''); 
 const searchKeyword = ref('');
+const quickDeployLoading = ref(false);
+const showQuickDeployResult = ref(false);
+const quickDeployTree = ref(null);
 
 // ★★★ Cookie 扫码获取逻辑 ★★★
 const showCookieModal = ref(false);
@@ -3149,6 +3195,35 @@ const handleCreateFolder = async () => {
   } catch (e) {
     message.error("请求失败: " + e.message);
   }
+};
+
+const handleQuickDeploy115 = () => {
+  dialog.warning({
+    title: '一键部署 115 基础配置',
+    content: '将自动在 115 根目录创建 ETK媒体库、ETK待整理、ETK未识别，并覆盖当前分类规则、重命名规则和洗版规则。确认继续？',
+    positiveText: '开始部署',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      quickDeployLoading.value = true;
+      try {
+        const res = await axios.post('/api/p115/quick_deploy');
+        if (!res.data?.success) {
+          message.error(res.data?.message || '一键部署失败');
+          return;
+        }
+        const data = res.data.data || {};
+        const cfg = data.config || {};
+        Object.assign(configModel.value, cfg);
+        quickDeployTree.value = data.tree || null;
+        showQuickDeployResult.value = true;
+        message.success(res.data.message || '115 网盘基础配置已部署完成');
+      } catch (e) {
+        message.error('一键部署失败: ' + (e.response?.data?.message || e.message));
+      } finally {
+        quickDeployLoading.value = false;
+      }
+    }
+  });
 };
 
 const confirmFolderSelection = () => {
@@ -3623,6 +3698,27 @@ onUnmounted(() => {
 .folder-item:hover { background-color: var(--n-hover-color); }
 .folder-icon-wrapper { display: flex; align-items: center; margin-right: 12px; }
 .folder-name { flex: 1; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--n-text-color-1); }
+
+.quick-deploy-tree {
+  border: 1px solid var(--n-border-color);
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: var(--n-text-color-1);
+}
+
+.quick-deploy-tree-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.quick-deploy-tree ul {
+  margin: 4px 0 4px 18px;
+  padding: 0;
+}
+
+.quick-deploy-tree li {
+  line-height: 1.8;
+}
 .browser-footer {
   padding: 12px 16px; border-top: 1px solid var(--n-divider-color);
   display: flex; justify-content: space-between; align-items: center;
