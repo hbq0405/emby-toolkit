@@ -42,7 +42,8 @@ def _json_text(value):
         return str(value)
 
 
-def _log_copy_response(resp):
+def _log_copy_response(resp, backend=""):
+    backend_label = backend or "auto"
     text = _json_text(resp)
     if isinstance(resp, dict):
         data = resp.get("data")
@@ -55,20 +56,21 @@ def _log_copy_response(resp):
         else:
             data_hint = "data_empty"
         logger.info(
-            "  ➜ [复制播放] 复制接口返回结构：长度=%s，顶层字段=%s，data类型=%s，%s",
+            "  ➜ [复制播放] %s 复制接口返回结构：长度=%s，顶层字段=%s，data类型=%s，%s",
+            backend_label,
             len(text),
             top_keys or "-",
             data_type,
             data_hint,
         )
     else:
-        logger.info("  ➜ [复制播放] 复制接口返回结构：类型=%s，长度=%s", type(resp).__name__, len(text))
+        logger.info("  ➜ [复制播放] %s 复制接口返回结构：类型=%s，长度=%s", backend_label, type(resp).__name__, len(text))
 
     chunk_size = 1800
     total = max(1, (len(text) + chunk_size - 1) // chunk_size)
     for index in range(total):
         chunk = text[index * chunk_size:(index + 1) * chunk_size]
-        logger.info("  ➜ [复制播放] 复制接口完整返回[%s/%s]：%s", index + 1, total, chunk)
+        logger.info("  ➜ [复制播放] %s 复制接口完整返回[%s/%s]：%s", backend_label, index + 1, total, chunk)
 
 
 def _now_ts():
@@ -204,6 +206,21 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name, exclude_ids
         if fid:
             return item
     return {}
+
+
+def _copy_backend_order():
+    primary = str(
+        (config_manager.APP_CONFIG or {}).get(constants.CONFIG_OPTION_115_API_PRIORITY, "openapi") or "openapi"
+    ).strip().lower()
+    if primary == "cookie":
+        return ["cookie", "openapi"]
+    return ["openapi", "cookie"]
+
+
+def _copy_file_with_backend(client, source_fid, temp_cid, backend):
+    if hasattr(client, "fs_copy_backend"):
+        return client.fs_copy_backend([source_fid], temp_cid, backend=backend)
+    return client.fs_copy([source_fid], temp_cid)
 
 
 def _info_to_clone(info_resp, fallback_parent_id="", fallback_name=""):
@@ -345,61 +362,69 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         temp_cid,
     )
 
-    before_ids = set()
-    try:
-        for item in _list_temp_candidates(client, temp_cid, source_row, display_name):
-            fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
-            if fid:
-                before_ids.add(fid)
-        logger.info("  ➜ [复制播放] 复制前临时目录已有同名候选：%s 个。", len(before_ids))
-    except Exception as e:
-        logger.debug(f"  ➜ [复制播放] 复制前临时目录快照失败：{e}")
-
-    try:
-        copy_resp = client.fs_copy([source_fid], temp_cid)
-    except Exception as e:
-        logger.warning("  ➜ [复制播放] 复制接口异常，终止本次点播：%s", e)
-        return ""
-
-    _log_copy_response(copy_resp)
-    if not isinstance(copy_resp, dict) or not copy_resp.get("state"):
-        logger.warning("  ➜ [复制播放] 复制失败，终止本次点播。")
-        return ""
-
     clone = {}
-    response_clones = _extract_clones_from_copy_response(copy_resp, source_fid=source_fid, temp_cid=temp_cid, fallback_name=display_name)
-    logger.info(
-        "  ➜ [复制播放] 复制返回解析结果：克隆候选=%s，FID候选=%s",
-        len(response_clones),
-        len(_extract_ids_from_copy_response(copy_resp)),
-    )
-    if response_clones:
-        clone = response_clones[0]
-        logger.info(
-            "  ➜ [复制播放] 已从复制接口返回中拿到克隆 PC：文件=%s，FID=%s，PC=%s",
-            clone.get("name") or display_name,
-            clone.get("fid"),
-            clone.get("pick_code", "")[:8] + "...",
-        )
+    last_copy_error = ""
+    for backend in _copy_backend_order():
+        before_ids = set()
+        try:
+            for item in _list_temp_candidates(client, temp_cid, source_row, display_name):
+                fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
+                if fid:
+                    before_ids.add(fid)
+            logger.info("  ➜ [复制播放] %s 复制前临时目录已有同名候选：%s 个。", backend, len(before_ids))
+        except Exception as e:
+            logger.debug(f"  ➜ [复制播放] {backend} 复制前临时目录快照失败：{e}")
 
-    for fid in _extract_ids_from_copy_response(copy_resp):
-        if clone:
-            break
-        if fid == source_fid:
+        try:
+            copy_resp = _copy_file_with_backend(client, source_fid, temp_cid, backend)
+        except Exception as e:
+            last_copy_error = str(e)
+            logger.warning("  ➜ [复制播放] %s 复制接口异常，准备尝试备用接口：%s", backend, e)
             continue
-        info_resp = client.fs_get_info(fid)
-        logger.debug("  ➜ [复制播放] 复制返回 FID 详情：fid=%s，返回=%s", fid, _safe_json(info_resp))
-        clone = _info_to_clone(info_resp, fallback_parent_id=temp_cid, fallback_name=display_name)
+
+        _log_copy_response(copy_resp, backend=backend)
+        if not isinstance(copy_resp, dict) or not copy_resp.get("state"):
+            last_copy_error = _safe_json(copy_resp)
+            logger.warning("  ➜ [复制播放] %s 复制失败，准备尝试备用接口。", backend)
+            continue
+
+        response_clones = _extract_clones_from_copy_response(copy_resp, source_fid=source_fid, temp_cid=temp_cid, fallback_name=display_name)
+        response_fids = _extract_ids_from_copy_response(copy_resp)
+        logger.info(
+            "  ➜ [复制播放] %s 复制返回解析结果：克隆候选=%s，FID候选=%s",
+            backend,
+            len(response_clones),
+            len(response_fids),
+        )
+        if response_clones:
+            clone = response_clones[0]
+            logger.info(
+                "  ➜ [复制播放] 已从 %s 复制接口返回中拿到克隆 PC：文件=%s，FID=%s，PC=%s",
+                backend,
+                clone.get("name") or display_name,
+                clone.get("fid"),
+                clone.get("pick_code", "")[:8] + "...",
+            )
+            break
+
+        for fid in response_fids:
+            if fid == source_fid:
+                continue
+            info_resp = client.fs_get_info(fid)
+            logger.debug("  ➜ [复制播放] %s 复制返回 FID 详情：fid=%s，返回=%s", backend, fid, _safe_json(info_resp))
+            clone = _info_to_clone(info_resp, fallback_parent_id=temp_cid, fallback_name=display_name)
+            if clone:
+                break
         if clone:
             break
 
-    if not clone:
-        for attempt in range(1, 9):
+        for attempt in range(1, 6):
             item = _find_clone_in_temp_dir(client, temp_cid, source_row, display_name, exclude_ids=before_ids)
             clone = _item_to_clone(item, fallback_parent_id=temp_cid, fallback_name=display_name)
             if clone:
                 logger.info(
-                    "  ➜ [复制播放] 已从临时目录列表拿到克隆 PC：文件=%s，FID=%s，PC=%s",
+                    "  ➜ [复制播放] 已从临时目录列表拿到 %s 克隆 PC：文件=%s，FID=%s，PC=%s",
+                    backend,
                     clone.get("name") or display_name,
                     clone.get("fid"),
                     clone.get("pick_code", "")[:8] + "...",
@@ -408,15 +433,19 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
             clone_fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
             if clone_fid:
                 info_resp = client.fs_get_info(clone_fid)
-                logger.debug("  ➜ [复制播放] 回查克隆 FID 详情：fid=%s，返回=%s", clone_fid, _safe_json(info_resp))
+                logger.debug("  ➜ [复制播放] %s 回查克隆 FID 详情：fid=%s，返回=%s", backend, clone_fid, _safe_json(info_resp))
                 clone = _info_to_clone(info_resp, fallback_parent_id=temp_cid, fallback_name=display_name)
                 if clone:
                     break
-            logger.info("  ➜ [复制播放] 第 %s 次未查到可播放克隆体，等待后重试。", attempt)
+            logger.info("  ➜ [复制播放] %s 第 %s 次未查到可播放克隆体，等待后重试。", backend, attempt)
             time.sleep(1)
+        if clone:
+            break
+        last_copy_error = f"{backend} 已复制但未拿到克隆 PC"
+        logger.warning("  ➜ [复制播放] %s 已复制但未拿到克隆 PC，准备尝试备用接口。", backend)
 
     if not clone or not clone.get("pick_code"):
-        logger.warning("  ➜ [复制播放] 已复制但未拿到克隆 PC，终止本次点播。")
+        logger.warning("  ➜ [复制播放] 所有复制接口均未拿到克隆 PC，终止本次点播：%s", last_copy_error or "-")
         return ""
 
     record = {

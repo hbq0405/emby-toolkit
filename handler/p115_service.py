@@ -2732,6 +2732,17 @@ class P115Service:
             def fs_copy(self, fids, to_cid):
                 return self._call_api('fs_copy', fids, to_cid, normalizer=_p115_normalize_common_response)
 
+            def fs_copy_backend(self, fids, to_cid, backend=''):
+                backend = str(backend or '').strip().lower()
+                return self._call_api(
+                    'fs_copy',
+                    fids,
+                    to_cid,
+                    normalizer=_p115_normalize_common_response,
+                    force_openapi=(backend == 'openapi'),
+                    force_cookie=(backend == 'cookie'),
+                )
+
             def fs_rename(self, fid_name_tuple):
                 return self._call_api('fs_rename', fid_name_tuple, normalizer=_p115_normalize_common_response)
 
