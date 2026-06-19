@@ -22,7 +22,7 @@ import config_manager
 import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
-from database import connection, settings_db, media_db, queries_db
+from database import connection, settings_db, media_db, queries_db, maintenance_db
 from .helpers import parse_full_asset_details, reconstruct_metadata_from_db, translate_tmdb_metadata_recursively
 from extensions import UPDATING_METADATA
 
@@ -969,7 +969,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 
                 # 1. 查出包含这些消失 ID 的所有记录
                 cursor.execute("""
-                    SELECT tmdb_id, item_type, parent_series_tmdb_id, 
+                    SELECT tmdb_id, item_type, title, original_language, countries_json, parent_series_tmdb_id,
                            emby_item_ids_json, asset_details_json, file_sha1_json, file_pickcode_json
                     FROM media_metadata 
                     WHERE in_library = TRUE 
@@ -984,6 +984,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 
                 # 分类收集处理结果
                 partial_update_records = [] # 还有其他版本存活的记录
+                cleanup_sync_records = [] # 同步修剪媒体去重索引
+                cleanup_delete_scopes = [] # 死绝媒体需要删除去重索引
                 dead_movies_and_series = [] # 彻底死绝的顶层项目
                 dead_seasons_and_episodes = [] # 彻底死绝的子集项目
                 affected_parent_ids = set() # 需要重刷的父剧集
@@ -1026,12 +1028,22 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             json.dumps(pcs, ensure_ascii=False),
                             r_tmdb, r_type
                         ))
+                        cleanup_sync_records.append((
+                            r_tmdb,
+                            r_type,
+                            row.get('title') or str(r_tmdb),
+                            assets,
+                            row.get('original_language'),
+                            row.get('countries_json'),
+                        ))
                     else:
                         # 死绝了，分类加入死亡名单
                         if r_type in ['Movie', 'Series']:
                             dead_movies_and_series.append(r_tmdb)
+                            cleanup_delete_scopes.append((r_tmdb, r_type))
                         elif r_type in ['Season', 'Episode']:
                             dead_seasons_and_episodes.append(r_tmdb)
+                            cleanup_delete_scopes.append((r_tmdb, r_type))
                             if r_parent:
                                 affected_parent_ids.add(r_parent)
 
@@ -1052,6 +1064,25 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                         WHERE m.tmdb_id = v.tmdb_id AND m.item_type = v.item_type
                     """
                     execute_values(cursor, update_sql, partial_update_records)
+                    cleanup_sync_stats = {'updated': 0, 'deleted': 0}
+                    for sync_record in cleanup_sync_records:
+                        result = maintenance_db._sync_cleanup_index_for_media_row(
+                            cursor,
+                            tmdb_id=sync_record[0],
+                            item_type=sync_record[1],
+                            item_name=sync_record[2],
+                            asset_details_json=sync_record[3],
+                            original_language=sync_record[4],
+                            countries_json=sync_record[5],
+                        )
+                        cleanup_sync_stats['updated'] += result.get('updated', 0)
+                        cleanup_sync_stats['deleted'] += result.get('deleted', 0)
+                    if cleanup_sync_stats['updated'] or cleanup_sync_stats['deleted']:
+                        logger.info(
+                            "  ➜ [媒体去重] 已同步修剪失效版本索引: 更新 %s 条，删除 %s 条。",
+                            cleanup_sync_stats['updated'],
+                            cleanup_sync_stats['deleted'],
+                        )
 
                 # B. 彻底枪毙死绝的顶层项目 (Movie, Series)
                 if dead_movies_and_series:
@@ -1092,6 +1123,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                         WHERE tmdb_id = ANY(%s) AND item_type IN ('Season', 'Episode')
                     """, (dead_seasons_and_episodes,))
                     total_offline_count += cursor.rowcount
+
+                if cleanup_delete_scopes:
+                    deleted_cleanup_indexes = 0
+                    for tmdb_id, item_type in cleanup_delete_scopes:
+                        deleted_cleanup_indexes += maintenance_db._delete_cleanup_index_for_media_scope(cursor, tmdb_id, item_type)
+                    if deleted_cleanup_indexes > 0:
+                        logger.info(f"  ➜ [媒体去重] 已删除离线媒体失效索引 {deleted_cleanup_indexes} 条。")
                     
                 # D. 善后：如果子集死了，但父剧集还活着，让父剧集刷新一下状态
                 if affected_parent_ids:
