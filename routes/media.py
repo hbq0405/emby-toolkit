@@ -14,7 +14,7 @@ import extensions
 from database import custom_collection_db, media_db, user_db, request_db, settings_db
 import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit, parse_qsl, urlencode
 
 # --- 蓝图 1：用于所有 /api/... 的路由 ---
 media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
@@ -23,6 +23,17 @@ media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
 media_proxy_bp = Blueprint('media_proxy', __name__)
 
 logger = logging.getLogger(__name__)
+
+def _mask_url_query_secret(url: str) -> str:
+    try:
+        parts = urlsplit(str(url or ''))
+        query = urlencode(
+            [(key, '********' if key.lower() in {'api_key', 'x-emby-token'} else value)
+             for key, value in parse_qsl(parts.query, keep_blank_values=True)]
+        )
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+    except Exception:
+        return str(url or '').replace('api_key=', 'api_key=********')
 
 @media_api_bp.route('/search_emby_library', methods=['GET'])
 @processor_ready_required
@@ -206,7 +217,7 @@ def proxy_emby_image(image_path):
         separator = '&' if '?' in target_url else '?'
         target_url_with_key = f"{target_url}{separator}api_key={emby_api_key}"
         
-        logger.trace(f"代理图片请求 (最终URL): {target_url_with_key}")
+        logger.trace(f"代理图片请求 (最终URL): {_mask_url_query_secret(target_url_with_key)}")
 
         # 3. 发送请求
         emby_response = requests.get(target_url_with_key, stream=True, timeout=20)

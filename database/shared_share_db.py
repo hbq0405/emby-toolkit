@@ -1652,7 +1652,7 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                     COALESCE(cm.cache_live_files, 0) AS cache_live_files,
                     CASE
                         WHEN s.source_kind = 'completed_season'
-                         AND COALESCE(s.center_source_id, '') LIKE 'css_%'
+                         AND COALESCE(s.center_source_id, '') LIKE 'css_%%'
                          AND COALESCE(f.total_files, 0) > 0
                          AND COALESCE(cm.cache_live_files, 0) = 0
                         THEN 'legacy_completed_season_file_not_in_cache'
@@ -1675,7 +1675,7 @@ def list_offline_local_sources(limit: int = 300) -> List[Dict[str, Any]]:
                     )
                     OR (
                         s.source_kind = 'completed_season'
-                        AND COALESCE(s.center_source_id, '') LIKE 'css_%'
+                        AND COALESCE(s.center_source_id, '') LIKE 'css_%%'
                         AND COALESCE(f.total_files, 0) > 0
                         AND COALESCE(cm.cache_live_files, 0) = 0
                     )
