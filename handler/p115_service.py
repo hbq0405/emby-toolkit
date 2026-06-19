@@ -11,6 +11,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from gevent import spawn_later
+from typing import Any, Dict
 import time
 import config_manager
 import constants
@@ -2867,9 +2868,14 @@ class P115Service:
                                 'expire_at': time.time() + 300
                             }
                             return direct_url
-                        return None
+                        repaired = self._repair_stale_pick_code_downurl(pick_code, user_agent, backend='cookie')
+                        return repaired.get('url') if isinstance(repaired, dict) else None
                     except Exception as e:
                         err_str = str(e)
+                        if '405' not in err_str and 'Method Not Allowed' not in err_str:
+                            repaired = self._repair_stale_pick_code_downurl(pick_code, user_agent, backend='cookie')
+                            if isinstance(repaired, dict) and repaired.get('url'):
+                                return repaired['url']
                         if '405' in err_str or 'Method Not Allowed' in err_str:
                             logger.error("  🛑 [熔断] 获取直链触发 115 WAF 风控 (405)，强制休眠 10 秒...")
                             P115Service._last_downurl_time = time.time() + 10
@@ -2908,10 +2914,82 @@ class P115Service:
                                     'expire_at': time.time() + 300 
                                 }
                                 return direct_url
-                        return None
+                        repaired = self._repair_stale_pick_code_downurl(pick_code, user_agent, backend='openapi')
+                        return repaired.get('url') if isinstance(repaired, dict) else None
                     except Exception as e:
+                        repaired = self._repair_stale_pick_code_downurl(pick_code, user_agent, backend='openapi')
+                        if isinstance(repaired, dict) and repaired.get('url'):
+                            return repaired['url']
                         logger.warning(f"  ➜ [115 OpenAPI] 获取直链异常: {e}")
                         return None
+
+            def _repair_stale_pick_code_downurl(self, old_pick_code, user_agent=None, backend='openapi'):
+                """旧 PC 取不到直链时，用本地缓存中的 FID 重新获取当前 PC 并回写。"""
+                old_pc = str(old_pick_code or '').strip()
+                if not old_pc:
+                    return {}
+                try:
+                    cache_row = P115CacheManager.get_file_cache_by_pickcode(old_pc)
+                    if not cache_row or not cache_row.get('id'):
+                        return {}
+                    fid = str(cache_row.get('id') or '').strip()
+                    info_res = self.fs_get_info(fid)
+                    if not info_res or not info_res.get('state') or not isinstance(info_res.get('data'), dict):
+                        logger.debug(f"  ➜ [115直链] 旧 PC 补救失败：无法通过 FID={fid} 获取文件详情")
+                        return {}
+                    info = info_res.get('data') or {}
+                    new_pc = str(info.get('pick_code') or info.get('pc') or info.get('pickcode') or '').strip()
+                    if not new_pc or new_pc == old_pc:
+                        return {}
+
+                    if backend == 'cookie':
+                        if not self._cookie:
+                            return {}
+                        from concurrent.futures import ThreadPoolExecutor, TimeoutError
+                        executor = ThreadPoolExecutor(max_workers=1)
+                        future = executor.submit(self._cookie.download_url, new_pc, user_agent)
+                        try:
+                            direct_url = _p115_extract_down_url(future.result(timeout=15))
+                        except TimeoutError:
+                            executor.shutdown(wait=False)
+                            P115Service.reset_cookie_client()
+                            return {}
+                        finally:
+                            try:
+                                executor.shutdown(wait=False)
+                            except Exception:
+                                pass
+                    else:
+                        if not self._openapi:
+                            return {}
+                        direct_url = _p115_extract_down_url(self._openapi.fs_downurl(new_pc, user_agent))
+
+                    if not direct_url:
+                        return {}
+
+                    P115CacheManager.replace_pick_code_references(
+                        old_pc,
+                        new_pc,
+                        fid=fid,
+                        info_data=info,
+                        source='playback_downurl_repair',
+                    )
+                    display_name = info.get('name') or info.get('file_name') or cache_row.get('name') or new_pc
+                    _DIRECT_URL_CACHE[(new_pc if backend == 'cookie' else f"openapi_{new_pc}", user_agent)] = {
+                        'url': direct_url,
+                        'name': display_name,
+                        'expire_at': time.time() + 300,
+                    }
+                    logger.info(
+                        "  ➜ [115直链] 旧 PC 已自动修复：%s -> %s，文件=%s",
+                        old_pc[:8] + "...",
+                        new_pc[:8] + "...",
+                        display_name,
+                    )
+                    return {'url': direct_url, 'pick_code': new_pc, 'fid': fid}
+                except Exception as e:
+                    logger.warning(f"  ➜ [115直链] 旧 PC 自动修复失败: pc={old_pc[:8]}..., err={e}")
+                    return {}
 
             def request(self, *args, **kwargs):
                 self._rate_limit()
@@ -3478,6 +3556,169 @@ class P115CacheManager:
         except Exception as e:
             logger.debug(f"  ➜ 读取 115 文件缓存失败(pc={pick_code}): {e}")
             return None
+
+    @staticmethod
+    def replace_pick_code_references(old_pick_code, new_pick_code, *, fid='', info_data=None, source='') -> Dict[str, Any]:
+        """PC 过期后的统一回写：缓存表、整理记录、媒体元数据和 HTTP STRM。"""
+        old_pc = str(old_pick_code or '').strip()
+        new_pc = str(new_pick_code or '').strip()
+        if not old_pc or not new_pc or old_pc == new_pc:
+            return {'updated': False, 'reason': 'invalid_pick_code'}
+
+        fid = str(fid or '').strip()
+        info = info_data if isinstance(info_data, dict) else {}
+        stats = {
+            'updated': False,
+            'filesystem_cache': 0,
+            'organize_records': 0,
+            'media_metadata': 0,
+            'strm_files': 0,
+        }
+
+        def _first(*values):
+            for value in values:
+                text = str(value or '').strip()
+                if text:
+                    return text
+            return ''
+
+        try:
+            old_row = None
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    if fid:
+                        cursor.execute(
+                            """
+                            SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                            FROM p115_filesystem_cache
+                            WHERE id = %s OR pick_code = %s
+                            ORDER BY CASE WHEN id = %s THEN 0 ELSE 1 END
+                            LIMIT 1
+                            """,
+                            (fid, old_pc, fid),
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            SELECT id, parent_id, name, sha1, pick_code, local_path, size
+                            FROM p115_filesystem_cache
+                            WHERE pick_code = %s
+                            LIMIT 1
+                            """,
+                            (old_pc,),
+                        )
+                    old_row = P115CacheManager._filesystem_cache_row_to_dict(cursor.fetchone()) or {}
+
+                    final_fid = _first(fid, old_row.get('id'), info.get('fid'), info.get('file_id'), info.get('id'))
+                    parent_id = _first(info.get('parent_id'), info.get('pid'), info.get('cid'), old_row.get('parent_id'))
+                    name = _first(info.get('name'), info.get('file_name'), info.get('fn'), old_row.get('name'))
+                    sha1 = _first(info.get('sha1'), info.get('sha'), info.get('file_sha1'), old_row.get('sha1')).upper()
+                    local_path = _first(old_row.get('local_path'))
+                    try:
+                        size = int(float(info.get('size') or info.get('fs') or info.get('file_size') or old_row.get('size') or 0))
+                    except Exception:
+                        size = 0
+
+                    if final_fid:
+                        cursor.execute(
+                            "UPDATE p115_filesystem_cache SET pick_code = NULL, updated_at = NOW() WHERE pick_code = %s AND id <> %s",
+                            (new_pc, final_fid),
+                        )
+                        cursor.execute(
+                            """
+                            UPDATE p115_filesystem_cache
+                            SET parent_id = COALESCE(%s, parent_id),
+                                name = COALESCE(%s, name),
+                                sha1 = COALESCE(%s, sha1),
+                                pick_code = %s,
+                                local_path = COALESCE(%s, local_path),
+                                size = CASE WHEN %s > 0 THEN %s ELSE size END,
+                                updated_at = NOW()
+                            WHERE id = %s OR pick_code = %s
+                            """,
+                            (parent_id or None, name or None, sha1 or None, new_pc, local_path or None, size, size, final_fid, old_pc),
+                        )
+                        stats['filesystem_cache'] = cursor.rowcount or 0
+
+                    cursor.execute(
+                        "UPDATE p115_organize_records SET pick_code = NULL WHERE pick_code = %s AND (%s = '' OR file_id <> %s)",
+                        (new_pc, final_fid, final_fid),
+                    )
+                    cursor.execute(
+                        """
+                        UPDATE p115_organize_records
+                        SET pick_code = %s
+                        WHERE pick_code = %s OR (%s <> '' AND file_id = %s)
+                        """,
+                        (new_pc, old_pc, final_fid, final_fid),
+                    )
+                    stats['organize_records'] = cursor.rowcount or 0
+
+                    cursor.execute(
+                        """
+                        UPDATE media_metadata
+                        SET file_pickcode_json = (
+                            SELECT COALESCE(jsonb_agg(
+                                CASE WHEN elem.value = to_jsonb(%s::text) THEN to_jsonb(%s::text) ELSE elem.value END
+                                ORDER BY elem.ord
+                            ), '[]'::jsonb)
+                            FROM jsonb_array_elements(file_pickcode_json) WITH ORDINALITY AS elem(value, ord)
+                        ),
+                        last_updated_at = NOW()
+                        WHERE file_pickcode_json ? %s
+                        """,
+                        (old_pc, new_pc, old_pc),
+                    )
+                    stats['media_metadata'] = cursor.rowcount or 0
+                conn.commit()
+
+            stats['strm_files'] = P115CacheManager._replace_pick_code_in_strm_file(old_pc, new_pc, old_row)
+            stats['updated'] = any(stats.get(k, 0) for k in ('filesystem_cache', 'organize_records', 'media_metadata', 'strm_files'))
+            logger.info(
+                "  ➜ [115缓存] 已回写最新 PC：%s -> %s，缓存=%s，整理记录=%s，媒体元数据=%s，STRM=%s，来源=%s",
+                old_pc[:8] + "...",
+                new_pc[:8] + "...",
+                stats['filesystem_cache'],
+                stats['organize_records'],
+                stats['media_metadata'],
+                stats['strm_files'],
+                source or '-',
+            )
+            return stats
+        except Exception as e:
+            logger.warning(f"  ➜ [115缓存] 回写最新 PC 失败: {old_pc[:8]}... -> {new_pc[:8]}..., err={e}")
+            return {**stats, 'error': str(e)}
+
+    @staticmethod
+    def _replace_pick_code_in_strm_file(old_pick_code, new_pick_code, cache_row=None) -> int:
+        old_pc = str(old_pick_code or '').strip()
+        new_pc = str(new_pick_code or '').strip()
+        row = cache_row if isinstance(cache_row, dict) else {}
+        local_path = str(row.get('local_path') or '').strip()
+        if not old_pc or not new_pc or not local_path:
+            return 0
+        try:
+            cfg = get_config() or {}
+            local_root = str(cfg.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT) or cfg.get('local_strm_root') or '').strip()
+            if not local_root:
+                return 0
+            rel = local_path.replace('\\', '/').lstrip('/\\')
+            strm_rel = os.path.splitext(rel)[0] + '.strm'
+            strm_path = os.path.join(local_root, *strm_rel.split('/'))
+            if not os.path.exists(strm_path):
+                return 0
+            with open(strm_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            pattern = re.compile(r'(/api/p115/play/)' + re.escape(old_pc) + r'(?=([/?#]|$))')
+            new_content, count = pattern.subn(lambda m: m.group(1) + new_pc, content)
+            if count <= 0 or new_content == content:
+                return 0
+            with open(strm_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            return 1
+        except Exception as e:
+            logger.debug(f"  ➜ [115缓存] 更新 STRM 中的 PC 失败: {e}")
+            return 0
 
     @staticmethod
     def get_file_cache_by_sha1(sha1):
