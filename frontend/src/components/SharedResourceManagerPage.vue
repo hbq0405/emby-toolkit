@@ -3236,7 +3236,7 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
     if (forceRefresh) params.force_refresh = 1;
     const res = await axios.get('/api/shared/resources/center/sources', { params });
     const items = res.data?.items || [];
-    centerBackendGrouped.value = Boolean(res.data?.backend_grouped || res.data?.series_grouped || res.data?.source_schema === 'logical_only_series_grouped');
+    centerBackendGrouped.value = Boolean(res.data?.backend_grouped || res.data?.series_grouped);
     centerSources.value = append ? [...(centerSources.value || []), ...items] : items;
     centerPagination.itemCount = Number(res.data?.total || 0);
     const total = Number(centerPagination.itemCount || 0);
