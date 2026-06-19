@@ -2908,12 +2908,7 @@ const centerVersionTags = (row) => {
   const summary = centerVersionSummary(row) || {};
   const tags = [];
   
-  // 1. 可展开资源把“展开/收起单集”放在最前面，避免夹在参数标签中间。
-  if (centerHasLogicalGroup(row) && centerVersionCanExpandEpisodes(row)) {
-    centerTagPush(tags, centerVersionEpisodesExpanded(row) ? '收起单集' : '展开单集', 'info', 'logical-episodes');
-  }
-
-  // 2. 进度显示
+  // 1. 进度显示；集明细由资源行点击触发，不再占用标签位。
   const progress = centerProgressText(row);
   if (progress) {
     const progressLabel = centerIsOngoingHub(row) ? `更新至 ${progress} 集` : progress;
@@ -2922,20 +2917,20 @@ const centerVersionTags = (row) => {
 
   // 共享池完整 / 候选 / 资产 / 可建分享属于中心端调试信息，不在用户前端展示。
 
-  // 3. 基础参数
+  // 2. 基础参数
   centerTagPush(tags, formatCenterSize(row), 'info', 'size'); // 改为 info
   centerTagPush(tags, summary.resolution, 'success', 'resolution');
   centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
   centerTagPush(tags, codec, 'info', 'codec'); // 改为 info
   
-  // 4. 彻底修复 FPS 叠词
+  // 3. 彻底修复 FPS 叠词
   if (summary.fps) {
     const cleanFps = String(summary.fps).replace(/fps/ig, '').trim();
     if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'info', 'fps'); // 改为 info
   }
   
-  // 5. 业务标签优先使用中心端口径；旧中心端没下发时才兜底。
+  // 4. 业务标签优先使用中心端口径；旧中心端没下发时才兜底。
   const centerLabels = centerProvidedTags(row);
   centerLabels.forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   if (!centerLabels.length) {
@@ -3645,10 +3640,6 @@ const setupCenterInfiniteObserver = () => {
 };
 
 const registerCenterDevice = async () => {
-  if (hasSharedDeviceToken.value) {
-    message.info('共享资源中心已连接，无需重复操作。');
-    return;
-  }
   registeringDevice.value = true;
   try {
     const res = await axios.post('/api/shared/resources/center/device/register', {});

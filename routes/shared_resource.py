@@ -1933,18 +1933,6 @@ def api_center_import():
 @admin_required
 def api_register_center_device():
     cfg = _shared_resource_config_payload()
-    existing_token = str(cfg.get('p115_shared_device_token') or '').strip()
-    if existing_token:
-        # 这个接口只负责“首次注册”。已注册设备不要再从页面或脚本反复申请 token。
-        # 连接凭据真损坏时，先在配置里清空，中心端会按 Emby ServerID 重发同一设备的新凭据。
-        cfg['p115_shared_resource_enabled'] = True
-        saved = _save_shared_config(cfg)
-        return jsonify({
-            'success': True,
-            'message': '共享资源中心已连接，无需重复操作；如连接凭据损坏，请清空后按 ServerID 重新连接。',
-            'data': saved,
-            'device': {'device_token': existing_token, 'already_registered': True},
-        })
     name = socket.gethostname() or 'ETK Device'
     try:
         client = SharedCenterClient()
@@ -1958,7 +1946,7 @@ def api_register_center_device():
             shared_tasks.ensure_shared_device_event_listener()
         except Exception:
             pass
-        return jsonify({'success': True, 'message': '共享中心设备注册成功', 'data': saved, 'device': resp})
+        return jsonify({'success': True, 'message': '共享资源中心已按 ServerID 重新连接，监听已刷新', 'data': saved, 'device': resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
