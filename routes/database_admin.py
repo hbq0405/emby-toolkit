@@ -7,6 +7,7 @@ import gzip
 import io
 import time
 from datetime import datetime, date
+from decimal import Decimal
 
 # 导入底层模块 (不再导入 connection！)
 import config_manager
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 def json_datetime_serializer(obj):
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 # --- 数据看板 (拆分版 API) ---

@@ -12,52 +12,31 @@ from psycopg2.extras import execute_values, Json
 
 logger = logging.getLogger(__name__)
 
-# --- 辅助函数 1: 数据清洗与准备 ---
-def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) -> tuple[List[str], List[tuple]]:
-    """
-    【V2 - 健壮性修复版】一个更强大的数据准备函数。
-    - 核心功能：将需要存入 JSONB 列的数据包装成 psycopg2 的 Json 对象。
-    - 新增健壮性：如果一个非 JSONB 列意外地收到了字典或列表，
-      它会自动将其转换为 JSON 字符串，而不是让程序崩溃。
-    """
-    JSONB_COLUMNS = {
-        'app_settings': {'value_json'},
-        'cleanup_index': {'versions_info_json', 'best_version_json', 'additional_info_json'},
-        'translation_cache': {'translated_text_json'},
-        'collections_info': {'all_tmdb_ids_json'},
-        'custom_collections': {'definition_json', 'allowed_user_ids', 'generated_media_info_json'},
-        'emby_users': {'policy_json'},
-        'media_metadata': {
-            'emby_item_ids_json', 'file_sha1_json', 'file_pickcode_json', 'subscription_sources_json', 
-            'tags_json', 'genres_json', 'official_rating_json', 
-            'actors_json', 'directors_json', 'production_companies_json', 'networks_json', 'countries_json', 
-            'keywords_json', 'last_episode_to_air_json',
-            'watchlist_next_episode_json', 'watchlist_missing_info_json', 'asset_details_json',
-            'overview_embedding', 'washing_snapshot_json'
-        },
-        'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json', 'last_scanned_tmdb_ids_json'},
-        'resubscribe_rules': {
-            'scope_rules', 'resubscribe_audio_missing_languages',
-            'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
-            'resubscribe_effect_include', 'resubscribe_codec_include'
-        },
-        'user_templates': {'emby_policy_json', 'emby_configuration_json'},
-        'p115_mediainfo_cache': {'mediainfo_json', 'raw_ffprobe_json'},
-        'p115_filesystem_cache': {'washing_snapshot_json'},
-        'washing_priority_groups': {'target_cids', 'priorities'},
-        # 共享资源相关表：这些表大量使用 raw_json 保存接口回包/任务上下文，
-        # 需要显式按 JSONB 处理，否则导入 PostgreSQL 时会把 dict/list 当普通字符串插入失败。
-        'shared_credit_snapshot': {'raw_json'},
-        'shared_credit_ledger_local': {'raw_json'},
-        'shared_rapid_sources': {
-            'clean_version_meta_json', 'media_signature_json', 'rapid_meta_json', 'raw_json'
-        },
-        'shared_rapid_source_files': {
-            'media_signature_json', 'rapid_meta_json', 'raw_json'
-        },
-        'shared_completed_season_share_channels': {'raw_json'},
-    }
+def _get_table_column_types(cursor, table_name: str) -> Dict[str, str]:
+    """读取当前数据库真实列类型，避免导入逻辑和 connection.py 表结构脱节。"""
+    cursor.execute(
+        """
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = %s
+        """,
+        (table_name.lower(),)
+    )
+    return {row['column_name']: str(row['data_type']).lower() for row in cursor.fetchall()}
 
+# --- 辅助函数 1: 数据清洗与准备 ---
+def _prepare_data_for_insert(
+    table_name: str,
+    table_data: List[Dict[str, Any]],
+    column_types: Dict[str, str] | None = None,
+) -> tuple[List[str], List[tuple]]:
+    """
+    按当前数据库真实列类型准备导入数据。
+    - 只导入当前表仍然存在的列，旧备份里的废弃字段自动丢弃。
+    - JSON/JSONB 列自动包装成 psycopg2 Json 对象，不再维护硬编码字段清单。
+    - 非 JSON 列如果收到 dict/list，转成 JSON 字符串兜底。
+    """
     LIST_TO_STRING_COLUMNS = {
         'actor_subscriptions': {'config_media_types'}
     }
@@ -65,8 +44,28 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
     if not table_data:
         return [], []
 
-    columns = list(table_data[0].keys())
-    table_json_rules = JSONB_COLUMNS.get(table_name.lower(), set())
+    column_types = column_types or {}
+    valid_columns = set(column_types.keys())
+    columns = []
+    dropped_columns = set()
+    for row_dict in table_data:
+        for col_name in row_dict.keys():
+            if valid_columns and col_name not in valid_columns:
+                dropped_columns.add(col_name)
+                continue
+            if col_name not in columns:
+                columns.append(col_name)
+
+    if dropped_columns:
+        logger.warning(
+            "  ➜ [数据库导入] 表 '%s' 的备份包含当前版本不存在的字段，已跳过：%s",
+            table_name,
+            ', '.join(sorted(dropped_columns))
+        )
+
+    if not columns:
+        return [], []
+
     table_list_to_string_rules = LIST_TO_STRING_COLUMNS.get(table_name.lower(), set())
     
     prepared_rows = []
@@ -75,8 +74,8 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         for col_name in columns:
             value = row_dict.get(col_name)
             
-            if col_name in table_json_rules and value is not None:
-                # 1. 如果是指定的 JSONB 列，使用 Json() 包装器
+            if column_types.get(col_name) in {'json', 'jsonb'} and value is not None:
+                # 1. 如果是 JSON/JSONB 列，使用 Json() 包装器
                 value = Json(value)
             elif col_name in table_list_to_string_rules and isinstance(value, list):
                 # 2. 如果是指定的需要转为字符串的列表列
@@ -416,6 +415,12 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
 
                 for table_name in sorted_tables_to_import:
                     cn_name = TABLE_TRANSLATIONS.get(table_name.lower(), table_name)
+                    column_types = _get_table_column_types(cursor, table_name)
+                    if not column_types:
+                        logger.warning(f"备份中的表 '{cn_name}' 在当前数据库不存在，已跳过。")
+                        summary_lines.append(f"  - 表 '{cn_name}': 跳过 (当前数据库不存在)。")
+                        continue
+
                     table_data = backup_data.get(table_name, [])
                     if not table_data:
                         logger.debug(f"表 '{cn_name}' 在备份中没有数据，跳过。")
@@ -459,7 +464,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
 
                             cleaned_data.append(new_row)
                         
-                        columns, prepared_data = _prepare_data_for_insert(table_name, cleaned_data)
+                        columns, prepared_data = _prepare_data_for_insert(table_name, cleaned_data, column_types)
                         if not prepared_data:
                             summary_lines.append(f"  - 表 '{cn_name}': 跳过 (没有可共享的数据)。")
                             continue
@@ -475,7 +480,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                             summary_lines.append(f"  - 表 '{cn_name}': 成功合并 {inserted_count} / {len(prepared_data)} 条新记录。")
 
                     else: # import_strategy == 'overwrite'
-                        columns, prepared_data = _prepare_data_for_insert(table_name, table_data)
+                        columns, prepared_data = _prepare_data_for_insert(table_name, table_data, column_types)
                         if not prepared_data: continue
 
                         _overwrite_table_data(cursor, table_name, columns, prepared_data)
