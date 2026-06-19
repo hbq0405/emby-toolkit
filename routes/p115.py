@@ -14,7 +14,7 @@ from flask import Blueprint, jsonify, request, redirect, Response, stream_with_c
 from extensions import admin_required
 from database import settings_db
 from handler.p115_service import P115Service, get_config, get_115_api_priority
-from handler.p115_copy_play import prepare_copy_play_pick_code
+from handler.p115_copy_play import prepare_copy_play_pick_code, recycle_clone_after_direct_url
 import constants
 import config_manager
 from functools import lru_cache, wraps
@@ -1380,6 +1380,8 @@ def play_115_video(pick_code, filename=None):
         
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
+
+        recycle_clone_after_direct_url(play_pick_code, "起播后清理")
 
         # =================================================================
         # ★★★ 核心分流逻辑 ★★★

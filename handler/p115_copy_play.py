@@ -344,6 +344,38 @@ def _delete_clone(client, clone, reason):
     return ok
 
 
+def recycle_clone_after_direct_url(clone_pick_code, reason="起播后清理"):
+    pc = str(clone_pick_code or "").strip()
+    if not pc or not is_copy_play_enabled():
+        return False
+
+    clones = _load_clones()
+    if not clones:
+        return False
+
+    target = None
+    for clone in clones:
+        if pc == str(clone.get("clone_pick_code") or "").strip():
+            target = clone
+            break
+    if not target or target.get("recycled_after_direct_url"):
+        return False
+
+    client = P115Service.get_client()
+    if not client:
+        logger.warning("  ➜ [复制播放] 起播后清理失败：115 客户端未初始化。")
+        return False
+
+    if not _delete_clone(client, target, reason):
+        return False
+
+    target["recycled_after_direct_url"] = True
+    target["recycled_at"] = _now_ts()
+    _save_clones(clones)
+    logger.info("  ➜ [复制播放] 克隆体已提前移入回收站，本次播放继续复用缓存直链：%s", target.get("file_name") or pc[:8] + "...")
+    return True
+
+
 def cleanup_expired_clones(client=None):
     clones = _load_clones()
     if not clones:
@@ -357,6 +389,9 @@ def cleanup_expired_clones(client=None):
     for clone in clones:
         created_at = float(clone.get("created_at") or 0)
         if created_at and now - created_at > COPY_PLAY_TTL_SECONDS:
+            if clone.get("recycled_after_direct_url"):
+                removed += 1
+                continue
             if _delete_clone(client, clone, "过期清理"):
                 removed += 1
                 continue
@@ -543,6 +578,9 @@ def cleanup_for_playback_stop(data):
         clone_user_id = str(clone.get("user_id") or "")
         match_user = not user_id or not clone_user_id or user_id == clone_user_id
         if match_session or (match_item and match_client and match_user):
+            if clone.get("recycled_after_direct_url"):
+                removed += 1
+                continue
             if _delete_clone(client, clone, "停止播放"):
                 removed += 1
                 continue

@@ -20,7 +20,7 @@ from handler.custom_collection import RecommendationEngine
 import config_manager
 import constants
 from handler.p115_service import P115Service
-from handler.p115_copy_play import prepare_copy_play_pick_code
+from handler.p115_copy_play import prepare_copy_play_pick_code, recycle_clone_after_direct_url
 from utils import extract_pickcode_from_strm_url
 
 import extensions
@@ -1003,6 +1003,7 @@ def proxy_all(path):
                             real_115_url = client.download_url(play_pick_code, user_agent=player_ua)
                             
                         if real_115_url:
+                            recycle_clone_after_direct_url(play_pick_code, "起播后清理")
                             break 
                         else:
                             logger.warning(f"  ⚠️ [获取直链] {'OpenAPI' if use_openapi else 'Cookie'} 未拿到直链，切换接口重试 ({retry_count+1}/{max_retries})...")
