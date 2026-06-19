@@ -1954,6 +1954,7 @@ def get_emby_items_by_id(
         params = {
             "api_key": api_key,
             "Ids": ",".join(batch_ids), # 只使用当前批次的ID
+            "Limit": len(batch_ids),
             "Fields": fields or "ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName"
             # ★★★ 核心修正: 不再传递 UserId。演员等Person对象是全局的，使用UserId会导致查询失败。★★★
         }
