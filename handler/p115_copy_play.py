@@ -540,7 +540,8 @@ def cleanup_for_playback_stop(data):
             (client_key and client_key == clone_client_key)
             or (device_id and _client_key_device_id(clone_client_key) == device_id)
         )
-        match_user = not user_id or user_id == str(clone.get("user_id") or "")
+        clone_user_id = str(clone.get("user_id") or "")
+        match_user = not user_id or not clone_user_id or user_id == clone_user_id
         if match_session or (match_item and match_client and match_user):
             if _delete_clone(client, clone, "停止播放"):
                 removed += 1
