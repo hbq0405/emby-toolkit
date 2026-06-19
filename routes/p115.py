@@ -1354,6 +1354,7 @@ def play_115_video(pick_code, filename=None):
                 request.args.get("UserId") or "",
                 request.args.get("ItemId") or request.args.get("item_id") or "",
             ]),
+            client_name=request.headers.get("X-Emby-Client") or request.headers.get("User-Agent") or "",
         )
         if not play_pick_code:
             return "Copy play failed", 503

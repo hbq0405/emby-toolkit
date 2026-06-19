@@ -293,6 +293,28 @@ def _client_key_device_id(client_key):
     return str(client_key or "").split("|", 1)[0].strip()
 
 
+def _friendly_client_name(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    known_clients = [
+        ("senplayer", "SenPlayer"),
+        ("embymedia.embytheater", "Emby Theater"),
+        ("emby theater", "Emby Theater"),
+        ("infuse", "Infuse"),
+        ("applecoremedia", "Apple Core Media"),
+        ("emby for ios", "Emby for iOS"),
+        ("emby for android", "Emby for Android"),
+        ("androidtv", "Android TV"),
+        ("lavf", "Emby 服务端"),
+    ]
+    for marker, label in known_clients:
+        if marker in lower:
+            return label
+    return text.split("/", 1)[0].strip()[:40]
+
+
 def _lookup_emby_item_id_by_pick_code(pick_code):
     pc = str(pick_code or "").strip()
     if not pc:
@@ -401,7 +423,7 @@ def cleanup_expired_clones(client=None):
     return removed
 
 
-def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key=""):
+def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", client_name=""):
     if not is_copy_play_enabled():
         return source_pick_code
 
@@ -450,13 +472,11 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         )
         return reusable["clone_pick_code"]
 
+    friendly_client = _friendly_client_name(client_name)
     logger.info(
-        "  ➜ [复制播放] 开始复制播放：%s，源FID=%s，源PC=%s，临时目录=%s，客户端=%s",
+        "  ➜ [复制播放] 开始复制播放：%s%s",
         display_name,
-        source_fid,
-        str(source_pick_code)[:8] + "...",
-        temp_cid,
-        str(client_key or play_session_id or "-")[:80],
+        f"，客户端：{friendly_client}" if friendly_client else "",
     )
 
     clone = {}

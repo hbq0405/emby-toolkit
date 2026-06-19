@@ -984,6 +984,7 @@ def proxy_all(path):
                         request.headers.get('X-Emby-Client') or "",
                         request.headers.get('User-Agent') or "",
                     ]),
+                    client_name=request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
                 )
                 if not play_pick_code:
                     return Response("Copy play failed.", status=503)
