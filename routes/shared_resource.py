@@ -1611,16 +1611,13 @@ def api_center_sources():
             'limit': int(request.args.get('limit') or request.args.get('page_size') or 200),
             'offset': int(request.args.get('offset') or 0),
         }
-        if str(q or '').strip() or str(tmdb_id or '').strip():
-            resp = client.list_cloud_search_sources(**params)
-        else:
-            resp = client.list_display_sources(
-                **params,
-                force_refresh=_boolish(
-                    request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
-                    False,
-                ),
-            )
+        resp = client.list_display_sources(
+            **params,
+            force_refresh=_boolish(
+                request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
+                False,
+            ),
+        )
 
         raw_items = [row for row in (resp.get('items') or []) if isinstance(row, dict)]
         # 中心资源库首屏必须保持“中心端已聚合壳”直出。
