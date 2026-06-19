@@ -67,6 +67,25 @@ def _extract_ids_from_copy_response(resp):
     return list(dict.fromkeys(found))
 
 
+def _extract_clones_from_copy_response(resp, source_fid="", temp_cid="", fallback_name=""):
+    clones = []
+    source_fid = str(source_fid or "").strip()
+
+    def walk(value):
+        if isinstance(value, dict):
+            clone = _item_to_clone(value, fallback_parent_id=temp_cid, fallback_name=fallback_name)
+            if clone and clone.get("fid") != source_fid:
+                clones.append(clone)
+            for val in value.values():
+                walk(val)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(resp)
+    return clones
+
+
 def _norm_size(value):
     try:
         return int(float(value or 0))
@@ -312,7 +331,19 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         return ""
 
     clone = {}
+    response_clones = _extract_clones_from_copy_response(copy_resp, source_fid=source_fid, temp_cid=temp_cid, fallback_name=display_name)
+    if response_clones:
+        clone = response_clones[0]
+        logger.info(
+            "  ➜ [复制播放] 已从复制接口返回中拿到克隆 PC：文件=%s，FID=%s，PC=%s",
+            clone.get("name") or display_name,
+            clone.get("fid"),
+            clone.get("pick_code", "")[:8] + "...",
+        )
+
     for fid in _extract_ids_from_copy_response(copy_resp):
+        if clone:
+            break
         if fid == source_fid:
             continue
         info_resp = client.fs_get_info(fid)
