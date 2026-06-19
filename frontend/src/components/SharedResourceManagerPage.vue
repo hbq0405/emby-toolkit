@@ -2275,17 +2275,15 @@ const trackListToArray = (items) => {
   return items;
 };
 
-const compactEffectText = (value) => {
+const fullCenterEffectText = (value) => {
   let text = String(value || '').trim();
   if (!text || text === '-') return '-';
 
-  // Dolby Vision P8.1 / HDR10 -> P8.1 / HDR10
-  // Dolby Vision P7 / HDR10  -> P7 / HDR10
-  // 兼容 DOVI / DV / Profile 8.1 这几类常见写法。
   text = text
-    .replace(/\b(?:dolby\s*vision|dovi|dv)\s*(?:profile\s*)?p?\s*(5|7|8(?:\.\d+)?)/ig, 'P$1')
-    .replace(/\b(?:dolby\s*vision|dovi)\b/ig, 'DV')
+    .replace(/\b(?:dolby\s*vision|dovi|dv)\s*(?:profile\s*)?p?\s*(5|7|8(?:\.\d+)?)/ig, 'Dolby Vision P$1')
+    .replace(/\b(?:dovi|dv)\b/ig, 'Dolby Vision')
     .replace(/\bprofile\s*(5|7|8(?:\.\d+)?)\b/ig, 'P$1')
+    .replace(/^\s*P(5|7|8(?:\.\d+)?)(?=\s*(?:[/／|,，、]|$))/i, 'Dolby Vision P$1')
     .replace(/\s*([/／|,，、])\s*/g, ' $1 ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -2920,7 +2918,7 @@ const centerVersionTags = (row) => {
   // 2. 基础参数
   centerTagPush(tags, formatCenterSize(row), 'info', 'size'); // 改为 info
   centerTagPush(tags, summary.resolution, 'success', 'resolution');
-  centerTagPush(tags, compactEffectText(summary.effect), 'warning', 'effect');
+  centerTagPush(tags, fullCenterEffectText(summary.effect), 'warning', 'effect');
   const codec = [summary.video_codec || summary.codec, summary.bit_depth ? `${summary.bit_depth}bit` : ''].filter(Boolean).join(' · ');
   centerTagPush(tags, codec, 'info', 'codec'); // 改为 info
   
@@ -2935,7 +2933,6 @@ const centerVersionTags = (row) => {
   centerLabels.forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   if (!centerLabels.length) {
     if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
-    else if (isCenterCompletedCertified(row)) centerTagPush(tags, '一致版', 'success', 'completed');
     if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
     if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
     if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
