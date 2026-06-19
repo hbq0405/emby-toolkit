@@ -1014,8 +1014,30 @@ def task_move_root_files_to_115_inbox(processor=None):
     if not allowed_exts:
         allowed_exts = KNOWN_VIDEO_EXTS | {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
 
+    def first_present(*values):
+        for value in values:
+            if value is not None and str(value).strip() != '':
+                return value
+        return None
+
+    def collect_if_root_file(item, source_name):
+        item_id = first_present(item.get('fid'), item.get('file_id'), item.get('id'))
+        name = first_present(item.get('fn'), item.get('n'), item.get('file_name'), item.get('name')) or ''
+        fc_val = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+        is_folder = fc_val == '0'
+        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+        if not item_id or is_folder or ext not in allowed_exts:
+            return
+        if str(item_id) in root_file_id_set:
+            return
+        root_file_id_set.add(str(item_id))
+        root_file_ids.append(str(item_id))
+        root_file_names.append(str(name))
+        logger.warning(f"  ➜ [根目录修复] 发现根目录异常文件：{name}，来源={source_name}")
+
     update_progress(5, "  ➜ 正在扫描 115 根目录一级文件...")
     root_file_ids = []
+    root_file_id_set = set()
     root_file_names = []
     offset = 0
     limit = 1000
@@ -1034,21 +1056,66 @@ def task_move_root_files_to_115_inbox(processor=None):
             break
 
         for item in data:
-            item_id = item.get('fid') or item.get('file_id') or item.get('id')
-            name = item.get('fn') or item.get('n') or item.get('file_name') or item.get('name') or ''
-            fc_val = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-            is_folder = fc_val == '0'
-            ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
-            if item_id and not is_folder and ext in allowed_exts:
-                root_file_ids.append(str(item_id))
-                root_file_names.append(str(name))
+            collect_if_root_file(item, "根目录一级列表")
 
         if len(data) < limit:
             break
         offset += limit
 
+    raw_rules = settings_db.get_setting('p115_sorting_rules')
+    rules = json.loads(raw_rules) if raw_rules and isinstance(raw_rules, str) else (raw_rules or [])
+    target_dirs = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        cid = str(rule.get('cid') or '').strip()
+        if rule.get('enabled', True) and cid and cid not in ('0', save_cid):
+            target_dirs.append((cid, rule.get('category_path') or rule.get('dir_name') or f"CID:{cid}"))
+
+    fetch_types = []
+    if allowed_exts & KNOWN_VIDEO_EXTS:
+        fetch_types.append((4, "视频"))
+    if allowed_exts & {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}:
+        fetch_types.append((1, "字幕"))
+
+    if target_dirs and fetch_types:
+        update_progress(15, f"  ➜ 正在从 {len(target_dirs)} 个分类目录递归查找根目录幽灵文件...")
+    for idx, (target_cid, category_name) in enumerate(target_dirs):
+        if processor and getattr(processor, 'is_stop_requested', lambda: False)():
+            update_progress(100, "  ➜ 用户已中止根目录异常文件修复。")
+            return
+        base_prog = 15 + int((idx / max(len(target_dirs), 1)) * 25)
+        for f_type, type_name in fetch_types:
+            offset = 0
+            while True:
+                try:
+                    res = client.fs_files({
+                        'cid': target_cid,
+                        'type': f_type,
+                        'limit': limit,
+                        'offset': offset,
+                        'record_open_time': 0,
+                    })
+                except Exception as e:
+                    logger.warning(f"  ➜ [根目录修复] 递归扫描失败：{category_name} / {type_name}，err={e}")
+                    break
+
+                data = res.get('data') or []
+                if not data:
+                    break
+
+                for item in data:
+                    pid = first_present(item.get('pid'), item.get('cid'), item.get('parent_id'))
+                    if pid is not None and str(pid).strip() == '0':
+                        collect_if_root_file(item, category_name)
+
+                if len(data) < limit:
+                    break
+                offset += limit
+        update_progress(base_prog, f"  ➜ 已检查分类目录：{category_name}")
+
     if not root_file_ids:
-        update_progress(100, "  ➜ 115 根目录没有发现需要移动的媒体文件。")
+        update_progress(100, "  ➜ 没有发现需要移动的 115 根目录异常媒体文件。")
         return
 
     update_progress(40, f"  ➜ 发现 {len(root_file_ids)} 个根目录媒体文件，准备移动到 [{save_name}]。")
