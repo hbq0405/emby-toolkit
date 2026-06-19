@@ -39,6 +39,19 @@ def _sha256_or_empty(value: str = '') -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest() if text else ''
 
 
+def _current_server_id_hash() -> str:
+    """返回当前 Emby ServerID 的 hash；共享中心设备身份只认 ServerID。"""
+    server_id = ''
+    try:
+        import extensions
+        server_id = str(getattr(extensions, 'EMBY_SERVER_ID', '') or '').strip()
+    except Exception:
+        server_id = ''
+    if not server_id:
+        server_id = str((config_manager.APP_CONFIG or {}).get('emby_server_id') or '').strip()
+    return _sha256_or_empty(server_id)
+
+
 def _infer_pro_tier_from_license(value: str = '') -> str:
     text = str(value or '').strip().upper()
     import re
