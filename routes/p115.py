@@ -1349,6 +1349,11 @@ def play_115_video(pick_code, filename=None):
             play_session_id=request.args.get("PlaySessionId") or "",
             user_id=request.args.get("UserId") or "",
             source="/api/p115/play",
+            client_key="|".join([
+                request.args.get("DeviceId") or request.args.get("X-Emby-Device-Id") or request.headers.get("X-Emby-Device-Id") or request.remote_addr or "",
+                request.headers.get("User-Agent") or "",
+                request_ua or "",
+            ]),
         )
         if not play_pick_code:
             return "Copy play failed", 503

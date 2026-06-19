@@ -979,6 +979,11 @@ def proxy_all(path):
                     play_session_id=play_session_id,
                     user_id=request.args.get('UserId', ''),
                     source='reverse_proxy',
+                    client_key="|".join([
+                        request.args.get('DeviceId') or request.args.get('X-Emby-Device-Id') or request.headers.get('X-Emby-Device-Id') or request.remote_addr or "",
+                        request.headers.get('X-Emby-Client') or "",
+                        request.headers.get('User-Agent') or "",
+                    ]),
                 )
                 if not play_pick_code:
                     return Response("Copy play failed.", status=503)

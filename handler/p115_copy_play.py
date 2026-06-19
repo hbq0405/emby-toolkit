@@ -238,6 +238,47 @@ def _record_clone(record):
     _save_clones(clones)
 
 
+def _find_reusable_clone(source_pick_code, source_fid, temp_cid, *, item_id="", play_session_id="", user_id="", client_key=""):
+    now = _now_ts()
+    for clone in reversed(_load_clones()):
+        if str(clone.get("source_pick_code") or "") != str(source_pick_code or ""):
+            continue
+        if source_fid and str(clone.get("source_fid") or "") != str(source_fid):
+            continue
+        if temp_cid and str(clone.get("temp_cid") or "") != str(temp_cid):
+            continue
+        if not clone.get("clone_pick_code") or not clone.get("clone_fid"):
+            continue
+        created_at = float(clone.get("created_at") or 0)
+        if created_at and now - created_at > COPY_PLAY_TTL_SECONDS:
+            continue
+
+        clone_session = str(clone.get("play_session_id") or "").strip()
+        clone_client_key = str(clone.get("client_key") or "").strip()
+        clone_item_id = str(clone.get("item_id") or "").strip()
+        clone_user_id = str(clone.get("user_id") or "").strip()
+
+        if play_session_id and clone_session == str(play_session_id):
+            return clone
+        if client_key and clone_client_key == str(client_key):
+            if not item_id or not clone_item_id or clone_item_id == str(item_id):
+                if not user_id or not clone_user_id or clone_user_id == str(user_id):
+                    return clone
+    return {}
+
+
+def _client_key_from_webhook(data):
+    session = data.get("Session") or {}
+    device_id = str(session.get("DeviceId") or data.get("DeviceId") or "").strip()
+    client_name = str(session.get("Client") or "").strip()
+    device_name = str(session.get("DeviceName") or "").strip()
+    return "|".join([device_id, client_name, device_name])
+
+
+def _client_key_device_id(client_key):
+    return str(client_key or "").split("|", 1)[0].strip()
+
+
 def _lookup_emby_item_id_by_pick_code(pick_code):
     pc = str(pick_code or "").strip()
     if not pc:
@@ -311,7 +352,7 @@ def cleanup_expired_clones(client=None):
     return removed
 
 
-def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source=""):
+def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key=""):
     if not is_copy_play_enabled():
         return source_pick_code
 
@@ -341,12 +382,32 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         item_id = _lookup_emby_item_id_by_pick_code(source_pick_code)
         if item_id:
             logger.info("  ➜ [复制播放] 已按源 PC 反查到 Emby 媒体项：%s", item_id)
+
+    reusable = _find_reusable_clone(
+        source_pick_code,
+        source_fid,
+        temp_cid,
+        item_id=str(item_id or ""),
+        play_session_id=str(play_session_id or ""),
+        user_id=str(user_id or ""),
+        client_key=str(client_key or ""),
+    )
+    if reusable:
+        logger.info(
+            "  ➜ [复制播放] 复用本次播放临时克隆体：%s，客户端=%s，克隆PC=%s",
+            reusable.get("file_name") or display_name,
+            str(client_key or play_session_id or "-")[:80],
+            str(reusable.get("clone_pick_code") or "")[:8] + "...",
+        )
+        return reusable["clone_pick_code"]
+
     logger.info(
-        "  ➜ [复制播放] 开始复制播放：%s，源FID=%s，源PC=%s，临时目录=%s",
+        "  ➜ [复制播放] 开始复制播放：%s，源FID=%s，源PC=%s，临时目录=%s，客户端=%s",
         display_name,
         source_fid,
         str(source_pick_code)[:8] + "...",
         temp_cid,
+        str(client_key or play_session_id or "-")[:80],
     )
 
     clone = {}
@@ -401,10 +462,11 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         if clone:
             break
         last_copy_error = f"{backend} 已复制但未拿到克隆 PC"
-        logger.warning("  ➜ [复制播放] %s 已复制但未拿到克隆 PC，准备尝试备用接口。", backend)
+        logger.warning("  ➜ [复制播放] %s 已确认复制成功，但临时目录仍未刷出克隆体，终止本次点播，避免重复复制。", backend)
+        break
 
     if not clone or not clone.get("pick_code"):
-        logger.warning("  ➜ [复制播放] 所有复制接口均未拿到克隆 PC，终止本次点播：%s", last_copy_error or "-")
+        logger.warning("  ➜ [复制播放] 未拿到克隆 PC，终止本次点播：%s", last_copy_error or "-")
         return ""
 
     record = {
@@ -417,6 +479,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         "item_id": str(item_id or ""),
         "play_session_id": str(play_session_id or ""),
         "user_id": str(user_id or ""),
+        "client_key": str(client_key or ""),
         "source": source,
         "created_at": _now_ts(),
         "created_at_text": datetime.now(timezone.utc).isoformat(),
@@ -438,13 +501,7 @@ def cleanup_for_playback_stop(data):
     play_session_id = str(playback_info.get("PlaySessionId") or data.get("PlaySessionId") or "").strip()
     item_id = str(item.get("Id") or "").strip()
     user_id = str(user.get("Id") or "").strip()
-    source_pick_code = ""
-    if item_id:
-        try:
-            from database import media_db
-            source_pick_code = str(media_db.get_pickcode_by_emby_id(item_id) or "").strip()
-        except Exception as e:
-            logger.debug(f"  ➜ [复制播放] 停止播放按 Emby 项反查 PC 失败：item={item_id}, err={e}")
+    client_key = _client_key_from_webhook(data)
 
     clones = _load_clones()
     if not clones:
@@ -463,9 +520,14 @@ def cleanup_for_playback_stop(data):
     for clone in clones:
         match_session = play_session_id and play_session_id == str(clone.get("play_session_id") or "")
         match_item = item_id and item_id == str(clone.get("item_id") or "")
-        match_source_pc = source_pick_code and source_pick_code == str(clone.get("source_pick_code") or "")
-        match_user_item = match_item and (not user_id or user_id == str(clone.get("user_id") or ""))
-        if match_session or match_user_item or match_source_pc:
+        clone_client_key = str(clone.get("client_key") or "")
+        device_id = _client_key_device_id(client_key)
+        match_client = bool(
+            (client_key and client_key == clone_client_key)
+            or (device_id and _client_key_device_id(clone_client_key) == device_id)
+        )
+        match_user = not user_id or user_id == str(clone.get("user_id") or "")
+        if match_session or (match_item and match_client and match_user):
             if _delete_clone(client, clone, "停止播放"):
                 removed += 1
                 continue
