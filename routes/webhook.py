@@ -68,6 +68,24 @@ MP_BATCH_QUEUE = {}
 MP_BATCH_LOCK = threading.Lock()
 
 
+def _should_skip_non_etk_strm_webhook(item_type: str, item_name: str, item_path: str) -> bool:
+    """Webhook 只处理 ETK 自己生成的 STRM，避免第三方 STRM 进入整理/刮削链路。"""
+    if str(item_type or '') not in {'Movie', 'Episode'}:
+        return False
+    path = str(item_path or '').strip()
+    if not path.lower().endswith('.strm'):
+        return False
+    try:
+        from monitor_service import _is_etk_standard_strm
+        if _is_etk_standard_strm(path):
+            return False
+    except Exception as e:
+        logger.warning(f"  ➜ [Webhook] STRM 标准校验失败，已跳过：{item_name or os.path.basename(path)}，原因：{e}")
+        return True
+    logger.warning(f"  ➜ [Webhook] 非 ETK 标准 STRM，已跳过：{item_name or os.path.basename(path)}")
+    return True
+
+
 def _submit_webhook_media_task(
     task_name,
     *,
@@ -1844,6 +1862,9 @@ def emby_webhook():
             if lib_id not in allowed_libs and original_item_type != "Audio":
                 logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' (ID: {lib_id}) 不在处理范围内，已跳过。")
                 return jsonify({"status": "ignored_library"}), 200
+
+        if _should_skip_non_etk_strm_webhook(original_item_type, original_item_name, original_item_path):
+            return jsonify({"status": "ignored_non_etk_strm"}), 200
 
     # ======================================================================
     # ★★★ 处理音乐 (Audio) 入库事件 ★★★
