@@ -56,7 +56,7 @@ def _log_copy_response(resp, backend=""):
             data_hint = f"data_len={len(data)}"
         else:
             data_hint = "data_empty"
-        logger.info(
+        logger.debug(
             "  ➜ [复制播放] %s 复制接口返回结构：长度=%s，顶层字段=%s，data类型=%s，%s",
             backend_label,
             len(text),
@@ -65,13 +65,13 @@ def _log_copy_response(resp, backend=""):
             data_hint,
         )
     else:
-        logger.info("  ➜ [复制播放] %s 复制接口返回结构：类型=%s，长度=%s", backend_label, type(resp).__name__, len(text))
+        logger.debug("  ➜ [复制播放] %s 复制接口返回结构：类型=%s，长度=%s", backend_label, type(resp).__name__, len(text))
 
     chunk_size = 1800
     total = max(1, (len(text) + chunk_size - 1) // chunk_size)
     for index in range(total):
         chunk = text[index * chunk_size:(index + 1) * chunk_size]
-        logger.info("  ➜ [复制播放] %s 复制接口完整返回[%s/%s]：%s", backend_label, index + 1, total, chunk)
+        logger.debug("  ➜ [复制播放] %s 复制接口完整返回[%s/%s]：%s", backend_label, index + 1, total, chunk)
 
 
 def _now_ts():
@@ -189,7 +189,7 @@ def _list_temp_candidates(client, temp_cid, source_row, file_name):
 
     resp = client.fs_files(payload)
     items = resp.get("data") if isinstance(resp, dict) else []
-    logger.info(
+    logger.debug(
         "  ➜ [复制播放] 临时目录回查完成：候选=%s，文件名=%s",
         len(items or []),
         expected_name or "-",
@@ -222,7 +222,7 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
             best_item = item
             best_index = duplicate_index
     if best_item:
-        logger.info(
+        logger.debug(
             "  ➜ [复制播放] 临时目录命中克隆体：文件=%s，重复序号=%s",
             best_item.get("name") or best_item.get("file_name") or best_item.get("fn") or "-",
             best_index,
@@ -329,7 +329,7 @@ def _delete_clone(client, clone, reason):
     resp = client.fs_delete([fid])
     ok = bool(isinstance(resp, dict) and resp.get("state"))
     if ok:
-        logger.info(
+        logger.debug(
             "  ➜ [复制播放] 已删除临时克隆文件：%s，原因=%s",
             clone.get("file_name") or fid,
             reason,
@@ -372,7 +372,7 @@ def recycle_clone_after_direct_url(clone_pick_code, reason="起播后清理"):
     target["recycled_after_direct_url"] = True
     target["recycled_at"] = _now_ts()
     _save_clones(clones)
-    logger.info("  ➜ [复制播放] 克隆体已提前移入回收站，本次播放继续复用缓存直链：%s", target.get("file_name") or pc[:8] + "...")
+    logger.debug("  ➜ [复制播放] 克隆体已提前移入回收站，本次播放继续复用缓存直链：%s", target.get("file_name") or pc[:8] + "...")
     return True
 
 
@@ -430,7 +430,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
     if not item_id:
         item_id = _lookup_emby_item_id_by_pick_code(source_pick_code)
         if item_id:
-            logger.info("  ➜ [复制播放] 已按源 PC 反查到 Emby 媒体项：%s", item_id)
+            logger.debug("  ➜ [复制播放] 已按源 PC 反查到 Emby 媒体项：%s", item_id)
 
     reusable = _find_reusable_clone(
         source_pick_code,
@@ -442,7 +442,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         client_key=str(client_key or ""),
     )
     if reusable:
-        logger.info(
+        logger.debug(
             "  ➜ [复制播放] 复用本次播放临时克隆体：%s，客户端=%s，克隆PC=%s",
             reusable.get("file_name") or display_name,
             str(client_key or play_session_id or "-")[:80],
@@ -477,7 +477,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
 
         response_clones = _extract_clones_from_copy_response(copy_resp, source_fid=source_fid, temp_cid=temp_cid, fallback_name=display_name)
         response_fids = _extract_ids_from_copy_response(copy_resp)
-        logger.info(
+        logger.debug(
             "  ➜ [复制播放] %s 复制返回解析结果：克隆候选=%s，FID候选=%s",
             backend,
             len(response_clones),
@@ -485,7 +485,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         )
         if response_clones:
             clone = response_clones[0]
-            logger.info(
+            logger.debug(
                 "  ➜ [复制播放] 已从 %s 复制接口返回中拿到克隆 PC：文件=%s，FID=%s，PC=%s",
                 backend,
                 clone.get("name") or display_name,
@@ -498,7 +498,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
             item = _find_clone_in_temp_dir(client, temp_cid, source_row, display_name)
             clone = _item_to_clone(item, fallback_parent_id=temp_cid, fallback_name=display_name)
             if clone:
-                logger.info(
+                logger.debug(
                     "  ➜ [复制播放] 已从临时目录列表拿到 %s 克隆 PC：文件=%s，FID=%s，PC=%s",
                     backend,
                     clone.get("name") or display_name,
@@ -506,7 +506,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
                     clone.get("pick_code", "")[:8] + "...",
                 )
                 break
-            logger.info("  ➜ [复制播放] %s 第 %s 次未查到可播放克隆体，等待后重试。", backend, attempt)
+            logger.debug("  ➜ [复制播放] %s 第 %s 次未查到可播放克隆体，等待后重试。", backend, attempt)
             time.sleep(1)
         if clone:
             break
@@ -534,7 +534,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         "created_at_text": datetime.now(timezone.utc).isoformat(),
     }
     _record_clone(record)
-    logger.info(
+    logger.debug(
         "  ➜ [复制播放] 已准备临时克隆体：%s，克隆FID=%s，克隆PC=%s",
         record["file_name"],
         record["clone_fid"],
@@ -587,5 +587,5 @@ def cleanup_for_playback_stop(data):
         kept.append(clone)
     if removed:
         _save_clones(kept)
-        logger.info("  ➜ [复制播放] 停止播放清理完成：删除 %s 个临时克隆文件。", removed)
+        logger.debug("  ➜ [复制播放] 停止播放清理完成：删除 %s 个临时克隆文件。", removed)
     return removed
