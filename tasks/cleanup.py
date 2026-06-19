@@ -251,6 +251,46 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]], item_name: 
     sorted_versions = sorted(version_properties, key=cmp_to_key(compare_wrapper), reverse=True)
     return sorted_versions[0]['id'] if sorted_versions else None
 
+def _collect_unique_emby_ids_from_assets(items: List[Dict[str, Any]]) -> List[str]:
+    seen = set()
+    ordered_ids = []
+    for item in items or []:
+        for version in item.get('asset_details_json') or []:
+            if not isinstance(version, dict):
+                continue
+            emby_id = str(version.get('emby_item_id') or '').strip()
+            if emby_id and emby_id not in seen:
+                seen.add(emby_id)
+                ordered_ids.append(emby_id)
+    return ordered_ids
+
+def _get_existing_emby_ids_for_cleanup_scan(processor, items: List[Dict[str, Any]]) -> Optional[set]:
+    candidate_ids = _collect_unique_emby_ids_from_assets(items)
+    if not candidate_ids:
+        return set()
+
+    try:
+        current_items = emby.get_emby_items_by_id(
+            processor.emby_url,
+            processor.emby_api_key,
+            processor.emby_user_id,
+            candidate_ids,
+            fields="Id"
+        )
+    except Exception as e:
+        logger.warning(f"  ➜ [媒体去重] 批量校验 Emby 当前版本失败，将保守使用本地缓存版本: {e}")
+        return None
+
+    existing_ids = {
+        str(item.get('Id') or '').strip()
+        for item in current_items or []
+        if str(item.get('Id') or '').strip()
+    }
+    missing_count = len(candidate_ids) - len(existing_ids)
+    if missing_count > 0:
+        logger.info(f"  ➜ [媒体去重] 扫描前剔除 {missing_count} 个 Emby 已不存在的本地版本缓存。")
+    return existing_ids
+
 # ======================================================================
 # 任务函数
 # ======================================================================
@@ -326,6 +366,8 @@ def task_scan_for_cleanup_issues(processor):
             task_manager.update_status_from_thread(100, "扫描完成：未发现任何多版本媒体。")
             return
 
+        existing_emby_ids = _get_existing_emby_ids_for_cleanup_scan(processor, multi_version_items)
+
         task_manager.update_status_from_thread(10, f"发现 {total_items} 组多版本媒体，开始分析...")
         
         cleanup_index_entries = []
@@ -362,8 +404,12 @@ def task_scan_for_cleanup_issues(processor):
             unique_versions_map = {}
             for v in raw_versions:
                 eid = v.get('emby_item_id')
-                if eid:
-                    unique_versions_map[eid] = v
+                if not eid:
+                    continue
+                eid = str(eid)
+                if existing_emby_ids is not None and eid not in existing_emby_ids:
+                    continue
+                unique_versions_map[eid] = v
             
             versions_from_db = list(unique_versions_map.values())
 
