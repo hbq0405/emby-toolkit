@@ -1,6 +1,6 @@
 # routes/system.py
 
-from flask import Blueprint, jsonify, request, Response, stream_with_context
+from flask import Blueprint, jsonify, request, Response, stream_with_context, session
 import logging
 import json
 import os
@@ -33,6 +33,51 @@ PRO_PRICING_FALLBACK_TIERS = [
 ]
 
 # 2. 定义路由
+
+MASKED_SECRET = "********"
+SENSITIVE_CONFIG_KEYS = {
+    constants.CONFIG_OPTION_DB_PASSWORD,
+    constants.CONFIG_OPTION_EMBY_API_KEY,
+    constants.CONFIG_OPTION_EMBY_ADMIN_PASS,
+    constants.CONFIG_OPTION_TMDB_API_KEY,
+    constants.CONFIG_OPTION_GITHUB_TOKEN,
+    constants.CONFIG_OPTION_DOUBAN_COOKIE,
+    constants.CONFIG_OPTION_AI_API_KEY,
+    constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN,
+    "pro_license_key",
+}
+
+def _is_admin_session():
+    emby_user_id = session.get('emby_user_id')
+    if not emby_user_id:
+        return False
+    try:
+        from database import user_db
+        return bool(user_db.is_user_admin(emby_user_id))
+    except Exception as e:
+        logger.warning(f"  ➜ 校验管理员会话失败：{e}")
+        return False
+
+def _can_access_config_api():
+    if not config_manager.is_system_configured():
+        return True
+    if session.get('is_setup_mode'):
+        return True
+    return _is_admin_session()
+
+def _masked_config_payload(config):
+    payload = dict(config or {})
+    for key in SENSITIVE_CONFIG_KEYS:
+        if payload.get(key):
+            payload[key] = MASKED_SECRET
+    return payload
+
+def _restore_masked_config_values(new_config):
+    current_config = config_manager.APP_CONFIG or {}
+    for key in SENSITIVE_CONFIG_KEYS:
+        if new_config.get(key) == MASKED_SECRET:
+            new_config[key] = current_config.get(key, "")
+    return new_config
 
 def _fallback_pro_pricing(message=None):
     data = {
@@ -129,16 +174,19 @@ def api_handle_trigger_stop_task():
 # --- API 端点：获取当前配置 ---
 @system_bp.route('/config', methods=['GET'])
 def api_get_config():
+    if not _can_access_config_api():
+        return jsonify({"status": "error", "message": "需要管理员权限才能读取配置"}), 403
     try:
         # ★★★ 确保这里正确解包了元组 ★★★
-        current_config = config_manager.APP_CONFIG 
+        current_config = _masked_config_payload(config_manager.APP_CONFIG)
         
         if current_config:
             current_config['emby_server_id'] = extensions.EMBY_SERVER_ID
             custom_theme = config_manager.load_custom_theme()
             current_config['custom_theme'] = custom_theme
             
-            current_config['pro_license_key'] = settings_db.get_setting("pro_license_key") or ""
+            pro_license_key = settings_db.get_setting("pro_license_key") or ""
+            current_config['pro_license_key'] = MASKED_SECRET if pro_license_key else ""
             
             logger.trace(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
@@ -445,11 +493,14 @@ def api_test_telegram_connection():
 # --- API 端点：保存配置 ---
 @system_bp.route('/config', methods=['POST'])
 def api_save_config():
+    if not _can_access_config_api():
+        return jsonify({"status": "error", "message": "需要管理员权限才能保存配置"}), 403
     from web_app import save_config_and_reload
     try:
         new_config_data = request.json
         if not new_config_data:
             return jsonify({"error": "请求体中未包含配置数据"}), 400
+        new_config_data = _restore_masked_config_values(dict(new_config_data))
         
         # User ID 校验 (保留)
         user_id_to_save = new_config_data.get("emby_user_id", "").strip()
