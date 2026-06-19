@@ -348,8 +348,15 @@ def api_get_emby_user_views(user_id):
         logger.warning("/api/emby/user/<user_id>/views: Emby配置不完整或服务未就绪。")
         return jsonify({"error": "Emby配置不完整或服务未就绪"}), 500
     
-    # 尝试从请求头和查询参数获取用户令牌
-    user_token = request.headers.get('X-Emby-Token') or request.args.get('api_key')
+    # 尝试从请求头和查询参数获取用户令牌。配置页拿到的敏感字段可能是脱敏占位符，
+    # 这种情况下必须回退到服务端真实配置，不能把 ******** 透传给 Emby。
+    user_token = str(request.headers.get('X-Emby-Token') or request.args.get('api_key') or '').strip()
+    if user_token and set(user_token) == {'*'}:
+        user_token = ''
+    if not user_token:
+        user_token = str(getattr(extensions.media_processor_instance, 'emby_api_key', '') or '').strip()
+    if not user_token:
+        user_token = str((config_manager.APP_CONFIG or {}).get(constants.CONFIG_OPTION_EMBY_API_KEY) or '').strip()
     
     if not user_token:
         return jsonify({"error": "缺少用户访问令牌(api_key或X-Emby-Token)"}), 400
