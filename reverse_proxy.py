@@ -20,6 +20,7 @@ from handler.custom_collection import RecommendationEngine
 import config_manager
 import constants
 from handler.p115_service import P115Service
+from handler.p115_copy_play import prepare_copy_play_pick_code
 from utils import extract_pickcode_from_strm_url
 
 import extensions
@@ -971,6 +972,17 @@ def proxy_all(path):
                 if not client:
                     return "115 Client not initialized", 500
 
+                play_pick_code = prepare_copy_play_pick_code(
+                    pick_code,
+                    file_name=display_name,
+                    item_id=item_id,
+                    play_session_id=play_session_id,
+                    user_id=request.args.get('UserId', ''),
+                    source='reverse_proxy',
+                )
+                if not play_pick_code:
+                    return Response("Copy play failed.", status=503)
+
                 max_retries = 10 
                 retry_count = 0
                 
@@ -981,9 +993,9 @@ def proxy_all(path):
                 while retry_count < max_retries:
                     try:
                         if use_openapi:
-                            real_115_url = client.openapi_downurl(pick_code, user_agent=player_ua)
+                            real_115_url = client.openapi_downurl(play_pick_code, user_agent=player_ua)
                         else:
-                            real_115_url = client.download_url(pick_code, user_agent=player_ua)
+                            real_115_url = client.download_url(play_pick_code, user_agent=player_ua)
                             
                         if real_115_url:
                             break 

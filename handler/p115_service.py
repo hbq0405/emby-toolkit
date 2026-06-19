@@ -809,6 +809,11 @@ class P115OpenAPIClient:
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
         return self._do_request("POST", url, data={"file_ids": fids_str, "to_cid": str(to_cid)})
 
+    def fs_copy(self, fids, to_cid):
+        url = f"{self.base_url}/open/ufile/copy"
+        fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
+        return self._do_request("POST", url, data={"file_id": fids_str, "pid": str(to_cid), "nodupli": 0})
+
     def fs_rename(self, fid_name_tuple):
         url = f"{self.base_url}/open/ufile/update"
         return self._do_request("POST", url, data={"file_id": str(fid_name_tuple[0]), "file_name": str(fid_name_tuple[1])})
@@ -1902,6 +1907,23 @@ class P115CookieClient:
         r = self.request(url, method='POST', data=payload)
         return _p115_normalize_common_response(self._json_result(r))
 
+    def fs_copy(self, fids, to_cid):
+        ids = [str(i) for i in _p115_as_list(fids) if i is not None]
+        if self.webapi and hasattr(self.webapi, 'fs_copy'):
+            try:
+                return _p115_normalize_common_response(self.webapi.fs_copy(ids, pid=str(to_cid)))
+            except Exception as e:
+                if not _p115_is_severe_failure(e):
+                    raise
+        payload = {'pid': str(to_cid)}
+        if len(ids) == 1:
+            payload['fid'] = ids[0]
+        else:
+            payload.update({f'fid[{i}]': fid for i, fid in enumerate(ids)})
+        url = "https://webapi.115.com/files/copy"
+        r = self.request(url, method='POST', data=payload)
+        return _p115_normalize_common_response(self._json_result(r))
+
     def fs_rename(self, fid_name_tuple):
         fid, new_name = fid_name_tuple
         if self.webapi and hasattr(self.webapi, 'fs_rename'):
@@ -2706,6 +2728,9 @@ class P115Service:
 
             def fs_move(self, fids, to_cid):
                 return self._call_api('fs_move', fids, to_cid, normalizer=_p115_normalize_common_response)
+
+            def fs_copy(self, fids, to_cid):
+                return self._call_api('fs_copy', fids, to_cid, normalizer=_p115_normalize_common_response)
 
             def fs_rename(self, fid_name_tuple):
                 return self._call_api('fs_rename', fid_name_tuple, normalizer=_p115_normalize_common_response)

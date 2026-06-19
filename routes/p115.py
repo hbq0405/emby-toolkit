@@ -14,6 +14,7 @@ from flask import Blueprint, jsonify, request, redirect, Response, stream_with_c
 from extensions import admin_required
 from database import settings_db
 from handler.p115_service import P115Service, get_config, get_115_api_priority
+from handler.p115_copy_play import prepare_copy_play_pick_code
 import constants
 import config_manager
 from functools import lru_cache, wraps
@@ -1340,7 +1341,18 @@ def play_115_video(pick_code, filename=None):
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
-            
+
+        play_pick_code = prepare_copy_play_pick_code(
+            pick_code,
+            file_name=filename or "",
+            item_id=request.args.get("ItemId") or request.args.get("item_id") or "",
+            play_session_id=request.args.get("PlaySessionId") or "",
+            user_id=request.args.get("UserId") or "",
+            source="/api/p115/play",
+        )
+        if not play_pick_code:
+            return "Copy play failed", 503
+
         max_retries = 4
         real_url = None
         api_priority = get_115_api_priority('openapi')
@@ -1349,9 +1361,9 @@ def play_115_video(pick_code, filename=None):
         for i in range(max_retries):
             try:
                 if use_openapi:
-                    real_url = client.openapi_downurl(pick_code, user_agent=request_ua)
+                    real_url = client.openapi_downurl(play_pick_code, user_agent=request_ua)
                 else:
-                    real_url = client.download_url(pick_code, user_agent=request_ua)
+                    real_url = client.download_url(play_pick_code, user_agent=request_ua)
                     
                 if real_url:
                     break

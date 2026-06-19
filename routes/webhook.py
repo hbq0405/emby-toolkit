@@ -16,6 +16,7 @@ from gevent.lock import Semaphore
 
 import task_manager
 import handler.emby as emby
+from handler.p115_copy_play import cleanup_for_playback_stop
 import config_manager
 import constants
 import handler.telegram as telegram
@@ -1726,6 +1727,10 @@ def emby_webhook():
                         update_data['playback_position_ticks'] = 0
                     else:
                         update_data['played'] = False
+                    try:
+                        spawn(cleanup_for_playback_stop, data)
+                    except Exception as e:
+                        logger.error(f"  ➜ [复制播放] 停止播放清理任务分配失败: {e}")
 
             # 发送有灵魂的图文播放通知 
             notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
