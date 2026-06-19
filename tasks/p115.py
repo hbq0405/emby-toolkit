@@ -1336,10 +1336,31 @@ def task_full_sync_strm_and_subs(processor=None):
                             pass
 
                     if need_write:
-                        with open(strm_path, 'w', encoding='utf-8') as f:
-                            f.write(content)
-                        if not os.path.exists(strm_path):
-                            logger.debug(f"  ➜ [新增] 生成 STRM: {strm_name}")
+                        was_existing_strm = os.path.exists(strm_path)
+                        ignore_features = None
+                        if was_existing_strm:
+                            try:
+                                from handler import emby
+                                emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+                                emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+                                if emby_url and emby_api_key:
+                                    ignore_features = emby.enable_strm_assistant_ignore_file_change(emby_url, emby_api_key)
+                            except Exception as e:
+                                logger.debug(f"  ➜ [全量同步] 开启神医忽略文件变更失败: {e}")
+                        try:
+                            with open(strm_path, 'w', encoding='utf-8') as f:
+                                f.write(content)
+                            if not was_existing_strm:
+                                logger.debug(f"  ➜ [新增] 生成 STRM: {strm_name}")
+                            else:
+                                changed_strm_files.add(os.path.abspath(strm_path))
+                        finally:
+                            if ignore_features is not None:
+                                try:
+                                    from handler import emby
+                                    emby.disable_strm_assistant_ignore_file_change(emby_url, emby_api_key, ignore_features)
+                                except Exception as e:
+                                    logger.debug(f"  ➜ [全量同步] 恢复神医忽略文件变更失败: {e}")
                         files_generated += 1
 
                     valid_local_files.add(os.path.abspath(strm_path))
@@ -1483,6 +1504,7 @@ def task_full_sync_strm_and_subs(processor=None):
         files_generated = 0
         subs_downloaded = 0
         path_strm_preserved = 0
+        changed_strm_files = set()
         path_strm_conflicts = {
             'same_stem_different_ext': 0,
             'path_mismatch': 0,
@@ -1660,6 +1682,24 @@ def task_full_sync_strm_and_subs(processor=None):
                                     logger.warning(f"  ➜ 删除目录失败 {dir_path}: {e}")
                             
                 logger.info(f"  ➜ 清理完成: 删除了 {cleaned_files} 个失效/孤儿文件, {cleaned_dirs} 个无STRM的空壳目录。")
+
+        if changed_strm_files:
+            try:
+                from handler import emby
+                emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+                emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+                if emby_url and emby_api_key:
+                    update_progress(98, f"  ➜ 正在通知 Emby 扫描 {len(changed_strm_files)} 个已更新 STRM...")
+                    emby.notify_emby_file_changes(
+                        list(changed_strm_files),
+                        emby_url,
+                        emby_api_key,
+                        update_type="Modified",
+                    )
+                else:
+                    logger.warning("  ➜ 未配置 Emby 地址或 API Key，跳过全量生成 STRM 后的 Emby 扫描。")
+            except Exception as e:
+                logger.warning(f"  ➜ 通知 Emby 扫描全量生成 STRM 变更失败: {e}")
 
         update_progress(100, "=== 全量生成STRM任务结束 ===")
 
