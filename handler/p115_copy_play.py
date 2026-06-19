@@ -194,7 +194,11 @@ def _list_temp_candidates(client, temp_cid, source_row, file_name):
         len(items or []),
         expected_name or "-",
     )
-    logger.debug("  ➜ [复制播放] 临时目录回查摘要：%s", _safe_json(resp))
+    if logger.isEnabledFor(logging.DEBUG):
+        names = []
+        for item in (items or [])[:8]:
+            names.append(str(item.get("name") or item.get("file_name") or item.get("fn") or item.get("n") or ""))
+        logger.debug("  ➜ [复制播放] 临时目录回查摘要：候选文件=%s", names)
     return items if isinstance(items, list) else []
 
 
@@ -279,9 +283,10 @@ def _find_reusable_clone(source_pick_code, source_fid, temp_cid, *, item_id="", 
 def _client_key_from_webhook(data):
     session = data.get("Session") or {}
     device_id = str(session.get("DeviceId") or data.get("DeviceId") or "").strip()
+    remote_addr = str(data.get("_etk_webhook_remote_addr") or "").strip()
     client_name = str(session.get("Client") or "").strip()
     device_name = str(session.get("DeviceName") or "").strip()
-    return "|".join([device_id, client_name, device_name])
+    return "|".join([device_id or remote_addr, client_name, device_name])
 
 
 def _client_key_device_id(client_key):

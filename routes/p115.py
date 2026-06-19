@@ -1350,9 +1350,9 @@ def play_115_video(pick_code, filename=None):
             user_id=request.args.get("UserId") or "",
             source="/api/p115/play",
             client_key="|".join([
-                request.args.get("DeviceId") or request.args.get("X-Emby-Device-Id") or request.headers.get("X-Emby-Device-Id") or request.remote_addr or "",
-                request.headers.get("User-Agent") or "",
-                request_ua or "",
+                request.args.get("DeviceId") or request.args.get("X-Emby-Device-Id") or request.headers.get("X-Emby-Device-Id") or request.args.get("PlaySessionId") or request.remote_addr or "",
+                request.args.get("UserId") or "",
+                request.args.get("ItemId") or request.args.get("item_id") or "",
             ]),
         )
         if not play_pick_code:
