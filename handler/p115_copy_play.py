@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -73,6 +74,38 @@ def _norm_size(value):
         return 0
 
 
+def _is_same_or_duplicate_name(actual_name, expected_name):
+    actual = str(actual_name or "").strip()
+    expected = str(expected_name or "").strip()
+    if not expected:
+        return True
+    if actual == expected:
+        return True
+    if "." not in expected:
+        return actual.startswith(expected + "(") and actual.endswith(")")
+    stem, ext = expected.rsplit(".", 1)
+    return bool(re.fullmatch(re.escape(stem) + r"\(\d+\)\." + re.escape(ext), actual))
+
+
+def _item_to_clone(item, fallback_parent_id="", fallback_name=""):
+    if not isinstance(item, dict):
+        return {}
+    fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
+    pc = str(item.get("pick_code") or item.get("pc") or item.get("pickcode") or "").strip()
+    name = str(item.get("name") or item.get("file_name") or item.get("fn") or fallback_name or "").strip()
+    parent_id = str(item.get("parent_id") or item.get("pid") or item.get("cid") or fallback_parent_id or "").strip()
+    if not fid or not pc:
+        return {}
+    return {
+        "fid": fid,
+        "pick_code": pc,
+        "name": name,
+        "parent_id": parent_id,
+        "sha1": str(item.get("sha1") or item.get("sha") or "").strip().upper(),
+        "size": _norm_size(item.get("size") or item.get("fs") or item.get("s")),
+    }
+
+
 def _list_temp_candidates(client, temp_cid, source_row, file_name):
     expected_name = str(file_name or source_row.get("name") or "").strip()
     payload = {
@@ -109,7 +142,7 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name, exclude_ids
         fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
         if fid in exclude_ids:
             continue
-        if expected_name and item_name != expected_name:
+        if not _is_same_or_duplicate_name(item_name, expected_name):
             continue
         if expected_size and item_size and item_size != expected_size:
             continue
@@ -291,6 +324,15 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
     if not clone:
         for attempt in range(1, 9):
             item = _find_clone_in_temp_dir(client, temp_cid, source_row, display_name, exclude_ids=before_ids)
+            clone = _item_to_clone(item, fallback_parent_id=temp_cid, fallback_name=display_name)
+            if clone:
+                logger.info(
+                    "  ➜ [复制播放] 已从临时目录列表拿到克隆 PC：文件=%s，FID=%s，PC=%s",
+                    clone.get("name") or display_name,
+                    clone.get("fid"),
+                    clone.get("pick_code", "")[:8] + "...",
+                )
+                break
             clone_fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
             if clone_fid:
                 info_resp = client.fs_get_info(clone_fid)
