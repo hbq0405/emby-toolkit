@@ -8,12 +8,6 @@ upstream virtual_library_proxy {
     server {{ PROXY_UPSTREAM }};
 }
 
-{% if REDIRECT_UPSTREAM %}
-upstream redirect_service {
-    server {{ REDIRECT_UPSTREAM }};
-}
-{% endif %}
-
 server {
     listen 0.0.0.0:{{ NGINX_LISTEN_PORT }};
     listen [::]:{{ NGINX_LISTEN_PORT }} ipv6only=on;
@@ -37,15 +31,6 @@ server {
     # ====================================================================
     #  核心路由规则 (V4)
     # ====================================================================
-    # ★★★ 第三方302 ★★★
-    # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
-    # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
-    {% if REDIRECT_UPSTREAM %}
-    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
-        proxy_pass http://redirect_service;
-    }
-    {% endif %}
-
     # --- 以下是虚拟库路由规则 ---
     location /api/p115 {
         proxy_pass http://virtual_library_proxy;

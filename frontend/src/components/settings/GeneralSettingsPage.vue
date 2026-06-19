@@ -911,26 +911,6 @@
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled" style="width: 100%;" placeholder="8096"/>
                       </n-form-item-grid-item>
 
-                      <!-- 第三方302 URL -->
-                      <n-form-item-grid-item span="1 m:2" label-width="100">
-                        <template #label>
-                          <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
-                            <span>第三方302</span>
-                            <n-tooltip trigger="hover">
-                              <template #trigger>
-                                <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
-                              </template>
-                              需重启容器生效
-                            </n-tooltip>
-                          </div>
-                        </template>
-                        <n-input 
-                          v-model:value="configModel.proxy_302_redirect_url" 
-                          placeholder="例如: http://192.168.31.177:9096" 
-                          :disabled="!configModel.proxy_enabled"
-                        />
-                      </n-form-item-grid-item>
-                      
                       <!-- 3. 缺失占位符 (占满一行，因为说明文字较长) -->
                       <n-form-item-grid-item label="缺失占位符" path="proxy_show_missing_placeholders" span="1 m:2" label-width="100">
                          <n-space align="center">
