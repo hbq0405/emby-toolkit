@@ -20,7 +20,12 @@ from handler.custom_collection import RecommendationEngine
 import config_manager
 import constants
 from handler.p115_service import P115Service
-from handler.p115_copy_play import prepare_copy_play_pick_code, recycle_clone_after_direct_url
+from handler.p115_copy_play import (
+    discard_copy_play_clone,
+    is_copy_play_missing_error,
+    prepare_copy_play_pick_code,
+    recycle_clone_after_direct_url,
+)
 from utils import extract_pickcode_from_strm_url
 
 import extensions
@@ -972,20 +977,20 @@ def proxy_all(path):
                 if not client:
                     return "115 Client not initialized", 500
 
-                play_pick_code = prepare_copy_play_pick_code(
-                    pick_code,
-                    file_name=display_name,
-                    item_id=item_id,
-                    play_session_id=play_session_id,
-                    user_id=request.args.get('UserId', ''),
-                    source='reverse_proxy',
-                    client_key="|".join([
+                copy_play_kwargs = {
+                    "file_name": display_name,
+                    "item_id": item_id,
+                    "play_session_id": play_session_id,
+                    "user_id": request.args.get('UserId', ''),
+                    "source": 'reverse_proxy',
+                    "client_key": "|".join([
                         request.args.get('DeviceId') or request.args.get('X-Emby-Device-Id') or request.headers.get('X-Emby-Device-Id') or request.remote_addr or "",
                         request.headers.get('X-Emby-Client') or "",
                         request.headers.get('User-Agent') or "",
                     ]),
-                    client_name=request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
-                )
+                    "client_name": request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
+                }
+                play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
                 if not play_pick_code:
                     return Response("Copy play failed.", status=503)
 
@@ -995,6 +1000,7 @@ def proxy_all(path):
                 # ★ 动态读取配置，决定首次尝试的接口
                 api_priority = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_API_PRIORITY, 'openapi')
                 use_openapi = (api_priority != 'cookie') 
+                rebuilt_copy_play = False
 
                 while retry_count < max_retries:
                     try:
@@ -1010,6 +1016,16 @@ def proxy_all(path):
                             logger.warning(f"  ⚠️ [获取直链] {'OpenAPI' if use_openapi else 'Cookie'} 未拿到直链，切换接口重试 ({retry_count+1}/{max_retries})...")
                     except Exception as e:
                         err_str = str(e)
+                        if str(play_pick_code) != str(pick_code) and is_copy_play_missing_error(e):
+                            discard_copy_play_clone(play_pick_code)
+                            if rebuilt_copy_play:
+                                return Response("Copy play clone expired.", status=503)
+                            play_pick_code = prepare_copy_play_pick_code(pick_code, force_new=True, **copy_play_kwargs)
+                            rebuilt_copy_play = True
+                            if not play_pick_code:
+                                return Response("Copy play failed.", status=503)
+                            use_openapi = (api_priority != 'cookie')
+                            continue
                         if '405' in err_str or 'Method Not Allowed' in err_str:
                             logger.warning(f"  🛑 [获取直链] 触发 115 风控，切换接口重试 ({retry_count+1}/{max_retries})...")
                         else:

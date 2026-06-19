@@ -280,6 +280,30 @@ def _find_reusable_clone(source_pick_code, source_fid, temp_cid, *, item_id="", 
     return {}
 
 
+def is_copy_play_missing_error(error):
+    text = str(error or "").lower()
+    return bool(
+        "50015" in text
+        or "不存在" in text
+        or "已删除" in text
+        or "not exist" in text
+        or "deleted" in text
+    )
+
+
+def discard_copy_play_clone(clone_pick_code):
+    pc = str(clone_pick_code or "").strip()
+    if not pc:
+        return False
+    clones = _load_clones()
+    kept = [clone for clone in clones if str(clone.get("clone_pick_code") or "").strip() != pc]
+    if len(kept) == len(clones):
+        return False
+    _save_clones(kept)
+    logger.debug("  ➜ [复制播放] 克隆体已失效，丢弃旧记录：%s", pc[:8] + "...")
+    return True
+
+
 def _client_key_from_webhook(data):
     session = data.get("Session") or {}
     device_id = str(session.get("DeviceId") or data.get("DeviceId") or "").strip()
@@ -423,7 +447,7 @@ def cleanup_expired_clones(client=None):
     return removed
 
 
-def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", client_name=""):
+def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", client_name="", force_new=False):
     if not is_copy_play_enabled():
         return source_pick_code
 
@@ -454,7 +478,7 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         if item_id:
             logger.debug("  ➜ [复制播放] 已按源 PC 反查到 Emby 媒体项：%s", item_id)
 
-    reusable = _find_reusable_clone(
+    reusable = {} if force_new else _find_reusable_clone(
         source_pick_code,
         source_fid,
         temp_cid,
