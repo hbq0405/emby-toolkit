@@ -2377,10 +2377,109 @@ class P115Service:
             def fs_search(self, payload):
                 return self._call_api('fs_search', payload, normalizer=_p115_normalize_list_response)
             
+            def _fill_info_parent_from_cache(self, resp, file_id):
+                """Cookie 详情接口不稳定返回父目录 ID，缺失时从本地文件系统缓存反推。"""
+                if not isinstance(resp, dict) or not _p115_success(resp):
+                    return resp
+                data = resp.get('data')
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+                    resp['data'] = data
+                if not isinstance(data, dict):
+                    return resp
+
+                if str(data.get('parent_id') or data.get('pid') or '').strip():
+                    return resp
+
+                fid = str(data.get('fid') or data.get('file_id') or data.get('id') or file_id or '').strip()
+                pick_code = str(data.get('pick_code') or data.get('pc') or data.get('pickcode') or '').strip()
+                sha1 = str(data.get('sha1') or data.get('sha') or data.get('file_sha1') or '').strip().upper()
+
+                for path_key in ('path', 'paths', 'breadcrumb'):
+                    path_nodes = resp.get(path_key) or data.get(path_key)
+                    if not isinstance(path_nodes, list):
+                        continue
+                    for node in reversed(path_nodes):
+                        node = _p115_normalize_item(node) if isinstance(node, dict) else {}
+                        node_id = str(node.get('fid') or node.get('file_id') or node.get('id') or node.get('cid') or '').strip()
+                        node_fc = str(node.get('fc') or node.get('file_category') or '').strip()
+                        if node_id and node_id != fid and (not node_fc or node_fc == '0'):
+                            data['parent_id'] = node_id
+                            data['pid'] = node_id
+                            data.setdefault('_parent_id_source', path_key)
+                            return resp
+
+                row = None
+                try:
+                    if fid:
+                        row = P115CacheManager.get_file_cache_by_id(fid)
+                    if not row and pick_code:
+                        row = P115CacheManager.get_file_cache_by_pickcode(pick_code)
+                    if not row and sha1:
+                        row = P115CacheManager.get_file_cache_by_sha1(sha1)
+                except Exception as e:
+                    logger.debug(f"  ➜ [115] Cookie 文件详情父目录推导失败: fid={fid or file_id}, err={e}")
+                    return resp
+
+                if not row:
+                    logger.debug(f"  ➜ [115] Cookie 文件详情缺少父目录，且本地缓存未命中: fid={fid or file_id}")
+                    return resp
+
+                parent_id = str(row.get('parent_id') or '').strip()
+                if parent_id:
+                    data['parent_id'] = parent_id
+                    data['pid'] = parent_id
+                    data.setdefault('_parent_id_source', 'p115_filesystem_cache')
+                cached_id = str(row.get('id') or fid or '').strip()
+                cached_name = row.get('name')
+                cached_pc = row.get('pick_code')
+                cached_sha1 = row.get('sha1')
+                cached_size = row.get('size')
+                if cached_id:
+                    data.setdefault('fid', cached_id)
+                    data.setdefault('file_id', cached_id)
+                if cached_name:
+                    data.setdefault('name', cached_name)
+                    data.setdefault('file_name', cached_name)
+                    data.setdefault('fn', cached_name)
+                if cached_pc:
+                    data.setdefault('pick_code', cached_pc)
+                    data.setdefault('pc', cached_pc)
+                if cached_sha1:
+                    data.setdefault('sha1', cached_sha1)
+                    data.setdefault('sha', cached_sha1)
+                if cached_size:
+                    data.setdefault('size', cached_size)
+                    data.setdefault('fs', cached_size)
+                return resp
+
             def fs_get_info(self, file_id):
-                # 强制使用 OpenAPI 获取详情，因为 Cookie 接口存在不返回父目录 ID 的缺陷
-                self._check_openapi()
-                return self._call_api('fs_get_info', file_id, normalizer=_p115_normalize_info_response, force_openapi=True)
+                # 详情优先走 OpenAPI 获取完整父目录；访问上限/失败时用 Cookie 备用，再从本地缓存反推 parent_id。
+                openapi_resp = None
+                if self._openapi:
+                    openapi_resp = self._call_api(
+                        'fs_get_info',
+                        file_id,
+                        normalizer=_p115_normalize_info_response,
+                        force_openapi=True,
+                    )
+                    if _p115_success(openapi_resp):
+                        return openapi_resp
+
+                if self._cookie:
+                    cookie_resp = self._call_api(
+                        'fs_get_info',
+                        file_id,
+                        normalizer=_p115_normalize_info_response,
+                        force_cookie=True,
+                    )
+                    if _p115_success(cookie_resp):
+                        return self._fill_info_parent_from_cache(cookie_resp, file_id)
+                    return cookie_resp
+
+                if openapi_resp is not None:
+                    return openapi_resp
+                return {'state': False, 'error_msg': '未配置可用的 115 OpenAPI 或 Cookie，无法查询文件详情'}
 
             def _is_exists_error(self, resp):
                 text = json.dumps(resp, ensure_ascii=False).lower() if resp is not None else ""
@@ -2859,7 +2958,7 @@ class P115Service:
                                     if path_name: display_name = path_name
                             except: pass
 
-                            logger.info(f"  ➜ [115直链] 已获取下载直链：{display_name}")
+                            logger.info(f"  ➜ [115直链] 已通过 Cookie 获取下载直链：{display_name}")
 
                             # ★ 将文件名一起存入缓存
                             _DIRECT_URL_CACHE[cache_key] = {
