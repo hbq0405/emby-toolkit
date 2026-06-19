@@ -475,8 +475,6 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
     display_name = file_name or source_row.get("name") or source_pick_code
     if not item_id:
         item_id = _lookup_emby_item_id_by_pick_code(source_pick_code)
-        if item_id:
-            logger.debug("  ➜ [复制播放] 已按源 PC 反查到 Emby 媒体项：%s", item_id)
 
     reusable = {} if force_new else _find_reusable_clone(
         source_pick_code,
@@ -488,12 +486,6 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         client_key=str(client_key or ""),
     )
     if reusable:
-        logger.debug(
-            "  ➜ [复制播放] 复用本次播放临时克隆体：%s，客户端=%s，克隆PC=%s",
-            reusable.get("file_name") or display_name,
-            str(client_key or play_session_id or "-")[:80],
-            str(reusable.get("clone_pick_code") or "")[:8] + "...",
-        )
         return reusable["clone_pick_code"]
 
     friendly_client = _friendly_client_name(client_name)
