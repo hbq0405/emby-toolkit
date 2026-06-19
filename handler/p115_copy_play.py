@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 COPY_PLAY_CLONES_KEY = "p115_copy_play_clones"
 COPY_PLAY_TTL_SECONDS = 12 * 60 * 60
+MEDIA_EXTENSIONS = ("mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm", "iso")
 
 
 def is_copy_play_enabled():
@@ -138,10 +139,18 @@ def _duplicate_name_index(actual_name, expected_name):
         return 0
     if actual == expected:
         return 0
-    if "." not in expected:
+    ext_pattern = "|".join(re.escape(ext) for ext in MEDIA_EXTENSIONS)
+    expected_ext_match = re.fullmatch(r"(.+)\.(" + ext_pattern + r")", expected, flags=re.IGNORECASE)
+    if not expected_ext_match:
         match = re.fullmatch(re.escape(expected) + r"\((\d+)\)", actual)
+        if match:
+            return int(match.group(1))
+        match = re.fullmatch(re.escape(expected) + r"(?:\((\d+)\))?\.(" + ext_pattern + r")", actual, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1) or 0)
+        match = re.fullmatch(re.escape(expected) + r"\((\d+)\)\.[^.]+", actual)
         return int(match.group(1)) if match else -1
-    stem, ext = expected.rsplit(".", 1)
+    stem, ext = expected_ext_match.group(1), expected_ext_match.group(2)
     match = re.fullmatch(re.escape(stem) + r"\((\d+)\)\." + re.escape(ext), actual)
     return int(match.group(1)) if match else -1
 
