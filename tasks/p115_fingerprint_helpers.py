@@ -73,12 +73,10 @@ def p115_fp_build_local_path_candidates(
     path: str,
     strm_target: Optional[str],
     local_root: str = '',
-    mount_prefix: str = '',
 ) -> List[str]:
     """
-    为挂载模式/STRM 模式构造 p115_filesystem_cache.local_path 候选值。
-    - 标准 STRM：asset path 是 .strm，本地缓存是同目录真实视频扩展名。
-    - 挂载模式：STRM 内容可能没有 PC，只能靠路径映射到 local_path。
+    为 STRM 模式构造 p115_filesystem_cache.local_path 候选值。
+    标准 STRM：asset path 是 .strm，本地缓存是同目录真实视频扩展名。
     """
     candidates = []
 
@@ -90,7 +88,7 @@ def p115_fp_build_local_path_candidates(
             return
 
         variants = [cleaned]
-        for root in (local_root, mount_prefix):
+        for root in (local_root,):
             if not root:
                 continue
             try:
@@ -267,37 +265,6 @@ def _parse_size_to_bytes(size_val) -> int:
         pass
     return 0
 
-def _get_mount_prefix_for_fingerprint(processor=None) -> str:
-    candidates = []
-    try:
-        cfg = getattr(processor, 'config', None) or {}
-        value = cfg.get('etk_server_url') if isinstance(cfg, dict) else ''
-        if value:
-            candidates.append(value)
-    except Exception:
-        pass
-    try:
-        import config_manager
-        value = (config_manager.APP_CONFIG or {}).get('etk_server_url')
-        if value:
-            candidates.append(value)
-    except Exception:
-        pass
-    try:
-        from handler.p115_service import get_config
-        value = (get_config() or {}).get('etk_server_url')
-        if value:
-            candidates.append(value)
-    except Exception:
-        pass
-
-    for value in candidates:
-        text = str(value or '').strip().replace('\\', '/').rstrip('/')
-        if text and not re.match(r'^https?://', text, re.IGNORECASE):
-            return text
-    return ''
-
-
 def _get_asset_size(asset: Dict[str, Any]) -> int:
     val = (
         asset.get('size_bytes')
@@ -350,7 +317,6 @@ def repair_p115_fingerprints_for_rows(
         client = None
 
     video_exts = video_exts or VIDEO_EXTS
-    mount_prefix = _get_mount_prefix_for_fingerprint(processor)
     rows = [_row_to_dict(row) for row in rows]
     total_rows = len(rows)
 
@@ -419,7 +385,6 @@ def repair_p115_fingerprints_for_rows(
                 clean_path,
                 strm_target,
                 local_root,
-                mount_prefix=mount_prefix,
             )
             
             # ★ 优化 2：防止 .strm 污染 115 真实文件名

@@ -3675,7 +3675,7 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, 
     raw = _raw_for_file(file_info) if raw_uploaded else {}
     sig = _media_signature(raw, file_info) if raw else {}
     preid = _ensure_file_preid(file_info)
-    # size 不能只信 p115_filesystem_cache。第三方 STRM/旧库补齐 RAW 时，
+    # size 不能只信 p115_filesystem_cache。旧库补齐 RAW 时，
     # cache 可能缺 size，但 RAW 里通常有 MediaSourceInfo.Size / format.size。
     # 如果这里写 None，中心端整季 total_size 会被 0 或单集大小污染。
     final_size = _file_size_from_cache(file_info) or (_infer_size_from_raw(raw) if raw else 0) or 0

@@ -1275,22 +1275,6 @@ def handle_rename_config():
         settings_db.save_setting('p115_rename_config', new_config)
         return jsonify({"success": True, "message": "重命名规则已保存"})
     
-@p115_bp.route('/custom_strm_regex', methods=['GET', 'POST'])
-@admin_required
-def handle_custom_strm_regex():
-    """管理自定义 STRM 提取正则"""
-    if request.method == 'GET':
-        rules = settings_db.get_setting("custom_strm_regex") or []
-        return jsonify({"success": True, "data": rules})
-    
-    if request.method == 'POST':
-        data = request.json
-        rules = data.get('rules', [])
-        # 简单清洗一下空字符串
-        clean_rules = [r.strip() for r in rules if r and r.strip()]
-        settings_db.save_setting("custom_strm_regex", clean_rules)
-        return jsonify({"success": True, "message": "自定义正则已保存"})
-    
 def _normalize_episode_regex_rules(raw_rules):
     if not isinstance(raw_rules, list):
         return [], "规则数据格式错误，必须是数组"
@@ -1686,11 +1670,8 @@ def upload_music_file():
             strm_path = os.path.join(local_dir, strm_name)
             
             if not etk_url.startswith('http'):
-                rel_p = os.path.relpath(strm_path, local_root)
-                content = os.path.join(etk_url, rel_p).replace('\\', '/')
-                content = content[:-5] + f".{ext}"
-            else:
-                content = f"{etk_url}/api/p115/play/{pick_code}/{file.filename}"
+                return jsonify({'success': False, 'message': '请配置 http(s) 开头的 ETK 访问地址。'}), 400
+            content = f"{etk_url}/api/p115/play/{pick_code}/{file.filename}"
                 
             with open(strm_path, 'w', encoding='utf-8') as f:
                 f.write(content)

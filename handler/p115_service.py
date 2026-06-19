@@ -7757,7 +7757,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 f"  ➜ [重命名失败] {x['old_name']} -> {x['new_name']}, "
                                 f"原因: {_p115_error_text(fail_res)}"
                             )
-                            # ★ 核心修复：如果 115 API 重命名失败，强制退回原名，确保后续生成的 STRM 挂载路径 100% 准确！
+                            # 如果 115 API 重命名失败，强制退回原名，确保后续生成的 STRM 指向正确文件。
                             x['item']['_new_filename'] = x['old_name']
                         else:
                             logger.debug(f"  ➜ [重命名] {x['old_name']} -> {x['new_name']}")
@@ -7810,6 +7810,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
                     
                     if pick_code and local_root and os.path.exists(local_root):
+                        if not etk_url.startswith('http'):
+                            logger.error("  ➜ 请配置 http(s) 开头的 ETK 访问地址。")
+                            return False
                         try:
                             category_name = None
                             for rule in self.rules:
@@ -7877,18 +7880,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             if is_video:
                                 strm_filename = os.path.splitext(new_filename)[0] + ".strm"
                                 strm_filepath = os.path.join(local_dir, strm_filename)
-                                if not etk_url.startswith('http'):
-                                    mount_prefix = etk_url
-                                    # ★ 保留原名只影响 new_filename，挂载路径仍走标准目录
-                                    if self.media_type == 'tv' and season_num is not None and s_name:
-                                        mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, s_name, new_filename)
-                                    else:
-                                        mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, new_filename)
-                                    strm_content = mount_path.replace('\\', '/')
-                                else:
-                                    strm_content = f"{etk_url}/api/p115/play/{pick_code}"
-                                    if cfg.get('strm_url_fmt') == 'with_name':
-                                        strm_content = f"{strm_content}/{new_filename}"
+                                strm_content = f"{etk_url}/api/p115/play/{pick_code}"
+                                if cfg.get('strm_url_fmt') == 'with_name':
+                                    strm_content = f"{strm_content}/{new_filename}"
                                 
                                 with open(strm_filepath, 'w', encoding='utf-8') as f:
                                     f.write(strm_content)
@@ -8081,8 +8075,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         etk_url = (config.get(constants.CONFIG_OPTION_ETK_SERVER_URL) or "").rstrip("/")
         media_root_name = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME) or "").strip("/")
 
-        if not local_root or not etk_url:
-            logger.warning("  ➜ [MP直出] 未配置本地 STRM 根目录或 ETK 地址，跳过。")
+        if not local_root or not etk_url or not etk_url.startswith("http"):
+            logger.warning("  ➜ [MP直出] 请配置 http(s) 开头的 ETK 访问地址。")
             return False
 
         os.makedirs(local_root, exist_ok=True)
@@ -8170,13 +8164,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 strm_filename = os.path.splitext(original_name)[0] + ".strm"
                 strm_filepath = os.path.join(local_dir, strm_filename)
 
-                if not etk_url.startswith("http"):
-                    # 挂载模式
-                    mount_path = os.path.join(etk_url, parent_rel_path, original_name).replace("\\", "/")
-                    strm_content = mount_path
-                else:
-                    # API 模式
-                    strm_content = f"{etk_url}/api/p115/play/{pick_code}/{original_name}"
+                strm_content = f"{etk_url}/api/p115/play/{pick_code}/{original_name}"
 
                 with open(strm_filepath, "w", encoding="utf-8") as f:
                     f.write(strm_content)

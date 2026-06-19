@@ -56,55 +56,6 @@ KNOWN_SKIP_EXTS = {'clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo'}
 MIN_BIG_PACKAGE_VIDEO_SIZE = 50 * 1024 * 1024
 
 
-def _normalize_path_style_strm_content(content):
-    text = str(content or "").strip()
-    if not text:
-        return ""
-
-    lower_text = text.lower()
-    if lower_text.startswith(("http://", "https://")) or "/api/p115/play/" in lower_text:
-        return ""
-
-    has_file_scheme = lower_text.startswith("file://")
-    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text) and not has_file_scheme:
-        return ""
-
-    if has_file_scheme:
-        text = text[7:]
-
-    normalized = text.split("?", 1)[0].split("#", 1)[0].replace("\\", "/").rstrip("/")
-    if (
-        has_file_scheme
-        or normalized.startswith("/")
-        or normalized.startswith("//")
-        or re.match(r"^[a-zA-Z]:/", normalized)
-    ):
-        return normalized
-    return ""
-
-
-def _is_path_style_strm(content):
-    return bool(_normalize_path_style_strm_content(content))
-
-
-def _path_style_strm_conflict_type(old_content, new_content):
-    old_path = _normalize_path_style_strm_content(old_content)
-    new_path = _normalize_path_style_strm_content(new_content)
-    if not old_path or not new_path or old_path == new_path:
-        return ""
-
-    old_dir = os.path.dirname(old_path).replace("\\", "/").rstrip("/")
-    new_dir = os.path.dirname(new_path).replace("\\", "/").rstrip("/")
-    old_base = os.path.basename(old_path)
-    new_base = os.path.basename(new_path)
-    old_stem, old_ext = os.path.splitext(old_base)
-    new_stem, new_ext = os.path.splitext(new_base)
-
-    if old_dir == new_dir and old_stem == new_stem and old_ext.lower() != new_ext.lower():
-        return "same_stem_different_ext"
-    return "path_mismatch"
-
-
 def _p115_response_path_contains_cid(response, target_cid):
     path_nodes = response.get('path') if isinstance(response, dict) else None
     if not path_nodes:
@@ -1323,8 +1274,8 @@ def task_full_sync_strm_and_subs(processor=None):
         if not allowed_exts:
             allowed_exts = known_video_exts | known_sub_exts
         
-        if not local_root or not etk_url:
-            update_progress(100, "错误：未配置本地 STRM 根目录或 ETK 访问地址！")
+        if not local_root or not etk_url or not etk_url.startswith('http'):
+            update_progress(100, "错误：请配置 http(s) 开头的 ETK 访问地址。")
             return
 
         client = P115Service.get_client()
@@ -1430,7 +1381,7 @@ def task_full_sync_strm_and_subs(processor=None):
             return None
 
         def process_full_sync_items(items, target_cid, category_name):
-            nonlocal files_generated, subs_downloaded, path_strm_preserved, root_anomaly_skipped
+            nonlocal files_generated, subs_downloaded, root_anomaly_skipped
             for item in items:
                 # 兼容 OpenAPI、Cookie 和 p115client 标准化字段
                 name = first_present(item.get('fn'), item.get('n'), item.get('file_name'), item.get('name')) or ''
@@ -1478,37 +1429,17 @@ def task_full_sync_strm_and_subs(processor=None):
                     strm_name = os.path.splitext(name)[0] + ".strm"
                     strm_path = os.path.join(current_local_path, strm_name)
 
-                    # 动态计算 STRM 内容 (支持挂载模式与直链模式)
-                    if not etk_url.startswith('http'):
-                        mount_prefix = etk_url
-                        mount_path = os.path.join(mount_prefix, rel_dir, name)
-                        content = mount_path.replace('\\', '/')
-                    else:
-                        content = f"{etk_url}/api/p115/play/{pc}"
-                        if rename_config.get('strm_url_fmt') == 'with_name':
-                            content = f"{content}/{name}"
+                    content = f"{etk_url}/api/p115/play/{pc}"
+                    if rename_config.get('strm_url_fmt') == 'with_name':
+                        content = f"{content}/{name}"
 
                     need_write = True
-                    preserved_existing_path_strm = False
                     if os.path.exists(strm_path):
                         try:
                             with open(strm_path, 'r', encoding='utf-8') as f:
                                 old_content = f.read().strip()
                                 if old_content == content:
                                     need_write = False
-                                elif not etk_url.startswith('http') and _is_path_style_strm(old_content):
-                                    need_write = False
-                                    preserved_existing_path_strm = True
-                                    path_strm_preserved += 1
-                                    conflict_type = _path_style_strm_conflict_type(old_content, content)
-                                    if conflict_type:
-                                        path_strm_conflicts[conflict_type] = path_strm_conflicts.get(conflict_type, 0) + 1
-                                        if conflict_type == 'same_stem_different_ext':
-                                            logger.warning(f"  ➜ [冲突] 已存在路径模式 STRM，同名不同后缀，已跳过覆盖: {strm_name} | 旧: [{old_content}] | 新: [{content}]")
-                                        else:
-                                            logger.warning(f"  ➜ [冲突] 已存在路径模式 STRM，路径不一致，已跳过覆盖: {strm_name} | 旧: [{old_content}] | 新: [{content}]")
-                                    else:
-                                        logger.debug(f"  ➜ [保留] 已存在路径模式 STRM，跳过覆盖: {strm_name}")
                                 else:
                                     logger.debug(f"  ➜ [更新] 内容不一致触发覆盖 -> 旧: [{old_content}] | 新: [{content}]")
                         except Exception:
@@ -1548,7 +1479,7 @@ def task_full_sync_strm_and_subs(processor=None):
                     sha1 = item.get('sha1') or item.get('sha')
 
                     # 生成 Mediainfo (等同 MP 直出逻辑)
-                    if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False) and not preserved_existing_path_strm:
+                    if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
                         mediainfo_filename = os.path.splitext(name)[0] + "-mediainfo.json"
                         mediainfo_filepath = os.path.join(current_local_path, mediainfo_filename)
 
@@ -1682,13 +1613,8 @@ def task_full_sync_strm_and_subs(processor=None):
         valid_local_files = set()
         files_generated = 0
         subs_downloaded = 0
-        path_strm_preserved = 0
         root_anomaly_skipped = 0
         changed_strm_files = set()
-        path_strm_conflicts = {
-            'same_stem_different_ext': 0,
-            'path_mismatch': 0,
-        }
         
         fetch_types = [4] # 4=视频
         if download_subs: fetch_types.append(1) # 1=文档(含字幕)
@@ -1757,14 +1683,6 @@ def task_full_sync_strm_and_subs(processor=None):
                 "  ➜ [全量同步] 已跳过 %s 个 115 根目录异常文件，未生成 STRM，也未写入本地缓存。",
                 root_anomaly_skipped,
             )
-        if path_strm_preserved:
-            logger.info(
-                "  ➜ 路径模式 STRM 保护：跳过覆盖 %s 个，其中同名不同后缀 %s 个，路径不一致 %s 个。",
-                path_strm_preserved,
-                path_strm_conflicts.get('same_stem_different_ext', 0),
-                path_strm_conflicts.get('path_mismatch', 0),
-            )
-
         # =================================================================
         # 阶段 3: 本地失效文件清理 (耗时: 秒级)
         # =================================================================
@@ -1933,8 +1851,8 @@ def task_sync_music_library(processor=None):
         update_progress(100, msg)
         return
         
-    if not local_root or not etk_url:
-        msg = "未配置本地 STRM 根目录或 ETK 访问地址！"
+    if not local_root or not etk_url or not etk_url.startswith('http'):
+        msg = "请配置 http(s) 开头的 ETK 访问地址。"
         logger.error(msg)
         update_progress(100, msg)
         return
@@ -2015,12 +1933,7 @@ def task_sync_music_library(processor=None):
                             strm_name = os.path.splitext(name)[0] + ".strm"
                             strm_path = os.path.join(current_local_path, strm_name)
                             
-                            if not etk_url.startswith('http'):
-                                rel_p = os.path.relpath(strm_path, local_root)
-                                content = os.path.join(etk_url, rel_p).replace('\\', '/')
-                                content = content[:-5] + f".{ext}" 
-                            else:
-                                content = f"{etk_url}/api/p115/play/{pc}/{name}"
+                            content = f"{etk_url}/api/p115/play/{pc}/{name}"
                                 
                             need_write = True
                             if os.path.exists(strm_path):
@@ -2178,6 +2091,10 @@ def task_monitor_115_life_events(processor=None):
     known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
     allowed_exts = set(e.lower() for e in config.get(constants.CONFIG_OPTION_115_EXTENSIONS, []))
     if not allowed_exts: allowed_exts = known_video_exts | known_sub_exts
+
+    if not local_root or not etk_url or not etk_url.startswith('http'):
+        logger.warning("  ➜ [事件] 未配置 http(s) 开头的 ETK 访问地址，跳过 STRM 增量生成。")
+        return
 
     raw_rules = settings_db.get_setting('p115_sorting_rules')
     if not raw_rules: return
@@ -2422,14 +2339,9 @@ def task_monitor_115_life_events(processor=None):
                     strm_name = os.path.splitext(file_name)[0] + ".strm"
                     strm_path = os.path.join(current_local_path, strm_name)
                     
-                    if not etk_url.startswith('http'):
-                        rel_p = os.path.relpath(strm_path, local_root)
-                        content = os.path.join(etk_url, rel_p).replace('\\', '/')
-                        content = content[:-5] + f".{ext}"
-                    else:
-                        content = f"{etk_url}/api/p115/play/{pick_code}"
-                        if rename_config.get('strm_url_fmt') == 'with_name':
-                            content = f"{content}/{file_name}"
+                    content = f"{etk_url}/api/p115/play/{pick_code}"
+                    if rename_config.get('strm_url_fmt') == 'with_name':
+                        content = f"{content}/{file_name}"
                             
                     with open(strm_path, 'w', encoding='utf-8') as f:
                         f.write(content)

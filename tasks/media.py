@@ -27,6 +27,50 @@ from extensions import UPDATING_METADATA
 
 logger = logging.getLogger(__name__)
 
+def _restore_resolve_writable_path(processor, raw_path: str, pickcodes: Optional[List[str]] = None) -> str:
+    """
+    恢复 NFO/图片时必须写到本地 STRM 目录。
+    只支持通过 115 提取码反查本地 STRM 路径。
+    """
+    raw_path = str(raw_path or '').strip()
+    if not raw_path:
+        return ''
+
+    local_root = str(processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT) or '').strip()
+    if not local_root:
+        return raw_path
+
+    video_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.wmv', '.mov', '.m2ts', '.webm'}
+
+    def _to_strm_path(local_path: str) -> str:
+        full_path = os.path.join(local_root, str(local_path or '').lstrip('/\\'))
+        stem, ext = os.path.splitext(full_path)
+        if ext.lower() in video_exts:
+            return stem + '.strm'
+        return full_path
+
+    for pc in pickcodes or []:
+        pc = str(pc or '').strip()
+        if not pc:
+            continue
+        try:
+            db_local_path = processor._get_local_path_by_pickcode(pc)
+            if db_local_path:
+                return _to_strm_path(db_local_path)
+        except Exception as e:
+            logger.debug(f"  ➜ [NFO恢复] 通过提取码反查 STRM 路径失败: {e}")
+
+    try:
+        pc, _sha1 = processor._extract_115_fingerprints(raw_path)
+        if pc:
+            db_local_path = processor._get_local_path_by_pickcode(pc)
+            if db_local_path:
+                return _to_strm_path(db_local_path)
+    except Exception as e:
+        logger.debug(f"  ➜ [NFO恢复] 从资产路径反查 STRM 路径失败: {e}")
+
+    return ''
+
 # --- 辅助函数：严格校验 TMDb ID ---
 def is_valid_tmdb_id(tmdb_id) -> bool:
     """
@@ -2104,7 +2148,7 @@ def task_backup_mediainfo(processor):
                     current_sha1 = sha1s[idx] if idx < len(sha1s) else None
                     current_pc = pcs[idx] if idx < len(pcs) else None
                     
-                    # ★★★ 核心修复：直接调用核心处理器的万能双指纹提取器 (完美兼容 STRM 和 挂载模式) ★★★
+                    # 只从 ETK 官方 STRM/HTTP PC 地址提取 115 指纹。
                     extracted_pc, extracted_sha1 = processor._extract_115_fingerprints(current_path)
                             
                     # 兜底安检：确保提取出来的是合法的 PC 码 (纯字母数字且长度合理)
@@ -2119,14 +2163,14 @@ def task_backup_mediainfo(processor):
                         pcs[idx] = extracted_pc
                         needs_db_update = True
                         
-                    # ★★★ 意外惊喜：如果万能提取器(通过挂载路径匹配)顺手把 SHA1 也查出来了，直接用！★★★
+                    # 如果通过 ETK PC 地址顺手查到 SHA1，直接回填。
                     if extracted_sha1 and not current_sha1:
                         current_sha1 = extracted_sha1
                         while len(sha1s) <= idx: sha1s.append(None)
                         sha1s[idx] = current_sha1
                         needs_db_update = True
                         sha1_fixed_count += 1
-                        logger.info(f"  ➜ 成功通过本地路径匹配获取 SHA1: {current_sha1}")
+                        logger.info(f"  ➜ 成功通过 ETK PC 地址获取 SHA1: {current_sha1}")
                     
                     # 阶段 1: 补齐缺失的 SHA1 (如果万能提取器没拿到 SHA1，再调 API)
                     if not current_sha1 and actual_pc:
@@ -2165,8 +2209,7 @@ def task_backup_mediainfo(processor):
                         local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, '')
                         mediainfo_path = None
                         
-                        # ★★★ 核心修复：解决挂载模式下找不到 JSON 的问题 ★★★
-                        # Emby 的 current_path 可能是挂载路径，而 JSON 实际在本地 STRM 目录
+                        # 通过 PC/SHA1 回到本地 STRM 目录查找 JSON。
                         if current_sha1 or actual_pc:
                             query_val = current_sha1 if current_sha1 else actual_pc
                             query_col = "sha1" if current_sha1 else "pick_code"
@@ -2268,7 +2311,7 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
             if not isinstance(emby_ids, list):
                 emby_ids = []
 
-            # 转换路径为本地路径 (兼容 HTTP 挂载模式)
+            # ETK HTTP PC 地址转换为本地 STRM 路径。
             local_path = path
             if path.startswith('http'):
                 pc, _ = processor._extract_115_fingerprints(path)
@@ -2674,9 +2717,28 @@ def task_restore_nfo_and_images(processor):
                     logger.warning(f"  ➜ 无法从数据库获取项目 '{title}' 的物理路径，跳过。")
                     continue
                 
+                pickcodes = []
+                raw_pickcodes = item.get('file_pickcode_json')
+                if raw_pickcodes:
+                    try:
+                        pickcodes = json.loads(raw_pickcodes) if isinstance(raw_pickcodes, str) else raw_pickcodes
+                    except Exception:
+                        pickcodes = []
+                if not isinstance(pickcodes, list):
+                    pickcodes = []
+
+                raw_asset_path = assets[0].get('path')
+                writable_path = _restore_resolve_writable_path(processor, raw_asset_path, pickcodes)
+                if not writable_path:
+                    logger.warning(f"  ➜ 无法解析项目 '{title}' 的可写入路径，跳过。")
+                    continue
+
+                if writable_path != raw_asset_path:
+                    logger.info(f"  ➜ [NFO恢复] 已定位本地 STRM 路径：{writable_path}")
+
                 # 构造一个伪装的 item_details 供后续生成函数使用
                 item_details = {
-                    "Path": assets[0].get('path'),
+                    "Path": writable_path,
                     "Type": item_type
                 }
 

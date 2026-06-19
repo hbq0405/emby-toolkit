@@ -80,9 +80,35 @@ def _is_path_excluded(file_path: str, exclude_paths: List[str]) -> bool:
             return True
     return False
 
+def _is_etk_standard_strm(file_path: str) -> bool:
+    if not str(file_path or '').lower().endswith('.strm'):
+        return True
+    try:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) <= 0:
+            return False
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read(2048).strip()
+        return '/api/p115/play/' in content
+    except Exception as e:
+        logger.warning(f"  ➜ [实时监控] 读取 STRM 失败，已跳过：{os.path.basename(file_path)}，原因：{e}")
+        return False
+
+def _filter_etk_standard_files(file_paths: List[str]) -> List[str]:
+    valid = []
+    for fp in file_paths or []:
+        if _is_etk_standard_strm(fp):
+            valid.append(fp)
+        else:
+            logger.warning(f"  ➜ [实时监控] 非 ETK 标准 STRM，已跳过：{os.path.basename(fp)}")
+    return valid
+
 def enqueue_file_actively(file_path: str):
     """主动将文件推入监控队列"""
     global DEBOUNCE_TIMER
+    if not _is_etk_standard_strm(file_path):
+        logger.warning(f"  ➜ [实时监控] 非 ETK 标准 STRM，已跳过：{os.path.basename(file_path)}")
+        return
+
     with QUEUE_LOCK:
         if file_path not in FILE_EVENT_QUEUE:
             logger.info(f"  ➜ [主动推送] 文件加入监控队列: {os.path.basename(file_path)}")
@@ -156,11 +182,13 @@ def process_batch_queue():
 
 def _handle_batch_file_task(processor, file_paths: List[str]):
     valid_files = _wait_for_files_stability(file_paths)
+    valid_files = _filter_etk_standard_files(valid_files)
     if not valid_files: return
     processor.process_file_actively_batch(valid_files)
 
 def _handle_batch_refresh_only_task(file_paths: List[str]):
     valid_files = _wait_for_files_stability(file_paths)
+    valid_files = _filter_etk_standard_files(valid_files)
     if not valid_files: return
     
     config = config_manager.APP_CONFIG

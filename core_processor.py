@@ -1211,60 +1211,7 @@ class MediaProcessor:
 
         return id_to_parent_map, lib_guid
 
-    # --- 115 提取码和 SHA1 相关的核心函数 ---
-    def _get_115_info_by_local_path(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        【挂载模式核心】通过 local_path 精准匹配 115 缓存表。
-        返回 (pick_code, sha1)。
-        """
-        if not self.config.get("monitor_sha1_pc_search", True):
-            return None, None
-        
-        if not file_path: return None, None
-        
-        # 统一路径分隔符
-        normalized_path = file_path.replace('\\', '/')
-        filename = os.path.basename(normalized_path)
-        
-        try:
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
-                
-                # 1. 终极绝杀：利用 local_path 进行后缀匹配
-                # 数据库存的是 "电影/科幻/阿凡达/阿凡达.mkv"
-                # Emby 传的是 "/mnt/115/电影/科幻/阿凡达/阿凡达.mkv"
-                cursor.execute("SELECT pick_code, sha1, local_path FROM p115_filesystem_cache WHERE name = %s AND local_path IS NOT NULL", (filename,))
-                rows = cursor.fetchall()
-                for row in rows:
-                    db_local_path = row['local_path']
-                    # 只要 Emby 的绝对路径以数据库的相对路径结尾，就是 100% 命中！
-                    if normalized_path.endswith(db_local_path):
-                        logger.debug(f"  ➜ [挂载模式] 路径命中: {db_local_path}")
-                        return row['pick_code'], row['sha1']
-                        
-                # 2. 降级方案：三级目录联合匹配 (兼容以前没有写入 local_path 的老数据)
-                path_parts = normalized_path.split('/')
-                if len(path_parts) >= 3:
-                    parent_name = path_parts[-2]
-                    grandparent_name = path_parts[-3]
-                    sql = """
-                        SELECT c.pick_code, c.sha1 
-                        FROM p115_filesystem_cache c
-                        JOIN p115_filesystem_cache p ON c.parent_id = p.id
-                        JOIN p115_filesystem_cache gp ON p.parent_id = gp.id
-                        WHERE c.name = %s AND p.name = %s AND gp.name = %s
-                        LIMIT 1
-                    """
-                    cursor.execute(sql, (filename, parent_name, grandparent_name))
-                    row = cursor.fetchone()
-                    if row: return row['pick_code'], row['sha1']
-                    
-        except Exception as e:
-            logger.warning(f"通过路径查询 115 信息失败: {e}")
-            
-        return None, None
-
-    # --- 直接从 STRM 文件、HTTP 链接 或 挂载路径中抠出 115 提取码 (PC) 和 SHA1 ---
+    # --- 直接从 STRM 文件或 HTTP 链接中提取 115 提取码 (PC) 和 SHA1 ---
     def _extract_115_fingerprints(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
         if not self.config.get("monitor_sha1_pc_search", True):
             return None, None
@@ -1273,35 +1220,19 @@ class MediaProcessor:
         
         pc = None
         sha1 = None
-        target_path_for_db = file_path # 默认用传入的路径去查库
 
-        # =========================================================
-        # 🥇 优先级 1：嫡子 (STRM 模式) - 调用万能解析器
-        # =========================================================
         try:
             if file_path.startswith('http'):
                 pc = utils.extract_pickcode_from_strm_url(file_path)
             elif file_path.lower().endswith('.strm') and os.path.exists(file_path):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
-                    # 尝试按 HTTP 链接解析
                     pc = utils.extract_pickcode_from_strm_url(content)
-                    
-                    # ★★★ 核心修复：如果 STRM 里面存的是挂载路径，把这个路径提取出来供后续查库 ★★★
-                    if not pc and content and not content.startswith('http'):
-                        target_path_for_db = content
         except Exception as e:
             logger.warning(f"读取 STRM 文件失败: {e}")
-            
-        # =========================================================
-        # 🥈 优先级 2：庶子 (挂载模式) - 调用 local_path 精准匹配
-        # =========================================================
-        # 拿着真实的视频路径 (可能是直接传进来的，也可能是从 STRM 里读出来的) 去查库
-        db_pc, db_sha1 = self._get_115_info_by_local_path(target_path_for_db)
-        
-        # 合并结果 (如果正则提取到了 PC 就用正则的，否则用数据库的)
-        pc = pc or db_pc
-        sha1 = db_sha1
+
+        if pc:
+            sha1 = self._get_sha1_by_pickcode(pc)
 
         return pc, sha1
 
@@ -1322,7 +1253,7 @@ class MediaProcessor:
                     return row['sha1']
         except Exception: pass
 
-        # 2. 查不到？现场算 FID 调 API 查！(专治第三方 STRM)
+        # 2. 查不到时现场算 FID 调 API 查。
         logger.trace(f"  ➜ 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
         try:
             to_id_func = None
@@ -1352,7 +1283,7 @@ class MediaProcessor:
 
         return None
 
-    # --- 通过 PC 码反查 local_path (专治第三方 STRM 和挂载路径) ---
+    # --- 通过 PC 码反查 local_path ---
     def _get_local_path_by_pickcode(self, pick_code: str) -> Optional[str]:
         """
         通过 pick_code 反查 115 缓存表获取 local_path (相对路径)
