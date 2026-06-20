@@ -6777,10 +6777,28 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 finally:
                     self._disable_extension_batch_split = False
                 return ok
+            elif len(split_groups) == 1:
+                only_group = next(iter(split_groups.values()))
+                group_target_cid = only_group.get('target_cid')
+                if group_target_cid and str(group_target_cid) != str(target_cid):
+                    logger.info(f"  ➜ [智能分类] 单文件目录按文件级规则修正目标目录：{target_cid} -> {group_target_cid}")
+                    target_cid = group_target_cid
+                    dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
 
         # ★ 统一在这里获取最终的 target_cid！(因为 details 已经补齐了时长，media_type 也可能被纠错了，season 也提取了)
         if not getattr(self, 'is_manual_correct', False):
-            self.current_sorting_filename = parse_name
+            final_sorting_filename = parse_name
+            if is_batch:
+                classify_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
+                video_names_for_classify = []
+                for item in candidates:
+                    item_name = item.get('fn') or item.get('n') or item.get('file_name', '')
+                    ext = item_name.split('.')[-1].lower() if '.' in item_name else ''
+                    if ext in classify_video_exts:
+                        video_names_for_classify.append(item_name)
+                if len(video_names_for_classify) == 1:
+                    final_sorting_filename = video_names_for_classify[0]
+            self.current_sorting_filename = final_sorting_filename
             new_target_cid = self.get_target_cid(season_num=getattr(self, 'forced_season', None))
             if new_target_cid and str(new_target_cid) != str(target_cid):
                 logger.info(f"  ➜ [智能分类] 目标目录已根据最新元数据(时长/类型/连载状态)修正！")

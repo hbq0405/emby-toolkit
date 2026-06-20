@@ -1753,7 +1753,8 @@ def _prepare_files_before_rapid_transfer(
             continue
 
         s_num, e_num = _guess_se_from_source(src, context)
-        target_key = (media_type, str(tmdb_for_washing), s_num if media_type == 'tv' else None)
+        file_ext_for_washing = os.path.splitext(str(file_name or ''))[1].lower().lstrip('.')
+        target_key = (media_type, str(tmdb_for_washing), s_num if media_type == 'tv' else None, file_ext_for_washing)
         cached_target = target_cache.get(target_key)
         if cached_target:
             target_cid_for_washing = cached_target.get('target_cid') or ''
@@ -1779,6 +1780,7 @@ def _prepare_files_before_rapid_transfer(
                 )
                 if media_type == 'tv' and s_num is not None:
                     organizer.forced_season = int(s_num)
+                organizer.current_sorting_filename = file_name
                 target_cid_for_washing = organizer.get_target_cid(season_num=s_num if media_type == 'tv' else None)
                 original_lang = (organizer.raw_metadata or {}).get('lang_code')
                 target_cache[target_key] = {
