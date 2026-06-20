@@ -260,19 +260,23 @@ def _shared_center_home_sections(value) -> list:
             order_by = 'pool_time'
         if order_by not in ('pool_time', 'release_year', 'popular', 'size', 'name'):
             order_by = 'pool_time'
-        keyword = str(item.get('keyword') or item.get('q') or '').strip()[:80]
-        tmdb_id = str(item.get('tmdb_id') or '').strip()[:40]
         genre_id = str(item.get('genre_id') or '').strip()[:40]
+        tags = item.get('tags')
+        if not isinstance(tags, list):
+            tags = str(item.get('status') or '').split(',')
+        tag_values = []
+        for tag in tags:
+            text = str(tag or '').strip()
+            if text in ('completed_certified', 'ongoing', 'short_drama', 'clean_version', 'mandarin_audio', 'chinese_subtitle', 'effect_subtitle') and text not in tag_values:
+                tag_values.append(text)
         out.append({
             'key': key,
             'title': title,
             'display_type': display_type,
             'order_by': order_by,
-            'status': 'alive,available',
-            'keyword': keyword,
-            'tmdb_id': tmdb_id,
+            'status': ','.join(['alive', 'available', *tag_values]),
             'genre_id': genre_id,
-            'release_year': _shared_int(item.get('release_year'), 0, 0, 9999),
+            'tags': tag_values,
             'limit': _shared_int(item.get('limit'), 10, 1, 20),
             'enabled': _shared_bool(item.get('enabled'), True),
         })

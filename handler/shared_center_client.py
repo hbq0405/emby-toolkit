@@ -403,18 +403,20 @@ class SharedCenterClient:
         默认只返回电影和季容器；连载季返回公共 season_hub，单集只作为 children/pack_items。
         force_refresh=True 时绕过中心端展示缓存并重建缓存。
         """
-        return self._get('/api/v1/sources/display-list', {
+        params = {
             'q': q or '',
             'status': status or 'alive,available,updating,inconsistent,incomplete',
             'item_type': item_type or '',
             'tmdb_id': tmdb_id or '',
             'order_by': order_by or 'latest',
             'genre_id': genre_id or '',
-            'release_year': release_year or '',
             'limit': max(1, min(int(limit or 200), 1000)),
             'offset': max(0, int(offset or 0)),
             'force_refresh': 1 if force_refresh else 0,
-        }, timeout=30)
+        }
+        if release_year:
+            params['release_year'] = release_year
+        return self._get('/api/v1/sources/display-list', params, timeout=30)
 
     def list_cloud_search_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent,incomplete',
                                   item_type: str = '', tmdb_id: str = '', order_by: str = 'latest',

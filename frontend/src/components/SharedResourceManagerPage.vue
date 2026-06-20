@@ -299,9 +299,8 @@
             <n-input v-model:value="element.title" size="small" placeholder="列表标题" class="center-home-setting-title-input" />
             <n-select v-model:value="element.display_type" size="small" :options="centerHomeDisplayTypeOptions" class="center-home-setting-select" />
             <n-select v-model:value="element.genre_id" size="small" :options="centerHomeGenreOptions(element.display_type)" clearable filterable placeholder="TMDb 类型" class="center-home-setting-select" />
-            <n-input-number v-model:value="element.release_year" size="small" placeholder="发行年份" clearable :show-button="false" :min="1900" :max="2100" class="center-home-setting-year" />
+            <n-select v-model:value="element.tags" size="small" :options="centerHomeTagOptions" multiple clearable placeholder="标签" class="center-home-setting-tags" />
             <n-select v-model:value="element.order_by" size="small" :options="centerHomeOrderOptions" class="center-home-setting-select" />
-            <n-input v-model:value="element.keyword" size="small" placeholder="片名 / TMDb ID" class="center-home-setting-keyword" />
             <n-select v-model:value="element.limit" size="small" :options="centerHomeLimitOptions" class="center-home-setting-limit" />
             <n-switch v-model:value="element.enabled" size="small">
               <template #checked>显示</template>
@@ -478,7 +477,7 @@ import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } f
 import axios from 'axios';
 import draggable from 'vuedraggable';
 import {
-  NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput, NInputNumber,
+  NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
   NInputGroup, NModal, NSelect, NSpace, NSpin, NSwitch,
   NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
@@ -544,10 +543,10 @@ const ledgerItems = ref([]);
 const centerSources = ref([]);
 const centerHomeSections = ref([]);
 const CENTER_HOME_SECTION_DEFAULTS = [
-  { key: 'latest', title: '最新资源', display_type: 'all', order_by: 'pool_time', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
-  { key: 'popular', title: '热门共享', display_type: 'all', order_by: 'popular', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
-  { key: 'movies', title: '电影', display_type: 'movie', order_by: 'pool_time', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
-  { key: 'series', title: '剧集', display_type: 'tv', order_by: 'pool_time', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
+  { key: 'latest', title: '最新资源', display_type: 'all', order_by: 'pool_time', genre_id: '', tags: [], limit: 10, enabled: true },
+  { key: 'popular', title: '热门共享', display_type: 'all', order_by: 'popular', genre_id: '', tags: [], limit: 10, enabled: true },
+  { key: 'movies', title: '电影', display_type: 'movie', order_by: 'pool_time', genre_id: '', tags: [], limit: 10, enabled: true },
+  { key: 'series', title: '剧集', display_type: 'tv', order_by: 'pool_time', genre_id: '', tags: [], limit: 10, enabled: true },
 ];
 const showCenterHomeSettingsModal = ref(false);
 const centerHomeSettingSections = ref([]);
@@ -709,10 +708,19 @@ const centerHomeDisplayTypeOptions = [
 ];
 const centerHomeOrderOptions = [
   { label: '入池时间', value: 'pool_time' },
-  { label: '发行年份', value: 'release_year' },
+  { label: '发行日期', value: 'release_year' },
   { label: '热门', value: 'popular' },
   { label: '体积', value: 'size' },
   { label: '名称', value: 'name' },
+];
+const centerHomeTagOptions = [
+  { label: '已完结', value: 'completed_certified' },
+  { label: '连载中', value: 'ongoing' },
+  { label: '短剧', value: 'short_drama' },
+  { label: '纯净版', value: 'clean_version' },
+  { label: '国语', value: 'mandarin_audio' },
+  { label: '中字', value: 'chinese_subtitle' },
+  { label: '特效', value: 'effect_subtitle' },
 ];
 const centerHomeLimitOptions = [6, 8, 10, 12, 16, 20].map(value => ({ label: `${value} 个`, value }));
 const normalizeCenterHomeGenreOptions = (items) => (Array.isArray(items) ? items : [])
@@ -1763,13 +1771,26 @@ const centerStatusText = (row) => String(
   || ''
 ).trim();
 const centerStatusCode = (row) => String(
-  row?.season_status
+  row?.season_resource_status
+  || row?.season_status
   || row?.display_status
   || row?.watching_status
   || ''
 ).trim().toLowerCase();
+const centerSeasonResourceStatus = (row) => {
+  const code = centerStatusCode(row);
+  if (['consistent', 'completed', 'ongoing'].includes(code)) return code;
+  const label = centerStatusText(row);
+  if (/一致版/.test(label)) return 'consistent';
+  if (/已完结|完结/.test(label)) return 'completed';
+  if (/连载中|更新中|未完结/.test(label)) return 'ongoing';
+  return '';
+};
 const centerIsCompletedByServer = (row) => {
   if (!row || typeof row !== 'object' || centerSeasonIsSpecialNumber(row)) return false;
+  const resourceStatus = centerSeasonResourceStatus(row);
+  if (resourceStatus === 'consistent' || resourceStatus === 'completed') return true;
+  if (resourceStatus === 'ongoing') return false;
   const label = centerStatusText(row);
   const code = centerStatusCode(row);
   return Boolean(
@@ -1782,6 +1803,9 @@ const centerIsCompletedByServer = (row) => {
 };
 const centerIsOngoingHub = (row) => {
   if (!row || typeof row !== 'object' || centerIsSpecialSeason(row)) return false;
+  const resourceStatus = centerSeasonResourceStatus(row);
+  if (resourceStatus === 'ongoing') return true;
+  if (resourceStatus === 'consistent' || resourceStatus === 'completed') return false;
   if (centerIsCompletedByServer(row)) return false;
   const label = centerStatusText(row);
   const code = centerStatusCode(row);
@@ -2688,6 +2712,10 @@ const onCenterPosterError = (event) => {
 };
 const centerRibbonText = (row) => {
   if (isCenterReplenishRow(row)) return '待补充';
+  const resourceStatus = centerSeasonResourceStatus(row);
+  if (resourceStatus === 'consistent') return '一致版';
+  if (resourceStatus === 'completed') return '已完结';
+  if (resourceStatus === 'ongoing') return '连载中';
   if (isCenterCompletedCertified(row)) return '一致版';
   if (centerIsCompletedByServer(row)) return '已完结';
   if (centerIsOngoingHub(row)) return '连载中';
@@ -2695,6 +2723,10 @@ const centerRibbonText = (row) => {
 };
 const centerRibbonClass = (row) => {
   if (isCenterReplenishRow(row)) return 'center-ribbon-warning';
+  const resourceStatus = centerSeasonResourceStatus(row);
+  if (resourceStatus === 'consistent') return 'center-ribbon-green';
+  if (resourceStatus === 'completed') return 'center-ribbon-dark';
+  if (resourceStatus === 'ongoing') return 'center-ribbon-blue';
   if (isCenterCompletedCertified(row)) return 'center-ribbon-green';
   if (centerIsCompletedByServer(row)) return 'center-ribbon-dark';
   if (centerIsOngoingHub(row)) return 'center-ribbon-blue';
@@ -3271,10 +3303,10 @@ const normalizeCenterHomeSection = (section = {}, index = 0) => ({
     const value = String(section.order_by || 'pool_time').toLowerCase();
     return value === 'latest' ? 'pool_time' : (['pool_time', 'release_year', 'popular', 'size', 'name'].includes(value) ? value : 'pool_time');
   })(),
-  keyword: String(section.keyword || '').trim(),
-  tmdb_id: String(section.tmdb_id || '').trim(),
   genre_id: String(section.genre_id || '').trim(),
-  release_year: section.release_year ? Math.max(1900, Math.min(Number(section.release_year || 0), 2100)) : null,
+  tags: Array.isArray(section.tags)
+    ? section.tags.map(tag => String(tag || '').trim()).filter(Boolean)
+    : String(section.status || '').split(',').map(tag => String(tag || '').trim()).filter(tag => centerHomeTagOptions.some(opt => opt.value === tag)),
   limit: Math.max(1, Math.min(Number(section.limit || 10), 20)),
   enabled: section.enabled !== false,
 });
@@ -3301,7 +3333,7 @@ const saveCenterHomeSettings = async () => {
     applySharedConfig(res.data?.data || sharedConfigForm);
     message.success('列表设置已保存');
     showCenterHomeSettingsModal.value = false;
-    await resetCenterSources(true);
+    resetCenterSources(true).catch(e => message.error(e.response?.data?.message || '刷新中心资源库失败'));
   } catch (e) {
     message.error(e.response?.data?.message || '保存列表设置失败');
   } finally {
@@ -4169,7 +4201,7 @@ onUnmounted(() => {
 .center-home-setting-list { display: flex; flex-direction: column; gap: 8px; }
 .center-home-setting-item {
   display: grid;
-  grid-template-columns: 24px minmax(120px, 1.25fr) 96px 130px 86px 96px minmax(130px, 1fr) 82px 68px 32px;
+  grid-template-columns: 24px minmax(150px, 1.4fr) 96px 150px minmax(180px, 1.4fr) 96px 82px 68px 32px;
   gap: 8px;
   align-items: center;
   padding: 8px;
@@ -4181,8 +4213,7 @@ onUnmounted(() => {
 .center-home-setting-drag:active { cursor: grabbing; }
 .center-home-setting-title-input,
 .center-home-setting-select,
-.center-home-setting-year,
-.center-home-setting-keyword,
+.center-home-setting-tags,
 .center-home-setting-limit { min-width: 0; }
 .poster-wall-card {
   border-radius: calc(12px * var(--card-scale, 1)) !important;
@@ -4234,8 +4265,7 @@ onUnmounted(() => {
   }
   .center-home-setting-title-input,
   .center-home-setting-select,
-  .center-home-setting-year,
-  .center-home-setting-keyword,
+  .center-home-setting-tags,
   .center-home-setting-limit {
     grid-column: 2 / -1;
   }
