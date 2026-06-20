@@ -3668,6 +3668,57 @@ def _raw_batch_missing_for_files(files: List[Dict[str, Any]], uploaded_sha1s: Di
     return missing
 
 
+def _backfill_center_raw_repair_queue(limit: int = 200) -> Dict[str, Any]:
+    client = SharedCenterClient()
+    result = {'checked': 0, 'prepared': 0, 'uploaded': 0, 'failed': 0, 'missing_local': 0, 'errors': []}
+    try:
+        client.scan_raw_repair_queue(limit=200000)
+    except Exception as e:
+        result['scan_error'] = str(e)
+    try:
+        resp = client.my_raw_repair_queue(limit=limit) or {}
+    except Exception as e:
+        result['error'] = str(e)
+        return result
+
+    items = resp.get('items') or []
+    result['checked'] = len(items)
+    if not items:
+        return result
+
+    files = []
+    for item in items:
+        sha1 = _norm_sha1((item or {}).get('sha1'))
+        if not sha1:
+            continue
+        try:
+            cache = P115CacheManager.get_file_cache_by_sha1(sha1) or {}
+        except Exception as e:
+            result['errors'].append({'sha1': sha1, 'error': str(e)})
+            continue
+        if not cache:
+            result['missing_local'] += 1
+            continue
+        cache = dict(cache)
+        cache.setdefault('sha1', sha1)
+        cache.setdefault('file_name', cache.get('name') or sha1)
+        cache.setdefault('fid', cache.get('id') or '')
+        cache.setdefault('file_id', cache.get('id') or '')
+        cache.setdefault('pc', cache.get('pick_code') or '')
+        files.append(cache)
+
+    result['prepared'] = len(files)
+    if not files:
+        return result
+
+    uploaded = _upload_raw_batch(client, files)
+    result['uploaded'] = int(uploaded.get('uploaded_count') if uploaded.get('uploaded_count') is not None else uploaded.get('count') or 0)
+    errors = uploaded.get('errors') or []
+    result['failed'] = len(errors)
+    result['errors'].extend(errors[:20])
+    return result
+
+
 def _files_missing_pick_code(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     missing = []
     for f in files or []:
@@ -7175,6 +7226,11 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
         parts.append(f"海报元数据补齐={display_meta.get('uploaded_meta_items', 0)}/{display_meta.get('prepared_meta_items', 0)}")
         if display_meta.get('errors'):
             parts.append(f"元数据补齐失败={len(display_meta.get('errors') or [])}")
+    raw_repair = result.get('raw_repair_backfill') if isinstance(result.get('raw_repair_backfill'), dict) else {}
+    if raw_repair:
+        parts.append(f"残缺RAW补齐={raw_repair.get('uploaded', 0)}/{raw_repair.get('checked', 0)}")
+        if raw_repair.get('missing_local'):
+            parts.append(f"本地缺失RAW={raw_repair.get('missing_local')}")
     share_repair = result.get('logical_season_share_repair') if isinstance(result.get('logical_season_share_repair'), dict) else {}
     if share_repair:
         parts.append(f"分享回填={share_repair.get('backfilled', 0)}/{share_repair.get('missing_share_code', 0)}")
@@ -7189,7 +7245,7 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
             parts.append(f"分享全量对账跳过={share_reconcile.get('message')}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
-    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'display_meta_backfill_error', 'logical_season_share_repair_error', 'credit_error'):
+    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'display_meta_backfill_error', 'raw_repair_backfill_error', 'logical_season_share_repair_error', 'credit_error'):
         if result.get(key):
             parts.append(f"{key}={result.get(key)}")
     return '，'.join(parts)
@@ -7221,6 +7277,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['display_meta_backfill'] = _backfill_center_display_metadata(limit=3000)
     except Exception as e:
         result['display_meta_backfill_error'] = str(e)
+    try:
+        result['raw_repair_backfill'] = _backfill_center_raw_repair_queue(limit=200)
+    except Exception as e:
+        result['raw_repair_backfill_error'] = str(e)
     try:
         result['logical_season_share_repair'] = repair_logical_season_share_channels_from_115(max_pages=20, dry_run=False)
     except Exception as e:

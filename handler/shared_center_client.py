@@ -597,6 +597,12 @@ class SharedCenterClient:
     def raw_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
         return self._post('/api/v1/rawffprobe/batch', {'sha1_list': list(sha1_list or [])}, timeout=25)
 
+    def scan_raw_repair_queue(self, limit: int = 200000) -> Dict[str, Any]:
+        return self._post('/api/v1/rawffprobe/repair-queue/scan', {'limit': int(limit or 200000)}, timeout=30)
+
+    def my_raw_repair_queue(self, limit: int = 200) -> Dict[str, Any]:
+        return self._get('/api/v1/rawffprobe/repair-queue/mine', {'limit': int(limit or 200)}, timeout=25)
+
     def get_raw_ffprobe(self, sha1: str) -> Dict[str, Any]:
         return self._get(f"/api/v1/rawffprobe/{urllib.parse.quote(str(sha1 or '').strip())}", timeout=25)
 
