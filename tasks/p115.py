@@ -934,223 +934,6 @@ def task_scan_and_organize_115(processor=None):
         logger.error(f"  ➜ 115 扫描任务异常: {e}", exc_info=True)
         update_progress(100, f"扫描异常结束: {e}")
 
-def task_move_root_files_to_115_inbox(processor=None):
-    """把 115 根目录里的幽灵媒体文件移回待整理目录。"""
-    logger.info("=== 开始修复 115 根目录异常文件 ===")
-
-    try:
-        import task_manager
-    except ImportError:
-        task_manager = None
-
-    def update_progress(prog, msg):
-        if task_manager:
-            task_manager.update_status_from_thread(prog, msg)
-        logger.info(msg)
-
-    config = get_config()
-    save_cid = str(config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID) or '').strip()
-    save_name = str(config.get(constants.CONFIG_OPTION_115_SAVE_PATH_NAME) or '待整理').strip()
-    if not save_cid or save_cid == '0':
-        update_progress(100, "  ➜ 未配置 115 待整理目录，无法移动根目录异常文件。")
-        return
-
-    client = P115Service.get_client()
-    if not client:
-        update_progress(100, "  ➜ 无法初始化 115 客户端。")
-        return
-
-    configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
-    allowed_exts = {str(e).lower().lstrip('.') for e in configured_exts if str(e).strip()}
-    if not allowed_exts:
-        allowed_exts = KNOWN_VIDEO_EXTS | {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
-
-    def first_present(*values):
-        for value in values:
-            if value is not None and str(value).strip() != '':
-                return value
-        return None
-
-    def node_id(node):
-        if not isinstance(node, dict):
-            return ''
-        return str(
-            node.get('id') or node.get('cid') or node.get('file_id') or
-            node.get('fid') or node.get('parent_id') or ''
-        ).strip()
-
-    def path_contains_cid(path_nodes, target_cid):
-        if not isinstance(path_nodes, (list, tuple)):
-            return None
-        if not path_nodes:
-            return None
-        target = str(target_cid or '').strip()
-        if not target:
-            return None
-        return any(node_id(node) == target for node in path_nodes)
-
-    def collect_if_root_file(item, source_name):
-        item_id = first_present(item.get('fid'), item.get('file_id'), item.get('id'))
-        name = first_present(item.get('fn'), item.get('n'), item.get('file_name'), item.get('name')) or ''
-        fc_val = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-        is_folder = fc_val == '0'
-        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
-        if not item_id or is_folder or ext not in allowed_exts:
-            return
-        if str(item_id) in root_file_id_set:
-            return
-        root_file_id_set.add(str(item_id))
-        root_file_ids.append(str(item_id))
-        root_file_names.append(str(name))
-        logger.warning(f"  ➜ [根目录修复] 发现根目录异常文件：{name}，来源={source_name}")
-
-    parent_path_cache = {}
-
-    def parent_path_points_to_target(pid, target_cid):
-        pid = str(pid or '').strip()
-        if not pid or pid == '0':
-            return False
-        cache_key = (pid, str(target_cid))
-        if cache_key in parent_path_cache:
-            return parent_path_cache[cache_key]
-        try:
-            dir_info = client.fs_files({'cid': pid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-            if not dir_info.get('state') and (dir_info.get('code') or dir_info.get('error') or dir_info.get('error_msg')):
-                parent_path_cache[cache_key] = False
-                return False
-            contains = path_contains_cid(dir_info.get('path'), target_cid)
-            parent_path_cache[cache_key] = contains
-            return parent_path_cache[cache_key]
-        except Exception as e:
-            logger.debug(f"  ➜ [根目录修复] 查询父目录路径失败：pid={pid}，err={e}")
-            parent_path_cache[cache_key] = None
-            return None
-
-    def collect_if_path_anomaly(item, target_cid, category_name):
-        pid = first_present(item.get('pid'), item.get('cid'), item.get('parent_id'))
-        pid_text = str(pid).strip() if pid is not None else ''
-        if pid_text == '0':
-            collect_if_root_file(item, f"{category_name} / 父目录为根目录")
-            return
-
-        item_path = item.get('ancestors') or item.get('paths') or item.get('path')
-        item_path_contains = path_contains_cid(item_path, target_cid)
-        if item_path_contains is False:
-            collect_if_root_file(item, f"{category_name} / 文件路径链不在分类目录")
-            return
-
-        parent_path_contains = parent_path_points_to_target(pid_text, target_cid) if pid_text and item_path_contains is None else None
-        if parent_path_contains is False:
-            collect_if_root_file(item, f"{category_name} / 父目录路径链断裂")
-        elif pid_text and item_path_contains is None and parent_path_contains is None:
-            logger.debug(f"  ➜ [根目录修复] 无法确认文件路径异常，跳过移动：pid={pid_text}")
-
-    update_progress(5, "  ➜ 正在扫描 115 根目录一级文件...")
-    root_file_ids = []
-    root_file_id_set = set()
-    root_file_names = []
-    offset = 0
-    limit = 1000
-    while True:
-        if processor and getattr(processor, 'is_stop_requested', lambda: False)():
-            update_progress(100, "  ➜ 用户已中止根目录异常文件修复。")
-            return
-
-        res = client.fs_files({'cid': 0, 'limit': limit, 'offset': offset, 'record_open_time': 0, 'count_folders': 0})
-        if not res.get('state') and res.get('code'):
-            update_progress(100, f"  ➜ 拉取 115 根目录失败：{res}")
-            return
-
-        data = res.get('data') or []
-        if not data:
-            break
-
-        for item in data:
-            collect_if_root_file(item, "根目录一级列表")
-
-        if len(data) < limit:
-            break
-        offset += limit
-
-    raw_rules = settings_db.get_setting('p115_sorting_rules')
-    rules = json.loads(raw_rules) if raw_rules and isinstance(raw_rules, str) else (raw_rules or [])
-    target_dirs = []
-    for rule in rules:
-        if not isinstance(rule, dict):
-            continue
-        cid = str(rule.get('cid') or '').strip()
-        if rule.get('enabled', True) and cid and cid not in ('0', save_cid):
-            target_dirs.append((cid, rule.get('category_path') or rule.get('dir_name') or f"CID:{cid}"))
-
-    fetch_types = []
-    if allowed_exts & KNOWN_VIDEO_EXTS:
-        fetch_types.append((4, "视频"))
-    if allowed_exts & {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}:
-        fetch_types.append((1, "字幕"))
-
-    if target_dirs and fetch_types:
-        update_progress(15, f"  ➜ 正在从 {len(target_dirs)} 个分类目录递归查找根目录幽灵文件...")
-    for idx, (target_cid, category_name) in enumerate(target_dirs):
-        if processor and getattr(processor, 'is_stop_requested', lambda: False)():
-            update_progress(100, "  ➜ 用户已中止根目录异常文件修复。")
-            return
-        base_prog = 15 + int((idx / max(len(target_dirs), 1)) * 25)
-        for f_type, type_name in fetch_types:
-            offset = 0
-            while True:
-                try:
-                    res = client.fs_files({
-                        'cid': target_cid,
-                        'type': f_type,
-                        'limit': limit,
-                        'offset': offset,
-                        'record_open_time': 0,
-                    })
-                except Exception as e:
-                    logger.warning(f"  ➜ [根目录修复] 递归扫描失败：{category_name} / {type_name}，err={e}")
-                    break
-
-                data = res.get('data') or []
-                if not data:
-                    break
-
-                for item in data:
-                    collect_if_path_anomaly(item, target_cid, category_name)
-
-                if len(data) < limit:
-                    break
-                offset += limit
-        update_progress(base_prog, f"  ➜ 已检查分类目录：{category_name}")
-
-    if not root_file_ids:
-        update_progress(100, "  ➜ 没有发现需要移动的 115 根目录异常媒体文件。")
-        return
-
-    update_progress(40, f"  ➜ 发现 {len(root_file_ids)} 个根目录媒体文件，准备移动到 [{save_name}]。")
-    moved_ids = []
-    failed_batches = 0
-    batch_size = 100
-    for start in range(0, len(root_file_ids), batch_size):
-        batch = root_file_ids[start:start + batch_size]
-        try:
-            resp = client.fs_move(batch, save_cid)
-            if resp.get('state'):
-                moved_ids.extend(batch)
-            else:
-                failed_batches += 1
-                logger.warning(f"  ➜ [根目录修复] 移动失败：{resp}")
-        except Exception as e:
-            failed_batches += 1
-            logger.warning(f"  ➜ [根目录修复] 移动异常：{e}")
-
-    sample_names = "、".join(root_file_names[:3])
-    if len(root_file_names) > 3:
-        sample_names += " ..."
-    update_progress(
-        100,
-        f"  ➜ 根目录异常文件修复完成：移动 {len(moved_ids)} 个，失败批次 {failed_batches} 个。示例：{sample_names}"
-    )
-
 def task_sync_115_directory_tree(processor=None):
     """
     主动同步 115 分类目录下的所有子目录到本地 DB 缓存。
@@ -1296,6 +1079,8 @@ def task_full_sync_strm_and_subs(processor=None):
     config = get_config()
     download_subs = config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True)
     enable_cleanup = config.get(constants.CONFIG_OPTION_115_LOCAL_CLEANUP, False)
+    save_cid = str(config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID) or '').strip()
+    save_name = str(config.get(constants.CONFIG_OPTION_115_SAVE_PATH_NAME) or '待整理').strip()
     min_size_mb = int(config.get(constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE, 10))
     MIN_VIDEO_SIZE = min_size_mb * 1024 * 1024
     
@@ -1385,6 +1170,10 @@ def task_full_sync_strm_and_subs(processor=None):
         successful_target_cids = set()
         remote_dir_local_path = {}
         remote_dir_cache_rows = {}
+        path_anomaly_file_ids = []
+        path_anomaly_file_id_set = set()
+        path_anomaly_names = []
+        path_anomaly_move_failed = 0
 
         def first_present(*values):
             for value in values:
@@ -1503,6 +1292,52 @@ def task_full_sync_strm_and_subs(processor=None):
 
             return None
 
+        def queue_path_anomaly_file(fid, name, reason):
+            fid = str(fid or '').strip()
+            if not fid:
+                logger.warning(
+                    f"  ➜ [全量同步] 发现无法推导路径的 115 文件，但缺少 fid，无法自动移动：{name or '-'}，原因={reason}"
+                )
+                return False
+            if fid in path_anomaly_file_id_set:
+                return False
+            path_anomaly_file_id_set.add(fid)
+            path_anomaly_file_ids.append(fid)
+            path_anomaly_names.append(str(name or fid))
+            remote_file_ids.discard(fid)
+            logger.warning(
+                f"  ➜ [全量同步] 发现无法推导路径的 115 文件，已加入待整理移动队列：{name or fid}，原因={reason}"
+            )
+            return True
+
+        def move_path_anomaly_files_to_inbox():
+            nonlocal path_anomaly_move_failed
+            if not path_anomaly_file_ids:
+                return 0
+            if not save_cid or save_cid == '0':
+                logger.warning(
+                    f"  ➜ [全量同步] 已发现 {len(path_anomaly_file_ids)} 个无法推导路径的 115 文件，"
+                    "但未配置待整理目录 CID，无法自动移动。"
+                )
+                return 0
+
+            moved_count = 0
+            batch_size = 100
+            update_progress(88, f"  ➜ 正在把 {len(path_anomaly_file_ids)} 个路径异常文件移动到 [{save_name}]...")
+            for start in range(0, len(path_anomaly_file_ids), batch_size):
+                batch = path_anomaly_file_ids[start:start + batch_size]
+                try:
+                    resp = client.fs_move(batch, save_cid)
+                    if resp.get('state'):
+                        moved_count += len(batch)
+                    else:
+                        path_anomaly_move_failed += len(batch)
+                        logger.warning(f"  ➜ [全量同步] 路径异常文件移动失败：{resp}")
+                except Exception as e:
+                    path_anomaly_move_failed += len(batch)
+                    logger.warning(f"  ➜ [全量同步] 路径异常文件移动异常：{e}")
+            return moved_count
+
         def process_full_sync_items(items, target_cid, category_name):
             nonlocal files_generated, subs_downloaded, root_anomaly_skipped
             for item in items:
@@ -1526,19 +1361,15 @@ def task_full_sync_strm_and_subs(processor=None):
                 if not pid_text:
                     continue
                 if pid_text == '0' and not item.get('_etk_rel_dir'):
-                    root_anomaly_skipped += 1
                     fid = first_present(item.get('fid'), item.get('file_id'), item.get('id'))
-                    logger.warning(
-                        "  ➜ [全量同步] 跳过 115 根目录异常文件：%s（fid=%s，pc=%s）。请在 115 网盘手动删除或重新移动。",
-                        name,
-                        fid or '-',
-                        str(pc)[:8] if pc else '-',
-                    )
+                    if queue_path_anomaly_file(fid, name, "父目录为根目录"):
+                        root_anomaly_skipped += 1
                     continue
 
                 rel_dir = item.get('_etk_rel_dir') or ancestor_rel_dir or resolve_local_dir(pid, target_cid)
                 if not rel_dir:
-                    logger.warning(f"  ➜ 彻底无法推导路径，跳过文件: {name} (pid: {pid})")
+                    if queue_path_anomaly_file(fid, name, f"无法推导本地路径(pid={pid})"):
+                        root_anomaly_skipped += 1
                     continue
 
                 current_local_path = os.path.join(local_root, rel_dir)
@@ -1800,10 +1631,14 @@ def task_full_sync_strm_and_subs(processor=None):
                 successful_target_cids.add(target_cid)
 
         logger.info(f"  ➜ 增量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
+        moved_path_anomaly_count = move_path_anomaly_files_to_inbox()
         if root_anomaly_skipped:
+            sample_names = "、".join(path_anomaly_names[:3])
+            if len(path_anomaly_names) > 3:
+                sample_names += " ..."
             logger.warning(
-                "  ➜ [全量同步] 已跳过 %s 个 115 根目录异常文件，未生成 STRM，也未写入本地缓存。",
-                root_anomaly_skipped,
+                f"  ➜ [全量同步] 已处理 {root_anomaly_skipped} 个 115 路径异常文件："
+                f"移动到 [{save_name}] {moved_path_anomaly_count} 个，失败 {path_anomaly_move_failed} 个。示例：{sample_names}"
             )
 
         # =================================================================

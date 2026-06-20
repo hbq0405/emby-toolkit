@@ -25,7 +25,7 @@ from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
 from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
-from .p115 import task_scan_and_organize_115, task_move_root_files_to_115_inbox, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events, task_recalculate_library_washing_priorities, task_manual_correct_organize_records
+from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events, task_recalculate_library_washing_priorities, task_manual_correct_organize_records
 from .hdhive import task_hdhive_auto_checkin
 from .shared_resource_tasks import task_shared_resource_maintenance, share_all_library, task_shared_share_status_sync_high_freq
 
@@ -50,7 +50,6 @@ TASK_HELP_TEXTS = {
     'refresh_completed_series': '刷新完结剧集状态和季集信息，补充图片和元数据，以及订阅新季。',
     'scan-monitor-folders': '扫描配置的监控目录，发现新增媒体文件后进入识别、整理或入库流程，适合查漏补缺。',
     'scan-organize-115': '扫描 115 网盘待整理目录，并按规则识别、整理、生成记录，适合新增资源后手动触发。',
-    'move-root-files-to-115-inbox': '把 115 根目录异常媒体文件移动到待整理目录，用于修复 115 偶发的位置异常；只移动，不触发整理。',
     'full-sync-strm': '全量重建 STRM 与字幕文件，保持网盘和本地一致，适合媒体库重建或迁移时使用。',
     'monitor-115-life-events': '增量处理 115 网盘文件变化，功能较弱，不熟悉不建议使用。',
     'backup-mediainfo': '备份本地媒体信息缓存，避免重建库或迁移后丢失媒体参数。',
@@ -332,7 +331,6 @@ def get_task_registry(context: str = 'all'):
         'share-all-library': (share_all_library, "一键登记媒体库", 'media', False),
         'recalculate_library_washing_priorities': (task_recalculate_library_washing_priorities, "重新计算洗版优先级", 'media', False),
         'manual-correct-organize-records': (task_manual_correct_organize_records, "手动重组整理记录", 'media', False),
-        'move-root-files-to-115-inbox': (task_move_root_files_to_115_inbox, "移动115幽灵文件到待整理", 'media', False),
         # 系统硬编码后台任务：False = 前端不可见/不可编排，执行周期由 scheduler_manager.py 固定控制。
         'shared-share-status-sync': (task_shared_share_status_sync_high_freq, "共享分享状态同步", 'media', False),
     }
