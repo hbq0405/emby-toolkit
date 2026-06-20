@@ -18,7 +18,7 @@ import config_manager
 from extensions import admin_required
 from database import shared_credit_db, shared_share_db, settings_db
 from database.connection import get_db_connection
-from handler.shared_center_client import SharedCenterClient
+from handler.shared_center_client import SharedCenterClient, _current_server_id_hash
 from handler.shared_subscription_service import consume_device_event
 from handler import tmdb as tmdb_handler
 import tasks.shared_resource_tasks as shared_tasks
@@ -1720,7 +1720,8 @@ def api_center_sources_home():
             False,
         )
         home_sections = _shared_resource_config_payload().get('p115_shared_center_home_sections') or []
-        cache_key = (client.base_url, client.device_token, limit_per_section, json.dumps(home_sections, sort_keys=True, ensure_ascii=False))
+        identity_key = _current_server_id_hash() or client.device_token
+        cache_key = (client.base_url, identity_key, limit_per_section, json.dumps(home_sections, sort_keys=True, ensure_ascii=False))
         if not force_refresh:
             cached = _center_home_proxy_cache_get(cache_key)
             if cached:
