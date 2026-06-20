@@ -90,6 +90,10 @@
                 <template #prefix><n-icon :component="SearchIcon" /></template>
               </n-input>
               <n-button type="primary" :loading="centerLoading" @click="resetCenterSources()">查询中心</n-button>
+              <n-button v-if="centerHomeMode" secondary @click="openCenterHomeSettingsModal">
+                <template #icon><n-icon :component="SettingsIcon" /></template>
+                列表设置
+              </n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
             <n-spin :show="centerLoading && !centerAppendLoading">
@@ -97,10 +101,6 @@
                 <div v-for="section in centerHomeSections" :key="section.key" class="center-home-section">
                   <div class="center-home-section-head">
                     <div class="center-home-section-title">{{ section.title }}</div>
-                    <n-space size="small">
-                      <n-button size="tiny" quaternary :disabled="centerHomeSectionIndex(section.key) <= 0" @click.stop="moveCenterHomeSection(section.key, -1)">上移</n-button>
-                      <n-button size="tiny" quaternary :disabled="centerHomeSectionIndex(section.key) >= centerHomeSections.length - 1" @click.stop="moveCenterHomeSection(section.key, 1)">下移</n-button>
-                    </n-space>
                   </div>
                   <div class="center-card-grid">
                     <div
@@ -282,6 +282,47 @@
       </template>
     </n-modal>
 
+    <n-modal v-model:show="showCenterHomeSettingsModal" preset="card" title="中心资源库列表设置" style="width: 860px; max-width: 96vw;" class="custom-modal glass-modal">
+      <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+        列表配置会保存到共享资源配置库；拖动调整顺序，关闭后中心端不会查询该列表。状态/标签支持逗号分隔：alive、available、clean_version、short_drama、animation、completed_certified。
+      </n-alert>
+      <draggable
+        v-model="centerHomeSettingSections"
+        item-key="key"
+        handle=".center-home-setting-drag"
+        animation="180"
+        class="center-home-setting-list"
+      >
+        <template #item="{ element, index }">
+          <div class="center-home-setting-item">
+            <n-icon class="center-home-setting-drag" :component="MenuIcon" size="18" />
+            <n-input v-model:value="element.title" size="small" placeholder="列表标题" class="center-home-setting-title-input" />
+            <n-select v-model:value="element.display_type" size="small" :options="centerHomeDisplayTypeOptions" class="center-home-setting-select" />
+            <n-select v-model:value="element.order_by" size="small" :options="centerHomeOrderOptions" class="center-home-setting-select" />
+            <n-input v-model:value="element.status" size="small" placeholder="状态/标签" class="center-home-setting-status" />
+            <n-input v-model:value="element.keyword" size="small" placeholder="关键词" class="center-home-setting-keyword" />
+            <n-select v-model:value="element.limit" size="small" :options="centerHomeLimitOptions" class="center-home-setting-limit" />
+            <n-switch v-model:value="element.enabled" size="small">
+              <template #checked>显示</template>
+              <template #unchecked>隐藏</template>
+            </n-switch>
+            <n-button size="tiny" quaternary circle type="error" @click="removeCenterHomeSettingSection(index)">
+              <template #icon><n-icon :component="CancelIcon" /></template>
+            </n-button>
+          </div>
+        </template>
+      </draggable>
+      <template #footer>
+        <n-space justify="space-between">
+          <n-button secondary @click="addCenterHomeSettingSection">新增列表</n-button>
+          <n-space>
+            <n-button @click="showCenterHomeSettingsModal = false">取消</n-button>
+            <n-button type="primary" :loading="sharedConfigSaving" @click="saveCenterHomeSettings">保存</n-button>
+          </n-space>
+        </n-space>
+      </template>
+    </n-modal>
+
     <n-modal v-model:show="showManualShareModal" preset="card" :title="manualShareModalTitle" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
       <n-alert v-if="activeCenterReplenishSource" type="success" :bordered="false" style="margin-bottom: 12px;">
         正在补充中心待补充资源：{{ appendYear(centerTitleText(activeCenterReplenishSource), activeCenterReplenishSource.release_year) }}。系统已按中心 SHA1 精确匹配本机完全相同资源，并自动填入下方手动共享表单；确认无误后点击“登记共享源”。
@@ -434,6 +475,7 @@
 <script setup>
 import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import axios from 'axios';
+import draggable from 'vuedraggable';
 import {
   NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
   NInputGroup, NModal, NSelect, NSpace, NSpin, NSwitch,
@@ -444,6 +486,7 @@ import {
   SearchOutline as SearchIcon,
   SyncOutline as SyncIcon,
   SettingsOutline as SettingsIcon,
+  MenuOutline as MenuIcon,
   ShareSocialOutline as ShareIcon,
   CloseCircleOutline as CancelIcon
 } from '@vicons/ionicons5';
@@ -482,6 +525,7 @@ const sharedConfigForm = reactive({
   p115_shared_block_clean_version_transfer: false,
   p115_shared_block_short_drama_transfer: false,
   p115_shared_auto_share_requests_enabled: false,
+  p115_shared_center_home_sections: [],
 });
 const showManualShareModal = ref(false);
 const showShareRequestModal = ref(false);
@@ -498,7 +542,14 @@ const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
 const centerHomeSections = ref([]);
-const CENTER_HOME_SECTION_ORDER_KEY = 'etk.center.home.section.order.v1';
+const CENTER_HOME_SECTION_DEFAULTS = [
+  { key: 'latest', title: '最新资源', display_type: 'all', order_by: 'latest', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
+  { key: 'popular', title: '热门共享', display_type: 'all', order_by: 'popular', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
+  { key: 'movies', title: '电影', display_type: 'movie', order_by: 'latest', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
+  { key: 'series', title: '剧集', display_type: 'tv', order_by: 'latest', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
+];
+const showCenterHomeSettingsModal = ref(false);
+const centerHomeSettingSections = ref([]);
 const centerBackendGrouped = ref(false);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
@@ -648,6 +699,18 @@ const shareTypeOptions = [
   { label: '剧集资源', value: 'season_pack' },
   { label: '分集资源', value: 'episode_file' },
 ];
+const centerHomeDisplayTypeOptions = [
+  { label: '全部', value: 'all' },
+  { label: '电影', value: 'movie' },
+  { label: '剧集', value: 'tv' },
+];
+const centerHomeOrderOptions = [
+  { label: '最新', value: 'latest' },
+  { label: '热门', value: 'popular' },
+  { label: '体积', value: 'size' },
+  { label: '名称', value: 'name' },
+];
+const centerHomeLimitOptions = [6, 8, 10, 12, 16, 20].map(value => ({ label: `${value} 个`, value }));
 const resourceTypeLabel = (value) => ({
   movie_file: '电影', movie_folder: '电影', Movie: '电影', movie: '电影', movies: '电影',
   season_pack: '剧集资源', series_pack: '全剧包', Season: '季入口', Series: '全剧包', season: '季入口', series: '全剧包', Pack: '季入口', pack: '季入口',
@@ -3131,6 +3194,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
     p115_shared_block_short_drama_transfer: Boolean(data.p115_shared_block_short_drama_transfer),
     p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
+    p115_shared_center_home_sections: normalizeCenterHomeSections(data.p115_shared_center_home_sections),
   });
 };
 
@@ -3169,40 +3233,46 @@ const saveSharedConfig = async () => {
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
-const centerHomeSectionOrder = () => {
+const normalizeCenterHomeSection = (section = {}, index = 0) => ({
+  key: String(section.key || `custom_${Date.now()}_${index}`).trim() || `custom_${Date.now()}_${index}`,
+  title: String(section.title || '自定义列表').trim() || '自定义列表',
+  display_type: ['all', 'movie', 'tv', 'series', 'season', 'pack'].includes(String(section.display_type || '').toLowerCase()) ? String(section.display_type).toLowerCase() : 'all',
+  order_by: ['latest', 'popular', 'size', 'name'].includes(String(section.order_by || '').toLowerCase()) ? String(section.order_by).toLowerCase() : 'latest',
+  status: String(section.status || 'alive,available').trim() || 'alive,available',
+  keyword: String(section.keyword || '').trim(),
+  tmdb_id: String(section.tmdb_id || '').trim(),
+  limit: Math.max(1, Math.min(Number(section.limit || 10), 20)),
+  enabled: section.enabled !== false,
+});
+const normalizeCenterHomeSections = (sections) => {
+  const list = Array.isArray(sections) && sections.length ? sections : CENTER_HOME_SECTION_DEFAULTS;
+  return list.map((section, index) => normalizeCenterHomeSection(section, index));
+};
+const openCenterHomeSettingsModal = async () => {
+  await loadSharedConfig();
+  centerHomeSettingSections.value = normalizeCenterHomeSections(sharedConfigForm.p115_shared_center_home_sections).map(section => ({ ...section }));
+  showCenterHomeSettingsModal.value = true;
+};
+const addCenterHomeSettingSection = () => {
+  centerHomeSettingSections.value.push(normalizeCenterHomeSection({ key: `custom_${Date.now()}`, title: '自定义列表' }, centerHomeSettingSections.value.length));
+};
+const removeCenterHomeSettingSection = (index) => {
+  centerHomeSettingSections.value.splice(index, 1);
+};
+const saveCenterHomeSettings = async () => {
+  sharedConfigSaving.value = true;
   try {
-    const parsed = JSON.parse(localStorage.getItem(CENTER_HOME_SECTION_ORDER_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : [];
-  } catch (_) {
-    return [];
+    sharedConfigForm.p115_shared_center_home_sections = normalizeCenterHomeSections(centerHomeSettingSections.value);
+    const res = await axios.post('/api/shared/resources/config', { ...sharedConfigForm });
+    applySharedConfig(res.data?.data || sharedConfigForm);
+    message.success('列表设置已保存');
+    showCenterHomeSettingsModal.value = false;
+    await resetCenterSources(true);
+  } catch (e) {
+    message.error(e.response?.data?.message || '保存列表设置失败');
+  } finally {
+    sharedConfigSaving.value = false;
   }
-};
-const saveCenterHomeSectionOrder = () => {
-  try {
-    localStorage.setItem(CENTER_HOME_SECTION_ORDER_KEY, JSON.stringify(centerHomeSections.value.map(s => String(s?.key || '')).filter(Boolean)));
-  } catch (_) {}
-};
-const applyCenterHomeSectionOrder = (sections = []) => {
-  const list = Array.isArray(sections) ? [...sections] : [];
-  const order = centerHomeSectionOrder();
-  if (!order.length) return list;
-  const index = new Map(order.map((key, i) => [key, i]));
-  return list.sort((a, b) => {
-    const ai = index.has(String(a?.key || '')) ? index.get(String(a?.key || '')) : Number.MAX_SAFE_INTEGER;
-    const bi = index.has(String(b?.key || '')) ? index.get(String(b?.key || '')) : Number.MAX_SAFE_INTEGER;
-    return ai - bi;
-  });
-};
-const centerHomeSectionIndex = (key) => centerHomeSections.value.findIndex(section => String(section?.key || '') === String(key || ''));
-const moveCenterHomeSection = (key, delta) => {
-  const idx = centerHomeSectionIndex(key);
-  const next = idx + delta;
-  if (idx < 0 || next < 0 || next >= centerHomeSections.value.length) return;
-  const list = [...centerHomeSections.value];
-  const [item] = list.splice(idx, 1);
-  list.splice(next, 0, item);
-  centerHomeSections.value = list;
-  saveCenterHomeSectionOrder();
 };
 const loadCenterSources = async (forceRefresh = false, append = false) => {
   if (append) centerAppendLoading.value = true;
@@ -3218,7 +3288,7 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
       const params = { limit_per_section: 10 };
       if (forceRefresh) params.force_refresh = 1;
       const res = await axios.get('/api/shared/resources/center/sources/home', { params });
-      centerHomeSections.value = applyCenterHomeSectionOrder(Array.isArray(res.data?.sections) ? res.data.sections : []);
+      centerHomeSections.value = Array.isArray(res.data?.sections) ? res.data.sections : [];
       centerSources.value = [];
       centerBackendGrouped.value = true;
       centerPagination.itemCount = Number(res.data?.total || 0);
@@ -4062,6 +4132,24 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
 }
+.center-home-setting-list { display: flex; flex-direction: column; gap: 8px; }
+.center-home-setting-item {
+  display: grid;
+  grid-template-columns: 24px minmax(120px, 1.4fr) 110px 96px minmax(130px, 1.2fr) minmax(110px, 1fr) 82px 68px 32px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid rgba(128,128,128,.18);
+  border-radius: 8px;
+  background: rgba(128,128,128,.055);
+}
+.center-home-setting-drag { cursor: grab; color: var(--n-text-color-3, rgba(128,128,128,.72)); }
+.center-home-setting-drag:active { cursor: grabbing; }
+.center-home-setting-title-input,
+.center-home-setting-select,
+.center-home-setting-status,
+.center-home-setting-keyword,
+.center-home-setting-limit { min-width: 0; }
 .poster-wall-card {
   border-radius: calc(12px * var(--card-scale, 1)) !important;
   background: rgba(9, 16, 42, .78) !important;
@@ -4106,6 +4194,18 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
+@media (max-width: 768px) {
+  .center-home-setting-item {
+    grid-template-columns: 24px 1fr auto;
+  }
+  .center-home-setting-title-input,
+  .center-home-setting-select,
+  .center-home-setting-status,
+  .center-home-setting-keyword,
+  .center-home-setting-limit {
+    grid-column: 2 / -1;
+  }
+}
 
 .share-request-grid {
   box-sizing: border-box;

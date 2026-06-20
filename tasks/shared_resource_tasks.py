@@ -2915,7 +2915,52 @@ def _raw_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
         etk_obj = raw_obj.get('_etk') if isinstance(raw_obj, dict) and isinstance(raw_obj.get('_etk'), dict) else {}
         return bool(str(etk_obj.get('tmdb_id') or '').strip() and str(etk_obj.get('type') or '').strip())
 
+    def _probe_missing_raw() -> Dict[str, Any]:
+        pick_code = str(
+            file_info.get('pick_code') or file_info.get('pickcode') or file_info.get('pc') or ''
+        ).strip()
+        if not pick_code:
+            return {}
+        try:
+            from handler.p115_media_analyzer import P115MediaAnalyzerMixin
+            from handler.p115_service import P115CacheManager, P115Service
+            analyzer = P115MediaAnalyzerMixin()
+            analyzer.client = P115Service.get_client()
+            if not analyzer.client:
+                return {}
+            probe_file = {
+                **dict(file_info or {}),
+                'sha1': sha1,
+                'pc': pick_code,
+                'pick_code': pick_code,
+                'file_name': file_info.get('file_name') or file_info.get('name') or sha1,
+                'n': file_info.get('name') or file_info.get('file_name') or sha1,
+            }
+            result = analyzer._probe_mediainfo_with_ffprobe(probe_file, sha1=sha1, silent_log=True)
+            if not result:
+                return {}
+            emby_json, raw_probe = result if isinstance(result, tuple) else (result, None)
+            if not isinstance(raw_probe, dict) or not raw_probe:
+                return {}
+            P115CacheManager.save_mediainfo_cache(sha1, emby_json if isinstance(emby_json, dict) else {}, raw_probe, file_info=probe_file)
+            logger.info(
+                "  ➜ [共享资源] 已自动补齐缺失 RAW：%s",
+                file_info.get('file_name') or file_info.get('name') or sha1,
+            )
+            return raw_probe
+        except Exception as e:
+            logger.warning(
+                "  ➜ [共享资源] 自动补齐 RAW 失败：%s，err=%s",
+                file_info.get('file_name') or file_info.get('name') or sha1,
+                e,
+            )
+            return {}
+
     raw = _read_raw()
+    if not raw:
+        raw = _probe_missing_raw()
+        if raw:
+            raw = _read_raw() or raw
     if raw and not _has_required_etk(raw):
         try:
             from handler.p115_service import P115CacheManager

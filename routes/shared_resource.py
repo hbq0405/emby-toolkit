@@ -102,6 +102,7 @@ def _shared_resource_config_payload() -> Dict[str, Any]:
     payload.setdefault('p115_shared_block_clean_version_transfer', False)
     payload.setdefault('p115_shared_block_short_drama_transfer', False)
     payload.setdefault('p115_shared_auto_share_requests_enabled', False)
+    payload.setdefault('p115_shared_center_home_sections', [])
     return payload
 
 
@@ -116,6 +117,8 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data['p115_shared_block_clean_version_transfer'] = _boolish(data.get('p115_shared_block_clean_version_transfer'), False)
     data['p115_shared_block_short_drama_transfer'] = _boolish(data.get('p115_shared_block_short_drama_transfer'), False)
     data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
+    sections = data.get('p115_shared_center_home_sections')
+    data['p115_shared_center_home_sections'] = sections if isinstance(sections, list) else []
     install_id = str(data.get('p115_shared_install_id') or '').strip()
     data['p115_shared_install_id'] = install_id
     return settings_db.save_shared_resource_config(data)
@@ -1689,13 +1692,18 @@ def api_center_sources_home():
             request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
             False,
         )
-        cache_key = (client.base_url, client.device_token, limit_per_section)
+        home_sections = _shared_resource_config_payload().get('p115_shared_center_home_sections') or []
+        cache_key = (client.base_url, client.device_token, json.dumps(home_sections, sort_keys=True, ensure_ascii=False))
         if not force_refresh:
             cached = _center_home_proxy_cache_get(cache_key)
             if cached:
                 return jsonify(cached)
 
-        resp = client.list_display_home(limit_per_section=limit_per_section, force_refresh=force_refresh)
+        resp = client.list_display_home(
+            limit_per_section=limit_per_section,
+            force_refresh=force_refresh,
+            sections=home_sections,
+        )
 
         def _decorate_center_row(row):
             if not isinstance(row, dict):
