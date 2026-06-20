@@ -708,6 +708,7 @@ class WashingService:
         cls,
         db_media_type: str,
         tmdb_id: str,
+        target_cid: Optional[str] = None,
         season_num: Optional[int] = None,
         episode_num: Optional[int] = None,
         current_sha1: Optional[str] = None,
@@ -722,6 +723,7 @@ class WashingService:
         rows = []
         seen_sha1s = set()
         current_sha1 = str(current_sha1 or "").strip().upper()
+        target_cid = str(target_cid or "").strip()
 
         try:
             with get_db_connection() as conn:
@@ -754,6 +756,26 @@ class WashingService:
                         """
                         params = (str(tmdb_id),)
 
+                    library_target_filter = ""
+                    library_target_params = []
+                    if target_cid:
+                        library_target_filter = """
+                            AND EXISTS (
+                                SELECT 1
+                                FROM p115_filesystem_cache pfc_scope
+                                JOIN p115_organize_records por_scope
+                                  ON por_scope.file_id = pfc_scope.id
+                                  OR (
+                                      NULLIF(por_scope.pick_code, '') IS NOT NULL
+                                      AND por_scope.pick_code = pfc_scope.pick_code
+                                  )
+                                WHERE UPPER(pfc_scope.sha1) = UPPER(pmc.sha1)
+                                  AND por_scope.status = 'success'
+                                  AND por_scope.target_cid = %s
+                            )
+                        """
+                        library_target_params.append(target_cid)
+
                     sql = f"""
                         SELECT DISTINCT pmc.sha1, pmc.mediainfo_json
                         FROM media_metadata mm
@@ -768,9 +790,10 @@ class WashingService:
                         JOIN p115_mediainfo_cache pmc
                           ON pmc.sha1 = sha.sha1
                         WHERE {where_sql}
+                        {library_target_filter}
                     """
 
-                    cursor.execute(sql, params)
+                    cursor.execute(sql, tuple(params) + tuple(library_target_params))
                     library_rows = cursor.fetchall() or []
                     for row in library_rows:
                         row_sha1 = str(row.get("sha1") or "").strip().upper()
@@ -797,6 +820,24 @@ class WashingService:
                     if current_sha1:
                         etk_where.append("UPPER(pmc.sha1) <> %s")
                         etk_params.append(current_sha1)
+
+                    if target_cid:
+                        etk_where.append("""
+                            EXISTS (
+                                SELECT 1
+                                FROM p115_organize_records por_scope
+                                WHERE (
+                                      por_scope.file_id = pfc.id
+                                      OR (
+                                          NULLIF(por_scope.pick_code, '') IS NOT NULL
+                                          AND por_scope.pick_code = pfc.pick_code
+                                      )
+                                  )
+                                  AND por_scope.status = 'success'
+                                  AND por_scope.target_cid = %s
+                            )
+                        """)
+                        etk_params.append(target_cid)
 
                     if db_media_type == "Movie":
                         etk_where.append(f"{etk_type_expr} IN ('movie', 'movies', 'film')")
@@ -1008,6 +1049,7 @@ class WashingService:
         existing_raw_infos = cls._load_existing_raw_infos(
             db_media_type=db_media_type,
             tmdb_id=tmdb_id,
+            target_cid=target_cid,
             season_num=season_num,
             episode_num=episode_num,
             current_sha1=sha1,
