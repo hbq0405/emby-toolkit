@@ -2946,6 +2946,12 @@ const centerVersionBestAssetMap = (row) => {
   if (Object.keys(direct).length) return direct;
   return parseCenterJsonObject(row?.logical_group?.best_asset_map);
 };
+const centerVersionAssetAvailable = (asset) => {
+  if (!asset || typeof asset !== 'object') return false;
+  if (!asset.asset_id) return false;
+  const status = String(asset.status || asset.source_status || asset.backing_status || 'alive').toLowerCase();
+  return ['alive', 'available', 'updating', 'incomplete', 'pool_complete', 'pool_partial'].includes(status);
+};
 const centerVersionEpisodeItems = (row) => {
   const assetMap = centerVersionBestAssetMap(row);
   const total = Number(row?.episode_total || row?.progress_total || row?.logical_group?.episode_total || 0);
@@ -2957,7 +2963,8 @@ const centerVersionEpisodeItems = (row) => {
   const pad = maxEp >= 10 ? 2 : 1;
   const items = [];
   for (let ep = 1; ep <= maxEp; ep += 1) {
-    const asset = assetMap[String(ep)] || assetMap[ep] || null;
+    const rawAsset = assetMap[String(ep)] || assetMap[ep] || null;
+    const asset = centerVersionAssetAvailable(rawAsset) ? rawAsset : null;
     items.push({
       episode_number: ep,
       label: String(ep).padStart(pad, '0'),

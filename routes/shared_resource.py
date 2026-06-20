@@ -1846,6 +1846,7 @@ def api_center_source_detail():
         include_people = str(request.args.get('include_people') or '0').strip().lower() not in {'0', 'false', 'no', 'off'}
         limit = int(request.args.get('limit') or 200)
         cache_key = (
+            'detail:v2',
             client.base_url,
             client.device_token,
             request.args.get('source_kind') or '',
