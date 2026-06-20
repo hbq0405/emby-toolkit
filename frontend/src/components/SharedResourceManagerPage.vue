@@ -455,7 +455,6 @@
                   size="small"
                   type="primary"
                   round
-                  :style="centerTransferButtonStyle"
                   :loading="importingMap[version.source_id] === 'permanent'"
                   :disabled="centerVersionActionDisabled(version) || isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
                   @click="importCenterSource(version, 'permanent')"
@@ -497,26 +496,9 @@ import ShareRequestCreateModal from './ShareRequestCreateModal.vue';
 const message = useMessage();
 const dialog = useDialog();
 const themeVars = useThemeVars();
-const centerTransferButtonStyle = computed(() => {
-  const primary = themeVars.value.primaryColor || '#e91e63';
-  const hover = themeVars.value.primaryColorHover || primary;
-  const pressed = themeVars.value.primaryColorPressed || primary;
-  const text = '#fff';
-  return {
-    '--n-color': primary,
-    '--n-color-hover': hover,
-    '--n-color-pressed': pressed,
-    '--n-color-focus': hover,
-    '--n-border': `1px solid ${primary}`,
-    '--n-border-hover': `1px solid ${hover}`,
-    '--n-border-pressed': `1px solid ${pressed}`,
-    '--n-border-focus': `1px solid ${hover}`,
-    '--n-text-color': text,
-    '--n-text-color-hover': text,
-    '--n-text-color-pressed': text,
-    '--n-text-color-focus': text,
-  };
-});
+const centerTransferButtonColor = computed(() => themeVars.value.primaryColor || '#e91e63');
+const centerTransferButtonHoverColor = computed(() => themeVars.value.primaryColorHover || centerTransferButtonColor.value);
+const centerTransferButtonPressedColor = computed(() => themeVars.value.primaryColorPressed || centerTransferButtonColor.value);
 
 const isMobile = ref(false);
 const checkMobile = () => { isMobile.value = window.innerWidth <= 768; };
@@ -4666,19 +4648,25 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
-.center-version-action :deep(.center-version-transfer-button) {
-  --n-color: var(--n-primary-color);
-  --n-color-hover: var(--n-primary-color-hover);
-  --n-color-pressed: var(--n-primary-color-pressed);
-  --n-color-focus: var(--n-primary-color-hover);
-  --n-border: 1px solid var(--n-primary-color);
-  --n-border-hover: 1px solid var(--n-primary-color-hover);
-  --n-border-pressed: 1px solid var(--n-primary-color-pressed);
-  --n-border-focus: 1px solid var(--n-primary-color-hover);
-  --n-text-color: var(--n-text-color-primary);
-  --n-text-color-hover: var(--n-text-color-primary);
-  --n-text-color-pressed: var(--n-text-color-primary);
-  --n-text-color-focus: var(--n-text-color-primary);
+.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled)) {
+  background-color: v-bind(centerTransferButtonColor) !important;
+  color: #fff !important;
+}
+.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled):hover),
+.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled):focus) {
+  background-color: v-bind(centerTransferButtonHoverColor) !important;
+  color: #fff !important;
+}
+.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled):active) {
+  background-color: v-bind(centerTransferButtonPressedColor) !important;
+  color: #fff !important;
+}
+.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled) .n-button__content) {
+  color: #fff !important;
+}
+.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled) .n-button__border),
+.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled) .n-button__state-border) {
+  border-color: v-bind(centerTransferButtonColor) !important;
 }
 .center-version-detail-card-expandable { cursor: pointer; }
 .center-version-detail-card-expandable:hover {
