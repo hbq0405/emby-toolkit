@@ -455,6 +455,7 @@
                   size="small"
                   type="primary"
                   round
+                  :style="centerTransferButtonStyle"
                   :loading="importingMap[version.source_id] === 'permanent'"
                   :disabled="centerVersionActionDisabled(version) || isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
                   @click="importCenterSource(version, 'permanent')"
@@ -496,6 +497,26 @@ import ShareRequestCreateModal from './ShareRequestCreateModal.vue';
 const message = useMessage();
 const dialog = useDialog();
 const themeVars = useThemeVars();
+const centerTransferButtonStyle = computed(() => {
+  const primary = themeVars.value.primaryColor || '#e91e63';
+  const hover = themeVars.value.primaryColorHover || primary;
+  const pressed = themeVars.value.primaryColorPressed || primary;
+  const text = '#fff';
+  return {
+    '--n-color': primary,
+    '--n-color-hover': hover,
+    '--n-color-pressed': pressed,
+    '--n-color-focus': hover,
+    '--n-border': `1px solid ${primary}`,
+    '--n-border-hover': `1px solid ${hover}`,
+    '--n-border-pressed': `1px solid ${pressed}`,
+    '--n-border-focus': `1px solid ${hover}`,
+    '--n-text-color': text,
+    '--n-text-color-hover': text,
+    '--n-text-color-pressed': text,
+    '--n-text-color-focus': text,
+  };
+});
 
 const isMobile = ref(false);
 const checkMobile = () => { isMobile.value = window.innerWidth <= 768; };
