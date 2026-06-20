@@ -438,7 +438,7 @@ class SharedCenterClient:
             'limit_per_section': max(1, min(int(limit_per_section or 10), 20)),
             'force_refresh': 1 if force_refresh else 0,
             'sections_json': json.dumps(sections or [], ensure_ascii=False),
-        }, timeout=15)
+        }, timeout=45)
 
 
     def list_display_children(self, *, source_kind: str = '', source_id: str = '', source_ids: List[str] | None = None,

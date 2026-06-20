@@ -3333,7 +3333,7 @@ const saveCenterHomeSettings = async () => {
     applySharedConfig(res.data?.data || sharedConfigForm);
     message.success('列表设置已保存');
     showCenterHomeSettingsModal.value = false;
-    resetCenterSources(true).catch(e => message.error(e.response?.data?.message || '刷新中心资源库失败'));
+    resetCenterSources(false).catch(e => message.error(e.response?.data?.message || '刷新中心资源库失败'));
   } catch (e) {
     message.error(e.response?.data?.message || '保存列表设置失败');
   } finally {
