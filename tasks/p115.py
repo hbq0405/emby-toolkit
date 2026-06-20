@@ -971,6 +971,24 @@ def task_move_root_files_to_115_inbox(processor=None):
                 return value
         return None
 
+    def node_id(node):
+        if not isinstance(node, dict):
+            return ''
+        return str(
+            node.get('id') or node.get('cid') or node.get('file_id') or
+            node.get('fid') or node.get('parent_id') or ''
+        ).strip()
+
+    def path_contains_cid(path_nodes, target_cid):
+        if not isinstance(path_nodes, (list, tuple)):
+            return None
+        if not path_nodes:
+            return None
+        target = str(target_cid or '').strip()
+        if not target:
+            return None
+        return any(node_id(node) == target for node in path_nodes)
+
     def collect_if_root_file(item, source_name):
         item_id = first_present(item.get('fid'), item.get('file_id'), item.get('id'))
         name = first_present(item.get('fn'), item.get('n'), item.get('file_name'), item.get('name')) or ''
@@ -985,6 +1003,47 @@ def task_move_root_files_to_115_inbox(processor=None):
         root_file_ids.append(str(item_id))
         root_file_names.append(str(name))
         logger.warning(f"  ➜ [根目录修复] 发现根目录异常文件：{name}，来源={source_name}")
+
+    parent_path_cache = {}
+
+    def parent_path_points_to_target(pid, target_cid):
+        pid = str(pid or '').strip()
+        if not pid or pid == '0':
+            return False
+        cache_key = (pid, str(target_cid))
+        if cache_key in parent_path_cache:
+            return parent_path_cache[cache_key]
+        try:
+            dir_info = client.fs_files({'cid': pid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+            if not dir_info.get('state') and (dir_info.get('code') or dir_info.get('error') or dir_info.get('error_msg')):
+                parent_path_cache[cache_key] = False
+                return False
+            contains = path_contains_cid(dir_info.get('path'), target_cid)
+            parent_path_cache[cache_key] = contains
+            return parent_path_cache[cache_key]
+        except Exception as e:
+            logger.debug(f"  ➜ [根目录修复] 查询父目录路径失败：pid={pid}，err={e}")
+            parent_path_cache[cache_key] = None
+            return None
+
+    def collect_if_path_anomaly(item, target_cid, category_name):
+        pid = first_present(item.get('pid'), item.get('cid'), item.get('parent_id'))
+        pid_text = str(pid).strip() if pid is not None else ''
+        if pid_text == '0':
+            collect_if_root_file(item, f"{category_name} / 父目录为根目录")
+            return
+
+        item_path = item.get('ancestors') or item.get('paths') or item.get('path')
+        item_path_contains = path_contains_cid(item_path, target_cid)
+        if item_path_contains is False:
+            collect_if_root_file(item, f"{category_name} / 文件路径链不在分类目录")
+            return
+
+        parent_path_contains = parent_path_points_to_target(pid_text, target_cid) if pid_text and item_path_contains is None else None
+        if parent_path_contains is False:
+            collect_if_root_file(item, f"{category_name} / 父目录路径链断裂")
+        elif pid_text and item_path_contains is None and parent_path_contains is None:
+            logger.debug(f"  ➜ [根目录修复] 无法确认文件路径异常，跳过移动：pid={pid_text}")
 
     update_progress(5, "  ➜ 正在扫描 115 根目录一级文件...")
     root_file_ids = []
@@ -1056,9 +1115,7 @@ def task_move_root_files_to_115_inbox(processor=None):
                     break
 
                 for item in data:
-                    pid = first_present(item.get('pid'), item.get('cid'), item.get('parent_id'))
-                    if pid is not None and str(pid).strip() == '0':
-                        collect_if_root_file(item, category_name)
+                    collect_if_path_anomaly(item, target_cid, category_name)
 
                 if len(data) < limit:
                     break
