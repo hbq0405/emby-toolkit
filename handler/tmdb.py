@@ -65,9 +65,15 @@ def requests_retry_session(
     session.mount("https://", adapter)
     return session
 
-# 创建一个全局的、可复用的、带重试功能的 session 实例
-# 整个程序将通过这个实例来请求 TMDB API
-tmdb_session = requests_retry_session()
+_tmdb_session_local = threading.local()
+
+def get_tmdb_session() -> requests.Session:
+    """为每个线程复用独立 Session，避免多线程共享 requests.Session 卡住连接池。"""
+    session = getattr(_tmdb_session_local, "session", None)
+    if session is None:
+        session = requests_retry_session()
+        _tmdb_session_local.session = session
+    return session
 
 def get_tmdb_api_base_url() -> str:
     """
@@ -130,7 +136,7 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
 
     try:
         proxies = config_manager.get_proxies_for_requests()
-        response = tmdb_session.get(full_url, params=base_params, timeout=15, proxies=proxies)
+        response = get_tmdb_session().get(full_url, params=base_params, timeout=15, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         return data
@@ -509,7 +515,9 @@ def aggregate_full_series_data_from_tmdb(
 
     # --- 步骤 4: 并发执行 (使用 _fetch_season_smart) ---
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    timed_out = False
+    try:
         future_to_task = {}
         for task in tasks:
             _, tvid, s_num = task
@@ -517,15 +525,32 @@ def aggregate_full_series_data_from_tmdb(
             future = executor.submit(_fetch_season_smart, tvid, s_num)
             future_to_task[future] = f"S{s_num}"
 
-        for i, future in enumerate(concurrent.futures.as_completed(future_to_task)):
-            task_key = future_to_task[future]
-            try:
-                result_data = future.result()
-                if result_data:
-                    results[task_key] = result_data
-                logger.trace(f"    ({i+1}/{len(tasks)}) 季数据 {task_key} 获取完成。")
-            except Exception as exc:
-                logger.error(f"    任务 {task_key} 执行时产生错误: {exc}")
+        done_count = 0
+        aggregate_timeout = min(300, max(60, len(tasks) * 45))
+        try:
+            completed_futures = concurrent.futures.as_completed(future_to_task, timeout=aggregate_timeout)
+            for future in completed_futures:
+                done_count += 1
+                task_key = future_to_task[future]
+                try:
+                    result_data = future.result()
+                    if result_data:
+                        results[task_key] = result_data
+                    logger.trace(f"    ({done_count}/{len(tasks)}) 季数据 {task_key} 获取完成。")
+                except Exception as exc:
+                    logger.error(f"    任务 {task_key} 执行时产生错误: {exc}")
+        except concurrent.futures.TimeoutError:
+            timed_out = True
+            pending = [task_key for future, task_key in future_to_task.items() if not future.done()]
+            for future in future_to_task:
+                if not future.done():
+                    future.cancel()
+            logger.error(
+                f"  ➜ TMDb 聚合等待超时 ({aggregate_timeout}s)，已完成 {done_count}/{len(tasks)}，"
+                f"未完成: {', '.join(pending[:10])}{'...' if len(pending) > 10 else ''}"
+            )
+    finally:
+        executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
 
     # --- 步骤 5: 聚合数据与结构清洗 (保持不变) ---
     final_aggregated_data = {
@@ -579,7 +604,7 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
     logger.debug(f"  ➜ TMDb: 正在通过 {source} '{external_id}' 查找人物...")
     try:
         proxies = config_manager.get_proxies_for_requests()
-        response = tmdb_session.get(api_url, params=params, timeout=15, proxies=proxies)
+        response = get_tmdb_session().get(api_url, params=params, timeout=15, proxies=proxies)
         response.raise_for_status()
         data = response.json()
         person_results = data.get("person_results", [])
@@ -890,7 +915,7 @@ def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optio
         # ➜ 修复：获取代理配置
         proxies = config_manager.get_proxies_for_requests()
         # ➜ 修复：使用全局 session (带重试功能) 并传入 proxies
-        resp = tmdb_session.get(url, params=params, proxies=proxies, timeout=15)
+        resp = get_tmdb_session().get(url, params=params, proxies=proxies, timeout=15)
         
         if resp.status_code == 200:
             data = resp.json()
