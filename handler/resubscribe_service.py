@@ -168,6 +168,9 @@ class WashingService:
 
     @classmethod
     def _official_episode_runtime(cls, tmdb_id: str, season_num: int, episode_num: int) -> tuple[float, str]:
+        def missing_fallback() -> tuple[float, str]:
+            return cls._average_local_episode_tmdb_runtime(tmdb_id, season_num)
+
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -198,14 +201,40 @@ class WashingService:
 
             api_key = (config_manager.APP_CONFIG or {}).get(constants.CONFIG_OPTION_TMDB_API_KEY)
             if not api_key:
-                return 0.0, "missing_official_runtime"
+                return missing_fallback()
             data = tmdb_handler.get_season_details_tmdb(int(float(tmdb_id)), season_num, str(api_key), append_to_response=None)
             for ep in (data or {}).get("episodes") or []:
                 if isinstance(ep, dict) and int(ep.get("episode_number") or 0) == episode_num:
                     runtime = float(ep.get("runtime") or 0)
-                    return runtime, "tmdb_realtime" if runtime > 0 else "missing_official_runtime"
+                    return (runtime, "tmdb_realtime") if runtime > 0 else missing_fallback()
         except Exception as e:
             logger.debug("  ➜ [洗版] 实时查询 TMDb 分集时长失败: tmdb=%s, S%sE%s, err=%s", tmdb_id, season_num, episode_num, e)
+        return missing_fallback()
+
+    @classmethod
+    def _average_local_episode_tmdb_runtime(cls, tmdb_id: str, season_num: int) -> tuple[float, str]:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT AVG(runtime_minutes) AS avg_runtime
+                        FROM media_metadata
+                        WHERE item_type = 'Episode'
+                          AND parent_series_tmdb_id = %s
+                          AND season_number = %s
+                          AND in_library = TRUE
+                          AND runtime_minutes IS NOT NULL
+                          AND runtime_minutes > 0
+                        """,
+                        (str(tmdb_id), season_num),
+                    )
+                    row = cursor.fetchone()
+                    avg_runtime = float((row or {}).get("avg_runtime") or 0)
+                    if avg_runtime > 0:
+                        return avg_runtime, "local_media_metadata_average"
+        except Exception as e:
+            logger.debug("  ➜ [洗版] 读取本地 TMDb 分集平均时长失败: tmdb=%s, S%s, err=%s", tmdb_id, season_num, e)
         return 0.0, "missing_official_runtime"
 
     @classmethod
