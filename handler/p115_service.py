@@ -7513,7 +7513,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             new_info['_season_num'] = _item.get('_season_num')
                             new_info['_episode_num'] = _item.get('_episode_num')
                             db_media_type = 'Movie' if self.media_type == 'movie' else 'Series'
-                            priorities = WashingService._load_priorities(db_media_type, str(batch_target_cid))
+                            priorities = WashingService._load_priorities(db_media_type, str(target_cid))
                             if priorities:
                                 new_info['_need_clean_version_check'] = WashingService._priorities_need_clean_version(priorities)
                                 norm_new = WashingService._normalize_info(new_info)
@@ -7536,7 +7536,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         'washing_level': int(level),
                         'washing_snapshot_json': {
                             'reason': level_reason or f'优先级 {level}',
-                            'target_cid': str(batch_target_cid or ''),
+                            'target_cid': str(target_cid or ''),
                             'media_type': 'movie' if self.media_type == 'movie' else 'series',
                             'identity': identity,
                             'evaluated_at': datetime.now(timezone.utc).isoformat()
@@ -7651,7 +7651,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             sha1=file_sha1,
                             file_name=new_name,
                             file_size=file_size,
-                            target_cid=batch_target_cid,
+                            target_cid=target_cid,
                             media_type=self.media_type,
                             tmdb_id=self.tmdb_id,
                             season_num=s_num,
@@ -7960,7 +7960,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         try:
                             category_name = "未识别"
                             for rule in self.rules:
-                                if str(rule.get('cid')) == str(batch_target_cid):
+                                if str(rule.get('cid')) == str(target_cid):
                                     category_name = rule.get('dir_name', '未识别')
                                     break
                             P115RecordManager.add_or_update_record(
@@ -7969,7 +7969,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 status='success',
                                 tmdb_id=self.tmdb_id,
                                 media_type=self.media_type,
-                                target_cid=batch_target_cid,
+                                target_cid=target_cid,
                                 category_name=category_name,
                                 renamed_name=new_filename,
                                 pick_code=pick_code,
@@ -7988,12 +7988,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         try:
                             category_name = None
                             for rule in self.rules:
-                                if rule.get('cid') == str(batch_target_cid):
+                                if rule.get('cid') == str(target_cid):
                                     category_name = rule.get('dir_name', '未识别')
                                     break
                             if not category_name: category_name = "未识别"
 
-                            category_rule = next((r for r in self.rules if str(r.get('cid')) == str(batch_target_cid)), None)
+                            category_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
                             relative_category_path = "未识别"
                             
                             if category_rule:
@@ -8002,13 +8002,13 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 else:
                                     media_root_cid = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID, '0'))
                                     try:
-                                        dir_info = self.client.fs_files({'cid': batch_target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                                        dir_info = self.client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
                                         path_nodes = dir_info.get('path', [])
                                         start_idx = 0
                                         found_root = False
                                         
                                         if media_root_cid == '0':
-                                            if str(batch_target_cid) == '0': start_idx = 0
+                                            if str(target_cid) == '0': start_idx = 0
                                             else: start_idx = 1 
                                             found_root = True
                                         else:
