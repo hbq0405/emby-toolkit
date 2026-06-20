@@ -240,10 +240,10 @@ def _shared_int(value, default: int = 0, minimum: int = None, maximum: int = Non
 
 def _shared_center_home_sections(value) -> list:
     default_sections = [
-        {'key': 'latest', 'title': '最新资源', 'display_type': 'all', 'order_by': 'latest', 'status': 'alive,available', 'limit': 10, 'enabled': True},
-        {'key': 'popular', 'title': '热门共享', 'display_type': 'all', 'order_by': 'popular', 'status': 'alive,available', 'limit': 10, 'enabled': True},
-        {'key': 'movies', 'title': '电影', 'display_type': 'movie', 'order_by': 'latest', 'status': 'alive,available', 'limit': 10, 'enabled': True},
-        {'key': 'series', 'title': '剧集', 'display_type': 'tv', 'order_by': 'latest', 'status': 'alive,available', 'limit': 10, 'enabled': True},
+        {'key': 'latest', 'title': '最新资源', 'display_type': 'all', 'order_by': 'pool_time', 'limit': 10, 'enabled': True},
+        {'key': 'popular', 'title': '热门共享', 'display_type': 'all', 'order_by': 'popular', 'limit': 10, 'enabled': True},
+        {'key': 'movies', 'title': '电影', 'display_type': 'movie', 'order_by': 'pool_time', 'limit': 10, 'enabled': True},
+        {'key': 'series', 'title': '剧集', 'display_type': 'tv', 'order_by': 'pool_time', 'limit': 10, 'enabled': True},
     ]
     raw = value if isinstance(value, list) else default_sections
     out = []
@@ -256,19 +256,23 @@ def _shared_center_home_sections(value) -> list:
         if display_type not in ('all', 'movie', 'tv', 'series', 'season', 'pack'):
             display_type = 'all'
         order_by = str(item.get('order_by') or 'latest').strip().lower()
-        if order_by not in ('latest', 'popular', 'size', 'name'):
-            order_by = 'latest'
-        status = str(item.get('status') or 'alive,available').strip()[:160] or 'alive,available'
+        if order_by == 'latest':
+            order_by = 'pool_time'
+        if order_by not in ('pool_time', 'release_year', 'popular', 'size', 'name'):
+            order_by = 'pool_time'
         keyword = str(item.get('keyword') or item.get('q') or '').strip()[:80]
         tmdb_id = str(item.get('tmdb_id') or '').strip()[:40]
+        genre_id = str(item.get('genre_id') or '').strip()[:40]
         out.append({
             'key': key,
             'title': title,
             'display_type': display_type,
             'order_by': order_by,
-            'status': status,
+            'status': 'alive,available',
             'keyword': keyword,
             'tmdb_id': tmdb_id,
+            'genre_id': genre_id,
+            'release_year': _shared_int(item.get('release_year'), 0, 0, 9999),
             'limit': _shared_int(item.get('limit'), 10, 1, 20),
             'enabled': _shared_bool(item.get('enabled'), True),
         })

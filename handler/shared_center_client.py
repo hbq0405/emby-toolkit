@@ -396,6 +396,7 @@ class SharedCenterClient:
 
     def list_display_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent,incomplete',
                              item_type: str = '', tmdb_id: str = '', order_by: str = 'latest',
+                             genre_id: str = '', release_year=None,
                              limit: int = 200, offset: int = 0, force_refresh: bool = False, **_ignored) -> Dict[str, Any]:
         """中心资源库展示口径：由中心端分页、筛选、聚合。
 
@@ -408,6 +409,8 @@ class SharedCenterClient:
             'item_type': item_type or '',
             'tmdb_id': tmdb_id or '',
             'order_by': order_by or 'latest',
+            'genre_id': genre_id or '',
+            'release_year': release_year or '',
             'limit': max(1, min(int(limit or 200), 1000)),
             'offset': max(0, int(offset or 0)),
             'force_refresh': 1 if force_refresh else 0,

@@ -282,9 +282,9 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showCenterHomeSettingsModal" preset="card" title="中心资源库列表设置" style="width: 860px; max-width: 96vw;" class="custom-modal glass-modal">
+    <n-modal v-model:show="showCenterHomeSettingsModal" preset="card" title="中心资源库列表设置" style="width: 1080px; max-width: 96vw;" class="custom-modal glass-modal">
       <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-        列表配置会保存到共享资源配置库；拖动调整顺序，关闭后中心端不会查询该列表。状态/标签支持逗号分隔：alive、available、clean_version、short_drama、animation、completed_certified。
+        列表配置会保存到共享资源配置库；拖动调整顺序，关闭后中心端不会查询该列表。筛选项留空就是不限。
       </n-alert>
       <draggable
         v-model="centerHomeSettingSections"
@@ -298,9 +298,10 @@
             <n-icon class="center-home-setting-drag" :component="MenuIcon" size="18" />
             <n-input v-model:value="element.title" size="small" placeholder="列表标题" class="center-home-setting-title-input" />
             <n-select v-model:value="element.display_type" size="small" :options="centerHomeDisplayTypeOptions" class="center-home-setting-select" />
+            <n-select v-model:value="element.genre_id" size="small" :options="centerHomeGenreOptions(element.display_type)" clearable filterable placeholder="TMDb 类型" class="center-home-setting-select" />
+            <n-input-number v-model:value="element.release_year" size="small" placeholder="发行年份" clearable :show-button="false" :min="1900" :max="2100" class="center-home-setting-year" />
             <n-select v-model:value="element.order_by" size="small" :options="centerHomeOrderOptions" class="center-home-setting-select" />
-            <n-input v-model:value="element.status" size="small" placeholder="状态/标签" class="center-home-setting-status" />
-            <n-input v-model:value="element.keyword" size="small" placeholder="关键词" class="center-home-setting-keyword" />
+            <n-input v-model:value="element.keyword" size="small" placeholder="片名 / TMDb ID" class="center-home-setting-keyword" />
             <n-select v-model:value="element.limit" size="small" :options="centerHomeLimitOptions" class="center-home-setting-limit" />
             <n-switch v-model:value="element.enabled" size="small">
               <template #checked>显示</template>
@@ -477,7 +478,7 @@ import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } f
 import axios from 'axios';
 import draggable from 'vuedraggable';
 import {
-  NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
+  NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput, NInputNumber,
   NInputGroup, NModal, NSelect, NSpace, NSpin, NSwitch,
   NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
@@ -543,13 +544,15 @@ const ledgerItems = ref([]);
 const centerSources = ref([]);
 const centerHomeSections = ref([]);
 const CENTER_HOME_SECTION_DEFAULTS = [
-  { key: 'latest', title: '最新资源', display_type: 'all', order_by: 'latest', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
-  { key: 'popular', title: '热门共享', display_type: 'all', order_by: 'popular', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
-  { key: 'movies', title: '电影', display_type: 'movie', order_by: 'latest', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
-  { key: 'series', title: '剧集', display_type: 'tv', order_by: 'latest', status: 'alive,available', keyword: '', tmdb_id: '', limit: 10, enabled: true },
+  { key: 'latest', title: '最新资源', display_type: 'all', order_by: 'pool_time', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
+  { key: 'popular', title: '热门共享', display_type: 'all', order_by: 'popular', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
+  { key: 'movies', title: '电影', display_type: 'movie', order_by: 'pool_time', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
+  { key: 'series', title: '剧集', display_type: 'tv', order_by: 'pool_time', keyword: '', tmdb_id: '', genre_id: '', release_year: null, limit: 10, enabled: true },
 ];
 const showCenterHomeSettingsModal = ref(false);
 const centerHomeSettingSections = ref([]);
+const centerHomeMovieGenres = ref([]);
+const centerHomeTvGenres = ref([]);
 const centerBackendGrouped = ref(false);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
@@ -705,12 +708,39 @@ const centerHomeDisplayTypeOptions = [
   { label: '剧集', value: 'tv' },
 ];
 const centerHomeOrderOptions = [
-  { label: '最新', value: 'latest' },
+  { label: '入池时间', value: 'pool_time' },
+  { label: '发行年份', value: 'release_year' },
   { label: '热门', value: 'popular' },
   { label: '体积', value: 'size' },
   { label: '名称', value: 'name' },
 ];
 const centerHomeLimitOptions = [6, 8, 10, 12, 16, 20].map(value => ({ label: `${value} 个`, value }));
+const normalizeCenterHomeGenreOptions = (items) => (Array.isArray(items) ? items : [])
+  .map(item => ({
+    label: String(item?.name || item?.label || '').trim(),
+    value: String(item?.id || item?.value || '').trim(),
+  }))
+  .filter(item => item.label && item.value);
+const loadCenterHomeGenreOptions = async () => {
+  if (centerHomeMovieGenres.value.length && centerHomeTvGenres.value.length) return;
+  const [movieRes, tvRes] = await Promise.allSettled([
+    axios.get('/api/custom_collections/config/tmdb_movie_genres'),
+    axios.get('/api/custom_collections/config/tmdb_tv_genres'),
+  ]);
+  if (movieRes.status === 'fulfilled') centerHomeMovieGenres.value = normalizeCenterHomeGenreOptions(movieRes.value.data);
+  if (tvRes.status === 'fulfilled') centerHomeTvGenres.value = normalizeCenterHomeGenreOptions(tvRes.value.data);
+};
+const centerHomeGenreOptions = (displayType) => {
+  const type = String(displayType || '').toLowerCase();
+  if (type === 'movie') return centerHomeMovieGenres.value;
+  if (['tv', 'series', 'season', 'pack'].includes(type)) return centerHomeTvGenres.value;
+  const seen = new Set();
+  return [...centerHomeMovieGenres.value, ...centerHomeTvGenres.value].filter(item => {
+    if (seen.has(item.value)) return false;
+    seen.add(item.value);
+    return true;
+  });
+};
 const resourceTypeLabel = (value) => ({
   movie_file: '电影', movie_folder: '电影', Movie: '电影', movie: '电影', movies: '电影',
   season_pack: '剧集资源', series_pack: '全剧包', Season: '季入口', Series: '全剧包', season: '季入口', series: '全剧包', Pack: '季入口', pack: '季入口',
@@ -3237,10 +3267,14 @@ const normalizeCenterHomeSection = (section = {}, index = 0) => ({
   key: String(section.key || `custom_${Date.now()}_${index}`).trim() || `custom_${Date.now()}_${index}`,
   title: String(section.title || '自定义列表').trim() || '自定义列表',
   display_type: ['all', 'movie', 'tv', 'series', 'season', 'pack'].includes(String(section.display_type || '').toLowerCase()) ? String(section.display_type).toLowerCase() : 'all',
-  order_by: ['latest', 'popular', 'size', 'name'].includes(String(section.order_by || '').toLowerCase()) ? String(section.order_by).toLowerCase() : 'latest',
-  status: String(section.status || 'alive,available').trim() || 'alive,available',
+  order_by: (() => {
+    const value = String(section.order_by || 'pool_time').toLowerCase();
+    return value === 'latest' ? 'pool_time' : (['pool_time', 'release_year', 'popular', 'size', 'name'].includes(value) ? value : 'pool_time');
+  })(),
   keyword: String(section.keyword || '').trim(),
   tmdb_id: String(section.tmdb_id || '').trim(),
+  genre_id: String(section.genre_id || '').trim(),
+  release_year: section.release_year ? Math.max(1900, Math.min(Number(section.release_year || 0), 2100)) : null,
   limit: Math.max(1, Math.min(Number(section.limit || 10), 20)),
   enabled: section.enabled !== false,
 });
@@ -3249,7 +3283,7 @@ const normalizeCenterHomeSections = (sections) => {
   return list.map((section, index) => normalizeCenterHomeSection(section, index));
 };
 const openCenterHomeSettingsModal = async () => {
-  await loadSharedConfig();
+  await Promise.allSettled([loadSharedConfig(), loadCenterHomeGenreOptions()]);
   centerHomeSettingSections.value = normalizeCenterHomeSections(sharedConfigForm.p115_shared_center_home_sections).map(section => ({ ...section }));
   showCenterHomeSettingsModal.value = true;
 };
@@ -4135,7 +4169,7 @@ onUnmounted(() => {
 .center-home-setting-list { display: flex; flex-direction: column; gap: 8px; }
 .center-home-setting-item {
   display: grid;
-  grid-template-columns: 24px minmax(120px, 1.4fr) 110px 96px minmax(130px, 1.2fr) minmax(110px, 1fr) 82px 68px 32px;
+  grid-template-columns: 24px minmax(120px, 1.25fr) 96px 130px 86px 96px minmax(130px, 1fr) 82px 68px 32px;
   gap: 8px;
   align-items: center;
   padding: 8px;
@@ -4147,7 +4181,7 @@ onUnmounted(() => {
 .center-home-setting-drag:active { cursor: grabbing; }
 .center-home-setting-title-input,
 .center-home-setting-select,
-.center-home-setting-status,
+.center-home-setting-year,
 .center-home-setting-keyword,
 .center-home-setting-limit { min-width: 0; }
 .poster-wall-card {
@@ -4200,7 +4234,7 @@ onUnmounted(() => {
   }
   .center-home-setting-title-input,
   .center-home-setting-select,
-  .center-home-setting-status,
+  .center-home-setting-year,
   .center-home-setting-keyword,
   .center-home-setting-limit {
     grid-column: 2 / -1;
