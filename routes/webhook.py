@@ -1429,26 +1429,17 @@ def emby_webhook():
         # --------------------------------------------------------
         nb_config = get_config()
         if nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
-            description = data.get("Description", "")
             try:
-                import re
-                # 提取 Item Path (用于后续可能需要的目录清理)
-                path_match = re.search(r'Item Path:\n(.*?)\n\n', description)
-                item_path = path_match.group(1).strip() if path_match else ""
-
                 pickcodes = []
-                # 数据库兜底：此时数据库还没被删，可以直接通过 Emby ID 取 PC。
-                if not pickcodes and original_item_id:
-                    logger.debug(f"  ➜ [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
-                    db_pc = media_db.get_pickcode_by_emby_id(original_item_id)
-                    if db_pc:
-                        pickcodes.append(db_pc)
-                        logger.debug(f"  ➜ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
+                # 数据库兜底：此时数据库还没被删，可以按 Movie/Episode/Season/Series 层级收集实际文件 PC。
+                if original_item_id:
+                    logger.debug(f"  ➜ [深度删除] 尝试通过 Emby ID ({original_item_id}) 查库收集 PC 码...")
+                    pickcodes = media_db.get_pickcodes_for_deleted_emby_item(original_item_id, original_item_type)
 
-                if pickcodes and item_path:
+                if pickcodes:
                     logger.info(f"  ➜ 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
                     from handler.p115_service import delete_115_files_by_webhook
-                    spawn(delete_115_files_by_webhook, item_path, pickcodes)
+                    spawn(delete_115_files_by_webhook, pickcodes)
                 else:
                     logger.warning("  ➜ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
             except Exception as e:

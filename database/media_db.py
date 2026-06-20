@@ -1402,6 +1402,70 @@ def get_pickcode_by_emby_id(emby_id: str) -> Optional[str]:
         logger.error(f"DB: 根据 Emby ID 获取 PC 码失败: {e}")
     return None
 
+def get_pickcodes_for_deleted_emby_item(emby_id: str, item_type: Optional[str] = None) -> List[str]:
+    """
+    根据被删除的 Emby 项目层级，收集实际视频文件的 115 PickCode。
+    Series/Season 本身通常没有 PC，需要向下穿透到 Episode。
+    """
+    if not emby_id:
+        return []
+
+    sql = """
+        WITH target_item AS (
+            SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number
+            FROM media_metadata
+            WHERE emby_item_ids_json @> %s::jsonb
+            LIMIT 1
+        )
+        SELECT m.emby_item_ids_json, m.file_pickcode_json, m.file_sha1_json
+        FROM media_metadata m
+        JOIN target_item t ON
+             (m.tmdb_id = t.tmdb_id AND m.item_type = t.item_type)
+          OR (t.item_type = 'Series'
+              AND m.parent_series_tmdb_id = t.tmdb_id
+              AND m.item_type = 'Episode')
+          OR (t.item_type = 'Season'
+              AND m.parent_series_tmdb_id = t.parent_series_tmdb_id
+              AND m.season_number = t.season_number
+              AND m.item_type = 'Episode')
+    """
+    pickcodes = []
+    seen = set()
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (json.dumps([emby_id]),))
+                for row in cursor.fetchall():
+                    pcs = row['file_pickcode_json'] if isinstance(row['file_pickcode_json'], list) else []
+                    sha1s = row['file_sha1_json'] if isinstance(row['file_sha1_json'], list) else []
+
+                    for idx in range(max(len(pcs), len(sha1s))):
+                        pc = str(pcs[idx] or '').strip() if idx < len(pcs) else ''
+                        if pc and pc not in seen:
+                            seen.add(pc)
+                            pickcodes.append(pc)
+                            continue
+
+                        sha1 = str(sha1s[idx] or '').strip() if idx < len(sha1s) else ''
+                        if not sha1:
+                            continue
+                        cursor.execute(
+                            "SELECT pick_code FROM p115_filesystem_cache WHERE sha1 = %s AND pick_code IS NOT NULL LIMIT 1",
+                            (sha1,),
+                        )
+                        cache_row = cursor.fetchone()
+                        cache_pc = str((cache_row or {}).get('pick_code') or '').strip()
+                        if cache_pc and cache_pc not in seen:
+                            seen.add(cache_pc)
+                            pickcodes.append(cache_pc)
+
+        if pickcodes:
+            logger.debug(f"  ➜ [深度删除] 已按 {item_type or '未知类型'} 层级收集到 {len(pickcodes)} 个 PC 码。")
+        return pickcodes
+    except Exception as e:
+        logger.error(f"DB: 根据 Emby ID 收集深度删除 PC 码失败: {e}", exc_info=True)
+        return []
+
 def update_media_sha1_and_pc_json(tmdb_id: str, item_type: str, sha1_list: list, pc_list: list):
     """同时更新 SHA1 和 PC 码数组"""
     sql = "UPDATE media_metadata SET file_sha1_json = %s::jsonb, file_pickcode_json = %s::jsonb WHERE tmdb_id = %s AND item_type = %s"

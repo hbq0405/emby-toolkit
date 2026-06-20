@@ -9351,7 +9351,7 @@ class WebhookDeleteBuffer:
         except Exception as e:
             logger.error(f"  ➜ [深度删除] 执行异常: {e}", exc_info=True)
 
-def delete_115_files_by_webhook(item_path, pickcodes):
+def delete_115_files_by_webhook(pickcodes):
     """
     【V6 终极缓冲版】接收神医 Webhook 传来的提取码，加入缓冲队列。
     """
