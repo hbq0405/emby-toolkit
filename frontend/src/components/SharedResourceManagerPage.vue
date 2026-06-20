@@ -454,6 +454,8 @@
                   class="center-version-transfer-button"
                   size="small"
                   type="primary"
+                  :color="centerTransferButtonColor"
+                  text-color="#fff"
                   round
                   :loading="importingMap[version.source_id] === 'permanent'"
                   :disabled="centerVersionActionDisabled(version) || isCenterReplenishRow(version) || Boolean(importingMap[version.source_id])"
@@ -497,8 +499,6 @@ const message = useMessage();
 const dialog = useDialog();
 const themeVars = useThemeVars();
 const centerTransferButtonColor = computed(() => themeVars.value.primaryColor || '#e91e63');
-const centerTransferButtonHoverColor = computed(() => themeVars.value.primaryColorHover || centerTransferButtonColor.value);
-const centerTransferButtonPressedColor = computed(() => themeVars.value.primaryColorPressed || centerTransferButtonColor.value);
 
 const isMobile = ref(false);
 const checkMobile = () => { isMobile.value = window.innerWidth <= 768; };
@@ -4648,26 +4648,6 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
-.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled)) {
-  background-color: v-bind(centerTransferButtonColor) !important;
-  color: #fff !important;
-}
-.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled):hover),
-.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled):focus) {
-  background-color: v-bind(centerTransferButtonHoverColor) !important;
-  color: #fff !important;
-}
-.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled):active) {
-  background-color: v-bind(centerTransferButtonPressedColor) !important;
-  color: #fff !important;
-}
-.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled) .n-button__content) {
-  color: #fff !important;
-}
-.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled) .n-button__border),
-.center-version-action :deep(.center-version-transfer-button:not(.n-button--disabled) .n-button__state-border) {
-  border-color: v-bind(centerTransferButtonColor) !important;
-}
 .center-version-detail-card-expandable { cursor: pointer; }
 .center-version-detail-card-expandable:hover {
   border-color: var(--n-primary-color, var(--accent-color, var(--center-detail-border)));
