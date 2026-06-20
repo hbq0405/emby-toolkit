@@ -418,6 +418,9 @@ class SharedCenterClient:
             params['release_year'] = release_year
         return self._get('/api/v1/sources/display-list', params, timeout=30)
 
+    def list_display_tags(self) -> Dict[str, Any]:
+        return self._get('/api/v1/sources/display-tags', {}, timeout=15)
+
     def list_cloud_search_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent,incomplete',
                                   item_type: str = '', tmdb_id: str = '', order_by: str = 'latest',
                                   limit: int = 200, offset: int = 0, **_ignored) -> Dict[str, Any]:

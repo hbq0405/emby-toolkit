@@ -2,6 +2,7 @@
 import psycopg2
 import logging
 import json
+import re
 import pytz
 from typing import Optional, Any, Dict
 from datetime import datetime
@@ -267,7 +268,7 @@ def _shared_center_home_sections(value) -> list:
         tag_values = []
         for tag in tags:
             text = str(tag or '').strip()
-            if text in ('completed_certified', 'ongoing', 'short_drama', 'clean_version', 'mandarin_audio', 'chinese_subtitle', 'effect_subtitle') and text not in tag_values:
+            if re.fullmatch(r'[A-Za-z0-9_:-]{1,40}', text) and text not in tag_values:
                 tag_values.append(text)
         out.append({
             'key': key,

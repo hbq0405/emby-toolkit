@@ -1682,6 +1682,27 @@ def api_center_sources():
         return jsonify({'success': False, 'message': str(e), 'items': [], 'total': 0}), 500
 
 
+@shared_resource_bp.route('/center/sources/tags', methods=['GET'])
+@admin_required
+def api_center_source_tags():
+    fallback_items = [
+        {'label': '已完结', 'value': 'completed_certified'},
+        {'label': '连载中', 'value': 'ongoing'},
+        {'label': '短剧', 'value': 'short_drama'},
+        {'label': '纯净版', 'value': 'clean_version'},
+        {'label': '原盘', 'value': 'original_disc'},
+        {'label': '国语', 'value': 'mandarin_audio'},
+        {'label': '中字', 'value': 'chinese_subtitle'},
+        {'label': '特效', 'value': 'effect_subtitle'},
+    ]
+    try:
+        resp = SharedCenterClient().list_display_tags()
+        items = [row for row in (resp.get('items') or []) if isinstance(row, dict)]
+        return jsonify({'success': True, 'items': items or fallback_items})
+    except Exception as e:
+        return jsonify({'success': True, 'items': fallback_items, 'message': str(e)})
+
+
 @shared_resource_bp.route('/center/sources/home', methods=['GET'])
 @admin_required
 def api_center_sources_home():

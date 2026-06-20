@@ -451,6 +451,7 @@
               </div>
               <div class="center-version-action" @click.stop>
                 <n-button
+                  class="center-version-transfer-button"
                   size="small"
                   type="primary"
                   round
@@ -713,16 +714,40 @@ const centerHomeOrderOptions = [
   { label: '体积', value: 'size' },
   { label: '名称', value: 'name' },
 ];
-const centerHomeTagOptions = [
+const CENTER_HOME_TAG_FALLBACK_OPTIONS = [
   { label: '已完结', value: 'completed_certified' },
   { label: '连载中', value: 'ongoing' },
   { label: '短剧', value: 'short_drama' },
   { label: '纯净版', value: 'clean_version' },
+  { label: '原盘', value: 'original_disc' },
   { label: '国语', value: 'mandarin_audio' },
   { label: '中字', value: 'chinese_subtitle' },
   { label: '特效', value: 'effect_subtitle' },
 ];
+const centerHomeTagOptions = ref([...CENTER_HOME_TAG_FALLBACK_OPTIONS]);
 const centerHomeLimitOptions = [6, 8, 10, 12, 16, 20].map(value => ({ label: `${value} 个`, value }));
+const normalizeCenterHomeTagOptions = (items) => {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : [])
+    .map(item => ({
+      label: String(item?.label || item?.name || '').trim(),
+      value: String(item?.value || item?.key || '').trim(),
+    }))
+    .filter(item => {
+      if (!item.label || !/^[A-Za-z0-9_:-]{1,40}$/.test(item.value) || seen.has(item.value)) return false;
+      seen.add(item.value);
+      return true;
+    });
+};
+const loadCenterHomeTagOptions = async () => {
+  try {
+    const res = await axios.get('/api/shared/resources/center/sources/tags');
+    const options = normalizeCenterHomeTagOptions(res.data?.items);
+    centerHomeTagOptions.value = options.length ? options : [...CENTER_HOME_TAG_FALLBACK_OPTIONS];
+  } catch (e) {
+    centerHomeTagOptions.value = [...CENTER_HOME_TAG_FALLBACK_OPTIONS];
+  }
+};
 const normalizeCenterHomeGenreOptions = (items) => (Array.isArray(items) ? items : [])
   .map(item => ({
     label: String(item?.name || item?.label || '').trim(),
@@ -1851,6 +1876,12 @@ const centerNestedParts = (row) => {
       });
     }
   }
+  const bestAssetMap = row?.best_asset_map;
+  if (bestAssetMap && typeof bestAssetMap === 'object' && !Array.isArray(bestAssetMap)) {
+    Object.values(bestAssetMap).forEach(x => {
+      if (x && typeof x === 'object') parts.push(x);
+    });
+  }
   return parts;
 };
 const centerCompletedCertifiedMeta = (row) => {
@@ -1879,6 +1910,7 @@ const centerShortDramaMeta = (row) => {
   return {};
 };
 const isCenterShortDrama = (row) => Boolean(centerShortDramaMeta(row).is_short_drama || row?.is_short_drama);
+const isCenterOriginalDisc = (row) => Boolean(row?.is_original_disc || centerNestedParts(row).some(part => /\.iso(?:$|[\s?#])/i.test(String(part?.file_name || part?.filename || part?.name || ''))));
 const centerShareChannel = (row) => row?.share_channel
   || row?.logical_season_share_channel
  
@@ -3060,6 +3092,7 @@ const centerVersionTags = (row) => {
     if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
     if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
     if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
+    if (isCenterOriginalDisc(row)) centerTagPush(tags, '原盘', 'warning', 'original-disc');
     if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
     centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
   }
@@ -3305,8 +3338,8 @@ const normalizeCenterHomeSection = (section = {}, index = 0) => ({
   })(),
   genre_id: String(section.genre_id || '').trim(),
   tags: Array.isArray(section.tags)
-    ? section.tags.map(tag => String(tag || '').trim()).filter(Boolean)
-    : String(section.status || '').split(',').map(tag => String(tag || '').trim()).filter(tag => centerHomeTagOptions.some(opt => opt.value === tag)),
+    ? section.tags.map(tag => String(tag || '').trim()).filter(tag => /^[A-Za-z0-9_:-]{1,40}$/.test(tag))
+    : String(section.status || '').split(',').map(tag => String(tag || '').trim()).filter(tag => /^[A-Za-z0-9_:-]{1,40}$/.test(tag) && !['alive', 'available'].includes(tag)),
   limit: Math.max(1, Math.min(Number(section.limit || 10), 20)),
   enabled: section.enabled !== false,
 });
@@ -3315,7 +3348,7 @@ const normalizeCenterHomeSections = (sections) => {
   return list.map((section, index) => normalizeCenterHomeSection(section, index));
 };
 const openCenterHomeSettingsModal = async () => {
-  await Promise.allSettled([loadSharedConfig(), loadCenterHomeGenreOptions()]);
+  await Promise.allSettled([loadSharedConfig(), loadCenterHomeGenreOptions(), loadCenterHomeTagOptions()]);
   centerHomeSettingSections.value = normalizeCenterHomeSections(sharedConfigForm.p115_shared_center_home_sections).map(section => ({ ...section }));
   showCenterHomeSettingsModal.value = true;
 };
@@ -4612,6 +4645,20 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
+.center-version-action :deep(.center-version-transfer-button) {
+  --n-color: var(--n-primary-color);
+  --n-color-hover: var(--n-primary-color-hover);
+  --n-color-pressed: var(--n-primary-color-pressed);
+  --n-color-focus: var(--n-primary-color-hover);
+  --n-border: 1px solid var(--n-primary-color);
+  --n-border-hover: 1px solid var(--n-primary-color-hover);
+  --n-border-pressed: 1px solid var(--n-primary-color-pressed);
+  --n-border-focus: 1px solid var(--n-primary-color-hover);
+  --n-text-color: var(--n-text-color-primary);
+  --n-text-color-hover: var(--n-text-color-primary);
+  --n-text-color-pressed: var(--n-text-color-primary);
+  --n-text-color-focus: var(--n-text-color-primary);
+}
 .center-version-detail-card-expandable { cursor: pointer; }
 .center-version-detail-card-expandable:hover {
   border-color: var(--n-primary-color, var(--accent-color, var(--center-detail-border)));
