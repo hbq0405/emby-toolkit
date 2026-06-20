@@ -68,6 +68,11 @@ def _center_home_proxy_cache_set(cache_key, payload: Dict[str, Any]) -> None:
     _center_proxy_cache_set(_CENTER_HOME_PROXY_CACHE, cache_key, payload)
 
 
+def _center_home_proxy_cache_clear() -> None:
+    with _CENTER_HOME_PROXY_CACHE_LOCK:
+        _CENTER_HOME_PROXY_CACHE.clear()
+
+
 def _boolish(value, default=False):
     if value is None:
         return bool(default)
@@ -820,6 +825,7 @@ def api_shared_resource_config():
     if request.method == 'GET':
         return jsonify({'success': True, 'data': _shared_resource_config_payload()})
     payload = _save_shared_config(_request_json())
+    _center_home_proxy_cache_clear()
     return jsonify({'success': True, 'message': '共享资源配置已保存（Rapid v2：中心不存 CK、不创建 115 分享）', 'data': payload})
 
 
@@ -1714,7 +1720,7 @@ def api_center_sources_home():
             False,
         )
         home_sections = _shared_resource_config_payload().get('p115_shared_center_home_sections') or []
-        cache_key = (client.base_url, client.device_token, json.dumps(home_sections, sort_keys=True, ensure_ascii=False))
+        cache_key = (client.base_url, client.device_token, limit_per_section, json.dumps(home_sections, sort_keys=True, ensure_ascii=False))
         if not force_refresh:
             cached = _center_home_proxy_cache_get(cache_key)
             if cached:
@@ -1752,6 +1758,10 @@ def api_center_sources_home():
             sections.append({**section, 'items': items})
         resp['sections'] = sections
         resp['items'] = []
+        center_cache_hit = bool(resp.get('cache_hit'))
+        if 'cache_hit' in resp:
+            resp['center_cache_hit'] = center_cache_hit
+            resp['cache_hit'] = center_cache_hit
         payload = {'success': True, **resp}
         _center_home_proxy_cache_set(cache_key, payload)
         return jsonify(payload)
