@@ -2906,8 +2906,24 @@ def _raw_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
     sha1 = _norm_sha1(file_info.get('sha1'))
     if not sha1:
         return {}
-    row = shared_share_db.raw_ffprobe_for_sha1(sha1) or {}
-    raw = row.get('raw_ffprobe_json') if isinstance(row.get('raw_ffprobe_json'), dict) else {}
+
+    def _read_raw() -> Dict[str, Any]:
+        row = shared_share_db.raw_ffprobe_for_sha1(sha1) or {}
+        return row.get('raw_ffprobe_json') if isinstance(row.get('raw_ffprobe_json'), dict) else {}
+
+    def _has_required_etk(raw_obj: Dict[str, Any]) -> bool:
+        etk_obj = raw_obj.get('_etk') if isinstance(raw_obj, dict) and isinstance(raw_obj.get('_etk'), dict) else {}
+        return bool(str(etk_obj.get('tmdb_id') or '').strip() and str(etk_obj.get('type') or '').strip())
+
+    raw = _read_raw()
+    if raw and not _has_required_etk(raw):
+        try:
+            from handler.p115_service import P115CacheManager
+            P115CacheManager.get_raw_ffprobe_cache(sha1)
+            raw = _read_raw()
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] RAW 上传前自检补齐 _etk 失败: sha1={sha1[:12]}..., err={e}")
+
     if not raw:
         return {}
     # 补齐中心需要的 _etk。中心会清理 cookie/pc/url，不泄露 CK。
@@ -2924,6 +2940,12 @@ def _raw_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
     if file_info.get('episode_number') not in (None, ''):
         etk.setdefault('episode_number', _safe_int(file_info.get('episode_number')))
     raw['_etk'] = etk
+    if not _has_required_etk(raw):
+        logger.warning(
+            "  ➜ [共享资源] RAW 缺少 TMDb 身份，拒绝上传中心：%s",
+            file_info.get('file_name') or file_info.get('name') or sha1,
+        )
+        return {}
     return raw
 
 

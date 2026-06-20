@@ -2491,6 +2491,7 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
 
             if emby_json:
                 P115CacheManager.save_mediainfo_cache(sha1, emby_json, raw_ffprobe)
+                P115CacheManager.get_raw_ffprobe_cache(sha1)
                 return emby_json
 
         except Exception as e:
@@ -2561,6 +2562,9 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
         # 如果不是强制全量，先尝试直接从数据库获取格式化好的 mediainfo
         if not force_full_update and sha1:
             mediainfo = media_db.get_mediainfo_by_sha1(sha1)
+            if mediainfo:
+                # 命中 mediainfo_json 时也顺手读取 RAW，触发旧缓存 _etk 自动补齐。
+                P115CacheManager.get_raw_ffprobe_cache(sha1)
 
         # 如果没有获取到 (或者是强制全量被清空了)，则尝试重新生成或在线提取
         if not mediainfo and sha1 and pc:
