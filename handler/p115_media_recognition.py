@@ -83,6 +83,35 @@ class P115RecognitionRuleTests(unittest.TestCase):
                     else:
                         self.assertEqual(result.get(key), value)
 
+    def test_rename_renderer_supports_mp_tmdb_dash_template(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "绝命毒师", "date": "2008-01-20"},
+            tmdb_id="1396",
+            original_title="Breaking Bad",
+        )
+        name = renderer.build_name(
+            "{{title}}{% if year %} ({{year}}){% endif %} {tmdb-{{tmdbid}}}",
+            is_tv=True,
+            season_num=1,
+            episode_num=1,
+        )
+        self.assertEqual(name, "绝命毒师 (2008) {tmdb-1396}")
+
+    def test_rename_renderer_accepts_mp_zfill_shorthand(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "绝命毒师", "date": "2008-01-20"},
+            tmdb_id="1396",
+            original_title="Breaking Bad",
+        )
+        name = renderer.build_name(
+            "Season {{season|string}.zfill(2)}}/{{title}} - {{season_episode}}{{fileExt}}",
+            is_tv=True,
+            season_num=1,
+            episode_num=1,
+            file_ext="mkv",
+        )
+        self.assertEqual(name, "Season 01/绝命毒师 - S01E01.mkv")
+
     def test_identify_media_enhanced_prefers_rule_search_input(self):
         with mock.patch.object(
             p115_service.tmdb,

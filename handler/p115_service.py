@@ -21,6 +21,7 @@ import handler.tmdb as tmdb
 from tasks import helpers
 import utils
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
+from handler.p115_rename import P115RenameRenderer
 from handler.tg_media_candidate import candidate_to_recognition_hints, is_recognition_hint_eligible, lookup_candidate_hint_for_name, normalize_title_for_match
 try:
     from p115client import P115Client
@@ -5107,8 +5108,6 @@ def get_config():
 
 
 class SmartOrganizer(P115MediaAnalyzerMixin):
-    _P115_INVALID_NAME_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
-
     def __init__(self, client, tmdb_id, media_type, original_title, ai_translator=None, use_ai=False, recognition_hints=None):
         self.client = client
         self.tmdb_id = tmdb_id
@@ -5131,6 +5130,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         self.rename_config = settings_db.get_setting('p115_rename_config') or {
             "main_title_lang": "zh", "main_year_en": True, "main_tmdb_fmt": "{tmdb=ID}",
             "season_fmt": "Season {02}", "file_title_lang": "zh", "file_year_en": False,
+            "main_dir_template": "{{title}}{% if year %} ({{year}}){% endif %} {tmdb={{tmdbid}}}",
+            "season_dir_template": "Season {{season_no}}",
+            "file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
             "file_tmdb_fmt": "none", "file_params_en": True, "file_sep": " - ",
             "strm_url_fmt": "standard"
         }
@@ -5724,87 +5726,30 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         return None
 
-    def _build_name_from_format(self, format_array, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None):
-        """解析乐高轨道生成名称 (支持目录和文件，自动过滤特殊字符)"""
-        if not format_array: return ""
-        
-        evaluated = []
-        for raw_id in format_array:
-            block = raw_id.rsplit('_', 1)[0] if re.search(r'_\d+$', raw_id) else raw_id
-            val = None
-            is_sep = False
-            
-            # 标题块统一做 115 非法字符清洗，避免目录/文件名因原文标题中的引号等字符创建失败。
-            if block == 'title_zh':
-                raw_title = safe_title if safe_title else (self.details.get('title') or self.original_title)
-                val = self._sanitize_115_name_component(raw_title)
-            elif block == 'title_en':
-                raw_title = self.details.get('title_en') or original_title or self.details.get('original_title') or self.original_title
-                val = self._sanitize_115_name_component(raw_title)
-            elif block == 'title_orig':
-                raw_title = original_title or self.details.get('original_title') or self.original_title
-                val = self._sanitize_115_name_component(raw_title)
-            elif block == 'year': val = f"({self.details.get('date', '')[:4]})" if self.details.get('date') else None
-            elif block == 'year_pure': val = self.details.get('date', '')[:4] if self.details.get('date') else None
-            elif block == 'tmdb_bracket': val = f"{{tmdb={self.tmdb_id}}}"
-            elif block == 'tmdb_square': val = f"[tmdbid={self.tmdb_id}]"
-            elif block == 'tmdb_dash': val = f"tmdb-{self.tmdb_id}"
-            elif block == 's_e' and is_tv: 
-                s_val = season_num if season_num is not None else 1
-                e_val = episode_num if episode_num is not None else 1
-                val = f"S{s_val:02d}E{e_val:02d}" 
-            elif block in ('episode_name_zh', 'episode_no_zh') and is_tv:
-                e_val = episode_num if episode_num is not None else 1
-                val = f"第 {e_val} 集"
-            elif block in ('s_e_zh', 'season_episode_zh') and is_tv:
-                s_val = season_num if season_num is not None else 1
-                e_val = episode_num if episode_num is not None else 1
-                val = f"第 {s_val} 季 {e_val} 集"
-            elif block == 'season_name_en' and is_tv:
-                val = f"Season {season_num:02d}" if season_num is not None else None
-            elif block == 'season_name_en_no0' and is_tv:
-                val = f"Season {season_num}" if season_num is not None else None
-            elif block == 'season_name_zh' and is_tv:
-                val = f"第 {season_num} 季" if season_num is not None else None
-            elif block == 'season_name_s' and is_tv:
-                val = f"S{season_num:02d}" if season_num is not None else None
-            elif block == 'season_name_s_no0' and is_tv:
-                val = f"S{season_num}" if season_num is not None else None
-            elif video_info and block in video_info: val = video_info.get(block)
-            elif block.startswith('sep_'):
-                is_sep = True
-                if block == 'sep_slash': val = '/'
-                elif block.startswith('sep_dash_space'): val = ' - '
-                elif block.startswith('sep_middot_space'): val = ' · '
-                elif block.startswith('sep_middot'): val = '·'
-                elif block.startswith('sep_dot'): val = '.'
-                elif block.startswith('sep_dash'): val = '-'
-                elif block.startswith('sep_underline'): val = '_'
-                elif block.startswith('sep_space'): val = ' '
+    def _rename_renderer(self):
+        return P115RenameRenderer(self.details, self.tmdb_id, self.original_title)
 
-            if val: evaluated.append({'val': str(val).strip() if not is_sep else val, 'is_sep': is_sep})
+    def _get_rename_format(self, kind, fallback):
+        return P115RenameRenderer.get_format(self.rename_config, kind, fallback)
 
-        # 智能消除多余分隔符
-        final_parts = []
-        for i, item in enumerate(evaluated):
-            if item['is_sep']:
-                has_content_before = any(not x['is_sep'] for x in evaluated[:i])
-                has_content_after = any(not x['is_sep'] for x in evaluated[i+1:])
-                is_last_sep_in_group = True
-                if i + 1 < len(evaluated) and evaluated[i+1]['is_sep']:
-                    is_last_sep_in_group = False
-                if has_content_before and has_content_after and is_last_sep_in_group:
-                    final_parts.append(item['val'])
-            else:
-                final_parts.append(item['val'])
+    def _template_uses_file_ext(self, format_value):
+        return P115RenameRenderer.template_uses_file_ext(format_value)
 
-        return "".join(final_parts)
+    def _build_name_from_format(self, format_array, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None, file_ext=""):
+        return self._rename_renderer().build_name(
+            format_array,
+            is_tv=is_tv,
+            season_num=season_num,
+            episode_num=episode_num,
+            original_title=original_title,
+            video_info=video_info,
+            safe_title=safe_title,
+            file_ext=file_ext,
+        )
 
     @classmethod
     def _sanitize_115_name_component(cls, text):
-        cleaned = utils.clean_invisible_chars(text)
-        cleaned = cls._P115_INVALID_NAME_CHARS_RE.sub('', cleaned).strip()
-        return cleaned
+        return P115RenameRenderer.sanitize_name_component(text)
 
     def _get_episode_regex_rules(self):
         """懒加载自定义季集号识别规则，避免每个文件都查数据库"""
@@ -5936,8 +5881,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 episode_num = file_node.get('_forced_episode')
                 s_name = None
                 if is_tv and season_num is not None:
-                    cfg = self.rename_config
-                    season_format = cfg.get('season_dir_format', ['season_name_en'])
+                    season_format = self._get_rename_format('season_dir', ['season_name_en'])
                     s_name = self._build_name_from_format(
                         season_format, 
                         is_tv=True, 
@@ -6212,7 +6156,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
-        file_format = cfg.get('file_format', default_format)
+        file_format = self._get_rename_format('file', default_format)
 
         core_name = self._build_name_from_format(
             file_format, 
@@ -6221,7 +6165,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             episode_num=episode_num, 
             original_title=original_title, 
             video_info=video_info,
-            safe_title=new_base_name # 传入过滤过特殊字符的标题
+            safe_title=new_base_name, # 传入过滤过特殊字符的标题
+            file_ext=ext,
         )
 
         # 兜底：如果轨道配空了，用原名
@@ -6235,12 +6180,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             part_num = int(part_match.group(2))
             part_suffix = f" - pt{part_num}"
 
-        new_name = f"{core_name}{part_suffix}{lang_suffix}.{ext}"
+        if self._template_uses_file_ext(file_format) or core_name.lower().endswith(f".{ext.lower()}"):
+            core_base, core_ext = os.path.splitext(core_name)
+            new_name = f"{core_base}{part_suffix}{lang_suffix}{core_ext or f'.{ext}'}"
+        else:
+            new_name = f"{core_name}{part_suffix}{lang_suffix}.{ext}"
         
         # ★★★ 核心修复：在这里利用齐全的 video_info 生成季目录名称 ★★★
         s_name = None
         if is_tv and season_num is not None:
-            season_format = cfg.get('season_dir_format', ['season_name_en'])
+            season_format = self._get_rename_format('season_dir', ['season_name_en'])
             s_name = self._build_name_from_format(
                 season_format, 
                 is_tv=True, 
@@ -6794,7 +6743,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         # ★ 保留原名只影响文件名，不影响主目录
         # batch 模式 root_name 可能是“批量文件”，绝不能拿它当目标主目录
-        main_format = cfg.get('main_dir_format', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
+        main_format = self._get_rename_format('main_dir', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
         std_root_name = self._build_name_from_format(
             main_format,
             is_tv=(self.media_type == 'tv'),
