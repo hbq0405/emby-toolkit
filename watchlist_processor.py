@@ -417,6 +417,36 @@ class WatchlistProcessor:
                                     has_new_content = True
                                     logger.info(f"  ➜ [新季检测] 《{series_name}》发现新播出记录 ({tmdb_last_date} > {last_air_date_local})，触发全量刷新。")
                             except: pass
+
+                        if not has_new_content:
+                            try:
+                                local_max_season = int(last_ep_json.get('season_number') or 0) if isinstance(last_ep_json, dict) else 0
+                            except (TypeError, ValueError):
+                                local_max_season = 0
+
+                            for season_info in tmdb_basic.get('seasons') or []:
+                                try:
+                                    tmdb_season_num = int(season_info.get('season_number', 0))
+                                except (TypeError, ValueError):
+                                    continue
+
+                                if tmdb_season_num <= local_max_season:
+                                    continue
+
+                                air_date_str = season_info.get('air_date')
+                                if not air_date_str:
+                                    continue
+
+                                try:
+                                    season_air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                                except ValueError:
+                                    continue
+
+                                days_diff = (season_air_date - today).days
+                                if -30 <= days_diff <= 7:
+                                    has_new_content = True
+                                    logger.info(f"  ➜ [新季检测] 《{series_name}》第 {tmdb_season_num} 季已有开播日期 {air_date_str}，触发全量刷新。")
+                                    break
                         
                         # 3. 决策：如果没有新内容，直接跳过后续所有逻辑
                         if not has_new_content:
