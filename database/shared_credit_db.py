@@ -38,9 +38,15 @@ def get_shared_resource_summary() -> Dict[str, Any]:
                     COUNT(*) FILTER (WHERE status IN ('active','available') AND source_kind='episode') AS alive_episodes,
                     COUNT(DISTINCT COALESCE(NULLIF(parent_series_tmdb_id, ''), NULLIF(tmdb_id, ''))) FILTER (
                         WHERE status IN ('active','available')
-                          AND source_kind = 'episode'
+                          AND source_kind IN ('episode', 'logical_season')
                           AND COALESCE(NULLIF(parent_series_tmdb_id, ''), NULLIF(tmdb_id, '')) IS NOT NULL
-                    ) AS alive_series_count
+                    ) AS alive_series_count,
+                    COUNT(DISTINCT CONCAT(COALESCE(NULLIF(parent_series_tmdb_id, ''), NULLIF(tmdb_id, '')), ':', season_number::text)) FILTER (
+                        WHERE status IN ('active','available')
+                          AND source_kind IN ('episode', 'logical_season')
+                          AND COALESCE(NULLIF(parent_series_tmdb_id, ''), NULLIF(tmdb_id, '')) IS NOT NULL
+                          AND season_number IS NOT NULL
+                    ) AS alive_season_count
                 FROM shared_rapid_sources
                 """
             )

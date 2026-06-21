@@ -1086,6 +1086,18 @@ const localShareSeriesCount = computed(() => {
   );
 });
 
+const localShareSeasonCount = computed(() => {
+  const shares = summary.value.shares || {};
+  return firstFiniteNumber(
+    shares.alive_season_count,
+    shares.season_count,
+    shares.display_season_count,
+    shares.alive_series_count,
+    shares.series_count,
+    0
+  );
+});
+
 const activeShareRequestCount = computed(() => {
   const credit = summary.value.credit || {};
   const rawStats = credit?.raw_json?.stats || {};
@@ -1110,10 +1122,10 @@ const statCards = computed(() => {
     {
       key: 'shares',
       label: '我的共享',
-      value: `电影 ${shares.alive_movies ?? 0} · 剧集 ${localShareSeriesCount.value}`,
+      value: `电影 ${shares.alive_movies ?? 0} · 剧 ${localShareSeriesCount.value} · 季 ${localShareSeasonCount.value}`,
       desc: `共计视频 ${shares.alive_videos ?? 0} 个`,
     },
-    { key: 'remote_sources', label: '中心资源', value: `电影 ${centerStats.movieCount} · 剧集 ${centerStats.seriesCount}`, desc: `共计视频 ${centerStats.videoCount} 个` },
+    { key: 'remote_sources', label: '中心资源', value: `电影 ${centerStats.movieCount} · 季 ${centerStats.seriesCount}`, desc: `共计视频 ${centerStats.videoCount} 个` },
     { key: 'share_requests', label: '求共享', value: activeShareRequestCount.value, desc: '活跃求共享需求' },
   ];
 });
@@ -1787,7 +1799,9 @@ const centerTitleText = (row) => {
 const centerSeriesSeasonRows = (row) => Array.isArray(row?.seasons) ? row.seasons.filter(x => x && typeof x === 'object') : [];
 const centerSeasonIsSpecialNumber = (row) => centerSeasonTabNumber(row) === 0;
 const centerStatusText = (row) => String(
-  row?.season_status_label
+  row?.center_ribbon_text
+  || row?.ribbon_text
+  || row?.season_status_label
   || row?.display_status_label
   || row?.status_label
   || ''
@@ -1805,6 +1819,7 @@ const centerSeasonResourceStatus = (row) => {
   const label = centerStatusText(row);
   if (/一致版/.test(label)) return 'consistent';
   if (/已完结|完结/.test(label)) return 'completed';
+  if (/缺集|未完整/.test(label)) return 'missing';
   if (/连载中|更新中|未完结/.test(label)) return 'ongoing';
   return '';
 };
@@ -2740,10 +2755,13 @@ const onCenterPosterError = (event) => {
   if (!target.src.endsWith('/default-poster.png')) target.src = '/default-poster.png';
 };
 const centerRibbonText = (row) => {
+  const direct = String(row?.center_ribbon_text || row?.ribbon_text || '').trim();
+  if (direct) return direct;
   if (isCenterReplenishRow(row)) return '待补充';
   const resourceStatus = centerSeasonResourceStatus(row);
   if (resourceStatus === 'consistent') return '一致版';
   if (resourceStatus === 'completed') return '已完结';
+  if (resourceStatus === 'missing') return '缺集';
   if (resourceStatus === 'ongoing') return '连载中';
   if (isCenterCompletedCertified(row)) return '一致版';
   if (centerIsCompletedByServer(row)) return '已完结';
@@ -2751,10 +2769,13 @@ const centerRibbonText = (row) => {
   return '';
 };
 const centerRibbonClass = (row) => {
+  const direct = String(row?.center_ribbon_class || row?.ribbon_class || '').trim();
+  if (direct) return direct;
   if (isCenterReplenishRow(row)) return 'center-ribbon-warning';
   const resourceStatus = centerSeasonResourceStatus(row);
   if (resourceStatus === 'consistent') return 'center-ribbon-green';
   if (resourceStatus === 'completed') return 'center-ribbon-dark';
+  if (resourceStatus === 'missing') return 'center-ribbon-warning';
   if (resourceStatus === 'ongoing') return 'center-ribbon-blue';
   if (isCenterCompletedCertified(row)) return 'center-ribbon-green';
   if (centerIsCompletedByServer(row)) return 'center-ribbon-dark';
