@@ -112,6 +112,20 @@ class P115RecognitionRuleTests(unittest.TestCase):
         )
         self.assertEqual(name, "Season 01/绝命毒师 - S01E01.mkv")
 
+    def test_rename_renderer_exposes_chinese_season_episode_tokens(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "绝命毒师", "date": "2008-01-20"},
+            tmdb_id="1396",
+            original_title="Breaking Bad",
+        )
+        name = renderer.build_name(
+            "{{season_name_zh}} {{episode_name_zh}} {{season_episode_zh}}",
+            is_tv=True,
+            season_num=1,
+            episode_num=1,
+        )
+        self.assertEqual(name, "第 1 季 第 1 集 第 1 季 1 集")
+
     def test_identify_media_enhanced_prefers_rule_search_input(self):
         with mock.patch.object(
             p115_service.tmdb,

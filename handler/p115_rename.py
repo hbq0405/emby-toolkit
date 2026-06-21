@@ -67,6 +67,9 @@ class P115RenameRenderer:
         season_no = f"{season_val:02d}" if season_val is not None else ""
         episode_no = f"{episode_val:02d}" if episode_val is not None else ""
         season_episode = f"S{season_no}E{episode_no}" if is_tv and season_no and episode_no else ""
+        season_name_zh = f"第 {season_val} 季" if is_tv and season_val is not None else ""
+        episode_name_zh = f"第 {episode_val} 集" if is_tv and episode_val is not None else ""
+        season_episode_zh = f"第 {season_val} 季 {episode_val} 集" if is_tv and season_val is not None and episode_val is not None else ""
         source = video_info.get('source') or ''
         effect = video_info.get('effect') or ''
         codec = video_info.get('codec') or ''
@@ -92,6 +95,10 @@ class P115RenameRenderer:
             's_e': season_episode,
             'season_episode': season_episode,
             'season_name': f"Season {season_no}" if season_no else "",
+            'season_name_zh': season_name_zh,
+            'episode_name_zh': episode_name_zh,
+            's_e_zh': season_episode_zh,
+            'season_episode_zh': season_episode_zh,
             'resolution': video_info.get('resolution') or '',
             'source': source,
             'stream': video_info.get('stream') or '',

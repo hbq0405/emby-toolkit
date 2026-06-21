@@ -221,6 +221,9 @@ const templateBlocks = [
   { label: '季集 S01E01', snippet: '{{season_episode}}' },
   { label: '季号 01', snippet: '{{season_no}}' },
   { label: '集号 01', snippet: '{{episode_no}}' },
+  { label: '中文季号 (第 1 季)', snippet: '{{season_name_zh}}' },
+  { label: '中文集号 (第 1 集)', snippet: '{{episode_name_zh}}' },
+  { label: '中文季集号 (第 1 季 1 集)', snippet: '{{season_episode_zh}}' },
   { label: '分辨率', snippet: '{{resolution}}' },
   { label: '来源', snippet: '{{videoFormat}}' },
   { label: '视频编码', snippet: '{{videoCodec | upper}}' },
@@ -259,6 +262,9 @@ const mockTv = {
   season_no: '01',
   episode_no: '01',
   season_episode: 'S01E01',
+  season_name_zh: '第 1 季',
+  episode_name_zh: '第 1 集',
+  season_episode_zh: '第 1 季 1 集',
   resolution: '2160p',
   videoFormat: 'WEB-DL',
   videoCodec: 'HEVC',
@@ -277,28 +283,42 @@ const normalizeMpTemplate = (template) => {
   return String(template || '').replace(/{{\s*([A-Za-z_]\w*)\s*\|\s*string\s*}\s*\.zfill\((\d+)\)\s*}}/g, '{{ ($1|string).zfill($2) }}');
 };
 
+const splitTemplateFromRight = (template, separatorCount) => {
+  const parts = [];
+  let end = template.length;
+  for (let i = 0; i < separatorCount; i++) {
+    const index = template.lastIndexOf('/', end - 1);
+    if (index < 0) return null;
+    parts.unshift(template.slice(index + 1, end).trim());
+    end = index;
+  }
+  parts.unshift(template.slice(0, end).trim());
+  return parts;
+};
+
 const importMpTemplate = (type) => {
   const raw = normalizeMpTemplate(mpTemplate.value).trim();
   if (!raw) {
     message.warning('请先粘贴 MP 模板');
     return;
   }
-  const parts = raw.split('/').map(p => p.trim()).filter(Boolean);
   if (type === 'movie') {
-    if (parts.length < 2) {
+    const parts = splitTemplateFromRight(raw, 1);
+    if (!parts || parts.some(part => !part)) {
       message.warning('电影模板至少需要包含 主目录/文件名 两段');
       return;
     }
-    config.value.main_dir_template = parts.slice(0, -1).join('/');
-    config.value.file_template = parts[parts.length - 1];
+    config.value.main_dir_template = parts[0];
+    config.value.file_template = parts[1];
   } else {
-    if (parts.length < 3) {
+    const parts = splitTemplateFromRight(raw, 2);
+    if (!parts || parts.some(part => !part)) {
       message.warning('剧集模板至少需要包含 主目录/季目录/文件名 三段');
       return;
     }
     config.value.main_dir_template = parts[0];
-    config.value.season_dir_template = parts.slice(1, -1).join('/');
-    config.value.file_template = parts[parts.length - 1];
+    config.value.season_dir_template = parts[1];
+    config.value.file_template = parts[2];
   }
   message.success('已导入模板');
 };
