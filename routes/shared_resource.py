@@ -140,7 +140,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
     stats = client.stats()
     display_series = {}
     try:
-        display_series = client.list_display_sources(item_type='Series', limit=1, offset=0)
+        display_series = {'total': stats.get('display_series_count') or (stats.get('media_stats') or {}).get('series_count')}
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 拉取中心剧集展示统计失败: {e}")
     ledger = {}
@@ -1589,10 +1589,7 @@ def api_center_sources():
         }
         resp = client.list_display_sources(
             **params,
-            force_refresh=_boolish(
-                request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'),
-                False,
-            ),
+            force_refresh=False,
         )
 
         raw_items = [row for row in (resp.get('items') or []) if isinstance(row, dict)]
@@ -1696,7 +1693,7 @@ def api_center_sources_home():
 
         resp = client.list_display_home(
             limit_per_section=limit_per_section,
-            force_refresh=force_refresh,
+            force_refresh=False,
             sections=home_sections,
         )
 
@@ -1731,7 +1728,8 @@ def api_center_sources_home():
             resp['center_cache_hit'] = center_cache_hit
             resp['cache_hit'] = center_cache_hit
         payload = {'success': True, **resp}
-        _center_home_proxy_cache_set(cache_key, payload)
+        if int(resp.get('total') or 0) > 0:
+            _center_home_proxy_cache_set(cache_key, payload)
         return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'items': [], 'sections': []}), 500
