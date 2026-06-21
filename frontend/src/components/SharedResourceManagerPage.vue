@@ -560,7 +560,6 @@ const centerBackendGrouped = ref(false);
 const centerExpandedRowKeys = ref([]);
 const centerChildrenLoading = reactive({});
 const centerVersionExpandedMap = reactive({});
-const centerPrefetchedDetailKeys = new Set();
 const centerHasMore = ref(true);
 const centerAppendLoading = ref(false);
 const centerInfiniteSentinel = ref(null);
@@ -3199,40 +3198,6 @@ const loadCenterSourceDetail = async (row, seasonOverride = null) => {
   return res.data?.data || res.data || {};
 };
 
-const prefetchCenterHomeDetails = (sections = []) => {
-  const rows = [];
-  (sections || []).forEach(section => {
-    (section?.items || []).forEach(row => {
-      if (row && typeof row === 'object') rows.push(row);
-    });
-  });
-  const seen = new Set();
-  const targets = [];
-  for (const row of rows) {
-    const season = centerIsSeriesGroup(row) ? centerDefaultDetailSeason(row) : centerSeasonNumber(row);
-    const params = centerDetailParams(row, season);
-    const key = JSON.stringify(params);
-    if (seen.has(key) || centerPrefetchedDetailKeys.has(key)) continue;
-    seen.add(key);
-    targets.push({ row, season, key });
-    if (targets.length >= 18) break;
-  }
-  if (!targets.length) return;
-  window.setTimeout(() => {
-    targets.forEach((target, index) => {
-      window.setTimeout(async () => {
-        if (centerPrefetchedDetailKeys.has(target.key)) return;
-        centerPrefetchedDetailKeys.add(target.key);
-        try {
-          await loadCenterSourceDetail(target.row, target.season);
-        } catch (_) {
-          centerPrefetchedDetailKeys.delete(target.key);
-        }
-      }, index * 250);
-    });
-  }, 300);
-};
-
 const applyCenterDetailPayload = (base, payload, seasonOverride = null) => {
   const merged = mergeCenterDetailPayload(base, payload);
   if (centerIsSeriesGroup(merged)) {
@@ -3397,7 +3362,6 @@ const loadCenterSources = async (forceRefresh = false, append = false) => {
       centerPagination.itemCount = Number(res.data?.total || 0);
       centerHasMore.value = false;
       setupCenterInfiniteObserver();
-      prefetchCenterHomeDetails(centerHomeSections.value);
       return;
     }
     centerHomeSections.value = [];

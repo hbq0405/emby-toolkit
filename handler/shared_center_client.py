@@ -49,6 +49,8 @@ def _current_server_id_hash() -> str:
         server_id = ''
     if not server_id:
         server_id = str((config_manager.APP_CONFIG or {}).get('emby_server_id') or '').strip()
+    if not server_id:
+        server_id = _setting_text('emby_server_id_cache')
     return _sha256_or_empty(server_id)
 
 
@@ -117,17 +119,12 @@ def build_current_pro_quota_report_payload() -> Dict[str, Any]:
         effective_is_pro_active = False
         auth_state = 'expired_local'
 
-    try:
-        import extensions
-        server_id = str(getattr(extensions, 'EMBY_SERVER_ID', '') or '').strip()
-    except Exception:
-        server_id = ''
     return {
         'is_pro_active': effective_is_pro_active,
         'pro_tier': tier,
         'pro_expire_time': pro_expire_time,
         'pro_license_hash': _sha256_or_empty(license_key),
-        'pro_server_id_hash': _sha256_or_empty(server_id),
+        'pro_server_id_hash': _current_server_id_hash(),
         'client_version': _app_version(),
         'auth_source': 'client_local_license_grace' if auth_grace else 'client_app_config',
         'auth_state': auth_state,
@@ -306,13 +303,17 @@ class SharedCenterClient:
 
     def _headers(self) -> Dict[str, str]:
         version = _app_version()
-        return {
+        headers = {
             'X-Device-Token': self.device_token,
             'X-Client-Version': version,
             'X-ETK-Version': version,
             'Content-Type': 'application/json',
             'User-Agent': _client_user_agent(),
         }
+        server_id_hash = _current_server_id_hash()
+        if server_id_hash:
+            headers['X-Server-ID-Hash'] = server_id_hash
+        return headers
 
     def _post(self, path: str, payload: Dict[str, Any] | None = None, timeout: int = 20) -> Dict[str, Any]:
         if not self.ready:
