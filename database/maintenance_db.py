@@ -1018,6 +1018,7 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
 
     client = SharedCenterClient()
     disabled = failed = 0
+    deleted = 0
     items = []
     for row in rows:
         local_id = int(row.get('id') or 0)
@@ -1027,6 +1028,17 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
         reason = str(row.get('offline_reason') or 'media_deleted')
         message = f'local media deleted: {reason}'
         center_resp = {}
+
+        if source_kind == 'completed_season':
+            delete_reason = 'legacy_completed_season_source_removed'
+            shared_share_db.delete_local_source(local_id)
+            deleted += 1
+            items.append({'id': local_id, 'source_kind': source_kind, 'center_source_id': center_source_id, 'title': title, 'reason': delete_reason, 'deleted': True})
+            logger.info(
+                "  ➜ [共享资源删除善后] 已删除废弃 completed_season 共享源: id=%s, center=%s, title=%s, offline_reason=%s",
+                local_id, center_source_id or '-', title, reason,
+            )
+            continue
 
         if center_source_id:
             try:
@@ -1054,7 +1066,7 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
         )
 
     total_failed = failed + int(file_cleanup.get('failed') or 0)
-    result = {'ok': total_failed == 0, 'matched': len(rows), 'disabled': disabled, 'failed': total_failed, 'items': items[:50]}
+    result = {'ok': total_failed == 0, 'matched': len(rows), 'disabled': disabled, 'deleted': deleted, 'failed': total_failed, 'items': items[:50]}
     logical_share_cleanup = file_cleanup.get('logical_share_cleanup') if isinstance(file_cleanup, dict) else None
     if (
         file_cleanup.get('matched')

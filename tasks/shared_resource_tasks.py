@@ -6571,6 +6571,7 @@ def disable_shared_sources_for_deleted_fids(
     reason_text = str(reason or 'washing_replaced_old_version').strip()
     center_message = str(message or '').strip() or f'local file deleted by washing: {reason_text}'
     disabled = 0
+    deleted = 0
     failed = 0
     items: List[Dict[str, Any]] = []
     logical_share_cleanup = _delete_logical_share_channels_for_fids(fid_list, reason_text)
@@ -6633,6 +6634,49 @@ def disable_shared_sources_for_deleted_fids(
         title = str(row.get('title') or row.get('file_name') or row.get('tmdb_id') or local_id)
         matched_file_fids = [str(x) for x in (row.get('matched_file_fids') or []) if str(x or '').strip()]
         center_resp: Dict[str, Any] = {}
+
+        if source_kind == 'completed_season':
+            delete_reason = 'legacy_completed_season_source_removed'
+            try:
+                shared_share_db.delete_local_source(local_id)
+                deleted += 1
+                item = {
+                    'id': local_id,
+                    'source_kind': source_kind,
+                    'center_source_id': center_source_id,
+                    'title': title,
+                    'ok': True,
+                    'deleted': True,
+                    'reason': delete_reason,
+                    'matched_file_fids': matched_file_fids,
+                    'root_fid_matched': str(row.get('root_fid') or '') in fid_list,
+                }
+                items.append(item)
+                logger.info(
+                    "  ➜ [共享资源] 洗版删除旧版前已删除废弃 completed_season 共享源: id=%s, center=%s, title=%s, matched_files=%s",
+                    local_id,
+                    center_source_id or '-',
+                    title,
+                    len(matched_file_fids) or ('root' if item['root_fid_matched'] else 0),
+                )
+            except Exception as e:
+                failed += 1
+                logger.warning(
+                    "  ➜ [共享资源] 洗版废弃 completed_season 本地删除失败: id=%s, center=%s, title=%s, err=%s",
+                    local_id,
+                    center_source_id or '-',
+                    title,
+                    e,
+                )
+                items.append({
+                    'id': local_id,
+                    'source_kind': source_kind,
+                    'center_source_id': center_source_id,
+                    'title': title,
+                    'ok': False,
+                    'error': str(e),
+                })
+            continue
 
         share_cleanup = _delete_completed_share_channels_for_source(row, reason_text, client=client)
         if not share_cleanup.get('ok'):
@@ -6749,6 +6793,7 @@ def disable_shared_sources_for_deleted_fids(
         'ok': failed == 0,
         'matched': len(rows),
         'disabled': disabled,
+        'deleted': deleted,
         'failed': failed,
         'logical_share_cleanup': logical_share_cleanup,
         'items': items[:50],
