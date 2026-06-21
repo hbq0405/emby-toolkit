@@ -3848,25 +3848,8 @@ class P115CacheManager:
             new_content, count = pattern.subn(lambda m: m.group(1) + new_pc, content)
             if count <= 0 or new_content == content:
                 return 0
-            emby_url = str(cfg.get(constants.CONFIG_OPTION_EMBY_SERVER_URL) or '').strip()
-            emby_api_key = str(cfg.get(constants.CONFIG_OPTION_EMBY_API_KEY) or '').strip()
-            ignore_features = None
-            if emby_url and emby_api_key:
-                try:
-                    from handler import emby
-                    ignore_features = emby.enable_strm_assistant_ignore_file_change(emby_url, emby_api_key)
-                except Exception as e:
-                    logger.debug(f"  ➜ [115缓存] 开启神医忽略文件变更失败: {e}")
-            try:
-                with open(strm_path, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-            finally:
-                if ignore_features is not None:
-                    try:
-                        from handler import emby
-                        emby.disable_strm_assistant_ignore_file_change(emby_url, emby_api_key, ignore_features)
-                    except Exception as e:
-                        logger.debug(f"  ➜ [115缓存] 恢复神医忽略文件变更失败: {e}")
+            with open(strm_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
             return 1
         except Exception as e:
             logger.debug(f"  ➜ [115缓存] 更新 STRM 中的 PC 失败: {e}")

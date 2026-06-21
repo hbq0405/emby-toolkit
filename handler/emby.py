@@ -15,11 +15,10 @@ from urllib3.util.retry import Retry
 from threading import BoundedSemaphore
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
-from urllib.parse import parse_qs, urlparse
 
 import config_manager
 import constants
-from typing import Optional, List, Dict, Any, Generator, Tuple, Set, Callable
+from typing import Optional, List, Dict, Any, Generator, Set, Callable
 import logging
 logger = logging.getLogger(__name__)
 
@@ -99,140 +98,6 @@ class EmbyAPIClient:
 
 # 初始化全局客户端实例
 emby_client = EmbyAPIClient()
-
-_STRM_ASSISTANT_IGNORE_FILE_CHANGE = "IgnoreFileChange"
-_STRM_ASSISTANT_MEDIAINFO_PAGE_NAME = "MediaInfoExtractPageView"
-_strm_assistant_ignore_lock = threading.RLock()
-_strm_assistant_ignore_states: Dict[Tuple[str, str], Dict[str, Any]] = {}
-_strm_assistant_page_cache: Dict[Tuple[str, str], Tuple[str, float]] = {}
-
-def _get_strm_assistant_mediainfo_page_id(base_url: str, api_key: str) -> Optional[str]:
-    base = (base_url or "").rstrip("/")
-    if not base or not api_key:
-        return None
-
-    cache_key = (base, api_key)
-    cached = _strm_assistant_page_cache.get(cache_key)
-    if cached and time.time() - cached[1] < CACHE_TTL:
-        return cached[0]
-
-    try:
-        resp = emby_client.get(f"{base}/web/ConfigurationPages", params={"api_key": api_key}, timeout=15)
-        resp.raise_for_status()
-        for page in resp.json() or []:
-            if page.get("Name") != _STRM_ASSISTANT_MEDIAINFO_PAGE_NAME:
-                continue
-            href = page.get("Href") or page.get("NavMenuId") or ""
-            page_id = (parse_qs(urlparse(href).query).get("PageId") or [None])[0]
-            if page_id:
-                _strm_assistant_page_cache[cache_key] = (page_id, time.time())
-                return page_id
-    except Exception as e:
-        logger.debug(f"  ➜ [神医忽略] 获取媒体信息提取配置页失败: {e}")
-    return None
-
-def _load_strm_assistant_mediainfo_config(base_url: str, api_key: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    page_id = _get_strm_assistant_mediainfo_page_id(base_url, api_key)
-    if not page_id:
-        return None, None
-    try:
-        resp = emby_client.get(
-            f"{base_url.rstrip('/')}/UI/View",
-            params={"api_key": api_key, "PageId": page_id, "ClientLocale": "zh-cn"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        obj = ((resp.json() or {}).get("EditObjectContainer") or {}).get("Object")
-        return page_id, obj if isinstance(obj, dict) else None
-    except Exception as e:
-        logger.debug(f"  ➜ [神医忽略] 读取媒体信息提取配置失败: {e}")
-        return page_id, None
-
-def _save_strm_assistant_mediainfo_config(base_url: str, api_key: str, page_id: str, obj: Dict[str, Any]) -> bool:
-    payload = {
-        "PageId": page_id,
-        "CommandId": "PageSave",
-        "Data": json.dumps(obj, ensure_ascii=False),
-        "ItemId": None,
-        "ClientLocale": "zh-cn",
-    }
-    try:
-        resp = emby_client.post(
-            f"{base_url.rstrip('/')}/UI/Command",
-            params={"api_key": api_key},
-            json=payload,
-            timeout=20,
-        )
-        resp.raise_for_status()
-        return True
-    except Exception as e:
-        logger.warning(f"  ➜ [神医忽略] 保存媒体信息提取配置失败: {e}")
-        return False
-
-def enable_strm_assistant_ignore_file_change(base_url: str, api_key: str) -> Optional[str]:
-    """开启神医“忽略文件变更”，返回原始 ExclusiveControlFeatures。"""
-    base = (base_url or "").rstrip("/")
-    if not base or not api_key:
-        return None
-
-    cache_key = (base, api_key)
-    with _strm_assistant_ignore_lock:
-        state = _strm_assistant_ignore_states.get(cache_key)
-        if state:
-            state["depth"] += 1
-            return state.get("original", "")
-
-        page_id, obj = _load_strm_assistant_mediainfo_config(base, api_key)
-        if not page_id or not obj:
-            return None
-
-        original = str(obj.get("ExclusiveControlFeatures") or "")
-        values = [v.strip() for v in original.split(",") if v.strip()]
-        if _STRM_ASSISTANT_IGNORE_FILE_CHANGE not in values:
-            values.append(_STRM_ASSISTANT_IGNORE_FILE_CHANGE)
-            obj["ExclusiveControlFeatures"] = ",".join(values)
-            if not _save_strm_assistant_mediainfo_config(base, api_key, page_id, obj):
-                return None
-            logger.debug("  ➜ [神医忽略] 已临时开启忽略文件变更。")
-
-        _strm_assistant_ignore_states[cache_key] = {"depth": 1, "original": original}
-        return original
-
-def disable_strm_assistant_ignore_file_change(base_url: str, api_key: str, original_features: Optional[str] = None) -> bool:
-    """关闭神医“忽略文件变更”。传入 original_features 时按原值精确还原。"""
-    base = (base_url or "").rstrip("/")
-    if not base or not api_key:
-        return False
-
-    cache_key = (base, api_key)
-    with _strm_assistant_ignore_lock:
-        state = _strm_assistant_ignore_states.get(cache_key)
-        if state:
-            state["depth"] -= 1
-            if state["depth"] > 0:
-                return True
-            original_features = state.get("original", "") if original_features is None else original_features
-            _strm_assistant_ignore_states.pop(cache_key, None)
-
-        page_id, obj = _load_strm_assistant_mediainfo_config(base, api_key)
-        if not page_id or not obj:
-            return False
-
-        if original_features is None:
-            current = str(obj.get("ExclusiveControlFeatures") or "")
-            values = [
-                v.strip()
-                for v in current.split(",")
-                if v.strip() and v.strip() != _STRM_ASSISTANT_IGNORE_FILE_CHANGE
-            ]
-            obj["ExclusiveControlFeatures"] = ",".join(values)
-        else:
-            obj["ExclusiveControlFeatures"] = str(original_features or "")
-
-        ok = _save_strm_assistant_mediainfo_config(base, api_key, page_id, obj)
-        if ok:
-            logger.debug("  ➜ [神医忽略] 已恢复忽略文件变更配置。")
-        return ok
 
 def get_running_tasks(base_url: str, api_key: str) -> List[Dict[str, Any]]:
     """
@@ -945,19 +810,14 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
     action_zh = action_map.get(update_type, update_type)
     
     try:
-        ignore_features = enable_strm_assistant_ignore_file_change(base_url, api_key)
         # 直接提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
-        try:
-            dirs_to_refresh = set(os.path.dirname(p) for p in file_paths if p)
+        dirs_to_refresh = set(os.path.dirname(p) for p in file_paths if p)
 
-            # logger.info(f"  ➜ 收到 {len(file_paths)} 个文件{action_zh}请求，准备对 {len(dirs_to_refresh)} 个父目录触发精准扫描...")
+        # logger.info(f"  ➜ 收到 {len(file_paths)} 个文件{action_zh}请求，准备对 {len(dirs_to_refresh)} 个父目录触发精准扫描...")
 
-            # 直接拿鞭子抽，让 Emby 扫目录
-            for d in dirs_to_refresh:
-                _force_refresh_directory_tree(d, base_url, api_key)
-        finally:
-            if ignore_features is not None:
-                disable_strm_assistant_ignore_file_change(base_url, api_key, ignore_features)
+        # 直接拿鞭子抽，让 Emby 扫目录
+        for d in dirs_to_refresh:
+            _force_refresh_directory_tree(d, base_url, api_key)
             
         return True
     except Exception as e:
@@ -1001,18 +861,13 @@ def refresh_emby_item_metadata(item_emby_id: str,
     }
     
     try:
-        ignore_features = enable_strm_assistant_ignore_file_change(emby_server_url, emby_api_key)
-        try:
-            response = emby_client.post(refresh_url, params=params)
-            if response.status_code == 204:
-                logger.info(f"  ➜ 已成功为 {log_identifier} 刷新元数据。")
-                return True
-            else:
-                logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
-                return False
-        finally:
-            if ignore_features is not None:
-                disable_strm_assistant_ignore_file_change(emby_server_url, emby_api_key, ignore_features)
+        response = emby_client.post(refresh_url, params=params)
+        if response.status_code == 204:
+            logger.info(f"  ➜ 已成功为 {log_identifier} 刷新元数据。")
+            return True
+        else:
+            logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
+            return False
     except requests.exceptions.RequestException as e:
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False

@@ -2631,22 +2631,17 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
             # 3. 对受影响的媒体库触发刷新
             if affected_lib_ids:
                 logger.info(f"  ➜ 匹配到 {len(affected_lib_ids)} 个受影响的媒体库，正在触发扫描...")
-                ignore_features = emby.enable_strm_assistant_ignore_file_change(processor.emby_url, processor.emby_api_key)
-                try:
-                    for lib_id in affected_lib_ids:
-                        refresh_url = f"{processor.emby_url.rstrip('/')}/Items/{lib_id}/Refresh"
-                        params = {
-                            "api_key": processor.emby_api_key,
-                            "Recursive": "true",
-                            "MetadataRefreshMode": "Default",
-                            "ImageRefreshMode": "Default",
-                            "ReplaceAllImages": "false",
-                            "ReplaceAllMetadata": "false"
-                        }
-                        emby.emby_client.post(refresh_url, params=params)
-                finally:
-                    if ignore_features is not None:
-                        emby.disable_strm_assistant_ignore_file_change(processor.emby_url, processor.emby_api_key, ignore_features)
+                for lib_id in affected_lib_ids:
+                    refresh_url = f"{processor.emby_url.rstrip('/')}/Items/{lib_id}/Refresh"
+                    params = {
+                        "api_key": processor.emby_api_key,
+                        "Recursive": "true",
+                        "MetadataRefreshMode": "Default",
+                        "ImageRefreshMode": "Default",
+                        "ReplaceAllImages": "false",
+                        "ReplaceAllMetadata": "false"
+                    }
+                    emby.emby_client.post(refresh_url, params=params)
                 logger.info("  ➜ 已成功触发受影响媒体库的扫描任务！")
             else:
                 logger.warning("  ➜ 未能将生成的文件匹配到任何 Emby 媒体库，跳过扫描。")

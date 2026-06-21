@@ -1406,30 +1406,12 @@ def task_full_sync_strm_and_subs(processor=None):
 
                     if need_write:
                         was_existing_strm = os.path.exists(strm_path)
-                        ignore_features = None
-                        if was_existing_strm:
-                            try:
-                                from handler import emby
-                                emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-                                emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-                                if emby_url and emby_api_key:
-                                    ignore_features = emby.enable_strm_assistant_ignore_file_change(emby_url, emby_api_key)
-                            except Exception as e:
-                                logger.debug(f"  ➜ [全量同步] 开启神医忽略文件变更失败: {e}")
-                        try:
-                            with open(strm_path, 'w', encoding='utf-8') as f:
-                                f.write(content)
-                            if not was_existing_strm:
-                                logger.debug(f"  ➜ [新增] 生成 STRM: {strm_name}")
-                            else:
-                                changed_strm_files.add(os.path.abspath(strm_path))
-                        finally:
-                            if ignore_features is not None:
-                                try:
-                                    from handler import emby
-                                    emby.disable_strm_assistant_ignore_file_change(emby_url, emby_api_key, ignore_features)
-                                except Exception as e:
-                                    logger.debug(f"  ➜ [全量同步] 恢复神医忽略文件变更失败: {e}")
+                        with open(strm_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        if not was_existing_strm:
+                            logger.debug(f"  ➜ [新增] 生成 STRM: {strm_name}")
+                        else:
+                            changed_strm_files.add(os.path.abspath(strm_path))
                         files_generated += 1
 
                     valid_local_files.add(os.path.abspath(strm_path))
