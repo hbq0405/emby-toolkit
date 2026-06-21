@@ -3371,11 +3371,22 @@ class P115CacheManager:
     def delete_cid(cid):
         """从缓存中物理删除该目录及其子目录的记录"""
         if not cid: return
+        cid_text = str(cid)
+        try:
+            with _GLOBAL_DIR_LOCK:
+                stale_keys = [
+                    key for key, value in list(_GLOBAL_DIR_CACHE.items())
+                    if str(value) == cid_text or str(key).startswith(f"{cid_text}_")
+                ]
+                for key in stale_keys:
+                    _GLOBAL_DIR_CACHE.pop(key, None)
+        except Exception:
+            pass
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     # 删除自身以及以它为父目录的子项
-                    cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (str(cid), str(cid)))
+                    cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (cid_text, cid_text))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ➜ 清理 115 DB 缓存失败: {e}")
@@ -6864,6 +6875,41 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         
         # ★★★ 核心升级：支持 / 分层创建多级目录 ★★★
         dir_parts = [p.strip() for p in std_root_name.split('/') if p.strip()]
+
+        def _is_visible_child_dir(parent_cid, dir_name, cid):
+            """确认目录 CID 真实挂在指定父目录下，避免复用回收站残留的幽灵目录。"""
+            if not parent_cid or not dir_name or not cid:
+                return False
+            if not isinstance(cid, (str, int)):
+                return True
+            try:
+                res = self.client.fs_files({
+                    'cid': parent_cid,
+                    'search_value': dir_name,
+                    'limit': 100,
+                    'show_dir': 1,
+                    'record_open_time': 0
+                })
+                if not isinstance(res, dict) or not res.get('state'):
+                    return True
+                data = res.get('data')
+                if not isinstance(data, list):
+                    return True
+                for item in data:
+                    item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                    item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                    item_cid = (
+                        item.get('fid')
+                        or item.get('file_id')
+                        or item.get('id')
+                        or item.get('cid')
+                    )
+                    if item_fc == '0' and item_name == dir_name and str(item_cid) == str(cid):
+                        return True
+                return False
+            except Exception as e:
+                logger.debug(f"  ➜ 目录可见性校验失败，保守沿用 CID: parent={parent_cid}, cid={cid}, err={e}")
+                return True
         
         # 提前计算基础相对路径，用于逐级修复 local_path
         category_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
@@ -6895,13 +6941,26 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         _GLOBAL_DIR_CACHE.pop(cache_key, None)
                     part_cid = None
 
+                if part_cid and not _is_visible_child_dir(temp_parent_cid, part_name, part_cid):
+                    logger.warning(f"  ➜ [目录自愈] 缓存目录不可见，已丢弃幽灵 CID: {part_name} ({part_cid})")
+                    P115CacheManager.delete_cid(part_cid)
+                    with _GLOBAL_DIR_LOCK:
+                        _GLOBAL_DIR_CACHE.pop(cache_key, None)
+                    part_cid = None
+
                 if not part_cid:
                     mk_res = self.client.fs_mkdir(part_name, temp_parent_cid)
                     if mk_res.get('state'):
                         part_cid = mk_res.get('cid')
-                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
-                        with _GLOBAL_DIR_LOCK:
-                            _GLOBAL_DIR_CACHE[cache_key] = part_cid
+                        if part_cid and _is_visible_child_dir(temp_parent_cid, part_name, part_cid):
+                            P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
+                            with _GLOBAL_DIR_LOCK:
+                                _GLOBAL_DIR_CACHE[cache_key] = part_cid
+                        else:
+                            logger.warning(f"  ➜ [目录自愈] 新建目录返回不可见 CID，拒绝继续整理: {part_name} ({part_cid})")
+                            if part_cid:
+                                P115CacheManager.delete_cid(part_cid)
+                            part_cid = None
                     else:
                         err_text = json.dumps(mk_res, ensure_ascii=False)
                         should_search_after_mkdir_fail = any(
@@ -9311,7 +9370,7 @@ class WebhookDeleteBuffer:
                         resp = client.fs_delete(final_api_ids)
                         
                         if resp.get('state'):
-                            logger.info(f"  ➜ [深度删除] 115 网盘文件/空目录物理销毁成功！")
+                            logger.info(f"  ➜ [深度删除] 115 网盘文件/空目录已移入回收站。")
                         else:
                             logger.error(f"  ➜ [深度删除] 115 API 删除失败: {resp}")
                             return # API 失败则不清理本地库，保持一致性
