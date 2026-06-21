@@ -368,10 +368,10 @@ class SharedCenterClient:
         items = _dedupe_gap_items_for_center(items)
         if not items:
             return {'count': 0, 'items': []}
-        return self._post('/api/v1/gaps/batch', {'items': items}, timeout=20)
+        return {'count': 0, 'items': items, 'skipped': True, 'reason': 'gap_api_removed'}
 
     def list_open_gaps(self, limit: int = 200) -> Dict[str, Any]:
-        return self._get('/api/v1/gaps/open', {'limit': max(1, min(int(limit or 200), 1000))}, timeout=15)
+        return {'items': [], 'total': 0, 'skipped': True, 'reason': 'gap_api_removed'}
 
     def list_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent', mine_only: bool = False,
                      source_kind: str = '', item_type: str = '', tmdb_id: str = '', source_id: str = '',
@@ -514,17 +514,21 @@ class SharedCenterClient:
             results.append({'query': item, 'sources': sources})
         return {'results': results}
 
-    def probe_subscriptions_batch(self, items: List[Dict[str, Any]], limit_per_item: int = 200) -> Dict[str, Any]:
+    def probe_subscriptions_batch(self, items: List[Dict[str, Any]], limit_per_item: int = 200,
+                                  report_gap: bool = False, disable_gap_report: bool = True,
+                                  **_ignored) -> Dict[str, Any]:
         results = []
         hit_count = 0
         gap_count = 0
+        should_report_gap = bool(report_gap) and not bool(disable_gap_report)
         for item in _dedupe_gap_items_for_center(items):
             search = self.search_sources([item], limit_per_item=limit_per_item)
             sources = ((search.get('results') or [{}])[0].get('sources') or [])
             if sources:
                 hit_count += 1
             else:
-                self.report_gaps([item])
+                if should_report_gap:
+                    self.report_gaps([item])
                 gap_count += 1
             results.append({'query': item, 'sources': sources, 'hit': bool(sources)})
         return {'supported': True, 'items': results, 'hit_count': hit_count, 'gap_count': gap_count}
