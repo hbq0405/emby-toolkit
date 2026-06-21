@@ -1728,7 +1728,21 @@ def api_center_sources_home():
             resp['center_cache_hit'] = center_cache_hit
             resp['cache_hit'] = center_cache_hit
         payload = {'success': True, **resp}
-        if int(resp.get('total') or 0) > 0:
+        has_center_cache_miss = any(
+            section.get('center_public_rank_cache_miss')
+            or section.get('public_rank_cache_pending')
+            or section.get('source_schema') == 'display_home_section_cache_miss'
+            or any(
+                isinstance(item, dict) and (
+                    item.get('center_public_rank_cache_miss')
+                    or item.get('public_rank_cache_pending')
+                    or item.get('source_schema') == 'display_public_rank_cache_miss'
+                )
+                for item in (section.get('items') or [])
+            )
+            for section in sections
+        )
+        if int(resp.get('total') or 0) > 0 and not has_center_cache_miss:
             _center_home_proxy_cache_set(cache_key, payload)
         return jsonify(payload)
     except Exception as e:
