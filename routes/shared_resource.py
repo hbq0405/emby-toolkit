@@ -1548,39 +1548,6 @@ def _strip_center_display_children(row: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
     row = dict(row)
-    kind = str(row.get('source_kind') or '').strip().lower()
-    typ = str(row.get('item_type') or row.get('display_type') or '').strip().lower()
-    if kind == 'series_group' or typ in {'series', 'tv'}:
-        nums = []
-        def _push_season_num(value):
-            try:
-                raw = value.get('season_number') if isinstance(value, dict) else value
-                if raw in (None, ''):
-                    return
-                n = int(float(raw))
-            except Exception:
-                return
-            if n not in nums:
-                nums.append(n)
-        for value in row.get('available_season_numbers') or []:
-            _push_season_num(value)
-        for value in row.get('season_numbers') or []:
-            _push_season_num(value)
-        for value in row.get('seasons') or []:
-            _push_season_num(value)
-        nums.sort(key=lambda n: -1 if n == 0 else n)
-        if nums:
-            row.setdefault('available_season_numbers', nums)
-            row.setdefault('season_numbers', nums)
-            row['season_count'] = row.get('season_count') or len(nums)
-            row['number_of_seasons'] = row.get('number_of_seasons') or len(nums)
-        row['seasons'] = []
-        row['resources'] = []
-        row['versions'] = []
-        row['children'] = []
-        row['pack_items'] = []
-        row['season_list_deferred'] = True
-        return row
     for key in ('versions',):
         if isinstance(row.get(key), list):
             row[key] = [_strip_center_display_children(x) for x in row.get(key) if isinstance(x, dict)]
