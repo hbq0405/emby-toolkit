@@ -4871,6 +4871,116 @@ class P115RecordManager:
         except Exception as e:
             logger.error(f"  ➜ 清理 115 整理记录失败: {e}")
 
+def _p115_info_payload(info_res):
+    data = (info_res or {}).get('data')
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                return item
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _p115_add_path_cids(protected_cids, payload):
+    for node in (payload or {}).get('paths') or (payload or {}).get('path') or []:
+        if not isinstance(node, dict):
+            continue
+        cid_val = str(node.get('file_id') or node.get('cid') or node.get('fid') or '').strip()
+        if cid_val and cid_val != '0':
+            protected_cids.add(cid_val)
+
+def _p115_parent_from_info_payload(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    parent = str(payload.get('parent_id') or payload.get('pid') or '').strip()
+    if parent:
+        return parent
+
+    path_nodes = payload.get('paths') or payload.get('path') or []
+    if isinstance(path_nodes, list):
+        for node in reversed(path_nodes):
+            if not isinstance(node, dict):
+                continue
+            cid_val = str(node.get('file_id') or node.get('cid') or node.get('fid') or '').strip()
+            if cid_val and cid_val != '0':
+                return cid_val
+    return ''
+
+def _p115_expand_protected_cid_ancestors(protected_cids, client):
+    """保护配置目录的所有祖先，避免上级空目录被 GC 连锅端。"""
+    if not client:
+        return protected_cids
+
+    for safe_cid in list(protected_cids):
+        current = str(safe_cid or '').strip()
+        seen = set()
+
+        for _ in range(20):
+            if not current or current == '0' or current in seen:
+                break
+            seen.add(current)
+
+            node = P115CacheManager.get_node_info(current)
+            parent_id = str((node or {}).get('parent_id') or '').strip() if node else ''
+            if not parent_id:
+                try:
+                    info_res = client.fs_get_info(current)
+                    if info_res and info_res.get('state'):
+                        payload = _p115_info_payload(info_res)
+                        _p115_add_path_cids(protected_cids, payload)
+                        parent_id = _p115_parent_from_info_payload(payload)
+                except Exception as e:
+                    logger.debug(f"  ➜ [GC保护] 回查保护目录父级失败: cid={current}, err={e}")
+
+            if not parent_id or parent_id == '0' or parent_id in seen:
+                break
+
+            protected_cids.add(parent_id)
+            current = parent_id
+
+    return protected_cids
+
+def _p115_build_gc_protected_cids(config, client=None):
+    protected_cids = {'0'}
+
+    def add_cid(cid):
+        cid_text = str(cid or '').strip()
+        if cid_text:
+            protected_cids.add(cid_text)
+
+    add_cid(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID))
+
+    save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+    add_cid(save_path)
+
+    unidentified_name = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_NAME, "未识别")
+    explicit_un_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
+    add_cid(explicit_un_cid)
+
+    explicit_un_text = str(explicit_un_cid or '').strip()
+    if save_path and str(save_path) != '0' and unidentified_name and explicit_un_text in ('', '0'):
+        unidentified_cid = P115CacheManager.get_cid(str(save_path), unidentified_name)
+        if unidentified_cid:
+            add_cid(unidentified_cid)
+        elif client:
+            try:
+                search_res = client.fs_files({'cid': save_path, 'search_value': unidentified_name, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                for item in search_res.get('data', []):
+                    if item.get('fn') == unidentified_name and str(item.get('fc') if item.get('fc') is not None else item.get('type')) == '0':
+                        add_cid(item.get('fid') or item.get('file_id'))
+                        break
+            except Exception:
+                pass
+
+    raw_rules = settings_db.get_setting('p115_sorting_rules')
+    if raw_rules:
+        try:
+            rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+            for rule in rules or []:
+                add_cid(rule.get('cid'))
+        except Exception as e:
+            logger.debug(f"  ➜ [GC保护] 解析分类规则保护目录失败: {e}")
+
+    return _p115_expand_protected_cid_ancestors(protected_cids, client)
+
 # ======================================================================
 # ★★★ 115 全局批量删除缓冲队列 (极简暴力清理版) ★★★
 # ======================================================================
@@ -4975,82 +5085,8 @@ class P115DeleteBuffer:
             if success_fids:
                 P115CacheManager.delete_files(success_fids)
 
-        # 2. 获取免死金牌名单
-        protected_cids = {'0'}
-
-        media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
-        if media_root:
-            protected_cids.add(str(media_root))
-
-        save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
-        if save_path:
-            protected_cids.add(str(save_path))
-
-        # ★★★ 核心修复：保护“未识别”目录 (三重保险) ★★★
-        unidentified_name = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_NAME, "未识别")
-        
-        # 保险 1：优先读取用户明确配置的 CID
-        explicit_un_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
-        if explicit_un_cid and str(explicit_un_cid) != '0':
-            protected_cids.add(str(explicit_un_cid))
-            
-        # 保险 2 & 3：如果没配置，尝试通过待整理目录推导
-        if save_path and str(save_path) != '0' and unidentified_name:
-            # 保险 2：查本地缓存
-            unidentified_cid = P115CacheManager.get_cid(str(save_path), unidentified_name)
-            if unidentified_cid:
-                protected_cids.add(str(unidentified_cid))
-            else:
-                # 保险 3：缓存穿透时，直接查 115 API (绝对兜底)
-                try:
-                    search_res = client.fs_files({'cid': save_path, 'search_value': unidentified_name, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-                    for item in search_res.get('data', []):
-                        if item.get('fn') == unidentified_name and str(item.get('fc') if item.get('fc') is not None else item.get('type')) == '0':
-                            protected_cids.add(str(item.get('fid') or item.get('file_id')))
-                            break
-                except Exception:
-                    pass
-
-        raw_rules = settings_db.get_setting('p115_sorting_rules')
-        if raw_rules:
-            rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
-            for rule in rules:
-                if rule.get('cid'):
-                    protected_cids.add(str(rule['cid']))
-
-
-        def _protect_ancestors(cid):
-            """把指定目录的所有父级目录加入免死名单，防止 ETK 这种管理根目录被 GC 删掉。"""
-            current = str(cid or '')
-
-            for _ in range(20):
-                if not current or current == '0':
-                    break
-
-                # 1. 优先查本地缓存
-                node = P115CacheManager.get_node_info(current)
-                parent_id = None
-                
-                if node and node.get('parent_id'):
-                    parent_id = str(node.get('parent_id'))
-                else:
-                    # 2. ★ 核心修复：缓存穿透时，直接查 115 API 溯源 (终极防线)
-                    try:
-                        info_res = client.fs_get_info(current)
-                        if info_res and info_res.get('state') and info_res.get('data'):
-                            parent_id = str(info_res['data'].get('parent_id') or info_res['data'].get('cid') or '')
-                    except Exception:
-                        pass
-
-                if not parent_id or parent_id == '0':
-                    break
-
-                protected_cids.add(parent_id)
-                current = parent_id
-
-
-        for safe_cid in list(protected_cids):
-            _protect_ancestors(safe_cid)
+        # 2. 获取免死金牌名单：配置目录自身 + 所有祖先目录都不能被 GC 删除
+        protected_cids = _p115_build_gc_protected_cids(config, client)
 
         # 3. 检查空目录
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
@@ -5060,7 +5096,9 @@ class P115DeleteBuffer:
         empty_cids_to_delete = []
 
         for cid in cids:
-            if str(cid) in protected_cids: continue
+            if str(cid) in protected_cids:
+                logger.debug(f"  ➜ [GC保护] 跳过受保护目录: CID {cid}")
+                continue
             
             media_count = 0
             def count_media(current_cid):
@@ -9162,19 +9200,9 @@ class WebhookDeleteBuffer:
         if not client: return
 
         try:
-            # 1. 获取免死金牌名单 (绝对不能删的根目录)
+            # 1. 获取免死金牌名单 (绝对不能删的根目录及其祖先)
             config = get_config()
-            protected_cids = {'0'}
-            media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
-            if media_root: protected_cids.add(str(media_root))
-            save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
-            if save_path: protected_cids.add(str(save_path))
-
-            raw_rules = settings_db.get_setting('p115_sorting_rules')
-            if raw_rules:
-                rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
-                for rule in rules:
-                    if rule.get('cid'): protected_cids.add(str(rule['cid']))
+            protected_cids = _p115_build_gc_protected_cids(config, client)
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -9238,6 +9266,10 @@ class WebhookDeleteBuffer:
                             parent_id = str(p_row['parent_id']) if p_row else None
 
                         # ★ 核心优化：如果一个节点的父节点也在死刑名单里，说明它会被连锅端，不需要单独发 API！
+                        if node in protected_cids:
+                            logger.debug(f"  ➜ [深度删除] 跳过受保护目录: CID {node}")
+                            continue
+
                         if parent_id not in deleted_nodes:
                             final_api_ids.append(node)
 
