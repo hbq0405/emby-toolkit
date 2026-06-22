@@ -42,6 +42,79 @@ def _get_access_token(config: Dict[str, Any] = None) -> Optional[str]:
         logger.error(f"  ➜ 获取 MoviePilot Token 失败: {e}")
         return None
 
+def _get_mp_base_and_headers(config: Dict[str, Any] = None) -> Tuple[str, Optional[dict], str]:
+    mp_config = settings_db.get_setting('mp_config') or {}
+    moviepilot_url = str(mp_config.get('moviepilot_url') or '').rstrip('/')
+    if not moviepilot_url:
+        return "", None, "MoviePilot URL 未配置"
+
+    access_token = _get_access_token(config)
+    if not access_token:
+        return moviepilot_url, None, "MoviePilot 认证失败，请检查用户名和密码"
+
+    return moviepilot_url, {"Authorization": f"Bearer {access_token}"}, ""
+
+
+def _extract_setting_value(data):
+    if not isinstance(data, dict):
+        return None
+    value = data.get("data")
+    if isinstance(value, dict):
+        for key in ("value", "data", "setting"):
+            if key in value:
+                return value.get(key)
+    if value is not None:
+        return value
+    for key in ("value", "setting"):
+        if key in data:
+            return data.get(key)
+    return None
+
+
+def get_rename_templates(config: Dict[str, Any] = None) -> Tuple[bool, dict, str]:
+    moviepilot_url, headers, error = _get_mp_base_and_headers(config)
+    if error:
+        return False, {}, error
+
+    templates = {}
+    for key, out_key in (("MOVIE_RENAME_FORMAT", "movie"), ("TV_RENAME_FORMAT", "tv")):
+        data, response = _request_json(
+            "GET",
+            f"{moviepilot_url}/api/v1/system/setting/{key}",
+            headers=headers,
+            timeout=15,
+        )
+        if not data:
+            status = response.status_code if response is not None else "请求失败"
+            return False, {}, f"读取 MoviePilot 配置 {key} 失败：{status}"
+        value = _extract_setting_value(data)
+        if value in (None, ""):
+            return False, {}, f"MoviePilot 配置 {key} 为空"
+        templates[out_key] = str(value)
+
+    return True, templates, ""
+
+
+def set_rename_templates(movie_template: str, tv_template: str, config: Dict[str, Any] = None) -> Tuple[bool, str]:
+    moviepilot_url, headers, error = _get_mp_base_and_headers(config)
+    if error:
+        return False, error
+
+    for key, value in (("MOVIE_RENAME_FORMAT", movie_template), ("TV_RENAME_FORMAT", tv_template)):
+        data, response = _request_json(
+            "POST",
+            f"{moviepilot_url}/api/v1/system/setting/{key}",
+            headers=headers,
+            json=value,
+            timeout=15,
+        )
+        if response is None or response.status_code not in (200, 201, 204):
+            status = response.status_code if response is not None else "请求失败"
+            return False, f"写入 MoviePilot 配置 {key} 失败：{status}"
+
+    return True, ""
+
+
 def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any] = None) -> bool:
     """
     【核心订阅函数】直接接收一个完整的订阅 payload 并提交。

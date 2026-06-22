@@ -5132,6 +5132,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             "season_fmt": "Season {02}", "file_title_lang": "zh", "file_year_en": False,
             "main_dir_template": "{{title}}{% if year %} ({{year}}){% endif %} {tmdb={{tmdbid}}}",
             "season_dir_template": "Season {{season_no}}",
+            "movie_file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
+            "tv_file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
             "file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
             "file_tmdb_fmt": "none", "file_params_en": True, "file_sep": " - ",
             "strm_url_fmt": "standard"
@@ -6158,7 +6160,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
-        file_format = self._get_rename_format('file', default_format)
+        file_format = self._get_rename_format('tv_file' if is_tv else 'movie_file', None)
+        if not file_format:
+            file_format = self._get_rename_format('file', default_format)
 
         core_name = self._build_name_from_format(
             file_format, 

@@ -233,6 +233,46 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertEqual(episode_num, 1)
         self.assertEqual(season_dir, "Season 01")
 
+    def test_rename_file_node_uses_media_specific_file_templates(self):
+        organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
+        organizer.rename_config = {
+            "movie_file_template": "MOVIE {{title}}{% if year %} ({{year}}){% endif %}{% if resolution %} · {{resolution}}{% endif %}{{fileExt}}",
+            "tv_file_template": "TV {{title}} - {{season_episode}}{% if resolution %} · {{resolution}}{% endif %}{{fileExt}}",
+            "file_template": "LEGACY {{title}} - {{season_episode}} · {{resolution}}{{fileExt}}",
+            "season_dir_template": "Season {{season_no}}",
+        }
+        organizer.tmdb_id = "1"
+        organizer.media_type = "movie"
+        organizer.original_title = "Parasite"
+        organizer.details = {"title": "寄生虫", "original_title": "Parasite", "date": "2019-05-30", "seasons": []}
+        organizer.raw_metadata = {}
+        organizer.forced_season = None
+        organizer._fetch_and_parse_mediainfo = lambda *args, **kwargs: None
+        organizer._extract_video_info = lambda *args, **kwargs: {"resolution": "1080p"}
+        organizer._parse_season_episode_by_custom_regex = lambda *args, **kwargs: (None, None, None)
+
+        movie_name, *_ = organizer._rename_file_node(
+            {"fn": "Parasite.2019.1080p.mkv", "rel_path": "Parasite"},
+            new_base_name="寄生虫",
+            is_tv=False,
+            original_title="Parasite",
+            silent_log=True,
+        )
+        tv_name, tv_season, tv_episode, season_dir, *_ = organizer._rename_file_node(
+            {"fn": "Breaking.Bad.S01E01.2160p.mkv", "rel_path": "Breaking Bad"},
+            new_base_name="绝命毒师",
+            is_tv=True,
+            original_title="Breaking Bad",
+            silent_log=True,
+        )
+
+        self.assertEqual(movie_name, "MOVIE 寄生虫 (2019) · 1080p.mkv")
+        self.assertNotIn("LEGACY", movie_name)
+        self.assertEqual(tv_name, "TV 绝命毒师 - S01E01 · 1080p.mkv")
+        self.assertEqual(tv_season, 1)
+        self.assertEqual(tv_episode, 1)
+        self.assertEqual(season_dir, "Season 01")
+
     def test_execute_keeps_video_original_name_but_renames_sidecar_subtitle_to_video_basename(self):
         organizer = p115_service.SmartOrganizer.__new__(p115_service.SmartOrganizer)
         organizer.client = mock.Mock()

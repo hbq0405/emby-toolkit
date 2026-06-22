@@ -13,6 +13,7 @@ import requests
 from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app
 from extensions import admin_required
 from database import settings_db
+from handler import moviepilot
 from handler.p115_service import P115Service, get_config, get_115_api_priority
 from handler.p115_copy_play import (
     discard_copy_play_clone,
@@ -1109,6 +1110,8 @@ def quick_deploy_115():
             'season_fmt': 'Season {02}',
             'main_dir_template': '{{title}}{% if year %} ({{year}}){% endif %} {tmdb={{tmdbid}}}',
             'season_dir_template': 'Season {{season_no}}',
+            'movie_file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
+            'tv_file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
             'file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
             'file_format': ['s_e'],
             'file_tmdb_fmt': 'none',
@@ -1517,11 +1520,19 @@ def handle_rename_config():
             "main_dir_template": "{{title}}{% if year %} ({{year}}){% endif %} {tmdb={{tmdbid}}}",
             "season_dir_template": "Season {{season_no}}",
             "file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
+            "movie_file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
+            "tv_file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
             "file_format": ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group'],
             "file_tmdb_fmt": "none",       
             "strm_url_fmt": "standard"
         }
         defaults.update(config)
+        if not config.get("movie_file_template"):
+            defaults["movie_file_template"] = config.get("file_template") or defaults["movie_file_template"]
+        if not config.get("tv_file_template"):
+            defaults["tv_file_template"] = config.get("file_template") or defaults["tv_file_template"]
+        if not defaults.get("file_template"):
+            defaults["file_template"] = defaults.get("tv_file_template")
         return jsonify({"success": True, "data": defaults})
     
     if request.method == 'POST':
@@ -1529,6 +1540,83 @@ def handle_rename_config():
         settings_db.save_setting('p115_rename_config', new_config)
         return jsonify({"success": True, "message": "重命名规则已保存"})
     
+def _split_mp_template_from_right(template, separator_count):
+    text = str(template or "").strip()
+    parts = []
+    end = len(text)
+    for _ in range(separator_count):
+        index = text.rfind("/", 0, end)
+        if index < 0:
+            return None
+        parts.insert(0, text[index + 1:end].strip())
+        end = index
+    parts.insert(0, text[:end].strip())
+    if any(not part for part in parts):
+        return None
+    return parts
+
+
+def _join_mp_template(*parts):
+    clean_parts = [str(part or "").strip().strip("/") for part in parts]
+    if any(not part for part in clean_parts):
+        return ""
+    return "/".join(clean_parts)
+
+
+@p115_bp.route('/rename_config/mp/import', methods=['GET'])
+@admin_required
+def import_rename_config_from_mp():
+    ok, templates, error = moviepilot.get_rename_templates(get_config())
+    if not ok:
+        return jsonify({"success": False, "message": error or "读取 MoviePilot 模板失败"}), 400
+
+    movie_parts = _split_mp_template_from_right(templates.get("movie"), 1)
+    tv_parts = _split_mp_template_from_right(templates.get("tv"), 2)
+    if not movie_parts:
+        return jsonify({"success": False, "message": "MoviePilot 电影模板格式不正确，至少需要 主目录/文件名 两段"}), 400
+    if not tv_parts:
+        return jsonify({"success": False, "message": "MoviePilot 剧集模板格式不正确，至少需要 主目录/季目录/文件名 三段"}), 400
+
+    return jsonify({
+        "success": True,
+        "message": "已读取 MoviePilot 重命名模板",
+        "data": {
+            "main_dir_template": movie_parts[0],
+            "season_dir_template": tv_parts[1],
+            "file_template": tv_parts[2],
+            "movie_file_template": movie_parts[1],
+            "tv_file_template": tv_parts[2],
+            "mp_movie_template": templates.get("movie"),
+            "mp_tv_template": templates.get("tv"),
+        }
+    })
+
+
+@p115_bp.route('/rename_config/mp/export', methods=['POST'])
+@admin_required
+def export_rename_config_to_mp():
+    data = request.json if isinstance(request.json, dict) else {}
+    movie_file_template = data.get("movie_file_template") or data.get("file_template")
+    tv_file_template = data.get("tv_file_template") or data.get("file_template")
+    movie_template = _join_mp_template(data.get("main_dir_template"), movie_file_template)
+    tv_template = _join_mp_template(data.get("main_dir_template"), data.get("season_dir_template"), tv_file_template)
+    if not movie_template or not tv_template:
+        return jsonify({"success": False, "message": "主目录、季目录、电影文件名和剧集文件名模板不能为空"}), 400
+
+    ok, error = moviepilot.set_rename_templates(movie_template, tv_template, get_config())
+    if not ok:
+        return jsonify({"success": False, "message": error or "写入 MoviePilot 模板失败"}), 400
+
+    return jsonify({
+        "success": True,
+        "message": "已把当前模板写入 MoviePilot",
+        "data": {
+            "mp_movie_template": movie_template,
+            "mp_tv_template": tv_template,
+        }
+    })
+
+
 def _normalize_episode_regex_rules(raw_rules):
     if not isinstance(raw_rules, list):
         return [], "规则数据格式错误，必须是数组"

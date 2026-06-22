@@ -29,13 +29,22 @@
               />
             </n-form-item>
 
-            <n-form-item v-if="!config.keep_original_name" label="文件名模板">
+            <n-form-item v-if="!config.keep_original_name" label="电影文件名模板">
               <n-input
                 ref="fileInputRef"
-                v-model:value="config.file_template"
+                v-model:value="config.movie_file_template"
                 type="textarea"
                 :autosize="{ minRows: 3, maxRows: 6 }"
-                @focus="activeTemplate = 'file_template'"
+                @focus="activeTemplate = 'movie_file_template'"
+              />
+            </n-form-item>
+
+            <n-form-item v-if="!config.keep_original_name" label="剧集文件名模板">
+              <n-input
+                v-model:value="config.tv_file_template"
+                type="textarea"
+                :autosize="{ minRows: 3, maxRows: 6 }"
+                @focus="activeTemplate = 'tv_file_template'"
               />
             </n-form-item>
 
@@ -58,15 +67,13 @@
 
           <div class="lego-container">
             <div class="lego-header"><span>MoviePilot 模板导入</span></div>
-            <n-input
-              v-model:value="mpTemplate"
-              type="textarea"
-              placeholder="粘贴 MP 的整段重命名模板，例如：{{title}} ({% raw %}{{year}}{% endraw %}) {tmdb={{tmdbid}}}/Season {{season_no}}/{{title}} - {{season_episode}}{{fileExt}}"
-              :autosize="{ minRows: 3, maxRows: 6 }"
-            />
-            <n-space style="margin-top: 8px;">
-              <n-button size="small" secondary type="primary" @click="importMpTemplate('movie')">按电影模板导入</n-button>
-              <n-button size="small" secondary type="primary" @click="importMpTemplate('tv')">按剧集模板导入</n-button>
+            <n-space>
+              <n-button size="small" secondary type="primary" @click="importMpTemplates" :loading="importingMp">
+                从 MP 导入模板
+              </n-button>
+              <n-button size="small" secondary type="primary" @click="exportMpTemplates" :loading="exportingMp">
+                把模板导入 MP
+              </n-button>
             </n-space>
           </div>
         </n-tab-pane>
@@ -186,14 +193,17 @@ const message = useMessage();
 const isVisible = ref(false);
 const loading = ref(false);
 const saving = ref(false);
+const importingMp = ref(false);
+const exportingMp = ref(false);
 const activeTemplate = ref('main_dir_template');
-const mpTemplate = ref('');
 
 const defaultConfig = {
   keep_original_name: false,
   conflict_mode: 'replace',
   main_dir_template: '{{title}}{% if year %} ({{year}}){% endif %} {tmdb={{tmdbid}}}',
   season_dir_template: 'Season {{season_no}}',
+  movie_file_template: '{{title}}{% if year %} ({{year}}){% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
+  tv_file_template: '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
   file_template: '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
   main_dir_format: ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'],
   season_dir_format: ['season_name_en'],
@@ -206,7 +216,8 @@ const config = ref({ ...defaultConfig });
 const templateTargetOptions = [
   { label: '主目录模板', value: 'main_dir_template' },
   { label: '季目录模板', value: 'season_dir_template' },
-  { label: '文件名模板', value: 'file_template' }
+  { label: '电影文件名模板', value: 'movie_file_template' },
+  { label: '剧集文件名模板', value: 'tv_file_template' }
 ];
 
 const templateBlocks = [
@@ -322,44 +333,50 @@ const normalizeMpTemplate = (template) => {
   return String(template || '').replace(/{{\s*([A-Za-z_]\w*)\s*\|\s*string\s*}\s*\.zfill\((\d+)\)\s*}}/g, '{{ ($1|string).zfill($2) }}');
 };
 
-const splitTemplateFromRight = (template, separatorCount) => {
-  const parts = [];
-  let end = template.length;
-  for (let i = 0; i < separatorCount; i++) {
-    const index = template.lastIndexOf('/', end - 1);
-    if (index < 0) return null;
-    parts.unshift(template.slice(index + 1, end).trim());
-    end = index;
+const importMpTemplates = async () => {
+  importingMp.value = true;
+  try {
+    const res = await axios.get('/api/p115/rename_config/mp/import');
+    if (!res.data.success) {
+      message.error(res.data.message || '从 MP 导入模板失败');
+      return;
+    }
+    const data = res.data.data || {};
+    config.value.main_dir_template = normalizeMpTemplate(data.main_dir_template || config.value.main_dir_template);
+    config.value.season_dir_template = normalizeMpTemplate(data.season_dir_template || config.value.season_dir_template);
+    config.value.movie_file_template = normalizeMpTemplate(data.movie_file_template || data.file_template || config.value.movie_file_template);
+    config.value.tv_file_template = normalizeMpTemplate(data.tv_file_template || data.file_template || config.value.tv_file_template);
+    config.value.file_template = config.value.tv_file_template;
+    if (data.warning) message.warning(data.warning);
+    message.success('已从 MP 导入模板');
+  } catch (e) {
+    message.error(e.response?.data?.message || '从 MP 导入模板失败');
+  } finally {
+    importingMp.value = false;
   }
-  parts.unshift(template.slice(0, end).trim());
-  return parts;
 };
 
-const importMpTemplate = (type) => {
-  const raw = normalizeMpTemplate(mpTemplate.value).trim();
-  if (!raw) {
-    message.warning('请先粘贴 MP 模板');
+const exportMpTemplates = async () => {
+  if (!String(config.value.main_dir_template || '').trim()
+    || !String(config.value.season_dir_template || '').trim()
+    || !String(config.value.movie_file_template || '').trim()
+    || !String(config.value.tv_file_template || '').trim()) {
+    message.warning('主目录、季目录、电影文件名和剧集文件名模板不能为空');
     return;
   }
-  if (type === 'movie') {
-    const parts = splitTemplateFromRight(raw, 1);
-    if (!parts || parts.some(part => !part)) {
-      message.warning('电影模板至少需要包含 主目录/文件名 两段');
+  exportingMp.value = true;
+  try {
+    const res = await axios.post('/api/p115/rename_config/mp/export', config.value);
+    if (!res.data.success) {
+      message.error(res.data.message || '写入 MP 模板失败');
       return;
     }
-    config.value.main_dir_template = parts[0];
-    config.value.file_template = parts[1];
-  } else {
-    const parts = splitTemplateFromRight(raw, 2);
-    if (!parts || parts.some(part => !part)) {
-      message.warning('剧集模板至少需要包含 主目录/季目录/文件名 三段');
-      return;
-    }
-    config.value.main_dir_template = parts[0];
-    config.value.season_dir_template = parts[1];
-    config.value.file_template = parts[2];
+    message.success('已把当前模板导入 MP');
+  } catch (e) {
+    message.error(e.response?.data?.message || '写入 MP 模板失败');
+  } finally {
+    exportingMp.value = false;
   }
-  message.success('已导入模板');
 };
 
 const valueByPath = (data, name) => {
@@ -394,9 +411,12 @@ const renderTemplate = (template, data) => {
   return output.replace(/[\\:*?"<>|]/g, '').trim();
 };
 
-const withExt = (name, data) => {
+const movieFileTemplate = computed(() => config.value.movie_file_template || config.value.file_template);
+const tvFileTemplate = computed(() => config.value.tv_file_template || config.value.file_template);
+
+const withExt = (name, data, template) => {
   if (!name) return data.originalFile;
-  if (/\{\{\s*(fileExt|file_ext)\s*\}\}/.test(config.value.file_template || '') || name.toLowerCase().endsWith(data.fileExt.toLowerCase())) {
+  if (/\{\{\s*(fileExt|file_ext)\s*\}\}/.test(template || '') || name.toLowerCase().endsWith(data.fileExt.toLowerCase())) {
     return name;
   }
   return `${name}${data.fileExt}`;
@@ -417,13 +437,13 @@ const previewTvSeason = computed(() =>
 const previewMovieFile = computed(() =>
   config.value.keep_original_name
     ? mockMovie.originalFile
-    : withExt(renderTemplate(config.value.file_template, mockMovie), mockMovie)
+    : withExt(renderTemplate(movieFileTemplate.value, mockMovie), mockMovie, movieFileTemplate.value)
 );
 
 const previewTvFile = computed(() =>
   config.value.keep_original_name
     ? mockTv.originalFile
-    : withExt(renderTemplate(config.value.file_template, mockTv), mockTv)
+    : withExt(renderTemplate(tvFileTemplate.value, mockTv), mockTv, tvFileTemplate.value)
 );
 
 const previewMovieStrm = computed(() => {
@@ -440,7 +460,9 @@ const ensureTemplateDefaults = (data) => {
   const next = { ...defaultConfig, ...(data || {}) };
   if (!next.main_dir_template) next.main_dir_template = defaultConfig.main_dir_template;
   if (!next.season_dir_template) next.season_dir_template = defaultConfig.season_dir_template;
-  if (!next.file_template) next.file_template = defaultConfig.file_template;
+  if (!next.movie_file_template) next.movie_file_template = next.file_template || defaultConfig.movie_file_template;
+  if (!next.tv_file_template) next.tv_file_template = next.file_template || defaultConfig.tv_file_template;
+  if (!next.file_template) next.file_template = next.tv_file_template;
   return next;
 };
 
@@ -468,13 +490,15 @@ const saveConfig = async () => {
     message.warning('季目录模板不能为空');
     return;
   }
-  if (!config.value.keep_original_name && !String(config.value.file_template || '').trim()) {
-    message.warning('文件名模板不能为空；如需跳过文件重命名，请开启“保留原始文件名”');
+  if (!config.value.keep_original_name
+    && (!String(config.value.movie_file_template || '').trim() || !String(config.value.tv_file_template || '').trim())) {
+    message.warning('电影文件名和剧集文件名模板不能为空；如需跳过文件重命名，请开启“保留原始文件名”');
     return;
   }
 
   saving.value = true;
   try {
+    config.value.file_template = config.value.tv_file_template || config.value.file_template;
     const res = await axios.post('/api/p115/rename_config', config.value);
     if (res.data.success) {
       message.success('重命名规则已保存');
