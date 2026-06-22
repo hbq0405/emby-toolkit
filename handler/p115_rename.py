@@ -138,6 +138,8 @@ class P115RenameRenderer:
             'title_orig': title_orig,
             'original_title': title_orig,
             'name': name_from_file,
+            'clean_title': name_from_file,
+            'identify_title': name_from_file,
             'year': year,
             'year_pure': year,
             'title_year': title_year,

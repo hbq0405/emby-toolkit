@@ -189,6 +189,15 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertIn("{% if webSource %} · {{webSource}}{% endif %}", converted)
         self.assertIn("{% if releaseGroup %} - {{releaseGroup}}{% endif %}", converted)
 
+    def test_moviepilot_export_maps_internal_clean_title_to_mp_name(self):
+        converted, unsupported = moviepilot.convert_etk_rename_template_to_mp(
+            "{{clean_title}}{% if identify_title %}.{{identify_title}}{% endif %}{{fileExt}}"
+        )
+
+        self.assertEqual(unsupported, [])
+        self.assertIn("{{name}}", converted)
+        self.assertIn("{% if name %}.{{name}}{% endif %}", converted)
+
     def test_moviepilot_import_converts_mp_variables_to_etk_aliases(self):
         converted = moviepilot.convert_mp_rename_template_to_etk(
             "{{title}}{% if en_title %}.{{en_title}}{% endif %}.{{season_episode}}"
@@ -263,6 +272,7 @@ class P115RecognitionRuleTests(unittest.TestCase):
 
         expected_keys = {
             "title", "en_title", "original_title", "name", "en_name", "original_name",
+            "clean_title", "identify_title",
             "year", "title_year", "type", "category", "vote_average", "poster",
             "backdrop", "actors", "overview", "resourceType", "effect", "edition",
             "videoFormat", "resource_term", "releaseGroup", "videoCodec", "videoBit",

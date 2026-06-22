@@ -20,6 +20,8 @@ _ETK_TO_MP_RENAME_VARS = {
     "year_pure": "year",
     "tmdb": "tmdbid",
     "tmdb_id": "tmdbid",
+    "clean_title": "name",
+    "identify_title": "name",
     "source": "resourceType",
     "resolution": "videoFormat",
     "stream": "webSource",
