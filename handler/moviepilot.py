@@ -32,6 +32,17 @@ _ETK_TO_MP_RENAME_VARS = {
     "file_ext": "fileExt",
 }
 
+_MP_TO_ETK_RENAME_VARS = {
+    "en_title": "title_en",
+    "en_name": "title_en",
+    "resourceType": "source",
+    "videoFormat": "resolution",
+    "webSource": "stream",
+    "videoCodec": "codec",
+    "audioCodec": "audio",
+    "releaseGroup": "group",
+}
+
 _MP_RENAME_SUPPORTED_VARS = {
     "title", "en_title", "original_title", "name", "en_name", "original_name",
     "year", "title_year", "type", "category", "vote_average", "poster", "backdrop",
@@ -149,6 +160,19 @@ def convert_etk_rename_template_to_mp(template: str) -> Tuple[str, List[str]]:
                 unsupported.append(name)
 
     return text, unsupported
+
+
+def convert_mp_rename_template_to_etk(template: str) -> str:
+    """Convert MoviePilot rename variables to ETK-friendly aliases for imported templates."""
+    text = str(template or "")
+
+    def replace_tag(match):
+        tag = match.group(0)
+        for old, new in _MP_TO_ETK_RENAME_VARS.items():
+            tag = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, tag)
+        return tag
+
+    return re.sub(r"({[{%#][\s\S]*?[}%#]})", replace_tag, text)
 
 
 def _dedupe_mp_audio_codec_segments(template: str) -> str:

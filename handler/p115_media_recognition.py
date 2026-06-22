@@ -189,6 +189,98 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertIn("{% if webSource %} · {{webSource}}{% endif %}", converted)
         self.assertIn("{% if releaseGroup %} - {{releaseGroup}}{% endif %}", converted)
 
+    def test_moviepilot_import_converts_mp_variables_to_etk_aliases(self):
+        converted = moviepilot.convert_mp_rename_template_to_etk(
+            "{{title}}{% if en_title %}.{{en_title}}{% endif %}.{{season_episode}}"
+            "{% if videoFormat %}.{{videoFormat}}{% endif %}"
+            "{% if resourceType %}.{{resourceType}}{% endif %}"
+            "{% if webSource %}.{{webSource}}{% endif %}"
+            "{% if videoCodec %}.{{videoCodec}}{% endif %}"
+            "{% if audioCodec %}.{{audioCodec}}{% endif %}"
+            "{% if releaseGroup %}-{{releaseGroup}}{% endif %}{{fileExt}}"
+        )
+
+        self.assertIn("{% if title_en %}.{{title_en}}{% endif %}", converted)
+        self.assertIn("{% if resolution %}.{{resolution}}{% endif %}", converted)
+        self.assertIn("{% if source %}.{{source}}{% endif %}", converted)
+        self.assertIn("{% if stream %}.{{stream}}{% endif %}", converted)
+        self.assertIn("{% if codec %}.{{codec}}{% endif %}", converted)
+        self.assertIn("{% if audio %}.{{audio}}{% endif %}", converted)
+        self.assertIn("{% if group %}-{{group}}{% endif %}", converted)
+
+    def test_rename_renderer_accepts_moviepilot_english_title_alias(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "爱情有烟火", "date": "2026-01-01"},
+            tmdb_id="12345",
+            original_title="Love Has Fireworks",
+        )
+        name = renderer.build_name(
+            "{{title}}{% if en_title %}.{{en_title}}{% endif %}.{{season_episode}}{{fileExt}}",
+            is_tv=True,
+            season_num=1,
+            episode_num=13,
+            file_ext="mkv",
+        )
+        self.assertEqual(name, "爱情有烟火.Love Has Fireworks.S01E13.mkv")
+
+    def test_rename_renderer_exposes_moviepilot_documented_variables(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={
+                "title": "爱情有烟火",
+                "date": "2026-06-20",
+                "vote_average": 8.2,
+                "poster_path": "/poster.jpg",
+                "backdrop_path": "/backdrop.jpg",
+                "overview": "简介",
+                "actors": [{"name": "演员一"}, {"name": "演员二"}],
+                "imdb_id": "tt123",
+                "douban_id": "db123",
+            },
+            tmdb_id="12345",
+            original_title="Love Has Fireworks",
+        )
+        ctx = renderer.build_template_context(
+            is_tv=True,
+            season_num=1,
+            episode_num=13,
+            original_name="Love.Has.Fireworks.S01E13.Part.2.mkv",
+            video_info={
+                "source": "WEB-DL",
+                "effect": "HDR10",
+                "resolution": "2160p",
+                "codec": "HEVC",
+                "videoBit": "10bit",
+                "audio": "AAC 2.0",
+                "fps": "25fps",
+                "stream": "HHWEB",
+                "group": "ADWeb",
+                "category": "国产剧",
+                "episode_title": "第十三集",
+                "episode_date": "2026-06-20",
+            },
+            file_ext="mkv",
+        )
+
+        expected_keys = {
+            "title", "en_title", "original_title", "name", "en_name", "original_name",
+            "year", "title_year", "type", "category", "vote_average", "poster",
+            "backdrop", "actors", "overview", "resourceType", "effect", "edition",
+            "videoFormat", "resource_term", "releaseGroup", "videoCodec", "videoBit",
+            "audioCodec", "fps", "webSource", "tmdbid", "imdbid", "doubanid", "part",
+            "fileExt", "customization", "season", "season_fmt", "season_year", "episode",
+            "season_episode", "episode_title", "episode_date",
+        }
+        self.assertTrue(expected_keys.issubset(ctx.keys()))
+        self.assertEqual(ctx["en_title"], "Love Has Fireworks")
+        self.assertEqual(ctx["videoFormat"], "2160p")
+        self.assertEqual(ctx["resourceType"], "WEB-DL")
+        self.assertEqual(ctx["videoBit"], "10bit")
+        self.assertEqual(ctx["webSource"], "HHWEB")
+        self.assertEqual(ctx["releaseGroup"], "ADWeb")
+        self.assertEqual(ctx["season_fmt"], "S01")
+        self.assertEqual(ctx["episode_title"], "第十三集")
+        self.assertEqual(ctx["part"], "2")
+
     def test_identify_media_enhanced_prefers_rule_search_input(self):
         with mock.patch.object(
             p115_service.tmdb,

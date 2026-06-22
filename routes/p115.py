@@ -1584,15 +1584,20 @@ def import_rename_config_from_mp():
     if not tv_parts:
         return jsonify({"success": False, "message": "MoviePilot 剧集模板格式不正确，至少需要 主目录/季目录/文件名 三段"}), 400
 
+    main_dir_template = moviepilot.convert_mp_rename_template_to_etk(movie_parts[0])
+    season_dir_template = moviepilot.convert_mp_rename_template_to_etk(tv_parts[1])
+    movie_file_template = moviepilot.convert_mp_rename_template_to_etk(movie_parts[1])
+    tv_file_template = moviepilot.convert_mp_rename_template_to_etk(tv_parts[2])
+
     return jsonify({
         "success": True,
         "message": "已读取 MoviePilot 重命名模板",
         "data": {
-            "main_dir_template": movie_parts[0],
-            "season_dir_template": tv_parts[1],
-            "file_template": tv_parts[2],
-            "movie_file_template": movie_parts[1],
-            "tv_file_template": tv_parts[2],
+            "main_dir_template": main_dir_template,
+            "season_dir_template": season_dir_template,
+            "file_template": tv_file_template,
+            "movie_file_template": movie_file_template,
+            "tv_file_template": tv_file_template,
             "mp_movie_template": templates.get("movie"),
             "mp_tv_template": templates.get("tv"),
         }
