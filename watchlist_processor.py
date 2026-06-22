@@ -528,59 +528,59 @@ class WatchlistProcessor:
                                 if not season_info.get('poster_path'): season_info['poster_path'] = season_details_deep.get('poster_path')
                                 if not season_info.get('overview'): season_info['overview'] = season_details_deep.get('overview')
                         
-                        if not air_date_str: continue
+                    if not air_date_str: continue
 
-                        try:
-                            air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
-                            days_diff = (air_date - today).days
+                    try:
+                        air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                        days_diff = (air_date - today).days
+
+                        if -30 <= days_diff <= 7:
+                            revived_count += 1
+                            status_desc = "已开播" if days_diff <= 0 else f"{days_diff}天后开播"
+                            logger.info(f"  ➜ 发现《{series_name}》第 {new_season_num} 季{status_desc}，触发复活订阅流程。")
                             
-                            if -30 <= days_diff <= 7:
-                                revived_count += 1
-                                status_desc = "已开播" if days_diff <= 0 else f"{days_diff}天后开播"
-                                logger.info(f"  ➜ 发现《{series_name}》第 {new_season_num} 季{status_desc}，触发复活订阅流程。")
-                                
-                                # 1. 构造媒体信息
-                                season_tmdb_id = str(season_info.get('id'))
-                                media_info = {
-                                    'tmdb_id': season_tmdb_id,
-                                    'item_type': 'Season',
-                                    'title': f"{series_name} - {season_info.get('name', f'第 {new_season_num} 季')}",
-                                    'release_date': air_date_str,
-                                    'poster_path': season_info.get('poster_path'),
-                                    'season_number': new_season_num,
-                                    'parent_series_tmdb_id': tmdb_id,
-                                    'overview': season_info.get('overview')
-                                }
+                            # 1. 构造媒体信息
+                            season_tmdb_id = str(season_info.get('id'))
+                            media_info = {
+                                'tmdb_id': season_tmdb_id,
+                                'item_type': 'Season',
+                                'title': f"{series_name} - {season_info.get('name', f'第 {new_season_num} 季')}",
+                                'release_date': air_date_str,
+                                'poster_path': season_info.get('poster_path'),
+                                'season_number': new_season_num,
+                                'parent_series_tmdb_id': tmdb_id,
+                                'overview': season_info.get('overview')
+                            }
 
-                                # ★★★ 修改点：定义专属的 source type，并区分开播状态 ★★★
-                                source_data = {"type": "revived_season", "reason": "watchlist_revival", "item_id": tmdb_id}
+                            # ★★★ 修改点：定义专属的 source type，并区分开播状态 ★★★
+                            source_data = {"type": "revived_season", "reason": "watchlist_revival", "item_id": tmdb_id}
 
-                                if days_diff <= 0:
-                                    # 已开播：直接设为 WANTED (想看/立即订阅)
-                                    request_db.set_media_status_wanted(
-                                        tmdb_ids=season_tmdb_id,
-                                        item_type='Season',
-                                        source=source_data,
-                                        media_info_list=[media_info]
-                                    )
-                                else:
-                                    # 未开播：设为 PENDING_RELEASE (待上映)
-                                    request_db.set_media_status_pending_release(
-                                        tmdb_ids=season_tmdb_id,
-                                        item_type='Season',
-                                        source=source_data,
-                                        media_info_list=[media_info]
-                                    )
-                                
-                                # 仅更新 TMDb 状态元数据，保持数据新鲜度 (可选，不影响逻辑)
-                                self._update_watchlist_entry(tmdb_id, series_name, {
-                                    "watchlist_tmdb_status": "Returning Series"
-                                })
+                            if days_diff <= 0:
+                                # 已开播：直接设为 WANTED (想看/立即订阅)
+                                request_db.set_media_status_wanted(
+                                    tmdb_ids=season_tmdb_id,
+                                    item_type='Season',
+                                    source=source_data,
+                                    media_info_list=[media_info]
+                                )
+                            else:
+                                # 未开播：设为 PENDING_RELEASE (待上映)
+                                request_db.set_media_status_pending_release(
+                                    tmdb_ids=season_tmdb_id,
+                                    item_type='Season',
+                                    source=source_data,
+                                    media_info_list=[media_info]
+                                )
 
-                                sub_status_desc = "立即订阅" if days_diff <= 0 else "待上映"
-                                logger.info(f"  ➜ 已为《{series_name}》第 {new_season_num} 季提交订阅请求，状态：{sub_status_desc}。")
-                                break 
-                        except ValueError: pass
+                            # 仅更新 TMDb 状态元数据，保持数据新鲜度 (可选，不影响逻辑)
+                            self._update_watchlist_entry(tmdb_id, series_name, {
+                                "watchlist_tmdb_status": "Returning Series"
+                            })
+
+                            sub_status_desc = "立即订阅" if days_diff <= 0 else "待上映"
+                            logger.info(f"  ➜ 已为《{series_name}》第 {new_season_num} 季提交订阅请求，状态：{sub_status_desc}。")
+                            break
+                    except ValueError: pass
                 
                 time.sleep(0.5) # 稍微减少一点 sleep，因为轻量检查很快
             
