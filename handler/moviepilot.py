@@ -1268,7 +1268,7 @@ def update_subscription(payload: dict, config: Dict[str, Any] = None) -> bool:
         res = requests.put(f"{moviepilot_url}/api/v1/subscribe/", headers=headers, json=payload, timeout=15)
         if res.status_code in [200, 204]:
             return True
-        logger.warning(f"  -> Update MP subscription failed: {res.status_code} - {res.text}")
+        logger.warning(f"  ➜ 更新 MP 订阅失败: {res.status_code} - {res.text}")
         return False
     except Exception as e:
         logger.error(f"  ➜ 更新 MP 订阅失败: {e}")
@@ -1286,6 +1286,7 @@ def lock_series_subscription_version(
     """Lock an MP season subscription by include regex; recreate it if PUT is not persisted."""
     tmdb_id = str(tmdb_id or '').strip()
     include_regex = str(include_regex or '').strip()
+    log_title = f"《{series_name}》第 {season} 季" if series_name else f"第 {season} 季"
     if not tmdb_id or not season or not include_regex:
         return False
 
@@ -1309,9 +1310,9 @@ def lock_series_subscription_version(
     if existing.get("id") and update_subscription(payload, config):
         verified = get_subscription_by_tmdbid(tmdb_id, season, config) or {}
         if str(verified.get("include") or "") == include_regex:
-            logger.info(f"  -> Version lock updated MP subscription: TMDb {tmdb_id} S{season}")
+            logger.info(f"  ➜ [版本锁定] 已更新 MP 订阅：{log_title}")
             return True
-        logger.warning(f"  -> MP update did not persist include regex; recreating: TMDb {tmdb_id} S{season}")
+        logger.warning(f"  ➜ [版本锁定] MP 更新后未持久化包含正则，改为删除后重建：{log_title}")
 
     recreate_payload = dict(payload)
     recreate_payload.pop("id", None)
@@ -1319,7 +1320,7 @@ def lock_series_subscription_version(
         cancel_subscription(tmdb_id, "Series", config or {}, season=season)
     ok = subscribe_with_custom_payload(recreate_payload, config)
     if ok:
-        logger.info(f"  -> Version lock recreated MP subscription: TMDb {tmdb_id} S{season}")
+        logger.info(f"  ➜ [版本锁定] 已删除后重建 MP 订阅：{log_title}")
     return ok
 
 def search_subscription(sub_id: int, config: Dict[str, Any] = None) -> bool:

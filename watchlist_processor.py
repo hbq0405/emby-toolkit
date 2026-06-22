@@ -1623,7 +1623,8 @@ class WatchlistProcessor:
             lookaheads.append(f"(?=.*({aliases.get(compact, flexible)}))")
         return "(?i)" + "".join(lookaheads[:8]) if lookaheads else ""
 
-    def _get_version_lock_candidate(self, tmdb_id: str, season_number: int, mode: str) -> Optional[Dict[str, Any]]:
+    def _get_version_lock_candidate(self, tmdb_id: str, season_number: int, mode: str, series_name: str = '') -> Optional[Dict[str, Any]]:
+        log_title = f"《{series_name}》第 {season_number} 季" if series_name else f"第 {season_number} 季"
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -1690,10 +1691,11 @@ class WatchlistProcessor:
                     row = cursor.fetchone()
                     return dict(row) if row and row.get('source_name') else None
         except Exception as e:
-            logger.warning(f"  -> Version lock candidate query failed: TMDb {tmdb_id} S{season_number}: {e}")
+            logger.warning(f"  ➜ [版本锁定] 查询候选入库版本失败：{log_title}: {e}")
             return None
 
-    def _save_version_lock_state(self, tmdb_id: str, season_number: int, state: Dict[str, Any]) -> None:
+    def _save_version_lock_state(self, tmdb_id: str, season_number: int, state: Dict[str, Any], series_name: str = '') -> None:
+        log_title = f"《{series_name}》第 {season_number} 季" if series_name else f"第 {season_number} 季"
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -1707,14 +1709,14 @@ class WatchlistProcessor:
                     )
                     conn.commit()
         except Exception as e:
-            logger.warning(f"  -> Save version lock state failed: TMDb {tmdb_id} S{season_number}: {e}")
+            logger.warning(f"  ➜ [版本锁定] 保存本地锁定状态失败：{log_title}: {e}")
 
     def _apply_watchlist_version_lock(self, tmdb_id: str, series_name: str, seasons: List[int], mode: str) -> None:
         mode = str(mode or 'off').strip().lower()
         if mode not in ('best', 'any'):
             return
         for season_number in sorted({int(s) for s in seasons if s}):
-            row = self._get_version_lock_candidate(tmdb_id, season_number, mode)
+            row = self._get_version_lock_candidate(tmdb_id, season_number, mode, series_name)
             if not row:
                 continue
             include_regex = self._build_version_lock_include_regex(row.get('source_name'))
@@ -1728,16 +1730,26 @@ class WatchlistProcessor:
                 self.config,
                 best_version=(mode == 'best'),
             )
+            episode_number = row.get('episode_number')
+            washing_level = row.get('washing_level')
+            try:
+                episode_number = int(episode_number) if episode_number is not None else None
+            except Exception:
+                episode_number = None
+            try:
+                washing_level = int(washing_level) if washing_level is not None else None
+            except Exception:
+                washing_level = None
             self._save_version_lock_state(tmdb_id, season_number, {
                 'locked': bool(ok),
                 'mode': mode,
                 'season': season_number,
-                'episode': row.get('episode_number'),
-                'washing_level': row.get('washing_level'),
+                'episode': episode_number,
+                'washing_level': washing_level,
                 'source_name': row.get('source_name'),
                 'include': include_regex,
                 'updated_at': datetime.now(timezone.utc).isoformat(),
-            })
+            }, series_name)
 
     def _check_season_consistency(self, tmdb_id: str, season_number: int, expected_episode_count: int) -> bool:
         """统一调用 tasks.helpers.check_season_consistency，保留旧方法名兼容现有调用。"""
