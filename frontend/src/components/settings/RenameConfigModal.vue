@@ -20,13 +20,8 @@
               <div class="inline-preview">
                 <div class="preview-line">
                   <n-icon color="#f0a020" size="16"><FolderIcon /></n-icon>
-                  <span class="preview-label">电影</span>
+                  <span class="preview-label">预览</span>
                   <span class="node-text">{{ previewMovieDir }}</span>
-                </div>
-                <div class="preview-line">
-                  <n-icon color="#f0a020" size="16"><FolderIcon /></n-icon>
-                  <span class="preview-label">剧集</span>
-                  <span class="node-text">{{ previewTvDir }}</span>
                 </div>
               </div>
             </n-form-item>
@@ -571,11 +566,18 @@ defineExpose({ open });
   gap: 8px;
 }
 
+.template-grid :deep(.n-form-item-blank) {
+  display: block;
+  width: 100%;
+}
+
 .inline-preview {
   margin-top: 6px;
   padding: 8px 10px;
   background: rgba(0, 0, 0, 0.02);
   border-radius: 6px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .preview-line {
