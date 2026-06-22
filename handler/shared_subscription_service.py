@@ -4115,8 +4115,9 @@ def _consume_sources(
             'payload_json': payload,
         }
         result = consume_device_event(event, ack=False)
-        if result.get('ok'):
-            ok += int(result.get('success_count') or 1)
+        success_count = int(result.get('success_count') or 0)
+        if result.get('ok') and not result.get('skipped') and not result.get('blocked') and success_count > 0:
+            ok += success_count
             # 电影 / 单集命中一个即可；完结季一次事件会包含多文件。
             if payload.get('source_kind') in ('movie', 'episode'):
                 break
@@ -4124,6 +4125,7 @@ def _consume_sources(
             skipped.append({
                 'source_id': payload.get('source_id') or payload.get('source_ref_id'),
                 'message': result.get('message'),
+                'blocked_reason': result.get('blocked_reason'),
                 'match_filter': result.get('match_filter'),
             })
         else:
