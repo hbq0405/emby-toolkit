@@ -286,6 +286,7 @@ def api_watchlist_settings():
         "sync_mp_subscription": False,
         "series_subscription_best_version": False,
         "series_subscription_best_version_full": False,
+        "series_version_lock_mode": "off",
         "revival_check_days": 365,
         "tg_channel_tracking": False      
     }

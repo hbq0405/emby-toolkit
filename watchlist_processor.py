@@ -3,6 +3,7 @@
 import time
 import json
 import os
+import re
 import requests
 import concurrent.futures
 from typing import Optional, Dict, Any, List
@@ -1464,12 +1465,13 @@ class WatchlistProcessor:
             enable_auto_pause = auto_pause_days > 0
             auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
             enable_sync_sub = watchlist_cfg.get('sync_mp_subscription', False)
+            version_lock_mode = str(watchlist_cfg.get('series_version_lock_mode') or 'off').strip().lower()
             episode_wash_enabled = bool(
                 watchlist_cfg.get(
                     'series_subscription_best_version',
                     watchlist_cfg.get('sync_mp_subscription_episode_wash', False),
                 )
-            )
+            ) or version_lock_mode == 'best'
             full_wash_enabled = bool(
                 watchlist_cfg.get(
                     'series_subscription_best_version_full',
@@ -1570,6 +1572,172 @@ class WatchlistProcessor:
 
         except Exception as e:
             logger.warning(f"同步状态给 MoviePilot 时出错: {e}")
+
+    def _version_lock_terms_from_filename(self, filename: str) -> List[str]:
+        text = str(filename or '')
+        terms = []
+        patterns = [
+            r'\b(?:2160p|1080p|720p|480p|4k)\b',
+            r'\b(?:remux|bluray|blu[ ._-]?ray|web[ ._-]?dl|web[ ._-]?rip|webrip|webdl|hdtv)\b',
+            r'\b(?:nf|netflix|amzn|amazon|dsnp|disney|hulu|max|atvp|apple|hbo|iqiyi|wetv|viu)\b',
+            r'\b(?:dovi|dolby[ ._-]?vision|dv|hdr10\+?|hdr10plus|hdr|hlg)\b',
+            r'\b(?:hevc|h\.?265|x265|avc|h\.?264|x264|av1)\b',
+            r'\b(?:ddp|dd\+|eac3|aac|truehd|atmos|dts[ ._-]?hd|dts)\b',
+        ]
+        for pattern in patterns:
+            for match in re.findall(pattern, text, flags=re.IGNORECASE):
+                term = str(match if isinstance(match, str) else match[0]).strip(' ._-')
+                if term and term.lower() not in {t.lower() for t in terms}:
+                    terms.append(term)
+        group_match = re.search(r'[-\s]\s*([A-Za-z0-9][A-Za-z0-9._-]{1,24})\.[A-Za-z0-9]{2,5}$', text)
+        if group_match:
+            group = group_match.group(1).strip(' ._-')
+            if group and group.lower() not in {t.lower() for t in terms}:
+                terms.append(group)
+        return terms
+
+    def _build_version_lock_include_regex(self, filename: str) -> str:
+        aliases = {
+            'webdl': r'web[\s._-]?dl',
+            'web-dl': r'web[\s._-]?dl',
+            'bluray': r'blu[\s._-]?ray|bluray',
+            'blu-ray': r'blu[\s._-]?ray|bluray',
+            'hdr10+': r'hdr10\+|hdr10plus',
+            'h265': r'h\.?265|hevc|x265',
+            'hevc': r'hevc|h\.?265|x265',
+            'h264': r'h\.?264|avc|x264',
+            'avc': r'avc|h\.?264|x264',
+            'dovi': r'dovi|dolby[\s._-]?vision|dv',
+            'dolbyvision': r'dovi|dolby[\s._-]?vision|dv',
+            'ddp': r'ddp|dd\+|eac3',
+        }
+        lookaheads = []
+        seen = set()
+        for term in self._version_lock_terms_from_filename(filename):
+            compact = re.sub(r'[\s._-]+', '', term).lower()
+            if compact in seen or compact in {'sdr'}:
+                continue
+            seen.add(compact)
+            escaped = re.escape(term)
+            flexible = re.sub(r'\\[\s._-]+', r'[\\s._-]*', escaped)
+            lookaheads.append(f"(?=.*({aliases.get(compact, flexible)}))")
+        return "(?i)" + "".join(lookaheads[:8]) if lookaheads else ""
+
+    def _get_version_lock_candidate(self, tmdb_id: str, season_number: int, mode: str) -> Optional[Dict[str, Any]]:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT watchlist_version_lock_json
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s AND item_type = 'Season' AND season_number = %s
+                        LIMIT 1
+                        """,
+                        (str(tmdb_id), season_number),
+                    )
+                    season_row = cursor.fetchone()
+                    lock_state = season_row.get('watchlist_version_lock_json') if season_row else {}
+                    if isinstance(lock_state, str):
+                        try:
+                            lock_state = json.loads(lock_state)
+                        except Exception:
+                            lock_state = {}
+                    if (
+                        isinstance(lock_state, dict)
+                        and lock_state.get('locked')
+                        and lock_state.get('include')
+                        and str(lock_state.get('mode') or '') == mode
+                    ):
+                        return None
+
+                    level_sql = "AND e.washing_level = 1" if mode == 'best' else ""
+                    cursor.execute(
+                        f"""
+                        SELECT e.episode_number, e.washing_level,
+                               COALESCE(r.original_name, c.name) AS source_name
+                        FROM media_metadata e
+                        LEFT JOIN LATERAL (
+                            SELECT original_name
+                            FROM p115_organize_records r
+                            WHERE r.tmdb_id = %s
+                              AND r.season_number = %s
+                              AND r.pick_code IS NOT NULL
+                              AND e.file_pickcode_json IS NOT NULL
+                              AND e.file_pickcode_json ? r.pick_code
+                            ORDER BY r.processed_at ASC NULLS LAST
+                            LIMIT 1
+                        ) r ON TRUE
+                        LEFT JOIN LATERAL (
+                            SELECT name
+                            FROM p115_filesystem_cache c
+                            WHERE c.pick_code IS NOT NULL
+                              AND e.file_pickcode_json IS NOT NULL
+                              AND e.file_pickcode_json ? c.pick_code
+                            ORDER BY c.updated_at DESC NULLS LAST
+                            LIMIT 1
+                        ) c ON TRUE
+                        WHERE e.item_type = 'Episode'
+                          AND e.parent_series_tmdb_id = %s
+                          AND e.season_number = %s
+                          AND e.in_library = TRUE
+                          {level_sql}
+                        ORDER BY e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST
+                        LIMIT 1
+                        """,
+                        (str(tmdb_id), season_number, str(tmdb_id), season_number),
+                    )
+                    row = cursor.fetchone()
+                    return dict(row) if row and row.get('source_name') else None
+        except Exception as e:
+            logger.warning(f"  -> Version lock candidate query failed: TMDb {tmdb_id} S{season_number}: {e}")
+            return None
+
+    def _save_version_lock_state(self, tmdb_id: str, season_number: int, state: Dict[str, Any]) -> None:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE media_metadata
+                        SET watchlist_version_lock_json = %s
+                        WHERE parent_series_tmdb_id = %s AND item_type = 'Season' AND season_number = %s
+                        """,
+                        (json.dumps(state, ensure_ascii=False), str(tmdb_id), season_number),
+                    )
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"  -> Save version lock state failed: TMDb {tmdb_id} S{season_number}: {e}")
+
+    def _apply_watchlist_version_lock(self, tmdb_id: str, series_name: str, seasons: List[int], mode: str) -> None:
+        mode = str(mode or 'off').strip().lower()
+        if mode not in ('best', 'any'):
+            return
+        for season_number in sorted({int(s) for s in seasons if s}):
+            row = self._get_version_lock_candidate(tmdb_id, season_number, mode)
+            if not row:
+                continue
+            include_regex = self._build_version_lock_include_regex(row.get('source_name'))
+            if not include_regex:
+                continue
+            ok = moviepilot.lock_series_subscription_version(
+                tmdb_id,
+                season_number,
+                series_name,
+                include_regex,
+                self.config,
+                best_version=(mode == 'best'),
+            )
+            self._save_version_lock_state(tmdb_id, season_number, {
+                'locked': bool(ok),
+                'mode': mode,
+                'season': season_number,
+                'episode': row.get('episode_number'),
+                'washing_level': row.get('washing_level'),
+                'source_name': row.get('source_name'),
+                'include': include_regex,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            })
 
     def _check_season_consistency(self, tmdb_id: str, season_number: int, expected_episode_count: int) -> bool:
         """统一调用 tasks.helpers.check_season_consistency，保留旧方法名兼容现有调用。"""
@@ -2879,6 +3047,12 @@ class WatchlistProcessor:
             series_details=latest_series_data, 
             final_status=final_status,
             old_status=old_status
+        )
+        self._apply_watchlist_version_lock(
+            tmdb_id=tmdb_id,
+            series_name=item_name,
+            seasons=list(active_seasons),
+            mode=watchlist_cfg.get('series_version_lock_mode', 'off'),
         )
 
     # --- 统一的、公开的追剧处理入口 ★★★

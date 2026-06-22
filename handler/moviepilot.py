@@ -1264,10 +1264,61 @@ def update_subscription(payload: dict, config: Dict[str, Any] = None) -> bool:
 
         headers = {"Authorization": f"Bearer {access_token}"}
         res = requests.put(f"{moviepilot_url}/api/v1/subscribe/", headers=headers, json=payload, timeout=15)
-        return res.status_code in [200, 204]
+        if res.status_code in [200, 204]:
+            return True
+        logger.warning(f"  -> Update MP subscription failed: {res.status_code} - {res.text}")
+        return False
     except Exception as e:
         logger.error(f"  ➜ 更新 MP 订阅失败: {e}")
         return False
+
+def lock_series_subscription_version(
+    tmdb_id: str,
+    season: int,
+    series_name: str,
+    include_regex: str,
+    config: Dict[str, Any] = None,
+    *,
+    best_version: bool = False,
+) -> bool:
+    """Lock an MP season subscription by include regex; recreate it if PUT is not persisted."""
+    tmdb_id = str(tmdb_id or '').strip()
+    include_regex = str(include_regex or '').strip()
+    if not tmdb_id or not season or not include_regex:
+        return False
+
+    existing = get_subscription_by_tmdbid(tmdb_id, season, config) or {}
+    payload = dict(existing) if existing else {
+        "name": series_name,
+        "tmdbid": int(tmdb_id),
+        "type": "\u7535\u89c6\u5267",
+        "season": int(season),
+    }
+
+    payload["include"] = include_regex
+    payload["season"] = int(season)
+    payload["tmdbid"] = int(tmdb_id)
+    if series_name and not payload.get("name"):
+        payload["name"] = series_name
+    if best_version:
+        payload["best_version"] = 1
+        payload.pop("best_version_full", None)
+
+    if existing.get("id") and update_subscription(payload, config):
+        verified = get_subscription_by_tmdbid(tmdb_id, season, config) or {}
+        if str(verified.get("include") or "") == include_regex:
+            logger.info(f"  -> Version lock updated MP subscription: TMDb {tmdb_id} S{season}")
+            return True
+        logger.warning(f"  -> MP update did not persist include regex; recreating: TMDb {tmdb_id} S{season}")
+
+    recreate_payload = dict(payload)
+    recreate_payload.pop("id", None)
+    if existing:
+        cancel_subscription(tmdb_id, "Series", config or {}, season=season)
+    ok = subscribe_with_custom_payload(recreate_payload, config)
+    if ok:
+        logger.info(f"  -> Version lock recreated MP subscription: TMDb {tmdb_id} S{season}")
+    return ok
 
 def search_subscription(sub_id: int, config: Dict[str, Any] = None) -> bool:
     """触发指定订阅的立即搜索"""

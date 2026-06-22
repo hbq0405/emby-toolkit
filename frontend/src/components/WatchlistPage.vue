@@ -626,6 +626,18 @@
                       <template #unchecked>关闭</template>
                     </n-switch>
                   </div>
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-top: 1px dashed var(--n-border-color);">
+                    <div style="display: flex; flex-direction: column; gap: 2px;">
+                      <span style="font-size: 13px; font-weight: 500;">锁定版本</span>
+                      <span style="font-size: 12px; color: var(--n-text-color-3);">按入库文件名提取正则关键词后重提 MP 订阅。</span>
+                    </div>
+                    <n-select
+                      v-model:value="watchlistConfig.series_version_lock_mode"
+                      :options="versionLockOptions"
+                      size="small"
+                      style="width: 130px"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -722,6 +734,11 @@ const tempTotalEpisodes = ref(0);
 const activeTab = ref('seasons');
 const showConfigModal = ref(false);
 const configSaving = ref(false);
+const versionLockOptions = [
+  { label: '关闭', value: 'off' },
+  { label: '最佳版本', value: 'best' },
+  { label: '任意版本', value: 'any' }
+];
 
 const watchlistConfig = ref({
   auto_pending: { 
@@ -740,6 +757,7 @@ const watchlistConfig = ref({
   sync_mp_subscription: false,
   series_subscription_best_version: false,
   series_subscription_best_version_full: false,
+  series_version_lock_mode: 'off',
   revival_check_days: 365,
   tg_channel_tracking: false
 });
@@ -767,6 +785,7 @@ const openConfigModal = async () => {
          sync_mp_subscription: data.sync_mp_subscription ?? false,
          series_subscription_best_version: data.series_subscription_best_version ?? data.sync_mp_subscription_episode_wash ?? false,
          series_subscription_best_version_full: data.series_subscription_best_version_full ?? data.sync_mp_subscription_full_wash ?? false,
+         series_version_lock_mode: data.series_version_lock_mode ?? 'off',
          revival_check_days: data.revival_check_days ?? 365,
          tg_channel_tracking: data.tg_channel_tracking ?? false
        };
@@ -779,6 +798,9 @@ const openConfigModal = async () => {
 const saveConfig = async () => {
   configSaving.value = true;
   try {
+    if (watchlistConfig.value.series_version_lock_mode === 'best') {
+      watchlistConfig.value.series_subscription_best_version = true;
+    }
     await axios.post('/api/watchlist/settings', watchlistConfig.value);
     message.success('配置保存成功');
     showConfigModal.value = false;

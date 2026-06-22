@@ -241,6 +241,7 @@ def init_db():
                         total_episodes_locked BOOLEAN DEFAULT FALSE, 
                         waiting_for_completed_pack BOOLEAN DEFAULT FALSE,
                         active_washing BOOLEAN DEFAULT FALSE,
+                        watchlist_version_lock_json JSONB DEFAULT '{}'::jsonb,
 
                         -- 洗版优先级快照（主动洗版门禁用）
                         washing_level INTEGER,
@@ -681,6 +682,7 @@ def init_db():
                         'media_metadata': {
                             "imdb_id": "TEXT",
                             "tagline": "TEXT",
+                            "watchlist_version_lock_json": "JSONB DEFAULT '{}'::jsonb",
                             "washing_level": "INTEGER",
                             "washing_snapshot_json": "JSONB DEFAULT '{}'::jsonb"
                         },
