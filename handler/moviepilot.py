@@ -13,6 +13,39 @@ from handler.tg_media_candidate import candidate_to_recognition_hints, is_recogn
 
 logger = logging.getLogger(__name__)
 
+_ETK_TO_MP_RENAME_VARS = {
+    "title_zh": "title",
+    "title_en": "en_title",
+    "title_orig": "original_title",
+    "year_pure": "year",
+    "tmdb": "tmdbid",
+    "tmdb_id": "tmdbid",
+    "source": "resourceType",
+    "resolution": "videoFormat",
+    "stream": "webSource",
+    "codec": "videoCodec",
+    "audio": "audioCodec",
+    "group": "releaseGroup",
+    "s_e": "season_episode",
+    "season_name_s": "season_fmt",
+    "file_ext": "fileExt",
+}
+
+_MP_RENAME_SUPPORTED_VARS = {
+    "title", "en_title", "original_title", "name", "en_name", "original_name",
+    "year", "title_year", "type", "category", "vote_average", "poster", "backdrop",
+    "actors", "overview", "resourceType", "effect", "edition", "videoFormat",
+    "resource_term", "releaseGroup", "videoCodec", "videoBit", "audioCodec", "fps",
+    "webSource", "tmdbid", "imdbid", "doubanid", "part", "fileExt", "customization",
+    "season", "season_fmt", "season_year", "episode", "season_episode",
+    "episode_title", "episode_date",
+}
+
+_MP_RENAME_ALLOWED_FILTERS = {"upper", "lower", "string", "default", "trim", "replace", "zfill"}
+_MP_RENAME_ETK_ONLY_LABELS = {
+    "audio_count": "音轨数",
+}
+
 # ======================================================================
 # 核心基础函数 (Token管理与API请求)
 # ======================================================================
@@ -69,6 +102,55 @@ def _extract_setting_value(data):
         if key in data:
             return data.get(key)
     return None
+
+
+def convert_etk_rename_template_to_mp(template: str) -> Tuple[str, List[str]]:
+    """
+    Convert ETK-friendly rename variables to MoviePilot's documented Jinja context.
+    Returns the converted template and a list of ETK-only variables that MP cannot render.
+    """
+    text = str(template or "")
+
+    exact_replacements = {
+        r"{{\s*season_no\s*}}": "{{ season|string }}.zfill(2)",
+        r"{{\s*episode_no\s*}}": "{{ episode|string }}.zfill(2)",
+        r"{{\s*season_name_en\s*}}": "Season {{ season|string }}.zfill(2)",
+        r"{{\s*season_name_en_no0\s*}}": "Season {{ season }}",
+        r"{{\s*season_name_s_no0\s*}}": "S{{ season }}",
+        r"{{\s*season_name_zh\s*}}": "第 {{ season }} 季",
+        r"{{\s*episode_name_zh\s*}}": "第 {{ episode }} 集",
+        r"{{\s*season_episode_zh\s*}}": "第 {{ season }} 季 {{ episode }} 集",
+    }
+    for pattern, replacement in exact_replacements.items():
+        text = re.sub(pattern, replacement, text)
+
+    def replace_tag(match):
+        tag = match.group(0)
+        for old, new in _ETK_TO_MP_RENAME_VARS.items():
+            tag = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, tag)
+        return tag
+
+    text = re.sub(r"({[{%#][\s\S]*?[}%#]})", replace_tag, text)
+
+    unsupported = []
+    for tag in re.findall(r"{[{%][\s\S]*?[}%]}", text):
+        for name in re.findall(r"\b[A-Za-z_]\w*\b", tag):
+            if name in ("if", "endif", "else", "elif", "for", "endfor", "in", "and", "or", "not", "is", "none", "true", "false"):
+                continue
+            if name in _MP_RENAME_ALLOWED_FILTERS or name in _MP_RENAME_SUPPORTED_VARS:
+                continue
+            if name not in unsupported:
+                unsupported.append(name)
+
+    return text, unsupported
+
+
+def format_mp_unsupported_rename_vars(unsupported: List[str]) -> str:
+    labels = []
+    for name in unsupported:
+        label = _MP_RENAME_ETK_ONLY_LABELS.get(name)
+        labels.append(f"{name}（{label}）" if label else name)
+    return "、".join(labels)
 
 
 def get_rename_templates(config: Dict[str, Any] = None) -> Tuple[bool, dict, str]:

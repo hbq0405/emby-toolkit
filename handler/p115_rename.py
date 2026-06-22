@@ -122,10 +122,14 @@ class P115RenameRenderer:
             'fileExt': ext_with_dot,
 
             # MoviePilot-compatible aliases
-            'videoFormat': source,
+            'resourceType': source,
+            'videoFormat': video_info.get('resolution') or '',
             'videoCodec': codec,
             'audioCodec': audio,
             'releaseGroup': group,
+            'webSource': video_info.get('stream') or '',
+            'videoBit': video_info.get('videoBit') or video_info.get('video_bit') or '',
+            'resource_term': video_info.get('resource_term') or '',
             'customization': effect,
             'edition': video_info.get('edition') or '',
         }

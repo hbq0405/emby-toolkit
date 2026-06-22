@@ -1598,8 +1598,23 @@ def export_rename_config_to_mp():
     data = request.json if isinstance(request.json, dict) else {}
     movie_file_template = data.get("movie_file_template") or data.get("file_template")
     tv_file_template = data.get("tv_file_template") or data.get("file_template")
-    movie_template = _join_mp_template(data.get("main_dir_template"), movie_file_template)
-    tv_template = _join_mp_template(data.get("main_dir_template"), data.get("season_dir_template"), tv_file_template)
+    main_dir_template, main_unsupported = moviepilot.convert_etk_rename_template_to_mp(data.get("main_dir_template"))
+    season_dir_template, season_unsupported = moviepilot.convert_etk_rename_template_to_mp(data.get("season_dir_template"))
+    movie_file_template, movie_unsupported = moviepilot.convert_etk_rename_template_to_mp(movie_file_template)
+    tv_file_template, tv_unsupported = moviepilot.convert_etk_rename_template_to_mp(tv_file_template)
+    unsupported = []
+    for name in main_unsupported + season_unsupported + movie_unsupported + tv_unsupported:
+        if name not in unsupported:
+            unsupported.append(name)
+    if unsupported:
+        unsupported_text = moviepilot.format_mp_unsupported_rename_vars(unsupported)
+        return jsonify({
+            "success": False,
+            "message": f"MoviePilot 不支持这些 ETK 变量：{unsupported_text}。请先从模板里删除或改用 MP 支持的变量。"
+        }), 400
+
+    movie_template = _join_mp_template(main_dir_template, movie_file_template)
+    tv_template = _join_mp_template(main_dir_template, season_dir_template, tv_file_template)
     if not movie_template or not tv_template:
         return jsonify({"success": False, "message": "主目录、季目录、电影文件名和剧集文件名模板不能为空"}), 400
 
