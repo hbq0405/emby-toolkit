@@ -422,6 +422,23 @@
 
           <!-- 版本列表 -->
           <div class="center-version-detail-list">
+            <div v-if="centerDetailSeasonProgressVisible" class="center-season-progress">
+              <div class="center-season-progress-head">
+                <span>整体进度</span>
+                <span>{{ centerDetailSeasonProgressText }}</span>
+              </div>
+              <n-progress
+                class="center-season-progress-bar"
+                type="line"
+                :percentage="centerDetailSeasonProgressPercent"
+                :show-indicator="false"
+                :height="12"
+                :border-radius="6"
+                :color="centerTransferButtonColor"
+                :style="{ '--season-progress-color': centerTransferButtonColor }"
+                processing
+              />
+            </div>
             <div
               v-for="version in centerDetailVersions"
               :key="centerVersionKey(version)"
@@ -431,7 +448,7 @@
             >
               <div class="center-version-main">
                 <div class="center-version-tags">
-                  <n-tag v-for="tagItem in centerVersionTags(version)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
+                  <n-tag v-for="tagItem in centerVersionTags(version, centerDetailProgressScope)" :key="tagItem.key" size="small" round :type="tagItem.type || 'default'" :bordered="false">
                     {{ tagItem.label }}
                   </n-tag>
                 </div>
@@ -1854,10 +1871,23 @@ const centerIsOngoingHub = (row) => {
     || /连载中|更新中|未完结/.test(label)
   );
 };
-const centerProgressText = (row) => {
-  if (row?.progress_text) return String(row.progress_text);
-  const current = Number(row?.progress_current || row?.pack_item_count || row?.file_count || 0);
-  const total = Number(row?.progress_total || row?.expected_episode_count || current || 0);
+const centerPositiveNumber = (value) => {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : 0;
+};
+const centerProgressParts = (row) => {
+  const text = String(row?.progress_text || '').trim();
+  const match = text.match(/(\d+)\s*\/\s*(\d+)/);
+  const textCurrent = match ? centerPositiveNumber(match[1]) : 0;
+  const textTotal = match ? centerPositiveNumber(match[2]) : 0;
+  const current = centerPositiveNumber(row?.progress_current || row?.pack_item_count || row?.file_count) || textCurrent;
+  const total = centerPositiveNumber(row?.progress_total || row?.expected_episode_count || row?.episode_total || row?.total_episodes || row?.episode_count || row?.logical_group?.episode_total) || textTotal || current;
+  return { current, total };
+};
+const centerProgressText = (row, scope = null) => {
+  const parts = centerProgressParts(row);
+  const current = centerPositiveNumber(scope?.current) || parts.current;
+  const total = centerPositiveNumber(scope?.total) || parts.total;
   if (current > 0 && total > 0) return `${current}/${total}`;
   return current > 0 ? String(current) : '';
 };
@@ -2967,13 +2997,46 @@ const centerVersionAssetAvailable = (asset) => {
   const status = String(asset.status || asset.source_status || asset.backing_status || 'alive').toLowerCase();
   return ['alive', 'available', 'updating', 'incomplete', 'pool_complete', 'pool_partial'].includes(status);
 };
+const centerVersionEpisodeTotal = (row) => Math.max(
+  centerPositiveNumber(row?.episode_total),
+  centerPositiveNumber(row?.progress_total),
+  centerPositiveNumber(row?.logical_group?.episode_total),
+  centerPositiveNumber(row?.expected_episode_count),
+  centerPositiveNumber(row?.total_episodes),
+  centerPositiveNumber(row?.episode_count),
+  centerProgressParts(row).total,
+);
+const centerVersionAvailableEpisodeNumbers = (row) => {
+  const assetMap = centerVersionBestAssetMap(row);
+  const numbers = new Set();
+  Object.keys(assetMap)
+    .map(key => ({ key, num: Number(key) }))
+    .filter(({ key, num }) => Number.isFinite(num) && num > 0 && centerVersionAssetAvailable(assetMap[key]))
+    .forEach(({ num }) => numbers.add(num));
+  const childRows = [
+    ...(Array.isArray(row?.children) ? row.children : []),
+    ...(Array.isArray(row?.pack_items) ? row.pack_items : []),
+  ];
+  childRows
+    .map(item => Number(item?.episode_number || 0))
+    .filter(n => Number.isFinite(n) && n > 0)
+    .forEach(n => numbers.add(n));
+  return [...numbers];
+};
+const centerVersionAvailableEpisodeMax = (row) => {
+  const numbers = centerVersionAvailableEpisodeNumbers(row);
+  return Math.max(...numbers, numbers.length ? 0 : centerProgressParts(row).current, 0);
+};
+const centerVersionAvailableEpisodeCount = (row) => centerVersionAvailableEpisodeNumbers(row).length || centerProgressParts(row).current;
+const centerVersionExistingProgressText = (row, scope = null) => {
+  const current = centerVersionAvailableEpisodeCount(row);
+  const total = centerPositiveNumber(scope?.total) || centerVersionEpisodeTotal(row) || current;
+  if (current > 0 && total > 0) return `${current}/${total}`;
+  return current > 0 ? String(current) : '';
+};
 const centerVersionEpisodeItems = (row) => {
   const assetMap = centerVersionBestAssetMap(row);
-  const total = Number(row?.episode_total || row?.progress_total || row?.logical_group?.episode_total || 0);
-  const mapKeys = Object.keys(assetMap)
-    .map(k => Number(k))
-    .filter(n => Number.isFinite(n) && n > 0);
-  const maxEp = Math.max(total || 0, ...mapKeys, 0);
+  const maxEp = Math.max(centerVersionEpisodeTotal(row), centerVersionAvailableEpisodeMax(row), 0);
   if (!maxEp) return [];
   const pad = maxEp >= 10 ? 2 : 1;
   const items = [];
@@ -3083,15 +3146,39 @@ const centerDetailVersions = computed(() => {
       return true;
     });
 });
+const centerDetailProgressScope = computed(() => {
+  const versions = centerDetailVersions.value || [];
+  const current = Math.max(...versions.map(centerVersionAvailableEpisodeMax), 0);
+  const total = Math.max(...versions.map(centerVersionEpisodeTotal), current, 0);
+  return { current, total };
+});
+const centerDetailSeasonProgressVisible = computed(() => {
+  const scope = centerDetailProgressScope.value;
+  if (!scope.total || !scope.current) return false;
+  const host = centerDetailActiveSeasonRow.value || activeCenterDetailRow.value || {};
+  return centerIsSeasonLike(host) || (centerDetailVersions.value || []).some(v => centerIsOngoingHub(v) || centerIsSeasonLike(v));
+});
+const centerDetailSeasonProgressPercent = computed(() => {
+  const scope = centerDetailProgressScope.value;
+  if (!scope.total) return 0;
+  return Math.min(100, Math.round((scope.current / scope.total) * 100));
+});
+const centerDetailSeasonProgressText = computed(() => {
+  const scope = centerDetailProgressScope.value;
+  return scope.current && scope.total ? `更新至 ${scope.current}/${scope.total} 集` : '';
+});
 
-const centerVersionTags = (row) => {
+const centerVersionTags = (row, progressScope = null) => {
   const summary = centerVersionSummary(row) || {};
   const tags = [];
   
   // 1. 进度显示；集明细由资源行点击触发，不再占用标签位。
-  const progress = centerProgressText(row);
+  const scopedProgress = progressScope?.value || progressScope;
+  const progress = centerIsOngoingHub(row)
+    ? centerVersionExistingProgressText(row, scopedProgress)
+    : centerProgressText(row);
   if (progress) {
-    const progressLabel = centerIsOngoingHub(row) ? `更新至 ${progress} 集` : progress;
+    const progressLabel = centerIsOngoingHub(row) ? `已有 ${progress} 集` : progress;
     centerTagPush(tags, progressLabel, 'info', 'progress');
   }
 
@@ -4612,6 +4699,36 @@ onUnmounted(() => {
 .center-detail-title { font-size: 18px; font-weight: 800; line-height: 1.35; }
 .center-detail-sub { margin-top: 4px; font-size: 12px; opacity: .68; }
 .center-version-detail-list { display: flex; flex-direction: column; gap: 10px; }
+.center-season-progress {
+  padding: 10px 12px 12px;
+  border-radius: 10px;
+  background: var(--center-detail-soft-bg);
+  border: 1px solid var(--center-detail-border);
+}
+.center-season-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--center-detail-meta-color);
+}
+.center-season-progress-bar :deep(.n-progress-graph-line-fill) {
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--season-progress-color) 42%, transparent);
+}
+.center-season-progress-bar :deep(.n-progress-graph-line-fill)::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 0%, rgba(255,255,255,.18) 38%, rgba(255,255,255,.72) 50%, rgba(255,255,255,.18) 62%, transparent 100%);
+  transform: translateX(-120%);
+  animation: center-season-progress-marquee 1.15s linear infinite;
+}
+@keyframes center-season-progress-marquee {
+  to { transform: translateX(120%); }
+}
 .center-version-detail-card {
   display: flex;
   justify-content: space-between;
