@@ -1563,6 +1563,13 @@ def _join_mp_template(*parts):
     return "/".join(clean_parts)
 
 
+def _ensure_mp_file_ext_template(template):
+    text = str(template or "").strip()
+    if re.search(r"\b(fileExt|file_ext)\b", text):
+        return text
+    return f"{text}{{{{fileExt}}}}"
+
+
 @p115_bp.route('/rename_config/mp/import', methods=['GET'])
 @admin_required
 def import_rename_config_from_mp():
@@ -1613,8 +1620,8 @@ def export_rename_config_to_mp():
             "message": f"MoviePilot 不支持这些 ETK 变量：{unsupported_text}。请先从模板里删除或改用 MP 支持的变量。"
         }), 400
 
-    movie_template = _join_mp_template(main_dir_template, movie_file_template)
-    tv_template = _join_mp_template(main_dir_template, season_dir_template, tv_file_template)
+    movie_template = _join_mp_template(main_dir_template, _ensure_mp_file_ext_template(movie_file_template))
+    tv_template = _join_mp_template(main_dir_template, season_dir_template, _ensure_mp_file_ext_template(tv_file_template))
     if not movie_template or not tv_template:
         return jsonify({"success": False, "message": "主目录、季目录、电影文件名和剧集文件名模板不能为空"}), 400
 

@@ -175,7 +175,7 @@ class P115RecognitionRuleTests(unittest.TestCase):
 
     def test_moviepilot_export_wraps_optional_rename_variables(self):
         converted, unsupported = moviepilot.convert_etk_rename_template_to_mp(
-            "{{title}} {{year_pure}} · {{source}} · {{customization}} · {{resolution}} · {{codec | upper}} · {{audio}} · {{stream}} - {{group}}"
+            "{{title}} {{year_pure}} · {{source}} · {{customization}} · {{resolution}} · {{codec | upper}} · {{audio}} · {{audio_count}} · {{stream}} - {{group}}"
         )
 
         self.assertEqual(unsupported, [])
@@ -185,6 +185,7 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertIn("{% if videoFormat %} · {{videoFormat}}{% endif %}", converted)
         self.assertIn("{% if videoCodec %} · {{videoCodec | upper}}{% endif %}", converted)
         self.assertIn("{% if audioCodec %} · {{audioCodec}}{% endif %}", converted)
+        self.assertEqual(converted.count("audioCodec"), 2)
         self.assertIn("{% if webSource %} · {{webSource}}{% endif %}", converted)
         self.assertIn("{% if releaseGroup %} - {{releaseGroup}}{% endif %}", converted)
 

@@ -25,6 +25,7 @@ _ETK_TO_MP_RENAME_VARS = {
     "stream": "webSource",
     "codec": "videoCodec",
     "audio": "audioCodec",
+    "audio_count": "audioCodec",
     "group": "releaseGroup",
     "s_e": "season_episode",
     "season_name_s": "season_fmt",
@@ -42,9 +43,7 @@ _MP_RENAME_SUPPORTED_VARS = {
 }
 
 _MP_RENAME_ALLOWED_FILTERS = {"upper", "lower", "string", "default", "trim", "replace", "zfill"}
-_MP_RENAME_ETK_ONLY_LABELS = {
-    "audio_count": "音轨数",
-}
+_MP_RENAME_ETK_ONLY_LABELS = {}
 _MP_RENAME_OPTIONAL_SEGMENT_VARS = {
     "resourceType", "effect", "edition", "videoFormat", "resource_term",
     "releaseGroup", "videoCodec", "videoBit", "audioCodec", "fps",
@@ -136,6 +135,7 @@ def convert_etk_rename_template_to_mp(template: str) -> Tuple[str, List[str]]:
         return tag
 
     text = re.sub(r"({[{%#][\s\S]*?[}%#]})", replace_tag, text)
+    text = _dedupe_mp_audio_codec_segments(text)
     text = _wrap_mp_optional_rename_segments(text)
 
     unsupported = []
@@ -149,6 +149,17 @@ def convert_etk_rename_template_to_mp(template: str) -> Tuple[str, List[str]]:
                 unsupported.append(name)
 
     return text, unsupported
+
+
+def _dedupe_mp_audio_codec_segments(template: str) -> str:
+    audio_expr = r"\{\{\s*audioCodec(?:\s*\|[^}]*)?\s*\}\}"
+    pattern = re.compile(rf"({audio_expr})(?P<sep>\s+(?:[·•]|\-)\s*){audio_expr}")
+    previous = None
+    text = str(template or "")
+    while previous != text:
+        previous = text
+        text = pattern.sub(r"\1", text)
+    return text
 
 
 def _wrap_mp_optional_rename_segments(template: str) -> str:
