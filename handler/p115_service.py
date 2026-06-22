@@ -5735,13 +5735,14 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
     def _template_uses_file_ext(self, format_value):
         return P115RenameRenderer.template_uses_file_ext(format_value)
 
-    def _build_name_from_format(self, format_array, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None, file_ext=""):
+    def _build_name_from_format(self, format_array, is_tv=False, season_num=None, episode_num=None, original_title=None, original_name=None, video_info=None, safe_title=None, file_ext=""):
         return self._rename_renderer().build_name(
             format_array,
             is_tv=is_tv,
             season_num=season_num,
             episode_num=episode_num,
             original_title=original_title,
+            original_name=original_name,
             video_info=video_info,
             safe_title=safe_title,
             file_ext=file_ext,
@@ -5887,6 +5888,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         is_tv=True, 
                         season_num=season_num, 
                         original_title=original_title, 
+                        original_name=original_name,
                         safe_title=new_base_name
                     )
                     if not s_name: s_name = f"Season {season_num:02d}"
@@ -6164,6 +6166,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             season_num=season_num, 
             episode_num=episode_num, 
             original_title=original_title, 
+            original_name=original_name,
             video_info=video_info,
             safe_title=new_base_name, # 传入过滤过特殊字符的标题
             file_ext=ext,
@@ -6195,6 +6198,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 is_tv=True, 
                 season_num=season_num, 
                 original_title=original_title, 
+                original_name=original_name,
                 video_info=video_info, # ★ 关键：把视频信息传进去！
                 safe_title=new_base_name
             )

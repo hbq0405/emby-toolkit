@@ -97,6 +97,19 @@ class P115RecognitionRuleTests(unittest.TestCase):
         )
         self.assertEqual(name, "绝命毒师 (2008) {tmdb-1396}")
 
+    def test_rename_renderer_exposes_original_name_template(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "寄生虫", "date": "2019-05-30"},
+            tmdb_id="496243",
+            original_title="Parasite",
+        )
+        name = renderer.build_name(
+            "{{original_name}}{{fileExt}}",
+            original_name="Parasite.2019.REMASTERED.1080p",
+            file_ext="mkv",
+        )
+        self.assertEqual(name, "Parasite.2019.REMASTERED.1080p.mkv")
+
     def test_rename_renderer_accepts_mp_zfill_shorthand(self):
         renderer = p115_service.P115RenameRenderer(
             details={"title": "绝命毒师", "date": "2008-01-20"},
@@ -125,6 +138,20 @@ class P115RecognitionRuleTests(unittest.TestCase):
             episode_num=1,
         )
         self.assertEqual(name, "第 1 季 第 1 集 第 1 季 1 集")
+
+    def test_rename_renderer_exposes_season_directory_tokens(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "绝命毒师", "date": "2008-01-20"},
+            tmdb_id="1396",
+            original_title="Breaking Bad",
+        )
+        name = renderer.build_name(
+            "{{season_name_en}} - {{season_name_en_no0}} - {{season_name_s}} - {{season_name_s_no0}}",
+            is_tv=True,
+            season_num=1,
+            episode_num=1,
+        )
+        self.assertEqual(name, "Season 01 - Season 1 - S01 - S1")
 
     def test_identify_media_enhanced_prefers_rule_search_input(self):
         with mock.patch.object(

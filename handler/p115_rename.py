@@ -55,7 +55,7 @@ class P115RenameRenderer:
         cleaned = re.sub(r'[\r\n\t]+', ' ', cleaned)
         return re.sub(r'[:*?"<>|]', '', cleaned).strip()
 
-    def build_template_context(self, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None, file_ext=""):
+    def build_template_context(self, is_tv=False, season_num=None, episode_num=None, original_title=None, original_name=None, video_info=None, safe_title=None, file_ext=""):
         video_info = video_info or {}
         date_text = str(self.details.get('date') or '')
         year = date_text[:4] if date_text else ''
@@ -67,6 +67,10 @@ class P115RenameRenderer:
         season_no = f"{season_val:02d}" if season_val is not None else ""
         episode_no = f"{episode_val:02d}" if episode_val is not None else ""
         season_episode = f"S{season_no}E{episode_no}" if is_tv and season_no and episode_no else ""
+        season_name_en = f"Season {season_no}" if is_tv and season_no else ""
+        season_name_en_no0 = f"Season {season_val}" if is_tv and season_val is not None else ""
+        season_name_s = f"S{season_no}" if is_tv and season_no else ""
+        season_name_s_no0 = f"S{season_val}" if is_tv and season_val is not None else ""
         season_name_zh = f"第 {season_val} 季" if is_tv and season_val is not None else ""
         episode_name_zh = f"第 {episode_val} 集" if is_tv and episode_val is not None else ""
         season_episode_zh = f"第 {season_val} 季 {episode_val} 集" if is_tv and season_val is not None and episode_val is not None else ""
@@ -85,6 +89,7 @@ class P115RenameRenderer:
             'title_orig': title_orig,
             'original_title': title_orig,
             'year': year,
+            'year_pure': year,
             'tmdb': self.tmdb_id,
             'tmdb_id': self.tmdb_id,
             'tmdbid': self.tmdb_id,
@@ -94,7 +99,11 @@ class P115RenameRenderer:
             'episode_no': episode_no,
             's_e': season_episode,
             'season_episode': season_episode,
-            'season_name': f"Season {season_no}" if season_no else "",
+            'season_name': season_name_en,
+            'season_name_en': season_name_en,
+            'season_name_en_no0': season_name_en_no0,
+            'season_name_s': season_name_s,
+            'season_name_s_no0': season_name_s_no0,
             'season_name_zh': season_name_zh,
             'episode_name_zh': episode_name_zh,
             's_e_zh': season_episode_zh,
@@ -108,7 +117,7 @@ class P115RenameRenderer:
             'audio': audio,
             'fps': video_info.get('fps') or '',
             'group': group,
-            'original_name': safe_title or title_zh,
+            'original_name': utils.clean_invisible_chars(original_name or safe_title or title_zh),
             'file_ext': ext_with_dot,
             'fileExt': ext_with_dot,
 
@@ -121,7 +130,7 @@ class P115RenameRenderer:
             'edition': video_info.get('edition') or '',
         }
 
-    def render_template(self, template, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None, file_ext=""):
+    def render_template(self, template, is_tv=False, season_num=None, episode_num=None, original_title=None, original_name=None, video_info=None, safe_title=None, file_ext=""):
         template = self.normalize_mp_jinja_template(template)
         if not template.strip():
             return ""
@@ -130,6 +139,7 @@ class P115RenameRenderer:
             season_num=season_num,
             episode_num=episode_num,
             original_title=original_title,
+            original_name=original_name,
             video_info=video_info,
             safe_title=safe_title,
             file_ext=file_ext,
@@ -141,7 +151,7 @@ class P115RenameRenderer:
             return ""
         return self.sanitize_rendered_template(rendered) if rendered else ""
 
-    def build_name(self, format_value, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None, file_ext=""):
+    def build_name(self, format_value, is_tv=False, season_num=None, episode_num=None, original_title=None, original_name=None, video_info=None, safe_title=None, file_ext=""):
         if not format_value:
             return ""
 
@@ -152,6 +162,7 @@ class P115RenameRenderer:
                 season_num=season_num,
                 episode_num=episode_num,
                 original_title=original_title,
+                original_name=original_name,
                 video_info=video_info,
                 safe_title=safe_title,
                 file_ext=file_ext,
