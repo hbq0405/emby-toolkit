@@ -17,6 +17,18 @@
                 :autosize="{ minRows: 2, maxRows: 4 }"
                 @focus="activeTemplate = 'main_dir_template'"
               />
+              <div class="inline-preview">
+                <div class="preview-line">
+                  <n-icon color="#f0a020" size="16"><FolderIcon /></n-icon>
+                  <span class="preview-label">电影</span>
+                  <span class="node-text">{{ previewMovieDir }}</span>
+                </div>
+                <div class="preview-line">
+                  <n-icon color="#f0a020" size="16"><FolderIcon /></n-icon>
+                  <span class="preview-label">剧集</span>
+                  <span class="node-text">{{ previewTvDir }}</span>
+                </div>
+              </div>
             </n-form-item>
 
             <n-form-item label="季目录模板">
@@ -27,6 +39,13 @@
                 :autosize="{ minRows: 2, maxRows: 4 }"
                 @focus="activeTemplate = 'season_dir_template'"
               />
+              <div class="inline-preview">
+                <div class="preview-line">
+                  <n-icon color="#f0a020" size="16"><FolderIcon /></n-icon>
+                  <span class="preview-label">预览</span>
+                  <span class="node-text">{{ previewTvSeason }}</span>
+                </div>
+              </div>
             </n-form-item>
 
             <n-form-item v-if="!config.keep_original_name" label="电影文件名模板">
@@ -37,6 +56,13 @@
                 :autosize="{ minRows: 3, maxRows: 6 }"
                 @focus="activeTemplate = 'movie_file_template'"
               />
+              <div class="inline-preview">
+                <div class="preview-line">
+                  <n-icon color="#2080f0" size="16"><DocumentIcon /></n-icon>
+                  <span class="preview-label">预览</span>
+                  <span class="node-text">{{ previewMovieFile }}</span>
+                </div>
+              </div>
             </n-form-item>
 
             <n-form-item v-if="!config.keep_original_name" label="剧集文件名模板">
@@ -46,6 +72,13 @@
                 :autosize="{ minRows: 3, maxRows: 6 }"
                 @focus="activeTemplate = 'tv_file_template'"
               />
+              <div class="inline-preview">
+                <div class="preview-line">
+                  <n-icon color="#2080f0" size="16"><DocumentIcon /></n-icon>
+                  <span class="preview-label">预览</span>
+                  <span class="node-text">{{ previewTvFile }}</span>
+                </div>
+              </div>
             </n-form-item>
 
             <n-form-item label="插入到">
@@ -127,7 +160,7 @@
         </n-tab-pane>
       </n-tabs>
 
-      <div class="preview-container">
+      <div v-if="false" class="preview-container">
         <div class="preview-header">
           <n-icon size="18" color="#18a058" style="margin-right: 6px;"><EyeIcon /></n-icon>
           实时效果预览
@@ -184,7 +217,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { NModal, NGrid, NGi, NTabs, NTabPane, NForm, NFormItem, NRadioGroup, NSwitch, NSpace, NButton, NIcon, NSpin, NTag, useMessage, NRadio, NAlert, NInput, NSelect, NDivider } from 'naive-ui';
 import { Folder as FolderIcon, DocumentTextOutline as DocumentIcon, EyeOutline as EyeIcon, LinkOutline as LinkIcon } from '@vicons/ionicons5';
 import axios from 'axios';
@@ -327,7 +360,25 @@ const mockTv = {
 const insertSnippet = (snippet) => {
   const key = activeTemplate.value;
   config.value[key] = `${config.value[key] || ''}${snippet}`;
+  syncLegacyFileTemplate();
 };
+
+const hasConfigKey = (key) => Object.prototype.hasOwnProperty.call(config.value, key);
+
+const templateValue = (key, fallbackKey) => {
+  if (hasConfigKey(key)) return config.value[key];
+  return config.value[fallbackKey] || '';
+};
+
+const syncLegacyFileTemplate = () => {
+  if (hasConfigKey('tv_file_template')) {
+    config.value.file_template = config.value.tv_file_template;
+  }
+};
+
+watch(() => config.value.tv_file_template, () => {
+  syncLegacyFileTemplate();
+});
 
 const normalizeMpTemplate = (template) => {
   return String(template || '').replace(/{{\s*([A-Za-z_]\w*)\s*\|\s*string\s*}\s*\.zfill\((\d+)\)\s*}}/g, '{{ ($1|string).zfill($2) }}');
@@ -411,8 +462,8 @@ const renderTemplate = (template, data) => {
   return output.replace(/[\\:*?"<>|]/g, '').trim();
 };
 
-const movieFileTemplate = computed(() => config.value.movie_file_template || config.value.file_template);
-const tvFileTemplate = computed(() => config.value.tv_file_template || config.value.file_template);
+const movieFileTemplate = computed(() => templateValue('movie_file_template', 'file_template'));
+const tvFileTemplate = computed(() => templateValue('tv_file_template', 'file_template'));
 
 const withExt = (name, data, template) => {
   if (!name) return data.originalFile;
@@ -518,6 +569,31 @@ defineExpose({ open });
 .template-grid {
   display: grid;
   gap: 8px;
+}
+
+.inline-preview {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 6px;
+}
+
+.preview-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.preview-line + .preview-line {
+  margin-top: 4px;
+}
+
+.preview-label {
+  flex: 0 0 auto;
+  min-width: 32px;
+  font-size: 12px;
+  color: var(--n-text-color-3);
 }
 
 .lego-container {
