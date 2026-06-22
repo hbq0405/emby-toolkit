@@ -45,6 +45,11 @@ _MP_RENAME_ALLOWED_FILTERS = {"upper", "lower", "string", "default", "trim", "re
 _MP_RENAME_ETK_ONLY_LABELS = {
     "audio_count": "音轨数",
 }
+_MP_RENAME_OPTIONAL_SEGMENT_VARS = {
+    "resourceType", "effect", "edition", "videoFormat", "resource_term",
+    "releaseGroup", "videoCodec", "videoBit", "audioCodec", "fps",
+    "webSource", "part", "customization",
+}
 
 # ======================================================================
 # 核心基础函数 (Token管理与API请求)
@@ -131,6 +136,7 @@ def convert_etk_rename_template_to_mp(template: str) -> Tuple[str, List[str]]:
         return tag
 
     text = re.sub(r"({[{%#][\s\S]*?[}%#]})", replace_tag, text)
+    text = _wrap_mp_optional_rename_segments(text)
 
     unsupported = []
     for tag in re.findall(r"{[{%][\s\S]*?[}%]}", text):
@@ -143,6 +149,25 @@ def convert_etk_rename_template_to_mp(template: str) -> Tuple[str, List[str]]:
                 unsupported.append(name)
 
     return text, unsupported
+
+
+def _wrap_mp_optional_rename_segments(template: str) -> str:
+    def replace(match):
+        prefix = match.group("prefix")
+        expr = match.group("expr").strip()
+        var_name = re.match(r"([A-Za-z_]\w*)", expr)
+        if not var_name or var_name.group(1) not in _MP_RENAME_OPTIONAL_SEGMENT_VARS:
+            return match.group(0)
+        guard = var_name.group(1)
+        return f"{{% if {guard} %}}{prefix}{{{{{expr}}}}}{{% endif %}}"
+
+    text = str(template or "")
+    # Convert ETK-style bare optional segments such as " · {{source}}" or
+    # " - {{group}}" into MP-friendly guarded Jinja blocks.
+    pattern = re.compile(
+        r"(?P<prefix>\s+(?:[·•]|\-)\s*)\{\{\s*(?P<expr>[A-Za-z_]\w*(?:\s*\|[^}]*)?)\s*\}\}"
+    )
+    return pattern.sub(replace, text)
 
 
 def format_mp_unsupported_rename_vars(unsupported: List[str]) -> str:

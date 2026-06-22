@@ -58,6 +58,7 @@ def _install_test_stubs():
 
 _install_test_stubs()
 p115_service = importlib.import_module("handler.p115_service")
+moviepilot = importlib.import_module("handler.moviepilot")
 task_p115 = importlib.import_module("tasks.p115")
 
 
@@ -171,6 +172,21 @@ class P115RecognitionRuleTests(unittest.TestCase):
             },
         )
         self.assertEqual(name, "寄生虫 (2019) · WEB-DL · 1080p · AVC · DDP 5.1 · AMZN.mkv")
+
+    def test_moviepilot_export_wraps_optional_rename_variables(self):
+        converted, unsupported = moviepilot.convert_etk_rename_template_to_mp(
+            "{{title}} {{year_pure}} · {{source}} · {{customization}} · {{resolution}} · {{codec | upper}} · {{audio}} · {{stream}} - {{group}}"
+        )
+
+        self.assertEqual(unsupported, [])
+        self.assertIn("{{year}}", converted)
+        self.assertIn("{% if resourceType %} · {{resourceType}}{% endif %}", converted)
+        self.assertIn("{% if customization %} · {{customization}}{% endif %}", converted)
+        self.assertIn("{% if videoFormat %} · {{videoFormat}}{% endif %}", converted)
+        self.assertIn("{% if videoCodec %} · {{videoCodec | upper}}{% endif %}", converted)
+        self.assertIn("{% if audioCodec %} · {{audioCodec}}{% endif %}", converted)
+        self.assertIn("{% if webSource %} · {{webSource}}{% endif %}", converted)
+        self.assertIn("{% if releaseGroup %} - {{releaseGroup}}{% endif %}", converted)
 
     def test_identify_media_enhanced_prefers_rule_search_input(self):
         with mock.patch.object(
