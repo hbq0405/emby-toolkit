@@ -153,6 +153,25 @@ class P115RecognitionRuleTests(unittest.TestCase):
         )
         self.assertEqual(name, "Season 01 - Season 1 - S01 - S1")
 
+    def test_rename_renderer_cleans_empty_separators(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "寄生虫", "date": "2019-05-30"},
+            tmdb_id="496243",
+            original_title="Parasite",
+        )
+        name = renderer.build_name(
+            "{{title}}{% if year %} ({{year}}){% endif %} · {{source}} · {{effect}} · {{resolution}} · {{codec | upper}} · {{audio}} · {{audio_count}} · {{stream}} - {{group}}{{fileExt}}",
+            file_ext="mkv",
+            video_info={
+                "source": "WEB-DL",
+                "resolution": "1080p",
+                "codec": "AVC",
+                "audio": "DDP 5.1",
+                "stream": "AMZN",
+            },
+        )
+        self.assertEqual(name, "寄生虫 (2019) · WEB-DL · 1080p · AVC · DDP 5.1 · AMZN.mkv")
+
     def test_identify_media_enhanced_prefers_rule_search_input(self):
         with mock.patch.object(
             p115_service.tmdb,

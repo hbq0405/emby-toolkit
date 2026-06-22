@@ -53,7 +53,25 @@ class P115RenameRenderer:
     def sanitize_rendered_template(text):
         cleaned = utils.clean_invisible_chars(text).replace("\\", "/")
         cleaned = re.sub(r'[\r\n\t]+', ' ', cleaned)
-        return re.sub(r'[:*?"<>|]', '', cleaned).strip()
+        cleaned = re.sub(r'[:*?"<>|]', '', cleaned).strip()
+        cleaned = P115RenameRenderer.cleanup_empty_separators(cleaned)
+        return cleaned
+
+    @staticmethod
+    def cleanup_empty_separators(text):
+        cleaned = re.sub(r'\s+', ' ', str(text or '')).strip()
+        for _ in range(4):
+            next_text = re.sub(r'\s*([·•])\s*(?:\1\s*)+', r' \1 ', cleaned)
+            next_text = re.sub(r'\s+-\s*(?:-\s*)+', ' - ', next_text)
+            next_text = re.sub(r'\s+\.\s*(?:\.\s*)+', ' . ', next_text)
+            next_text = re.sub(r'\s+([·•.-])\s+([·•.-])\s+', r' \2 ', next_text)
+            next_text = re.sub(r'\s+[·•-]\s*(\.[A-Za-z0-9]{1,8})$', r'\1', next_text)
+            next_text = re.sub(r'\s+\.\s+(\.[A-Za-z0-9]{1,8})$', r'\1', next_text)
+            next_text = next_text.strip(' ·•-')
+            if next_text == cleaned:
+                break
+            cleaned = next_text
+        return cleaned
 
     def build_template_context(self, is_tv=False, season_num=None, episode_num=None, original_title=None, original_name=None, video_info=None, safe_title=None, file_ext=""):
         video_info = video_info or {}

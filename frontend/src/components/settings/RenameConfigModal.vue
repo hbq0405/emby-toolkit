@@ -461,7 +461,24 @@ const renderTemplate = (template, data) => {
     output = next;
   }
   output = output.replace(/{{\s*([^}]+?)\s*}}/g, (_, expr) => renderExpression(expr, data));
-  return output.replace(/[\\:*?"<>|]/g, '').trim();
+  return cleanupEmptySeparators(output.replace(/[\\:*?"<>|]/g, '').trim());
+};
+
+const cleanupEmptySeparators = (text) => {
+  let cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+  for (let i = 0; i < 4; i++) {
+    const next = cleaned
+      .replace(/\s*([·•])\s*(?:\1\s*)+/g, ' $1 ')
+      .replace(/\s+-\s*(?:-\s*)+/g, ' - ')
+      .replace(/\s+\.\s*(?:\.\s*)+/g, ' . ')
+      .replace(/\s+([·•.-])\s+([·•.-])\s+/g, ' $2 ')
+      .replace(/\s+[·•-]\s*(\.[A-Za-z0-9]{1,8})$/g, '$1')
+      .replace(/\s+\.\s+(\.[A-Za-z0-9]{1,8})$/g, '$1')
+      .replace(/^[\s·•-]+|[\s·•-]+$/g, '');
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+  return cleaned;
 };
 
 const movieFileTemplate = computed(() => templateValue('movie_file_template', 'file_template'));
