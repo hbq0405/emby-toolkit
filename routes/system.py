@@ -79,6 +79,11 @@ def _restore_masked_config_values(new_config):
             new_config[key] = current_config.get(key, "")
     return new_config
 
+def _restore_masked_value(key, value):
+    if value == MASKED_SECRET:
+        return (config_manager.APP_CONFIG or {}).get(key, "")
+    return value
+
 def _fallback_pro_pricing(message=None):
     data = {
         "success": True,
@@ -208,7 +213,7 @@ def api_test_ai_connection():
     from ai_translator import AITranslator
     
     # 1. 获取前端传来的配置（可能是还没保存的）
-    test_config = request.json
+    test_config = _restore_masked_config_values(dict(request.json or {}))
     if not test_config:
         return jsonify({"success": False, "message": "缺少配置数据"}), 400
 
@@ -313,7 +318,7 @@ def api_get_ai_models():
     根据前端当前填写的 AI 配置，实时拉取服务商支持的模型列表。
     不保存配置，只用于前端下拉选择模型名。
     """
-    data = request.json or {}
+    data = _restore_masked_config_values(dict(request.json or {}))
     provider = (data.get("ai_provider") or "openai").strip()
     api_key = (data.get("ai_api_key") or "").strip()
     base_url = (data.get("ai_base_url") or "").strip()
@@ -437,8 +442,8 @@ def api_test_telegram_connection():
     测试 Telegram 机器人配置。
     接收前端传来的 Token 和 Chat ID，尝试发送一条测试消息。
     """
-    data = request.json
-    token = data.get('token')
+    data = request.json or {}
+    token = _restore_masked_value(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN, data.get('token'))
     chat_id = data.get('chat_id')
 
     if not token or not chat_id:
