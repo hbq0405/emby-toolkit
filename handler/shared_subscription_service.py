@@ -1532,28 +1532,9 @@ def _center_clean_version_flagged(source_kind: str, payload: Dict[str, Any], fil
 def _current_organize_conflict_mode(default: str = 'skip') -> str:
     """读取 115 整理覆盖模式，并统一成 skip/replace/keep_both。"""
     try:
-        rename_config = settings_db.get_setting('p115_rename_config') or {}
-        if isinstance(rename_config, str):
-            try:
-                rename_config = json.loads(rename_config)
-            except Exception:
-                rename_config = {}
-        mode = str((rename_config or {}).get('conflict_mode') or default or '').strip().lower()
+        mode = settings_db.get_washing_conflict_mode(default=default)
     except Exception:
         mode = str(default or '').strip().lower()
-
-    aliases = {
-        'overwrite': 'replace',
-        '洗版': 'replace',
-        '替换': 'replace',
-        'skip_existing': 'skip',
-        '跳过': 'skip',
-        'keep': 'keep_both',
-        'both': 'keep_both',
-        'keepboth': 'keep_both',
-        '保留两者': 'keep_both',
-    }
-    mode = aliases.get(mode, mode)
     if mode not in ('skip', 'replace', 'keep_both'):
         return str(default or 'skip').strip().lower() or 'skip'
     return mode

@@ -56,6 +56,70 @@ def save_setting(setting_key: str, value: Dict[str, Any]):
         logger.error(f"  ➜ 保存设置 '{setting_key}' 时失败: {e}", exc_info=True)
         raise
 
+def _normalize_washing_conflict_mode(value: Any, default: str = 'replace') -> str:
+    mode = str(value or default or '').strip().lower()
+    aliases = {
+        'overwrite': 'replace',
+        'washing': 'replace',
+        'wash': 'replace',
+        '洗版': 'replace',
+        '替换': 'replace',
+        'skip_existing': 'skip',
+        '跳过': 'skip',
+        'keep': 'keep_both',
+        'both': 'keep_both',
+        'keepboth': 'keep_both',
+        'keep-both': 'keep_both',
+        '保留两者': 'keep_both',
+        '共存': 'keep_both',
+    }
+    mode = aliases.get(mode, mode)
+    return mode if mode in {'replace', 'keep_both', 'skip'} else default
+
+def get_washing_priority_config(default_conflict_mode: str = 'replace') -> Dict[str, Any]:
+    """读取洗版相关配置，并从旧重命名配置无感迁移覆盖模式。"""
+    default_mode = _normalize_washing_conflict_mode(default_conflict_mode, 'replace')
+    config = get_setting('p115_washing_priority_config') or {}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            config = {}
+    if not isinstance(config, dict):
+        config = {}
+
+    mode = config.get('conflict_mode')
+    if not mode:
+        legacy = get_setting('p115_rename_config') or {}
+        if isinstance(legacy, str):
+            try:
+                legacy = json.loads(legacy)
+            except Exception:
+                legacy = {}
+        if isinstance(legacy, dict):
+            mode = legacy.get('conflict_mode')
+
+        if mode:
+            config['conflict_mode'] = _normalize_washing_conflict_mode(mode, default_mode)
+            try:
+                save_setting('p115_washing_priority_config', config)
+            except Exception:
+                logger.warning("  ➜ 迁移洗版覆盖模式配置失败，将仅使用内存值。", exc_info=True)
+
+    config['conflict_mode'] = _normalize_washing_conflict_mode(config.get('conflict_mode'), default_mode)
+    return config
+
+def save_washing_priority_config(value: Dict[str, Any]) -> Dict[str, Any]:
+    config = value if isinstance(value, dict) else {}
+    clean_config = {
+        'conflict_mode': _normalize_washing_conflict_mode(config.get('conflict_mode'), 'replace')
+    }
+    save_setting('p115_washing_priority_config', clean_config)
+    return clean_config
+
+def get_washing_conflict_mode(default: str = 'replace') -> str:
+    return get_washing_priority_config(default_conflict_mode=default).get('conflict_mode') or default
+
 def delete_setting(setting_key: str) -> bool:
     """从 app_settings 表中删除一个设置项。"""
     try:

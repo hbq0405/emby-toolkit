@@ -2,7 +2,30 @@
 <template>
   <n-modal v-model:show="showModal" preset="card" title="阶梯洗版优先级配置" style="width: 1000px; max-width: 95vw;" class="custom-modal glass-modal">
     <n-spin :show="loading">
-      <n-layout has-sider style="height: 650px; border: 1px solid var(--n-divider-color); border-radius: 8px;">
+      <div class="washing-mode-panel">
+        <n-form label-placement="left" size="small">
+          <n-form-item label="同集/同电影覆盖模式">
+            <n-radio-group v-model:value="config.conflict_mode">
+              <n-space vertical>
+                <n-radio value="replace">
+                  <b>洗版</b>
+                  <div class="mode-desc">删除目标目录中同一集/同一电影的旧版本，移入新版本，并按下方优先级规则评估资源。</div>
+                </n-radio>
+                <n-radio value="keep_both">
+                  <b>共存</b>
+                  <div class="mode-desc">只要文件名不同，同一集的不同版本将共存，不使用洗版优先级规则。</div>
+                </n-radio>
+                <n-radio value="skip">
+                  <b>跳过</b>
+                  <div class="mode-desc">只要目标目录已有该集/该电影，新文件直接丢入未识别，不使用洗版优先级规则。</div>
+                </n-radio>
+              </n-space>
+            </n-radio-group>
+          </n-form-item>
+        </n-form>
+      </div>
+
+      <n-layout v-if="config.conflict_mode === 'replace'" has-sider style="height: 650px; border: 1px solid var(--n-divider-color); border-radius: 8px;">
         
         <!-- 左侧：规则组列表 -->
         <n-layout-sider width="240" bordered style="background: var(--n-color-modal);">
@@ -219,14 +242,19 @@
           <n-empty v-else description="请在左侧选择或新建一个规则组" style="margin-top: 100px;" />
         </n-layout-content>
       </n-layout>
+
+      <n-alert v-else type="info" :show-icon="false" style="margin-top: 12px;">
+        当前覆盖模式不执行洗版，优先级规则已隐藏。切回“洗版”后可继续编辑和重算优先级。
+      </n-alert>
     </n-spin>
     
     <!-- 底部操作栏 -->
     <template #action>
       <n-space justify="space-between" style="width: 100%;">
-        <n-button secondary type="warning" :loading="recalcLoading" @click="confirmRecalculate">
+        <n-button v-if="config.conflict_mode === 'replace'" secondary type="warning" :loading="recalcLoading" @click="confirmRecalculate">
           一键重算媒体库优先级
         </n-button>
+        <span v-else></span>
         <n-space>
           <n-button @click="showModal = false">取消</n-button>
           <n-button type="primary" :loading="loading" @click="saveGroups">保存配置</n-button>
@@ -259,6 +287,9 @@ const recalcLoading = ref(false);
 const groups = ref([]);
 const activeGroupId = ref(null);
 const categoryOptions = ref([]);
+const config = ref({
+  conflict_mode: 'replace'
+});
 
 // 当前正在编辑的优先级卡片 UID
 const editingUid = ref(null);
@@ -333,7 +364,13 @@ const open = async () => {
     const rules = resRules.data.filter(r => r.enabled && r.cid && r.cid !== '0');
     categoryOptions.value = rules.map(r => ({ label: r.dir_name || r.name, value: r.cid }));
 
-    // 2. 获取洗版优先级组
+    // 2. 获取洗版覆盖模式配置
+    const resConfig = await axios.get('/api/p115/washing_priority_config');
+    config.value = {
+      conflict_mode: resConfig.data?.data?.conflict_mode || 'replace'
+    };
+
+    // 3. 获取洗版优先级组
     const resGroups = await axios.get('/api/p115/washing_priority_groups');
     groups.value = resGroups.data.data || [];
     
@@ -376,8 +413,13 @@ const saveGroups = async () => {
       }
     });
 
+    await axios.post('/api/p115/washing_priority_config', config.value);
     await axios.post('/api/p115/washing_priority_groups', payload);
     message.success('保存成功');
+    if (config.value.conflict_mode !== 'replace') {
+      showModal.value = false;
+      return;
+    }
     dialog.warning({
       title: '建议重算媒体库优先级',
       content: '洗版优先级规则已经保存。若规则有调整，旧媒体项记录的优先级可能已经过期，建议立即重算。',
@@ -498,6 +540,21 @@ defineExpose({ open });
 </script>
 
 <style scoped>
+.washing-mode-panel {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid var(--n-divider-color);
+  border-radius: 8px;
+}
+
+.mode-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--n-text-color-3);
+}
+
 .group-item {
   display: flex; align-items: center; padding: 10px 12px; cursor: pointer;
   border-radius: 6px; margin-bottom: 4px; transition: background 0.2s;

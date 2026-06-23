@@ -539,8 +539,7 @@ class MediaProcessor:
             # =========================================================
             mp_classify_enabled = self.config.get(constants.CONFIG_OPTION_115_MP_CLASSIFY, False)
             if mp_classify_enabled:
-                rename_config = settings_db.get_setting('p115_rename_config') or {}
-                if rename_config.get('conflict_mode') == 'replace':
+                if settings_db.get_washing_conflict_mode(default='skip') == 'replace':
                     try:
                         from database import maintenance_db
                         

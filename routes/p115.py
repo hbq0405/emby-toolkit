@@ -1118,6 +1118,7 @@ def quick_deploy_115():
             'strm_url_fmt': 'standard',
         }
         settings_db.save_setting('p115_rename_config', rename_config)
+        settings_db.save_washing_priority_config({'conflict_mode': 'replace'})
 
         sorting_rules = _p115_deploy_sorting_rules(category_dirs)
         washing_groups = _p115_deploy_washing_groups(category_dirs)
@@ -1171,6 +1172,24 @@ def handle_washing_priority_groups():
             return jsonify({"success": True, "message": "洗版优先级规则已保存"})
         except Exception as e:
             return jsonify({"success": False, "message": str(e)}), 500
+
+
+@p115_bp.route('/washing_priority_config', methods=['GET', 'POST'])
+@admin_required
+def handle_washing_priority_config():
+    """处理洗版相关全局配置，兼容从旧重命名配置迁移覆盖模式。"""
+    if request.method == 'GET':
+        try:
+            return jsonify({"success": True, "data": settings_db.get_washing_priority_config()})
+        except Exception as e:
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    try:
+        payload = request.json if isinstance(request.json, dict) else {}
+        config = settings_db.save_washing_priority_config(payload)
+        return jsonify({"success": True, "message": "洗版配置已保存", "data": config})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 # ======================================================================
@@ -1527,6 +1546,7 @@ def handle_rename_config():
             "strm_url_fmt": "standard"
         }
         defaults.update(config)
+        defaults.pop("conflict_mode", None)
         if not config.get("movie_file_template"):
             defaults["movie_file_template"] = config.get("file_template") or defaults["movie_file_template"]
         if not config.get("tv_file_template"):
@@ -1536,7 +1556,10 @@ def handle_rename_config():
         return jsonify({"success": True, "data": defaults})
     
     if request.method == 'POST':
-        new_config = request.json
+        new_config = request.json if isinstance(request.json, dict) else {}
+        legacy_conflict_mode = new_config.pop("conflict_mode", None)
+        if legacy_conflict_mode:
+            settings_db.save_washing_priority_config({"conflict_mode": legacy_conflict_mode})
         settings_db.save_setting('p115_rename_config', new_config)
         return jsonify({"success": True, "message": "重命名规则已保存"})
     

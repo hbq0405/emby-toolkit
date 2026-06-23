@@ -7333,7 +7333,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         # =================================================================
         # ★★★ 执行批量移动与后续 STRM 生成 ★★★
         # =================================================================
-        conflict_mode = cfg.get('conflict_mode', 'replace') # 获取覆盖模式，默认洗版替换
+        conflict_mode = settings_db.get_washing_conflict_mode(default='replace') # 获取覆盖模式，默认洗版替换
         
         # ★★★ 洗版特权检测 (细化到单集) ★★★
         active_washing_eps = set()
