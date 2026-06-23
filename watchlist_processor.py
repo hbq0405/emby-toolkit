@@ -1711,6 +1711,36 @@ class WatchlistProcessor:
         except Exception as e:
             logger.warning(f"  ➜ [版本锁定] 保存本地锁定状态失败：{log_title}: {e}")
 
+    def _get_version_lock_seasons_from_new_episode_ids(self, tmdb_id: str, episode_emby_ids: List[str], series_name: str = '') -> List[int]:
+        episode_ids = []
+        for eid in episode_emby_ids or []:
+            eid = str(eid or '').strip()
+            if eid and eid not in episode_ids:
+                episode_ids.append(eid)
+        if not episode_ids:
+            return []
+
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT season_number
+                        FROM media_metadata
+                        WHERE item_type = 'Episode'
+                          AND parent_series_tmdb_id = %s
+                          AND season_number IS NOT NULL
+                          AND emby_item_ids_json ?| %s
+                        """,
+                        (str(tmdb_id), episode_ids),
+                    )
+                    rows = cursor.fetchall()
+            return sorted({int(row['season_number']) for row in rows if row.get('season_number')})
+        except Exception as e:
+            log_title = f"《{series_name}》" if series_name else str(tmdb_id)
+            logger.warning(f"  ➜ [版本锁定] 反查新增分集所在季失败：{log_title}: {e}")
+            return []
+
     def _apply_watchlist_version_lock(self, tmdb_id: str, series_name: str, seasons: List[int], mode: str) -> None:
         mode = str(mode or 'off').strip().lower()
         if mode not in ('best', 'any'):
@@ -3060,12 +3090,22 @@ class WatchlistProcessor:
             final_status=final_status,
             old_status=old_status
         )
-        self._apply_watchlist_version_lock(
-            tmdb_id=tmdb_id,
-            series_name=item_name,
-            seasons=list(active_seasons),
-            mode=watchlist_cfg.get('series_version_lock_mode', 'off'),
-        )
+        version_lock_mode = str(watchlist_cfg.get('series_version_lock_mode', 'off') or 'off').strip().lower()
+        if version_lock_mode in ('best', 'any') and airing_episode_emby_ids:
+            version_lock_seasons = self._get_version_lock_seasons_from_new_episode_ids(
+                tmdb_id,
+                airing_episode_emby_ids,
+                item_name,
+            )
+            if version_lock_seasons:
+                self._apply_watchlist_version_lock(
+                    tmdb_id=tmdb_id,
+                    series_name=item_name,
+                    seasons=version_lock_seasons,
+                    mode=version_lock_mode,
+                )
+            else:
+                logger.info(f"  ➜ [版本锁定] 《{item_name}》本轮有新增分集，但未能匹配到所在季，跳过锁定。")
 
     # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
