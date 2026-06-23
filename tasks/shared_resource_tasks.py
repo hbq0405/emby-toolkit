@@ -5208,6 +5208,9 @@ def _center_display_meta_bundle_for_candidate(candidate: Dict[str, Any]) -> Dict
                 value = row.get(src_key) if row.get(src_key) not in (None, '', [], {}) else candidate.get(src_key)
                 if value not in (None, '', [], {}):
                     meta[dst_key] = value
+            season_status = str(meta.get('watching_status') or '').strip()
+            if season_status:
+                meta['watchlist_is_airing'] = season_status in ('Watching', 'Paused')
         if include_series_fields:
             meta.update({
                 'rating': row.get('rating'),
@@ -7172,8 +7175,9 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
                 'series_meta': has_any(series, (
                     'release_year', 'release_date', 'rating',
                 )) or has_chinese_display(series),
+                'watchlist_status': has_any(season, ('watching_status', 'watchlist_tmdb_status')),
                 'credits': _row_has_chinese_credits(series),
-                'season_meta': has_any(season, ('release_year', 'release_date')) or has_chinese_display(season),
+                'season_meta': has_any(season, ('release_year', 'release_date', 'watching_status', 'watchlist_tmdb_status')) or has_chinese_display(season),
                 'season_total': has_any(season, ('total_episodes',)),
                 'expected_episode_count': has_any(season, ('total_episodes',)),
                 'total_episodes': has_any(season, ('total_episodes',)),
@@ -7183,7 +7187,7 @@ def _local_rows_have_display_payload(rows: Dict[str, Dict[str, Any]], item_type:
 
     candidates = [movie] if item_type == 'Movie' else ([episode] if item_type == 'Episode' else [series, season])
     return any(
-        has_any(row, ('release_year', 'release_date', 'rating', 'runtime_minutes'))
+        has_any(row, ('release_year', 'release_date', 'rating', 'runtime_minutes', 'watching_status', 'watchlist_tmdb_status'))
         or has_chinese_display(row)
         or _row_has_chinese_credits(row)
         for row in candidates

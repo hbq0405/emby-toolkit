@@ -755,6 +755,7 @@ class WatchlistProcessor:
         final_status: str,
         episodes: List[Dict[str, Any]] = None,
         seasons_lock_map: Dict[Any, Any] = None,
+        season_status_map: Dict[Any, Any] = None,
         latest_season_num: int = 0,
         auto_pending_cfg: Dict[str, Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -773,6 +774,7 @@ class WatchlistProcessor:
 
         auto_pending_cfg = auto_pending_cfg if isinstance(auto_pending_cfg, dict) else {}
         lock_map = seasons_lock_map if isinstance(seasons_lock_map, dict) else {}
+        season_status_map = season_status_map if isinstance(season_status_map, dict) else {}
         fake_total = self._watchlist_safe_int(auto_pending_cfg.get('default_total_episodes'), 99) or 99
         release_date = str(series.get('first_air_date') or '').strip()
 
@@ -843,6 +845,11 @@ class WatchlistProcessor:
                 # 没有总集数就只传剧壳，不传季索引，避免中心端误用最大集号推断完结。
                 continue
 
+            season_status = season_status_map.get(s_num)
+            if season_status is None:
+                season_status = season_status_map.get(str(s_num))
+            season_status = str(season_status or '').strip()
+
             items.append({
                 'tmdb_id': tmdb_id,
                 'item_type': 'Season',
@@ -859,8 +866,9 @@ class WatchlistProcessor:
                 'episode_count_source': source,
                 'episode_count_locked': bool(source == 'locked'),
                 'episode_count_pending_virtual': bool(source == 'pending_virtual'),
-                'watching_status': final_status,
+                'watching_status': season_status,
                 'watchlist_tmdb_status': series.get('status') or '',
+                'watchlist_is_airing': season_status in (STATUS_WATCHING, STATUS_PAUSED),
                 'metadata_source': 'watchlist_processor',
             })
         for ep in episodes or []:
@@ -882,6 +890,36 @@ class WatchlistProcessor:
             })
         return items
 
+    def _load_local_season_watching_status_map(self, tmdb_id: str) -> Dict[int, str]:
+        tmdb_id = str(tmdb_id or '').strip()
+        if not tmdb_id:
+            return {}
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT season_number, watching_status
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND item_type = 'Season'
+                          AND season_number IS NOT NULL
+                        """,
+                        (tmdb_id,),
+                    )
+                    rows = cursor.fetchall() or []
+            out: Dict[int, str] = {}
+            for row in rows:
+                season_number = row.get('season_number') if isinstance(row, dict) else row[0]
+                watching_status = row.get('watching_status') if isinstance(row, dict) else row[1]
+                s_num = self._watchlist_safe_int(season_number, 0)
+                if s_num > 0:
+                    out[s_num] = str(watching_status or '').strip()
+            return out
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 读取本地 Season.watching_status 失败: tmdb={tmdb_id}, err={e}")
+            return {}
+
     def _upload_shared_series_metadata_after_watchlist_decision_detached(
         self,
         *,
@@ -901,6 +939,7 @@ class WatchlistProcessor:
         parent_tmdb_id = str(tmdb_id or '').strip()
         if not parent_tmdb_id:
             return
+        season_status_map = self._load_local_season_watching_status_map(parent_tmdb_id)
 
         items = self._build_shared_center_watchlist_metadata_items(
             tmdb_id=parent_tmdb_id,
@@ -909,6 +948,7 @@ class WatchlistProcessor:
             episodes=episodes or [],
             final_status=final_status,
             seasons_lock_map=seasons_lock_map or {},
+            season_status_map=season_status_map,
             latest_season_num=latest_season_num,
             auto_pending_cfg=auto_pending_cfg or {},
         )
@@ -2912,22 +2952,6 @@ class WatchlistProcessor:
                     logger.debug(f"  ➜ 已同步更新 S{latest_season_num} 的总集数为 {fake_total}")
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
 
-        # 追剧判定完成后，中心端此时才能拿到最可信的 Series 元数据和季总集数：
-        # - Pending 使用虚标总集数，避免刚上线 1 集被误判完结；
-        # - Locked 使用豆瓣/手动矫正总集数；
-        # - 其他情况使用 TMDb 当前总集数。
-        self._upload_shared_series_metadata_after_watchlist_decision_detached(
-            tmdb_id=tmdb_id,
-            item_name=item_name,
-            latest_series_data=latest_series_data,
-            episodes=all_tmdb_episodes,
-            final_status=final_status,
-            seasons_lock_map=seasons_lock_map,
-            latest_season_num=latest_s_num,
-            auto_pending_cfg=auto_pending_cfg,
-            skip_logical_share_dispatch=skip_logical_share_dispatch,
-        )
-
         # ======================================================================
         # ★★★ 提前计算季的活跃状态 (供数据库同步和目录重组使用) ★★★
         # ======================================================================
@@ -3072,6 +3096,23 @@ class WatchlistProcessor:
 
         # 调用 DB 模块进行批量更新 (使用上面提前算好的 active_seasons)
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
+
+        # 追剧判定完成后，中心端此时才能拿到最可信的 Series 元数据、季状态和季总集数：
+        # - Season.watching_status 只以本地季行同步后的状态为准；
+        # - Pending 使用虚标总集数，避免刚上线 1 集被误判完结；
+        # - Locked 使用豆瓣/手动矫正总集数；
+        # - 其他情况使用 TMDb 当前总集数。
+        self._upload_shared_series_metadata_after_watchlist_decision_detached(
+            tmdb_id=tmdb_id,
+            item_name=item_name,
+            latest_series_data=latest_series_data,
+            episodes=all_tmdb_episodes,
+            final_status=final_status,
+            seasons_lock_map=seasons_lock_map,
+            latest_season_num=latest_s_num,
+            auto_pending_cfg=auto_pending_cfg,
+            skip_logical_share_dispatch=skip_logical_share_dispatch,
+        )
 
         # ======================================================================
         # ★★★ 共享资源登记职责已迁移到 Webhook ★★★
