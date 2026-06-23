@@ -11,37 +11,88 @@ const backgroundTaskStatus = ref({
   message: '等待任务'
 });
 
-let statusInterval = null;
+const TASK_STATUS_EVENT = 'etk-task-status';
+let statusTimer = null;
+let statusAbortController = null;
+let statusFetchInFlight = false;
+let subscriberCount = 0;
+let listenerAttached = false;
+let lastExternalUpdateAt = 0;
 
-// 获取状态的函数
+const applyStatus = (status) => {
+  if (status && typeof status === 'object') {
+    backgroundTaskStatus.value = status;
+  }
+};
+
+const handleExternalStatus = (event) => {
+  lastExternalUpdateAt = Date.now();
+  applyStatus(event.detail);
+};
+
+const clearStatusTimer = () => {
+  if (statusTimer) {
+    clearTimeout(statusTimer);
+    statusTimer = null;
+  }
+};
+
+const scheduleStatusFetch = (delay = 2500) => {
+  if (subscriberCount <= 0) return;
+  clearStatusTimer();
+  statusTimer = setTimeout(fetchStatus, delay);
+};
+
+// 获取状态的函数。主布局已经在轮询时，这里只做兜底，避免重复请求。
 const fetchStatus = async () => {
+  if (subscriberCount <= 0 || statusFetchInFlight) return;
+  if (Date.now() - lastExternalUpdateAt < 5000) {
+    scheduleStatusFetch(3000);
+    return;
+  }
+  statusFetchInFlight = true;
+  statusAbortController = new AbortController();
   try {
-    const response = await axios.get('/api/status');
-    backgroundTaskStatus.value = response.data;
+    const response = await axios.get('/api/status', {
+      timeout: 8000,
+      signal: statusAbortController.signal,
+    });
+    applyStatus(response.data);
   } catch (error) {
     // 在这里可以静默处理错误，或者只在控制台打印
     // console.error("获取后台状态失败:", error);
+  } finally {
+    statusFetchInFlight = false;
+    statusAbortController = null;
+    scheduleStatusFetch(3000);
   }
 };
 
 export function useTaskStatus() {
   // onMounted 会在组件第一次使用这个 composable 时被调用
   onMounted(() => {
-    // 只有在没有定时器的情况下才启动一个新的，防止重复启动
-    if (!statusInterval) {
-      fetchStatus(); // 立即获取一次
-      statusInterval = setInterval(fetchStatus, 2000); // 每2秒获取一次
+    subscriberCount += 1;
+    if (!listenerAttached && typeof window !== 'undefined') {
+      window.addEventListener(TASK_STATUS_EVENT, handleExternalStatus);
+      listenerAttached = true;
     }
+    fetchStatus();
   });
 
   // onUnmounted 会在组件销毁时被调用
   onUnmounted(() => {
-    // 实际上，对于全局状态，我们通常不希望它停止
-    // 但为了代码的完整性，保留这个逻辑
-    // 如果你希望状态轮询在离开页面后停止，就保留它
-    // 如果希望它一直运行，可以注释掉下面的 clearInterval
-    // clearInterval(statusInterval);
-    // statusInterval = null;
+    subscriberCount = Math.max(0, subscriberCount - 1);
+    if (subscriberCount > 0) return;
+    clearStatusTimer();
+    if (statusAbortController) {
+      statusAbortController.abort();
+      statusAbortController = null;
+    }
+    statusFetchInFlight = false;
+    if (listenerAttached && typeof window !== 'undefined') {
+      window.removeEventListener(TASK_STATUS_EVENT, handleExternalStatus);
+      listenerAttached = false;
+    }
   });
 
   // 创建一个易于使用的计算属性

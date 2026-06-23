@@ -158,7 +158,11 @@ def _raise_for_center_error(resp):
 
 
 def _request_kwargs(timeout: int) -> Dict[str, Any]:
-    kwargs = {'timeout': timeout}
+    try:
+        read_timeout = max(1, int(timeout or 15))
+    except Exception:
+        read_timeout = 15
+    kwargs = {'timeout': (5, read_timeout)}
     getter = getattr(config_manager, 'get_proxies_for_requests', None)
     if callable(getter):
         proxies = getter()

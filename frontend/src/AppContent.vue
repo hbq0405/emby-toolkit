@@ -68,7 +68,11 @@ const newThemeTemplate = ref(null);
 const isOpeningEditor = ref(false);
 
 const backgroundTaskStatus = ref({ is_running: false, current_action: '空闲' });
-let statusIntervalId = null;
+const TASK_STATUS_EVENT = 'etk-task-status';
+let statusTimerId = null;
+let statusAbortController = null;
+let statusPollingActive = false;
+let statusFetchInFlight = false;
 const pendingSystemUpdateReload = ref(false);
 const waitingForBackendRecovery = ref(false);
 
@@ -220,34 +224,78 @@ watch([isDarkTheme, selectedTheme], ([isDark, themeKey]) => {
   }
 }, { deep: true });
 
+const emitTaskStatus = (status) => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(TASK_STATUS_EVENT, { detail: status }));
+  }
+};
+
+const stopStatusPolling = () => {
+  statusPollingActive = false;
+  if (statusTimerId) {
+    clearTimeout(statusTimerId);
+    statusTimerId = null;
+  }
+  if (statusAbortController) {
+    statusAbortController.abort();
+    statusAbortController = null;
+  }
+  statusFetchInFlight = false;
+};
+
+const scheduleStatusPoll = (delay = 2000) => {
+  if (!statusPollingActive) return;
+  if (statusTimerId) clearTimeout(statusTimerId);
+  statusTimerId = setTimeout(fetchStatus, delay);
+};
+
+const fetchStatus = async () => {
+  if (!statusPollingActive || statusFetchInFlight) return;
+  statusFetchInFlight = true;
+  statusAbortController = new AbortController();
+  try {
+    const response = await axios.get('/api/status', {
+      timeout: 8000,
+      signal: statusAbortController.signal,
+    });
+    backgroundTaskStatus.value = response.data;
+    emitTaskStatus(response.data);
+    if (waitingForBackendRecovery.value) {
+      waitingForBackendRecovery.value = false;
+      if (pendingSystemUpdateReload.value) {
+        window.location.reload();
+        return;
+      }
+    }
+    const statusMessage = String(response.data?.message || '');
+    if (statusMessage.includes('系统正在重启')) {
+      pendingSystemUpdateReload.value = true;
+    }
+  } catch (error) {
+    if (error?.code !== 'ERR_CANCELED') {
+      console.error('获取状态失败:', error);
+    }
+  } finally {
+    statusFetchInFlight = false;
+    statusAbortController = null;
+    if (pendingSystemUpdateReload.value) {
+      waitingForBackendRecovery.value = true;
+    }
+    scheduleStatusPoll(pendingSystemUpdateReload.value ? 2000 : 2500);
+  }
+};
+
+const startStatusPolling = () => {
+  if (statusPollingActive) return;
+  statusPollingActive = true;
+  fetchStatus();
+};
+
 watch(() => authStore.isLoggedIn, (isLoggedIn) => {
   if (isLoggedIn) {
-    if (!statusIntervalId) {
-      const fetchStatus = async () => {
-        try {
-          const response = await axios.get('/api/status');
-          backgroundTaskStatus.value = response.data;
-          if (waitingForBackendRecovery.value) {
-            waitingForBackendRecovery.value = false;
-            if (pendingSystemUpdateReload.value) {
-              window.location.reload();
-              return;
-            }
-          }
-          const statusMessage = String(response.data?.message || '');
-          if (statusMessage.includes('系统正在重启')) {
-            pendingSystemUpdateReload.value = true;
-          }
-        } catch (error) { console.error('获取状态失败:', error); }
-        if (pendingSystemUpdateReload.value) {
-          waitingForBackendRecovery.value = true;
-        }
-      };
-      fetchStatus();
-      statusIntervalId = setInterval(fetchStatus, 2000);
-    }
+    startStatusPolling();
   } else {
-    if (statusIntervalId) { clearInterval(statusIntervalId); statusIntervalId = null; }
+    stopStatusPolling();
     pendingSystemUpdateReload.value = false;
     waitingForBackendRecovery.value = false;
   }
@@ -272,6 +320,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  if (statusIntervalId) clearInterval(statusIntervalId);
+  stopStatusPolling();
 });
 </script>
