@@ -30,6 +30,7 @@ _LISTENER_STOP = threading.Event()
 _LISTENER_LOCK = threading.Lock()
 _FULL_SHARE_LOCK = threading.Lock()
 _CENTER_CONFIG_WARNED_REASONS = set()
+_LISTENER_FAILURE_WARN_THRESHOLD = 3
 
 
 def _cfg_bool(value: Any, default: bool = False) -> bool:
@@ -5949,28 +5950,40 @@ def _sign_listener_loop():
     阶段因为 holder 没及时领取而被中心误判超时。
     """
     logger.debug('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已启动。')
+    consecutive_failures = 0
     while not _LISTENER_STOP.is_set():
         try:
             if not _enabled():
                 _LISTENER_STOP.wait(5)
                 continue
             poll_and_process_rapid_sign_jobs_once(timeout=20, limit=10)
+            consecutive_failures = 0
         except Exception as e:
-            logger.warning(f"  ➜ [共享签名监听] 本轮处理失败: {e}")
+            consecutive_failures += 1
+            if consecutive_failures >= _LISTENER_FAILURE_WARN_THRESHOLD:
+                logger.warning(f"  ➜ [共享签名监听] 连续 {consecutive_failures} 轮处理失败: {e}")
+            else:
+                logger.debug(f"  ➜ [共享签名监听] 本轮处理失败: {e}")
             _LISTENER_STOP.wait(3)
     logger.info('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已停止。')
 
 
 def _event_listener_loop():
     logger.debug('  ➜ [共享事件监听] Rapid v2 长轮询监听已启动。')
+    consecutive_failures = 0
     while not _LISTENER_STOP.is_set():
         try:
             if not _enabled():
                 _LISTENER_STOP.wait(15)
                 continue
             poll_and_consume_once(timeout=25, limit=10)
+            consecutive_failures = 0
         except Exception as e:
-            logger.warning(f"  ➜ [共享事件监听] 本轮处理失败: {e}")
+            consecutive_failures += 1
+            if consecutive_failures >= _LISTENER_FAILURE_WARN_THRESHOLD:
+                logger.warning(f"  ➜ [共享事件监听] 连续 {consecutive_failures} 轮处理失败: {e}")
+            else:
+                logger.debug(f"  ➜ [共享事件监听] 本轮处理失败: {e}")
             _LISTENER_STOP.wait(10)
     logger.info('  ➜ [共享事件监听] Rapid v2 长轮询监听已停止。')
 
