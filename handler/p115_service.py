@@ -6714,7 +6714,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         # 同一 TMDb 批次里可能同时有 mkv / iso 等不同文件级分类。
         # 这种情况必须先按目标分类拆批，否则会被后续电影洗版逻辑当成同目录多版本互相淘汰。
-        if is_batch and not getattr(self, '_disable_extension_batch_split', False):
+        # 手动重组时用户指定的 target_cid 优先，不能再被历史记忆或文件级规则改写。
+        if (
+            is_batch
+            and not getattr(self, 'is_manual_correct', False)
+            and not getattr(self, '_disable_extension_batch_split', False)
+        ):
             split_groups = {}
             original_sorting_filename = getattr(self, 'current_sorting_filename', '')
             original_memory_flag = getattr(self, 'is_from_memory', False)
