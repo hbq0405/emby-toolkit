@@ -1283,7 +1283,7 @@ def lock_series_subscription_version(
     *,
     best_version: bool = False,
 ) -> bool:
-    """Lock an MP season subscription by include regex; recreate it if PUT is not persisted."""
+    """Lock an existing MP season subscription by include regex."""
     tmdb_id = str(tmdb_id or '').strip()
     include_regex = str(include_regex or '').strip()
     log_title = f"《{series_name}》第 {season} 季" if series_name else f"第 {season} 季"
@@ -1307,21 +1307,20 @@ def lock_series_subscription_version(
         payload["best_version"] = 1
         payload.pop("best_version_full", None)
 
-    if existing.get("id") and update_subscription(payload, config):
+    if not existing.get("id"):
+        logger.warning(f"  ➜ [版本锁定] 未找到可更新的 MP 订阅，跳过：{log_title}")
+        return False
+
+    if update_subscription(payload, config):
         verified = get_subscription_by_tmdbid(tmdb_id, season, config) or {}
         if str(verified.get("include") or "") == include_regex:
             logger.info(f"  ➜ [版本锁定] 已更新 MP 订阅：{log_title}")
             return True
-        logger.warning(f"  ➜ [版本锁定] MP 更新后未持久化包含正则，改为删除后重建：{log_title}")
+        logger.warning(f"  ➜ [版本锁定] MP 更新后未持久化包含正则，已跳过重建：{log_title}")
+        return False
 
-    recreate_payload = dict(payload)
-    recreate_payload.pop("id", None)
-    if existing:
-        cancel_subscription(tmdb_id, "Series", config or {}, season=season)
-    ok = subscribe_with_custom_payload(recreate_payload, config)
-    if ok:
-        logger.info(f"  ➜ [版本锁定] 已删除后重建 MP 订阅：{log_title}")
-    return ok
+    logger.warning(f"  ➜ [版本锁定] 更新 MP 订阅失败，已跳过重建：{log_title}")
+    return False
 
 def search_subscription(sub_id: int, config: Dict[str, Any] = None) -> bool:
     """触发指定订阅的立即搜索"""
