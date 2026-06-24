@@ -101,6 +101,7 @@ def _shared_resource_config_payload() -> Dict[str, Any]:
     payload.setdefault('p115_shared_resource_enabled', False)
     payload.setdefault('p115_shared_center_url', 'https://shared.55565576.xyz')
     payload.setdefault('p115_shared_device_token', '')
+    payload.setdefault('p115_shared_center_admin_token', '')
     payload.setdefault('p115_shared_install_id', '')
     payload['p115_shared_resource_mode'] = 'rapid'
     payload.setdefault('p115_shared_disable_episode_transfer', False)
@@ -116,6 +117,7 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data['p115_shared_resource_enabled'] = _boolish(data.get('p115_shared_resource_enabled'), False)
     data['p115_shared_center_url'] = str(data.get('p115_shared_center_url') or 'https://shared.55565576.xyz').rstrip('/')
     data['p115_shared_device_token'] = str(data.get('p115_shared_device_token') or '').strip()
+    data['p115_shared_center_admin_token'] = str(data.get('p115_shared_center_admin_token') or '').strip()
     data['p115_shared_resource_mode'] = 'rapid'
     data.pop('p115_shared_max_active_shares', None)
     data['p115_shared_disable_episode_transfer'] = _boolish(data.get('p115_shared_disable_episode_transfer'), False)
@@ -1946,6 +1948,69 @@ def api_center_import():
     return jsonify({'success': bool(result.get('ok')), 'message': message, 'data': result}), status
 
 
+@shared_resource_bp.route('/center/sources/<source_kind>/<path:source_id>/trace', methods=['GET'])
+@admin_required
+def api_center_trace_source(source_kind: str, source_id: str):
+    try:
+        resp = SharedCenterClient().admin_trace_source(source_kind, source_id)
+        return jsonify({'success': True, 'data': resp, **resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@shared_resource_bp.route('/center/sources/<source_kind>/<path:source_id>/delete', methods=['POST'])
+@admin_required
+def api_center_delete_source(source_kind: str, source_id: str):
+    data = _request_json()
+    try:
+        resp = SharedCenterClient().admin_delete_source(
+            source_kind,
+            source_id,
+            reason=str(data.get('reason') or 'client admin delete').strip(),
+        )
+        _center_home_proxy_cache_clear()
+        with _CENTER_HOME_PROXY_CACHE_LOCK:
+            _CENTER_DETAIL_PROXY_CACHE.clear()
+        return jsonify({'success': True, 'message': '中心资源已下架', 'data': resp, **resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@shared_resource_bp.route('/center/devices/<path:device_id>/ban', methods=['POST'])
+@admin_required
+def api_center_ban_device(device_id: str):
+    data = _request_json()
+    reason = str(data.get('reason') or '').strip()
+    if not reason:
+        return jsonify({'success': False, 'message': '缺少封禁理由'}), 400
+    try:
+        resp = SharedCenterClient().admin_ban_device(
+            device_id,
+            reason=reason,
+            disable_sources=_boolish(data.get('disable_sources'), True),
+        )
+        _center_home_proxy_cache_clear()
+        with _CENTER_HOME_PROXY_CACHE_LOCK:
+            _CENTER_DETAIL_PROXY_CACHE.clear()
+        return jsonify({'success': True, 'message': '设备已封禁，相关资源已下架', 'data': resp, **resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@shared_resource_bp.route('/center/devices/<path:device_id>/unban', methods=['POST'])
+@admin_required
+def api_center_unban_device(device_id: str):
+    data = _request_json()
+    try:
+        resp = SharedCenterClient().admin_unban_device(
+            device_id,
+            reason=str(data.get('reason') or '整改后解封').strip(),
+        )
+        return jsonify({'success': True, 'message': '设备已解封', 'data': resp, **resp})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @shared_resource_bp.route('/center/device/register', methods=['POST'])
 @admin_required
 def api_register_center_device():
@@ -1966,6 +2031,24 @@ def api_register_center_device():
         return jsonify({'success': True, 'message': '共享资源中心已按 ServerID 重新连接，监听已刷新', 'data': saved, 'device': resp})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@shared_resource_bp.route('/center/device/status', methods=['GET'])
+@admin_required
+def api_center_device_status():
+    try:
+        resp = SharedCenterClient().device_status()
+        data = {
+            **resp,
+            'local_server_id_hash': _current_server_id_hash(),
+        }
+        return jsonify({'success': True, 'data': data, **data})
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e),
+            'data': {'local_server_id_hash': _current_server_id_hash()},
+        }), 500
 
 
 @shared_resource_bp.route('/credit/refresh', methods=['POST'])

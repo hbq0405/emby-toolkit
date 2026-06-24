@@ -486,6 +486,8 @@ def _media_rows_for_search(keyword: str = '', limit: int = 200) -> List[Dict[str
                     p.title AS series_title,
                     p.original_title AS series_original_title,
                     p.release_year AS series_release_year,
+                    p.official_rating_json AS series_official_rating_json,
+                    p.custom_rating AS series_custom_rating,
                     se.watching_status AS season_watching_status,
                     se.total_episodes AS season_total_episodes
                 FROM media_metadata m
@@ -800,6 +802,8 @@ def build_shareable_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'standard_title': title,
         'display_title': title,
         'release_year': row.get('release_year') or row.get('series_release_year'),
+        'official_rating_json': row.get('official_rating_json') or row.get('series_official_rating_json'),
+        'custom_rating': row.get('custom_rating') or row.get('series_custom_rating'),
         'watching_status': row.get('watching_status') or '',
         'season_status': row.get('watching_status') or '',
         'total_episodes': _safe_int(row.get('total_episodes'), 0) or None,
@@ -870,6 +874,8 @@ def search_shareable_media(keyword='', search_limit=300, result_limit=500) -> Li
                     'series_title': row.get('title') or row.get('original_title'),
                     'series_original_title': row.get('original_title'),
                     'series_release_year': row.get('release_year'),
+                    'series_official_rating_json': row.get('official_rating_json') or row.get('series_official_rating_json'),
+                    'series_custom_rating': row.get('custom_rating') or row.get('series_custom_rating'),
                 }
                 cand = build_shareable_candidate(season_candidate_row)
                 if not cand.get('resolvable'):
@@ -1212,6 +1218,8 @@ def _build_lightweight_share_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         'standard_title': title,
         'display_title': title,
         'release_year': row.get('release_year') or row.get('series_release_year'),
+        'official_rating_json': row.get('official_rating_json') or row.get('series_official_rating_json'),
+        'custom_rating': row.get('custom_rating') or row.get('series_custom_rating'),
         'watching_status': row.get('watching_status') or '',
         'season_status': row.get('watching_status') or '',
         'total_episodes': strict_total or None,

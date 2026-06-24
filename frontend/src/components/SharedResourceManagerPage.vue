@@ -240,6 +240,37 @@
               <template #unchecked>关闭</template>
             </n-switch>
           </n-form-item>
+          <n-form-item label="中心管理 Token">
+            <n-input
+              v-model:value="sharedConfigForm.p115_shared_center_admin_token"
+              type="password"
+              show-password-on="click"
+              clearable
+              placeholder="用于中心资源追查、封禁和解封"
+            />
+          </n-form-item>
+          <n-form-item label="中心设备状态">
+            <n-spin :show="centerDeviceStatusLoading" size="small">
+              <div class="center-device-status-panel">
+                <div class="center-device-status-head">
+                  <n-tag size="small" round :type="centerDeviceStatusTagType(centerConfigDeviceStatus.status)">
+                    {{ centerConfigDeviceStatusLabel }}
+                  </n-tag>
+                  <span class="center-device-status-name">{{ centerConfigDeviceStatus.name || centerConfigDeviceStatus.id || '未连接中心' }}</span>
+                </div>
+                <div v-if="centerConfigDeviceStatus.id" class="center-device-status-grid">
+                  <span>设备 ID：{{ centerConfigDeviceStatus.id }}</span>
+                  <span>本机 ServerID Hash：{{ centerConfigLocalServerHash || '-' }}</span>
+                  <span>中心 ServerID Hash：{{ centerConfigDeviceStatus.server_id_hash || '-' }}</span>
+                  <span>最后在线：{{ fmtDate(centerConfigDeviceStatus.last_seen_at) }}</span>
+                </div>
+                <n-alert v-if="centerConfigForcedOfflineReason" type="error" :bordered="false" class="center-device-status-alert">
+                  封禁理由：{{ centerConfigForcedOfflineReason }}
+                </n-alert>
+                <n-text v-else-if="centerDeviceStatusError" type="error">{{ centerDeviceStatusError }}</n-text>
+              </div>
+            </n-spin>
+          </n-form-item>
           <n-form-item label="禁止单集秒传">
             <n-switch v-model:value="sharedConfigForm.p115_shared_disable_episode_transfer">
               <template #checked>不秒传单集</template>
@@ -468,6 +499,17 @@
               </div>
               <div class="center-version-action" @click.stop>
                 <n-button
+                  size="small"
+                  secondary
+                  circle
+                  :loading="centerAdminActionLoadingKey === `trace:${centerAdminSourceKey(version)}`"
+                  :disabled="!centerAdminSourceReady(version)"
+                  title="追查上传设备"
+                  @click="traceCenterSource(version)"
+                >
+                  <template #icon><n-icon :component="SearchIcon" /></template>
+                </n-button>
+                <n-button
                   class="center-version-transfer-button"
                   size="small"
                   type="primary"
@@ -483,6 +525,58 @@
           </div>
         </div>
       </n-spin>
+    </n-modal>
+
+    <n-modal v-model:show="showCenterTraceModal" preset="card" title="上传设备追查" style="width: 760px; max-width: 96vw;" class="custom-modal glass-modal">
+      <n-spin :show="centerTraceLoading">
+        <div v-if="centerTraceData.device" class="center-trace-body">
+          <div class="center-trace-section">
+            <div class="center-trace-title">资源</div>
+            <div class="center-trace-line">{{ centerTraceSourceTitle }}</div>
+            <div class="center-trace-muted">{{ centerTraceSourceMeta }}</div>
+          </div>
+          <div class="center-trace-section">
+            <div class="center-trace-title">设备</div>
+            <div class="center-trace-device-head">
+              <span>{{ centerTraceData.device.name || centerTraceData.device.id || '-' }}</span>
+              <n-tag size="small" round :type="centerDeviceStatusTagType(centerTraceData.device.status)">{{ centerTraceData.device.status || 'unknown' }}</n-tag>
+            </div>
+            <div class="center-trace-muted">ID {{ centerTraceData.device.id || '-' }}</div>
+            <div class="center-trace-grid">
+              <span>电影 {{ centerTraceData.device.active_movie_count || 0 }}/{{ centerTraceData.device.movie_count || 0 }}</span>
+              <span>分集 {{ centerTraceData.device.active_episode_count || 0 }}/{{ centerTraceData.device.episode_count || 0 }}</span>
+              <span>资产 {{ centerTraceData.device.active_asset_count || 0 }}/{{ centerTraceData.device.asset_count || 0 }}</span>
+              <span>分享 {{ centerTraceData.device.active_share_channel_count || 0 }}/{{ centerTraceData.device.share_channel_count || 0 }}</span>
+            </div>
+            <n-alert v-if="centerTraceBanReason" type="error" :bordered="false" class="center-trace-alert">
+              封禁理由：{{ centerTraceBanReason }}
+            </n-alert>
+          </div>
+          <n-input
+            v-model:value="centerBanReason"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+            placeholder="封禁或解封理由"
+          />
+        </div>
+        <n-text v-else depth="3">暂无追查结果。</n-text>
+      </n-spin>
+      <template #footer>
+        <n-space justify="space-between">
+          <n-text depth="3">封禁会强制设备离线，并复用中心离线下架逻辑。</n-text>
+          <n-space>
+            <n-button @click="showCenterTraceModal = false">关闭</n-button>
+            <n-button v-if="centerTraceDeviceBanned" type="success" :loading="centerDeviceUpdating" @click="unbanCenterTraceDevice">
+              <template #icon><n-icon :component="UnbanIcon" /></template>
+              整改后解封
+            </n-button>
+            <n-button v-else type="error" :loading="centerDeviceUpdating" @click="banCenterTraceDevice">
+              <template #icon><n-icon :component="BanIcon" /></template>
+              封禁设备
+            </n-button>
+          </n-space>
+        </n-space>
+      </template>
     </n-modal>
 
     <ShareRequestCreateModal
@@ -508,7 +602,9 @@ import {
   SettingsOutline as SettingsIcon,
   MenuOutline as MenuIcon,
   ShareSocialOutline as ShareIcon,
-  CloseCircleOutline as CancelIcon
+  CloseCircleOutline as CancelIcon,
+  BanOutline as BanIcon,
+  CheckmarkCircleOutline as UnbanIcon
 } from '@vicons/ionicons5';
 import ShareRequestCreateModal from './ShareRequestCreateModal.vue';
 
@@ -536,11 +632,15 @@ const manualCreating = ref(false);
 const showSharedConfigModal = ref(false);
 const sharedConfigLoading = ref(false);
 const sharedConfigSaving = ref(false);
+const centerDeviceStatusLoading = ref(false);
+const centerDeviceStatusError = ref('');
+const centerDeviceStatusData = ref({});
 const sharedConfigForm = reactive({
   p115_shared_resource_enabled: false,
   p115_shared_center_url: 'https://shared.55565576.xyz',
   p115_shared_install_id: '',
   p115_shared_device_token: '',
+  p115_shared_center_admin_token: '',
   p115_shared_resource_mode: 'rapid',
   p115_shared_disable_episode_transfer: false,
   p115_shared_block_clean_version_transfer: false,
@@ -584,6 +684,14 @@ const showCenterDetailModal = ref(false);
 const activeCenterDetailRow = ref(null);
 const centerDetailLoading = ref(false);
 const centerDetailActiveSeason = ref(null);
+const showCenterTraceModal = ref(false);
+const centerTraceLoading = ref(false);
+const centerTraceDeleting = ref(false);
+const centerDeviceUpdating = ref(false);
+const centerAdminActionLoadingKey = ref('');
+const centerTraceRow = ref(null);
+const centerTraceData = ref({});
+const centerBanReason = ref('');
 const shareRequests = ref([]);
 const shareRequestSearchKeyword = ref('');
 const shareRequestSearchItems = ref([]);
@@ -918,7 +1026,7 @@ const isEffectiveShareRow = (row) => {
   return statuses.some(v => shareUsableStatuses.has(v));
 };
 const deleteShareDisabledTitle = (row) => isEffectiveShareRow(row)
-  ? '有效共享不能直接删除，除非媒体项已不存在，判定为无效共享后再删除本地记录'
+  ? '有效共享会先同步中心取消登记，再删除本地记录'
   : (isProblemShareRow(row) ? '删除异常/识别已变更的共享记录' : '删除本地共享记录');
 
 const statusMap = {
@@ -1198,7 +1306,6 @@ const shareColumns = [
       size: 'small',
       type: 'error',
       secondary: true,
-      disabled: isEffectiveShareRow(row),
       title: deleteShareDisabledTitle(row),
       onClick: () => deleteShare(row),
     }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '删除' }),
@@ -2064,6 +2171,145 @@ const buildCenterImportSourcePayload = (row) => {
     share_type: row?.share_type || '',
     status: row?.status || '',
   };
+};
+
+const centerAdminSourcePayload = (row) => buildCenterImportSourcePayload(row || {});
+const centerAdminSourceKey = (row) => {
+  const source = centerAdminSourcePayload(row);
+  return `${source.source_kind || ''}:${source.source_id || ''}`;
+};
+const centerAdminSourceReady = (row) => {
+  const source = centerAdminSourcePayload(row);
+  return Boolean(source.source_kind && source.source_id);
+};
+const centerTraceSourceReady = computed(() => centerAdminSourceReady(centerTraceRow.value));
+const centerDeviceForcedOffline = (device) => device?.forced_offline === true || String(device?.forced_offline || '').toLowerCase() === 'true';
+const centerTraceDeviceBanned = computed(() => centerDeviceForcedOffline(centerTraceData.value?.device));
+const centerTraceBanReason = computed(() => String(centerTraceData.value?.device?.ban_reason || centerTraceData.value?.device?.forced_offline_reason || '').trim());
+const centerTraceSourceTitle = computed(() => {
+  const source = centerTraceData.value?.source || {};
+  return source.title || source.file_name || source.source_id || '-';
+});
+const centerTraceSourceMeta = computed(() => {
+  const source = centerTraceData.value?.source || {};
+  return [
+    source.source_kind,
+    source.tmdb_id ? `TMDb ${source.tmdb_id}` : '',
+    source.season_number ? `S${String(source.season_number).padStart(2, '0')}` : '',
+    source.episode_number ? `E${String(source.episode_number).padStart(2, '0')}` : '',
+    source.status,
+  ].filter(Boolean).join(' · ');
+});
+const centerDeviceStatusTagType = (status) => {
+  const value = String(status || '').toLowerCase();
+  if (value === 'banned') return 'error';
+  if (value === 'active') return 'success';
+  if (value === 'offline') return 'warning';
+  return 'default';
+};
+const centerConfigDeviceStatus = computed(() => centerDeviceStatusData.value?.device || {});
+const centerConfigLocalServerHash = computed(() => String(centerDeviceStatusData.value?.local_server_id_hash || '').trim());
+const centerConfigForcedOfflineReason = computed(() => {
+  const device = centerConfigDeviceStatus.value || {};
+  if (!centerDeviceForcedOffline(device)) return '';
+  return String(device.ban_reason || device.forced_offline_reason || '').trim() || '未填写';
+});
+const centerConfigDeviceStatusLabel = computed(() => {
+  const device = centerConfigDeviceStatus.value || {};
+  if (centerDeviceForcedOffline(device)) return '已封禁/强制离线';
+  return statusMap[String(device.status || '').toLowerCase()]?.text || device.status || '未知';
+});
+const centerAdminUrl = (source, action) => `/api/shared/resources/center/sources/${encodeURIComponent(source.source_kind)}/${encodeURIComponent(source.source_id)}/${action}`;
+const reloadCenterAfterAdminChange = async () => {
+  await Promise.allSettled([loadCenterSources(true), loadSummary(), loadLedger()]);
+  if (showCenterDetailModal.value && activeCenterDetailRow.value) {
+    try {
+      const requestedSeason = centerDetailActiveSeason.value;
+      const detailPayload = await loadCenterSourceDetail(activeCenterDetailRow.value, requestedSeason);
+      activeCenterDetailRow.value = applyCenterDetailPayload(activeCenterDetailRow.value, detailPayload, requestedSeason);
+    } catch (e) {
+      console.warn('[共享资源] 管理操作后刷新详情失败:', e);
+    }
+  }
+};
+const traceCenterSource = async (row) => {
+  if (!centerAdminSourceReady(row)) return message.error('中心源缺少 source_kind/source_id，刷新中心资源库后重试。');
+  const source = centerAdminSourcePayload(row);
+  const key = centerAdminSourceKey(row);
+  centerTraceRow.value = row;
+  showCenterTraceModal.value = true;
+  centerTraceLoading.value = true;
+  centerAdminActionLoadingKey.value = `trace:${key}`;
+  try {
+    const res = await axios.get(centerAdminUrl(source, 'trace'));
+    centerTraceData.value = res.data?.data || res.data || {};
+    const device = centerTraceData.value?.device || {};
+    centerBanReason.value = device.ban_reason || '上传违规资源';
+  } catch (e) {
+    message.error(e.response?.data?.message || '追查上传设备失败');
+  } finally {
+    centerTraceLoading.value = false;
+    centerAdminActionLoadingKey.value = '';
+  }
+};
+const confirmDeleteCenterSource = (row) => {
+  if (!centerAdminSourceReady(row)) return message.error('中心源缺少 source_kind/source_id，刷新中心资源库后重试。');
+  const source = centerAdminSourcePayload(row);
+  const title = row?.title || row?.file_name || source.source_id;
+  dialog.warning({
+    title: '下架中心资源',
+    content: `确定下架《${title}》吗？中心会同步取消未完成事件、签名任务并重建相关季包。`,
+    positiveText: '下架',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const key = centerAdminSourceKey(row);
+      centerTraceDeleting.value = true;
+      centerAdminActionLoadingKey.value = `delete:${key}`;
+      try {
+        const reason = centerBanReason.value || '违规资源下架';
+        const res = await axios.post(centerAdminUrl(source, 'delete'), { reason });
+        message.success(res.data?.message || '中心资源已下架');
+        await reloadCenterAfterAdminChange();
+      } catch (e) {
+        message.error(e.response?.data?.message || '下架中心资源失败');
+      } finally {
+        centerTraceDeleting.value = false;
+        centerAdminActionLoadingKey.value = '';
+      }
+    },
+  });
+};
+const banCenterTraceDevice = async () => {
+  const deviceId = String(centerTraceData.value?.device?.id || centerTraceData.value?.device_id || '').trim();
+  const reason = String(centerBanReason.value || '').trim();
+  if (!deviceId) return message.error('追查结果缺少设备 ID');
+  if (!reason) return message.error('请填写封禁理由');
+  centerDeviceUpdating.value = true;
+  try {
+    const res = await axios.post(`/api/shared/resources/center/devices/${encodeURIComponent(deviceId)}/ban`, { reason, disable_sources: true });
+    centerTraceData.value = { ...centerTraceData.value, device: res.data?.device || res.data?.data?.device || centerTraceData.value.device };
+    message.success(res.data?.message || '设备已封禁');
+    await reloadCenterAfterAdminChange();
+  } catch (e) {
+    message.error(e.response?.data?.message || '封禁设备失败');
+  } finally {
+    centerDeviceUpdating.value = false;
+  }
+};
+const unbanCenterTraceDevice = async () => {
+  const deviceId = String(centerTraceData.value?.device?.id || centerTraceData.value?.device_id || '').trim();
+  if (!deviceId) return message.error('追查结果缺少设备 ID');
+  centerDeviceUpdating.value = true;
+  try {
+    const reason = String(centerBanReason.value || '').trim() || '整改后解封';
+    const res = await axios.post(`/api/shared/resources/center/devices/${encodeURIComponent(deviceId)}/unban`, { reason });
+    centerTraceData.value = { ...centerTraceData.value, device: res.data?.device || res.data?.data?.device || centerTraceData.value.device };
+    message.success(res.data?.message || '设备已解封');
+  } catch (e) {
+    message.error(e.response?.data?.message || '解封设备失败');
+  } finally {
+    centerDeviceUpdating.value = false;
+  }
 };
 
 const executeImport = async (row, mode) => {
@@ -3361,6 +3607,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_center_url: data.p115_shared_center_url || 'https://shared.55565576.xyz',
     p115_shared_install_id: data.p115_shared_install_id || '',
     p115_shared_device_token: data.p115_shared_device_token || '',
+    p115_shared_center_admin_token: data.p115_shared_center_admin_token || '',
     p115_shared_resource_mode: 'rapid',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
@@ -3382,9 +3629,24 @@ const loadSharedConfig = async () => {
   }
 };
 
+const loadCenterDeviceStatus = async () => {
+  centerDeviceStatusLoading.value = true;
+  centerDeviceStatusError.value = '';
+  try {
+    const res = await axios.get('/api/shared/resources/center/device/status');
+    centerDeviceStatusData.value = res.data?.data || res.data || {};
+  } catch (e) {
+    centerDeviceStatusData.value = e.response?.data?.data || {};
+    centerDeviceStatusError.value = e.response?.data?.message || '读取中心设备状态失败';
+  } finally {
+    centerDeviceStatusLoading.value = false;
+  }
+};
+
 const openSharedConfigModal = async () => {
   showSharedConfigModal.value = true;
   await loadSharedConfig();
+  await loadCenterDeviceStatus();
 };
 
 const saveSharedConfig = async () => {
@@ -3395,7 +3657,7 @@ const saveSharedConfig = async () => {
     applySharedConfig(res.data?.data || sharedConfigForm);
     message.success(res.data?.message || '共享资源配置已保存');
     showSharedConfigModal.value = false;
-    await loadSummary();
+    await Promise.allSettled([loadSummary(), loadCenterDeviceStatus()]);
   } catch (e) {
     message.error(e.response?.data?.message || '保存共享资源配置失败');
   } finally {
@@ -4147,9 +4409,6 @@ const cancelShare = (row) => {
 
 
 const deleteShare = (row) => {
-  if (isEffectiveShareRow(row)) {
-    return message.warning('有效共享不能直接删除，请先停用，停用成功后再删除本地记录');
-  }
   const ids = Array.isArray(row.source_ids) ? row.source_ids.filter(Boolean) : [];
   const isBatch = ids.length > 1;
   const title = row.title || row.root_name || row.file_name || '该资源';
@@ -4750,7 +5009,7 @@ onUnmounted(() => {
   line-height: 1.55;
   word-break: break-all;
 }
-.center-version-action { flex: 0 0 auto; display: flex; align-items: center; }
+.center-version-action { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
 .center-version-detail-card-expandable { cursor: pointer; }
 .center-version-detail-card-expandable:hover {
   border-color: var(--n-primary-color, var(--accent-color, var(--center-detail-border)));
@@ -4769,6 +5028,18 @@ onUnmounted(() => {
   .center-detail-head,
   .center-version-detail-card { flex-direction: column; }
   .center-version-action { align-items: flex-start; }
+}
+
+.center-trace-body { display: flex; flex-direction: column; gap: 14px; }
+.center-trace-section { display: flex; flex-direction: column; gap: 6px; }
+.center-trace-title { font-size: 13px; font-weight: 700; color: var(--n-text-color-2); }
+.center-trace-line { font-size: 15px; font-weight: 700; line-height: 1.45; }
+.center-trace-muted { font-size: 12px; color: var(--n-text-color-3); word-break: break-all; }
+.center-trace-device-head { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.center-trace-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; font-size: 12px; color: var(--n-text-color-2); }
+.center-trace-alert { margin-top: 4px; }
+@media (max-width: 768px) {
+  .center-trace-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 

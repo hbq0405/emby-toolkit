@@ -198,15 +198,31 @@ def _json_object(value: Any) -> Dict[str, Any]:
 
 def _row_has_adult_rating(row: Dict[str, Any]) -> bool:
     row = dict(row or {})
+    if row.get('adult') is True or str(row.get('adult') or '').strip().lower() == 'true':
+        return True
     if str(row.get('custom_rating') or '').strip().upper() == 'XXX':
         return True
     ratings = _json_object(row.get('official_rating_json'))
-    return str(ratings.get('US') or ratings.get('us') or '').strip().upper() == 'XXX'
+    if str(ratings.get('US') or ratings.get('us') or '').strip().upper() == 'XXX':
+        return True
+    return str(row.get('official_rating') or row.get('mpaa') or row.get('certification') or '').strip().upper() == 'XXX'
+
+
+def _adult_rating_rows(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = [dict(candidate or {})]
+    raw = _json_object((candidate or {}).get('raw_json'))
+    if raw:
+        rows.append(raw)
+        for key in ('candidate', 'media_row', 'source', 'shared_source'):
+            nested = raw.get(key)
+            if isinstance(nested, dict):
+                rows.append(nested)
+    return rows
 
 
 def _adult_rating_block_reason(candidate: Dict[str, Any]) -> str:
     candidate = dict(candidate or {})
-    for row in (candidate, _json_object(candidate.get('raw_json'))):
+    for row in _adult_rating_rows(candidate):
         if _row_has_adult_rating(row):
             title = row.get('title') or candidate.get('title') or row.get('tmdb_id') or candidate.get('tmdb_id') or ''
             return f'adult rating XXX: {title}'.strip()
@@ -6163,6 +6179,7 @@ def _candidate_from_local_source(row: Dict[str, Any]) -> Dict[str, Any]:
         'file_name': row.get('file_name') if final_type == 'Movie' else None,
         'root_fid': row.get('root_fid'),
         'root_name': row.get('root_name'),
+        'raw_json': row.get('raw_json'),
         '_original_source_kind': source_kind,
         '_original_source_provider': row.get('source_provider') or '',
         '_original_center_source_id': row.get('center_source_id') or '',
