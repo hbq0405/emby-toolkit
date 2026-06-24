@@ -47,15 +47,24 @@ class P115RenameRenderer:
     @staticmethod
     def normalize_video_codec_style(value):
         style = str(value or 'hevc').strip().lower().replace('.', '')
-        return 'h265' if style in {'h265', 'x265', '265'} else 'hevc'
+        return 'h265' if style in {'h265', 'h264', 'x265', 'x264', '265', '264'} else 'hevc'
 
     @classmethod
     def format_video_codec_label(cls, codec, style='hevc'):
         text = str(codec or '')
         if not text:
             return ''
-        label = 'H265' if cls.normalize_video_codec_style(style) == 'h265' else 'HEVC'
-        return re.sub(r'(?i)\b(?:HEVC|H[\.\s]?265|X265)\b', label, text)
+        use_h26x = cls.normalize_video_codec_style(style) == 'h265'
+        text = re.sub(r'(?i)\b(?:HEVC|H[\.\s]?265|X265)\b', 'H265' if use_h26x else 'HEVC', text)
+        return re.sub(r'(?i)\b(?:AVC|H[\.\s]?264|X264)\b', 'H264' if use_h26x else 'AVC', text)
+
+    @staticmethod
+    def format_audio_label(audio, hide_channels=False):
+        text = str(audio or '')
+        if hide_channels:
+            text = re.sub(r'(?<!\d)(?:7[\.\s_]?1|5[\.\s_]?1|2[\.\s_]?0|1[\.\s_]?0)(?!\d)', '', text)
+            text = re.sub(r'[\s._-]+$', '', text)
+        return re.sub(r'\s+', ' ', text).strip()
 
     @classmethod
     def sanitize_name_component(cls, text):
@@ -110,9 +119,7 @@ class P115RenameRenderer:
         effect = video_info.get('effect') or ''
         codec_raw = video_info.get('codec') or video_info.get('videoCodec') or ''
         codec = self.format_video_codec_label(codec_raw, self.config.get('video_codec_style'))
-        codec_hevc = self.format_video_codec_label(codec_raw, 'hevc')
-        codec_h265 = self.format_video_codec_label(codec_raw, 'h265')
-        audio = video_info.get('audio') or ''
+        audio = self.format_audio_label(video_info.get('audio') or video_info.get('audioCodec') or '', self.config.get('hide_audio_channels'))
         group = video_info.get('group') or ''
         ext_with_dot = f".{str(file_ext).lstrip('.')}" if file_ext else ""
         title_year = f"{title_zh} ({year})" if title_zh and year else title_zh
@@ -196,8 +203,6 @@ class P115RenameRenderer:
             'stream': video_info.get('stream') or '',
             'effect': effect,
             'codec': codec,
-            'codec_hevc': codec_hevc,
-            'codec_h265': codec_h265,
             'audio_count': video_info.get('audio_count') or '',
             'audio': audio,
             'fps': video_info.get('fps') or '',
@@ -211,8 +216,6 @@ class P115RenameRenderer:
             'resourceType': source,
             'videoFormat': video_info.get('resolution') or '',
             'videoCodec': codec,
-            'videoCodecHEVC': codec_hevc,
-            'videoCodecH265': codec_h265,
             'audioCodec': audio,
             'releaseGroup': group,
             'webSource': video_info.get('stream') or '',
@@ -249,15 +252,14 @@ class P115RenameRenderer:
 
         video_info = video_info or {}
         codec_raw = video_info.get('codec') or video_info.get('videoCodec') or ''
-        if codec_raw:
+        audio_raw = video_info.get('audio') or video_info.get('audioCodec') or ''
+        if codec_raw or audio_raw:
             video_info = {
                 **video_info,
                 'codec': self.format_video_codec_label(codec_raw, self.config.get('video_codec_style')),
                 'videoCodec': self.format_video_codec_label(codec_raw, self.config.get('video_codec_style')),
-                'codec_hevc': self.format_video_codec_label(codec_raw, 'hevc'),
-                'codec_h265': self.format_video_codec_label(codec_raw, 'h265'),
-                'videoCodecHEVC': self.format_video_codec_label(codec_raw, 'hevc'),
-                'videoCodecH265': self.format_video_codec_label(codec_raw, 'h265'),
+                'audio': self.format_audio_label(audio_raw, self.config.get('hide_audio_channels')),
+                'audioCodec': self.format_audio_label(audio_raw, self.config.get('hide_audio_channels')),
             }
 
         if isinstance(format_value, str):

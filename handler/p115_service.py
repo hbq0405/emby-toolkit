@@ -5175,6 +5175,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             "file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
             "file_tmdb_fmt": "none", "file_params_en": True, "file_sep": " - ",
             "video_codec_style": "hevc",
+            "hide_audio_channels": False,
             "strm_url_fmt": "standard"
         }
         raw_rules = settings_db.get_setting('p115_sorting_rules')

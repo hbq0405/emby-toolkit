@@ -126,13 +126,24 @@
             <n-form-item label="视频编码显示">
               <n-radio-group v-model:value="config.video_codec_style">
                 <n-space>
-                  <n-radio value="hevc">HEVC</n-radio>
-                  <n-radio value="h265">H265</n-radio>
+                  <n-radio value="hevc">HEVC / AVC</n-radio>
+                  <n-radio value="h265">H265 / H264</n-radio>
                 </n-space>
               </n-radio-group>
               <template #feedback>
                 <span style="font-size: 12px; color: gray;">
                   仅影响重命名变量 codec/videoCodec 的显示，不改变洗版、订阅和清理的编码判断。
+                </span>
+              </template>
+            </n-form-item>
+
+            <n-divider style="margin: 12px 0;" />
+
+            <n-form-item label="隐藏声道数">
+              <n-switch v-model:value="config.hide_audio_channels" />
+              <template #feedback>
+                <span style="font-size: 12px; color: gray;">
+                  开启后重命名里的 audio/audioCodec 只保留音频格式，例如 DDP 5.1 输出为 DDP；音轨数不受影响。
                 </span>
               </template>
             </n-form-item>
@@ -232,6 +243,7 @@ const defaultConfig = {
   season_dir_format: ['season_name_en'],
   file_format: ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio_count', 'sep_space', 'audio', 'sep_middot_space', 'group'],
   video_codec_style: 'hevc',
+  hide_audio_channels: false,
   strm_url_fmt: 'standard'
 };
 
@@ -272,8 +284,6 @@ const templateBlocks = [
   { label: '特效 (HDR/DV)', snippet: '{{effect}}' },
   { label: '特效 customization', snippet: '{{customization}}' },
   { label: '视频编码', snippet: '{{codec | upper}}' },
-  { label: '视频编码 HEVC', snippet: '{{videoCodecHEVC}}' },
-  { label: '视频编码 H265', snippet: '{{videoCodecH265}}' },
   { label: '音轨数', snippet: '{{audio_count}}' },
   { label: '音频格式', snippet: '{{audio}}' },
   { label: '帧率', snippet: '{{fps}}' },
@@ -501,23 +511,31 @@ const renderTemplate = (template, data) => {
 };
 
 const formatVideoCodecLabel = (codec, style = config.value.video_codec_style) => {
-  const label = style === 'h265' ? 'H265' : 'HEVC';
-  return String(codec || '').replace(/\b(?:HEVC|H[.\s]?265|X265)\b/gi, label);
+  const useH26x = style === 'h265';
+  return String(codec || '')
+    .replace(/\b(?:HEVC|H[.\s]?265|X265)\b/gi, useH26x ? 'H265' : 'HEVC')
+    .replace(/\b(?:AVC|H[.\s]?264|X264)\b/gi, useH26x ? 'H264' : 'AVC');
+};
+
+const formatAudioLabel = (audio) => {
+  let text = String(audio || '');
+  if (config.value.hide_audio_channels) {
+    text = text.replace(/(?<!\d)(?:7[.\s_]?1|5[.\s_]?1|2[.\s_]?0|1[.\s_]?0)(?!\d)/g, '');
+    text = text.replace(/[\s._-]+$/g, '');
+  }
+  return text.replace(/\s+/g, ' ').trim();
 };
 
 const renamePreviewData = (data) => {
   const rawCodec = data.codec || data.videoCodec || '';
   const codec = formatVideoCodecLabel(rawCodec);
-  const codecHevc = formatVideoCodecLabel(rawCodec, 'hevc');
-  const codecH265 = formatVideoCodecLabel(rawCodec, 'h265');
+  const audio = formatAudioLabel(data.audio || data.audioCodec || '');
   return {
     ...data,
     codec,
     videoCodec: codec,
-    codec_hevc: codecHevc,
-    codec_h265: codecH265,
-    videoCodecHEVC: codecHevc,
-    videoCodecH265: codecH265
+    audio,
+    audioCodec: audio
   };
 };
 
