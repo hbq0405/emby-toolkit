@@ -59,7 +59,7 @@ def _build_cleanup_index_versions_payload(versions: List[Dict[str, Any]]) -> Lis
         payload.append({
             'id': version.get('emby_item_id'),
             'path': version.get('path'),
-            'filesize': version.get('size_bytes', 0),
+            'filesize': version.get('size_bytes') or 0,
             'quality': props.get('quality'),
             'resolution': props.get('resolution'),
             'effect': props.get('effect'),

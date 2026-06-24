@@ -67,7 +67,7 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         "effect": effect,
         "codec": codec,
         
-        "filesize": version.get("size_bytes", 0),
+        "filesize": version.get("size_bytes") or 0,
         "video_bitrate_mbps": version.get("video_bitrate_mbps") or 0,
         "bit_depth": version.get("bit_depth") or 8,
         "frame_rate": version.get("frame_rate") or 0,
@@ -85,7 +85,7 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
     """
     # 构建用于日志展示的版本简写 (例如: [4K|HEVC|15.2GB])
     def get_desc(v):
-        fs_gb = round(v.get('filesize', 0) / (1024**3), 2)
+        fs_gb = round((v.get('filesize') or 0) / (1024**3), 2)
         return f"[{v.get('resolution')}|{v.get('codec')}|{fs_gb}GB]"
     
     v1_desc = get_desc(v1)
