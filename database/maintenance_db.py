@@ -983,7 +983,6 @@ def _shared_cleanup_center_scope_payloads(contexts: List[Dict[str, Any]]) -> Lis
     """把本地删除上下文合并成中心端可一次处理的范围下架请求。"""
     series = set()
     seasons = set()
-    episodes = set()
     movies = set()
 
     for ctx in contexts or []:
@@ -997,8 +996,6 @@ def _shared_cleanup_center_scope_payloads(contexts: List[Dict[str, Any]]) -> Lis
             series.add(tmdb_id)
         elif scope == 'season' and season_number not in (None, ''):
             seasons.add((tmdb_id, _safe_int(season_number, 0)))
-        elif scope == 'episode' and episode_number not in (None, ''):
-            episodes.add((tmdb_id, _safe_int(season_number, 0), _safe_int(episode_number, 0)))
         elif scope == 'movie':
             movies.add(tmdb_id)
 
@@ -1015,16 +1012,6 @@ def _shared_cleanup_center_scope_payloads(contexts: List[Dict[str, Any]]) -> Lis
             'tmdb_id': tmdb_id,
             'season_number': season_number,
             'message': 'local media deleted: season_offline',
-        })
-    for tmdb_id, season_number, episode_number in sorted(episodes):
-        if tmdb_id in series or (tmdb_id, season_number) in seasons:
-            continue
-        payloads.append({
-            'scope': 'episode',
-            'tmdb_id': tmdb_id,
-            'season_number': season_number,
-            'episode_number': episode_number,
-            'message': 'local media deleted: episode_offline',
         })
     return payloads
 
@@ -1113,7 +1100,7 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
 
     rows_with_center = [r for r in normal_rows if str(r.get('center_source_id') or '').strip()]
     scope_payloads = _shared_cleanup_center_scope_payloads(contexts)
-    if rows_with_center and scope_payloads:
+    if scope_payloads:
         try:
             client = SharedCenterClient()
             scope_results = []
@@ -1125,7 +1112,7 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
             logger.info(
                 "  ➜ [共享资源删除善后] 已按范围批量下架中心共享源: scopes=%s, local_sources=%s",
                 len(scope_payloads),
-                len(rows_with_center),
+                len(rows),
             )
         except Exception as e:
             logger.warning(
