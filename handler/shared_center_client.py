@@ -300,13 +300,12 @@ class SharedCenterClient:
         cfg = _shared_cfg()
         self.base_url = str(cfg.get('p115_shared_center_url') or 'https://shared.55565576.xyz').rstrip('/')
         self.device_token = str(cfg.get('p115_shared_device_token') or '').strip()
-        self.admin_token = str(cfg.get('p115_shared_center_admin_token') or '').strip()
 
     @property
     def ready(self) -> bool:
         return bool(self.base_url and self.device_token)
 
-    def _headers(self, *, admin: bool = False) -> Dict[str, str]:
+    def _headers(self) -> Dict[str, str]:
         version = _app_version()
         headers = {
             'X-Device-Token': self.device_token,
@@ -318,8 +317,6 @@ class SharedCenterClient:
         server_id_hash = _current_server_id_hash()
         if server_id_hash:
             headers['X-Server-ID-Hash'] = server_id_hash
-        if admin and self.admin_token:
-            headers['X-Admin-Token'] = self.admin_token
         return headers
 
     def _post(self, path: str, payload: Dict[str, Any] | None = None, timeout: int = 20) -> Dict[str, Any]:
@@ -335,26 +332,6 @@ class SharedCenterClient:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
         resp = _CENTER_HTTP.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
-        _raise_for_center_error(resp)
-        return resp.json() if resp.text else {}
-
-    def _admin_post(self, path: str, payload: Dict[str, Any] | None = None, timeout: int = 20) -> Dict[str, Any]:
-        if not self.ready:
-            raise RuntimeError('shared center url or device_token is not configured')
-        if not self.admin_token:
-            raise RuntimeError('shared center admin token is not configured')
-        url = f"{self.base_url}{path}"
-        resp = _CENTER_HTTP.post(url, headers=self._headers(admin=True), json=payload or {}, **_request_kwargs(timeout))
-        _raise_for_center_error(resp)
-        return resp.json() if resp.text else {}
-
-    def _admin_get(self, path: str, params: Dict[str, Any] | None = None, timeout: int = 15) -> Dict[str, Any]:
-        if not self.ready:
-            raise RuntimeError('shared center url or device_token is not configured')
-        if not self.admin_token:
-            raise RuntimeError('shared center admin token is not configured')
-        url = f"{self.base_url}{path}"
-        resp = _CENTER_HTTP.get(url, headers=self._headers(admin=True), params=params or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
@@ -664,39 +641,6 @@ class SharedCenterClient:
             f"/api/v1/sources/{urllib.parse.quote(source_kind)}/{urllib.parse.quote(source_id)}/disable",
             {'message': message},
             timeout=25,
-        )
-
-    def admin_trace_source(self, source_kind: str, source_id: str) -> Dict[str, Any]:
-        source_kind = str(source_kind or '').strip()
-        source_id = str(source_id or '').strip()
-        return self._admin_get(
-            f"/api/v1/admin/sources/{urllib.parse.quote(source_kind)}/{urllib.parse.quote(source_id)}/trace",
-            timeout=20,
-        )
-
-    def admin_delete_source(self, source_kind: str, source_id: str, reason: str = '') -> Dict[str, Any]:
-        source_kind = str(source_kind or '').strip()
-        source_id = str(source_id or '').strip()
-        return self._admin_post(
-            f"/api/v1/admin/sources/{urllib.parse.quote(source_kind)}/{urllib.parse.quote(source_id)}/delete",
-            {'reason': reason or 'admin delete from client tool'},
-            timeout=35,
-        )
-
-    def admin_ban_device(self, device_id: str, reason: str, disable_sources: bool = True) -> Dict[str, Any]:
-        device_id = str(device_id or '').strip()
-        return self._admin_post(
-            f"/api/v1/admin/devices/{urllib.parse.quote(device_id)}/ban",
-            {'reason': reason or 'admin ban from client tool', 'disable_sources': bool(disable_sources)},
-            timeout=60,
-        )
-
-    def admin_unban_device(self, device_id: str, reason: str = '') -> Dict[str, Any]:
-        device_id = str(device_id or '').strip()
-        return self._admin_post(
-            f"/api/v1/admin/devices/{urllib.parse.quote(device_id)}/unban",
-            {'reason': reason or 'remediated'},
-            timeout=30,
         )
 
     def logical_season_manifest(self, group_id: str) -> Dict[str, Any]:
