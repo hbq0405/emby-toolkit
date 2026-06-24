@@ -38,12 +38,12 @@ INFO "Generating Nginx config..."
 python3 /app/web_app.py generate-nginx-config
 INFO "Nginx config generated."
 
-# p115client may create its HOME cache while the root-only nginx config command
-# imports application modules. Hand ownership back before the main app drops
-# privileges, otherwise the runtime user cannot create file locks there.
+# Dependencies may create HOME cache files while the root-only nginx config
+# command imports application modules. Hand ownership back before the main app
+# drops privileges, otherwise the runtime user cannot create file locks there.
 P115_CACHE_DIR="${HOME}/.p115client.cache.d"
 mkdir -p "${P115_CACHE_DIR}"
-chown -R embytoolkit:embytoolkit "${P115_CACHE_DIR}"
+chown -R embytoolkit:embytoolkit "${HOME}"
 
 # 3. Allow the non-root runtime user to access the mounted Docker socket.
 if [ -S "/var/run/docker.sock" ]; then
