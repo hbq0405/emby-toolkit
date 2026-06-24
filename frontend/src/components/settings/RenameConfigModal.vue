@@ -123,6 +123,22 @@
             </n-form-item>
             <n-divider style="margin: 12px 0;" />
 
+            <n-form-item label="视频编码显示">
+              <n-radio-group v-model:value="config.video_codec_style">
+                <n-space>
+                  <n-radio value="hevc">HEVC</n-radio>
+                  <n-radio value="h265">H265</n-radio>
+                </n-space>
+              </n-radio-group>
+              <template #feedback>
+                <span style="font-size: 12px; color: gray;">
+                  仅影响重命名变量 codec/videoCodec 的显示，不改变洗版、订阅和清理的编码判断。
+                </span>
+              </template>
+            </n-form-item>
+
+            <n-divider style="margin: 12px 0;" />
+
             <n-form-item label="STRM 链接格式">
               <n-radio-group v-model:value="config.strm_url_fmt">
                 <n-space vertical>
@@ -215,6 +231,7 @@ const defaultConfig = {
   main_dir_format: ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'],
   season_dir_format: ['season_name_en'],
   file_format: ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio_count', 'sep_space', 'audio', 'sep_middot_space', 'group'],
+  video_codec_style: 'hevc',
   strm_url_fmt: 'standard'
 };
 
@@ -255,6 +272,8 @@ const templateBlocks = [
   { label: '特效 (HDR/DV)', snippet: '{{effect}}' },
   { label: '特效 customization', snippet: '{{customization}}' },
   { label: '视频编码', snippet: '{{codec | upper}}' },
+  { label: '视频编码 HEVC', snippet: '{{videoCodecHEVC}}' },
+  { label: '视频编码 H265', snippet: '{{videoCodecH265}}' },
   { label: '音轨数', snippet: '{{audio_count}}' },
   { label: '音频格式', snippet: '{{audio}}' },
   { label: '帧率', snippet: '{{fps}}' },
@@ -481,6 +500,27 @@ const renderTemplate = (template, data) => {
   return cleanupEmptySeparators(output.replace(/[\\:*?"<>|]/g, '').trim());
 };
 
+const formatVideoCodecLabel = (codec, style = config.value.video_codec_style) => {
+  const label = style === 'h265' ? 'H265' : 'HEVC';
+  return String(codec || '').replace(/\b(?:HEVC|H[.\s]?265|X265)\b/gi, label);
+};
+
+const renamePreviewData = (data) => {
+  const rawCodec = data.codec || data.videoCodec || '';
+  const codec = formatVideoCodecLabel(rawCodec);
+  const codecHevc = formatVideoCodecLabel(rawCodec, 'hevc');
+  const codecH265 = formatVideoCodecLabel(rawCodec, 'h265');
+  return {
+    ...data,
+    codec,
+    videoCodec: codec,
+    codec_hevc: codecHevc,
+    codec_h265: codecH265,
+    videoCodecHEVC: codecHevc,
+    videoCodecH265: codecH265
+  };
+};
+
 const cleanupEmptySeparators = (text) => {
   let cleaned = String(text || '').replace(/\s+/g, ' ').trim();
   for (let i = 0; i < 4; i++) {
@@ -510,27 +550,27 @@ const withExt = (name, data, template) => {
 };
 
 const previewMovieDir = computed(() =>
-  renderTemplate(config.value.main_dir_template, mockMovie) || '未配置主目录规则'
+  renderTemplate(config.value.main_dir_template, renamePreviewData(mockMovie)) || '未配置主目录规则'
 );
 
 const previewTvDir = computed(() =>
-  renderTemplate(config.value.main_dir_template, mockTv) || '未配置主目录规则'
+  renderTemplate(config.value.main_dir_template, renamePreviewData(mockTv)) || '未配置主目录规则'
 );
 
 const previewTvSeason = computed(() =>
-  renderTemplate(config.value.season_dir_template, mockTv) || '未配置季目录规则'
+  renderTemplate(config.value.season_dir_template, renamePreviewData(mockTv)) || '未配置季目录规则'
 );
 
 const previewMovieFile = computed(() =>
   config.value.keep_original_name
     ? mockMovie.originalFile
-    : withExt(renderTemplate(movieFileTemplate.value, mockMovie), mockMovie, movieFileTemplate.value)
+    : withExt(renderTemplate(movieFileTemplate.value, renamePreviewData(mockMovie)), mockMovie, movieFileTemplate.value)
 );
 
 const previewTvFile = computed(() =>
   config.value.keep_original_name
     ? mockTv.originalFile
-    : withExt(renderTemplate(tvFileTemplate.value, mockTv), mockTv, tvFileTemplate.value)
+    : withExt(renderTemplate(tvFileTemplate.value, renamePreviewData(mockTv)), mockTv, tvFileTemplate.value)
 );
 
 const previewMovieStrm = computed(() => {

@@ -14,10 +14,11 @@ _JINJA_ENV = SandboxedEnvironment(autoescape=False)
 class P115RenameRenderer:
     _P115_INVALID_NAME_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
 
-    def __init__(self, details=None, tmdb_id="", original_title=""):
+    def __init__(self, details=None, tmdb_id="", original_title="", config=None):
         self.details = details or {}
         self.tmdb_id = tmdb_id
         self.original_title = original_title
+        self.config = config if isinstance(config, dict) else {}
 
     @staticmethod
     def get_format(config, kind, fallback):
@@ -42,6 +43,19 @@ class P115RenameRenderer:
         if not isinstance(format_value, str):
             return False
         return bool(re.search(r"\b(fileExt|file_ext)\b", format_value))
+
+    @staticmethod
+    def normalize_video_codec_style(value):
+        style = str(value or 'hevc').strip().lower().replace('.', '')
+        return 'h265' if style in {'h265', 'x265', '265'} else 'hevc'
+
+    @classmethod
+    def format_video_codec_label(cls, codec, style='hevc'):
+        text = str(codec or '')
+        if not text:
+            return ''
+        label = 'H265' if cls.normalize_video_codec_style(style) == 'h265' else 'HEVC'
+        return re.sub(r'(?i)\b(?:HEVC|H[\.\s]?265|X265)\b', label, text)
 
     @classmethod
     def sanitize_name_component(cls, text):
@@ -94,7 +108,10 @@ class P115RenameRenderer:
         season_episode_zh = f"第 {season_val} 季 {episode_val} 集" if is_tv and season_val is not None and episode_val is not None else ""
         source = video_info.get('source') or ''
         effect = video_info.get('effect') or ''
-        codec = video_info.get('codec') or ''
+        codec_raw = video_info.get('codec') or video_info.get('videoCodec') or ''
+        codec = self.format_video_codec_label(codec_raw, self.config.get('video_codec_style'))
+        codec_hevc = self.format_video_codec_label(codec_raw, 'hevc')
+        codec_h265 = self.format_video_codec_label(codec_raw, 'h265')
         audio = video_info.get('audio') or ''
         group = video_info.get('group') or ''
         ext_with_dot = f".{str(file_ext).lstrip('.')}" if file_ext else ""
@@ -179,6 +196,8 @@ class P115RenameRenderer:
             'stream': video_info.get('stream') or '',
             'effect': effect,
             'codec': codec,
+            'codec_hevc': codec_hevc,
+            'codec_h265': codec_h265,
             'audio_count': video_info.get('audio_count') or '',
             'audio': audio,
             'fps': video_info.get('fps') or '',
@@ -192,6 +211,8 @@ class P115RenameRenderer:
             'resourceType': source,
             'videoFormat': video_info.get('resolution') or '',
             'videoCodec': codec,
+            'videoCodecHEVC': codec_hevc,
+            'videoCodecH265': codec_h265,
             'audioCodec': audio,
             'releaseGroup': group,
             'webSource': video_info.get('stream') or '',
@@ -225,6 +246,19 @@ class P115RenameRenderer:
     def build_name(self, format_value, is_tv=False, season_num=None, episode_num=None, original_title=None, original_name=None, video_info=None, safe_title=None, file_ext=""):
         if not format_value:
             return ""
+
+        video_info = video_info or {}
+        codec_raw = video_info.get('codec') or video_info.get('videoCodec') or ''
+        if codec_raw:
+            video_info = {
+                **video_info,
+                'codec': self.format_video_codec_label(codec_raw, self.config.get('video_codec_style')),
+                'videoCodec': self.format_video_codec_label(codec_raw, self.config.get('video_codec_style')),
+                'codec_hevc': self.format_video_codec_label(codec_raw, 'hevc'),
+                'codec_h265': self.format_video_codec_label(codec_raw, 'h265'),
+                'videoCodecHEVC': self.format_video_codec_label(codec_raw, 'hevc'),
+                'videoCodecH265': self.format_video_codec_label(codec_raw, 'h265'),
+            }
 
         if isinstance(format_value, str):
             return self.render_template(

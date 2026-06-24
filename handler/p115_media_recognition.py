@@ -294,6 +294,25 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertEqual(ctx["episode_title"], "第十三集")
         self.assertEqual(ctx["part"], "2")
 
+    def test_rename_renderer_can_display_hevc_as_h265(self):
+        renderer = p115_service.P115RenameRenderer(
+            details={"title": "测试片", "date": "2026-01-01"},
+            tmdb_id="12345",
+            original_title="Test Movie",
+            config={"video_codec_style": "h265"},
+        )
+        ctx = renderer.build_template_context(video_info={"codec": "HEVC 10bit"})
+        self.assertEqual(ctx["codec"], "H265 10bit")
+        self.assertEqual(ctx["videoCodec"], "H265 10bit")
+        self.assertEqual(ctx["videoCodecHEVC"], "HEVC 10bit")
+        self.assertEqual(ctx["videoCodecH265"], "H265 10bit")
+
+        name = renderer.build_name(
+            "{{videoCodec}} / {{videoCodecHEVC}} / {{videoCodecH265}}",
+            video_info={"codec": "HEVC 10bit"},
+        )
+        self.assertEqual(name, "H265 10bit / HEVC 10bit / H265 10bit")
+
     def test_identify_media_enhanced_prefers_rule_search_input(self):
         with mock.patch.object(
             p115_service.tmdb,

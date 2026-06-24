@@ -1115,6 +1115,7 @@ def quick_deploy_115():
             'file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
             'file_format': ['s_e'],
             'file_tmdb_fmt': 'none',
+            'video_codec_style': 'hevc',
             'strm_url_fmt': 'standard',
         }
         settings_db.save_setting('p115_rename_config', rename_config)
@@ -1543,6 +1544,7 @@ def handle_rename_config():
             "tv_file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}",
             "file_format": ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group'],
             "file_tmdb_fmt": "none",       
+            "video_codec_style": "hevc",
             "strm_url_fmt": "standard"
         }
         defaults.update(config)
