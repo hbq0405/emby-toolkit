@@ -1630,6 +1630,54 @@ def _logical_share_file_ids_from_payload(client: SharedCenterClient, group_id: s
     return ids
 
 
+def _logical_share_filelist_log_label(payload: Dict[str, Any], fallback_title: str = '', file_count: int = 0) -> str:
+    """给逻辑季文件列表分享日志生成可读标题，不直接显示中心内部分享名。"""
+    payload = payload if isinstance(payload, dict) else {}
+    fallback_title = str(fallback_title or '').strip() or '逻辑完结季'
+
+    def first_text(*keys: str) -> str:
+        for key in keys:
+            value = str(payload.get(key) or '').strip()
+            if value:
+                return value
+        return ''
+
+    parent = first_text('parent_series_tmdb_id', 'series_tmdb_id', 'series_id', 'tmdb_id', 'tv_id')
+    season = _safe_int_or_none(payload.get('season_number') or payload.get('season'))
+    if (not parent or season is None):
+        for value in (fallback_title, first_text('title', 'share_title', 'root_name', 'name')):
+            match = re.search(r'(?P<tmdb>\d{3,})\s+S(?P<season>\d{1,3})\b', str(value or ''), re.I)
+            if match:
+                parent = parent or match.group('tmdb')
+                season = season if season is not None else _safe_int_or_none(match.group('season'))
+                break
+
+    identity = _series_identity_from_db(parent, season) if parent and season is not None else {}
+    title = str(
+        identity.get('title')
+        or first_text('series_title', 'series_name', 'show_title', 'parent_title')
+        or ''
+    ).strip()
+    if not title:
+        title = fallback_title
+
+    count = (
+        _safe_int_or_none(file_count)
+        or _safe_int_or_none(payload.get('file_count'))
+        or _safe_int_or_none(payload.get('episode_total'))
+        or _safe_int_or_none(payload.get('expected_episode_count'))
+        or _safe_int_or_none(payload.get('total_episodes'))
+        or _safe_int_or_none(identity.get('expected_episode_count'))
+    )
+
+    label = f"《{title}》"
+    if season is not None:
+        label += f"第 {season} 季"
+    if count:
+        label += f"，共 {count} 集"
+    return label
+
+
 def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str, Any]:
     """处理中心端 create_logical_season_filelist_share 事件：按中心传入的 file_id 列表创建 115 分享。"""
     client = SharedCenterClient()
@@ -1647,6 +1695,7 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
 
     manifest_hash = str(payload.get('package_fingerprint') or payload.get('manifest_hash') or '').strip()
     share_ids = _logical_share_file_ids_from_payload(client, group_id, payload)
+    log_label = _logical_share_filelist_log_label(payload, fallback_title=title, file_count=len(share_ids))
     existing_share = _local_existing_logical_share_for_create(group_id, manifest_hash, share_ids)
     if existing_share:
         status = str(existing_share.get('status') or 'pending_review').strip().lower()
@@ -1700,7 +1749,7 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         })
         if ack and event_id:
             client.ack_device_events([event_id], result='ok' if reported else 'failed', message=message[:500])
-        logger.info(f"  ➜ [共享资源] 复用已有 115 文件列表分享：《{title}》。")
+        logger.info(f"  ➜ [共享资源] 复用已有 115 文件列表分享：{log_label}。")
         logger.debug(
             f"  ➜ [共享资源] 复用文件列表分享详情：channel={channel_id}, "
             f"existing={existing_share.get('channel_id')}"
@@ -1745,7 +1794,7 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         p115 = P115Service.get_client()
         if not p115:
             raise RuntimeError('115 客户端未初始化')
-        logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：《{title}》，共 {len(share_ids)} 个文件。")
+        logger.info(f"  ➜ [共享资源] 开始创建 115 文件列表分享：{log_label}。")
         logger.debug(f"  ➜ [共享资源] 文件列表分享通道：{channel_id}")
         create_resp = p115.share_create(share_ids, share_duration=-1, receive_code=receive_code)
     except Exception as e:
@@ -1862,7 +1911,7 @@ def handle_create_logical_season_filelist_share_event(event: Dict[str, Any], *, 
         'review_failed': '审核未通过',
         'failed': '创建失败',
     }.get(report_payload['status'], report_payload['status'] or '状态未知')
-    logger.info(f"  ➜ [共享资源] 115 文件列表分享已创建：《{title}》，状态：{status_text}。")
+    logger.info(f"  ➜ [共享资源] 115 文件列表分享已创建：{log_label}，状态：{status_text}。")
     logger.debug(f"  ➜ [共享资源] 文件列表分享上报详情：status={report_payload['status']}, channel={channel_id}")
     return {
         'ok': bool(reported),
