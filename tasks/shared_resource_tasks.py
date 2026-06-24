@@ -977,6 +977,109 @@ def _delete_logical_share_channels_for_fids(fid_list: List[str], reason: str, *,
     }
 
 
+def delete_logical_share_channels_from_center_rows(channels: List[Dict[str, Any]], reason: str, *, client: SharedCenterClient = None) -> Dict[str, Any]:
+    """Delete local 115 shares for logical channels returned by center scope-disable."""
+    seen = set()
+    rows: List[Dict[str, Any]] = []
+    for channel in channels or []:
+        if not isinstance(channel, dict):
+            continue
+        channel_id = str(channel.get('channel_id') or '').strip()
+        share_code = str(channel.get('share_code') or '').strip()
+        if not channel_id or not share_code or channel_id in seen:
+            continue
+        seen.add(channel_id)
+        rows.append(channel)
+    if not rows:
+        return {'ok': True, 'checked': 0, 'deleted_115': 0, 'deleted_local': 0, 'failed': 0, 'items': []}
+
+    p115 = None
+    deleted_115 = 0
+    deleted_local = 0
+    failed = 0
+    items = []
+    reason = str(reason or 'center_scope_disabled').strip() or 'center_scope_disabled'
+    for channel in rows:
+        channel_id = str(channel.get('channel_id') or '').strip()
+        share_code = str(channel.get('share_code') or '').strip()
+        group_id = str(channel.get('group_id') or '').strip()
+        item = {'channel_id': channel_id, 'center_source_id': group_id, 'share_code': share_code}
+
+        if p115 is None:
+            try:
+                from handler.p115_service import P115Service
+                p115 = P115Service.get_client()
+            except Exception as e:
+                p115 = None
+                item.update({'ok': False, 'error': f'115 客户端初始化失败: {e}'})
+                items.append(item)
+                failed += 1
+                continue
+        if not p115:
+            item.update({'ok': False, 'error': '115 客户端未初始化，无法删除逻辑季分享'})
+            items.append(item)
+            failed += 1
+            continue
+
+        delete_resp = _delete_completed_share_from_115(p115, share_code)
+        item['share_delete_response'] = delete_resp
+        if delete_resp.get('state') is False:
+            msg = f'中心范围下架后删除 115 逻辑季分享失败: {delete_resp}'
+            try:
+                shared_share_db.update_completed_season_share_channel(
+                    channel_id,
+                    status_message=msg[:1000],
+                    raw_json={'share_delete_response': delete_resp, 'cleanup_reason': reason},
+                    last_checked_at='NOW()',
+                )
+            except Exception:
+                pass
+            item.update({'ok': False, 'error': msg})
+            items.append(item)
+            failed += 1
+            continue
+
+        deleted_115 += 1 if delete_resp.get('deleted') or delete_resp.get('cancelled_only') or delete_resp.get('skipped') else 0
+        local_row = shared_share_db.get_completed_season_share_channel(channel_id)
+        row_for_report = local_row or {
+            'channel_id': channel_id,
+            'center_source_id': group_id,
+            'share_code': share_code,
+            'share_url': channel.get('share_url') or '',
+            'raw_json': {'share_kind': 'logical_season'},
+        }
+        center_resp = {}
+        try:
+            client = client or SharedCenterClient()
+            center_resp = _update_center_share_channel_status(client, row_for_report, channel_id, {
+                'status': 'disabled',
+                'review_status': 'admin_deleted',
+                'status_message': reason,
+                'raw_json': {'share_delete_response': delete_resp, 'cleanup_reason': reason},
+            })
+        except Exception as e:
+            center_resp = {'ok': False, 'error': str(e)}
+        if isinstance(center_resp, dict) and center_resp.get('ok') is False:
+            item.update({'ok': False, 'error': f'中心逻辑季分享通道状态同步失败: {center_resp}', 'center': center_resp})
+            items.append(item)
+            failed += 1
+            continue
+
+        deleted = shared_share_db.delete_completed_season_share_channel(channel_id)
+        deleted_local += 1 if deleted else 0
+        item.update({'ok': True, 'deleted_115_share': True, 'deleted_local_channel': bool(deleted), 'center': center_resp})
+        items.append(item)
+
+    return {
+        'ok': failed == 0,
+        'checked': len(rows),
+        'deleted_115': deleted_115,
+        'deleted_local': deleted_local,
+        'failed': failed,
+        'items': items,
+    }
+
+
 def _extract_completed_share_payload(resp: Dict[str, Any], *, receive_code: str = '') -> Dict[str, Any]:
     resp = resp if isinstance(resp, dict) else {}
     data = resp.get('data') if isinstance(resp.get('data'), dict) else {}

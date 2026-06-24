@@ -1106,13 +1106,33 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
             scope_results = []
             for payload in scope_payloads:
                 scope_results.append(client.disable_source_scope(payload) or {})
+            disabled_channels = []
+            for result in scope_results:
+                if isinstance(result, dict):
+                    for channel in result.get('disabled_share_channels') or []:
+                        if isinstance(channel, dict):
+                            disabled_channels.append(channel)
+            share_cleanup = {}
+            if disabled_channels:
+                from tasks.shared_resource_tasks import delete_logical_share_channels_from_center_rows
+                share_cleanup = delete_logical_share_channels_from_center_rows(
+                    disabled_channels,
+                    'center_scope_disabled_after_media_delete',
+                    client=client,
+                )
+                if not share_cleanup.get('ok'):
+                    raise RuntimeError(f"中心范围下架后 115 分享删除失败: {share_cleanup}")
             center_scope_resp = {'scope_batch': True, 'scope_payloads': scope_payloads, 'scope_results': scope_results}
+            if share_cleanup:
+                center_scope_resp['logical_share_cleanup'] = share_cleanup
             for row in rows_with_center:
                 center_results[int(row.get('id') or 0)] = {'ok': True, 'id': int(row.get('id') or 0), 'center': center_scope_resp}
             logger.info(
-                "  ➜ [共享资源删除善后] 已按范围批量下架中心共享源: scopes=%s, local_sources=%s",
+                "  ➜ [共享资源删除善后] 已按范围批量下架中心共享源: scopes=%s, local_sources=%s, share_channels=%s, deleted_115=%s",
                 len(scope_payloads),
                 len(rows),
+                len(disabled_channels),
+                int((share_cleanup or {}).get('deleted_115') or 0),
             )
         except Exception as e:
             logger.warning(
