@@ -6,20 +6,35 @@
         <n-form label-placement="left" size="small">
           <n-form-item label="同集/同电影覆盖模式">
             <n-radio-group v-model:value="config.conflict_mode">
-              <n-space vertical>
-                <n-radio value="replace">
-                  <b>洗版</b>
-                  <div class="mode-desc">删除目标目录中同一集/同一电影的旧版本，移入新版本，并按下方优先级规则评估资源。</div>
+              <div class="mode-options">
+                <n-radio value="replace" class="mode-radio">
+                  <span class="mode-title">洗版</span>
+                  <n-tooltip trigger="hover" placement="top" style="max-width: 320px;">
+                    <template #trigger>
+                      <button type="button" class="mode-help" @click.stop>?</button>
+                    </template>
+                    删除目标目录中同一集/同一电影的旧版本，移入新版本，并按下方优先级规则评估资源。
+                  </n-tooltip>
                 </n-radio>
-                <n-radio value="keep_both">
-                  <b>共存</b>
-                  <div class="mode-desc">只要文件名不同，同一集的不同版本将共存，不使用洗版优先级规则。</div>
+                <n-radio value="keep_both" class="mode-radio">
+                  <span class="mode-title">共存</span>
+                  <n-tooltip trigger="hover" placement="top" style="max-width: 320px;">
+                    <template #trigger>
+                      <button type="button" class="mode-help" @click.stop>?</button>
+                    </template>
+                    只要文件名不同，同一集的不同版本将共存，不使用洗版优先级规则。
+                  </n-tooltip>
                 </n-radio>
-                <n-radio value="skip">
-                  <b>跳过</b>
-                  <div class="mode-desc">只要目标目录已有该集/该电影，新文件直接丢入未识别，不使用洗版优先级规则。</div>
+                <n-radio value="skip" class="mode-radio">
+                  <span class="mode-title">跳过</span>
+                  <n-tooltip trigger="hover" placement="top" style="max-width: 320px;">
+                    <template #trigger>
+                      <button type="button" class="mode-help" @click.stop>?</button>
+                    </template>
+                    只要目标目录已有该集/该电影，新文件直接丢入未识别，不使用洗版优先级规则。
+                  </n-tooltip>
                 </n-radio>
-              </n-space>
+              </div>
             </n-radio-group>
           </n-form-item>
         </n-form>
@@ -548,11 +563,35 @@ defineExpose({ open });
   border-radius: 8px;
 }
 
-.mode-desc {
-  margin-top: 2px;
-  font-size: 12px;
-  line-height: 1.5;
+.mode-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.mode-radio :deep(.n-radio__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-title {
+  font-weight: 600;
+}
+
+.mode-help {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--n-border-color);
+  border-radius: 50%;
+  background: transparent;
   color: var(--n-text-color-3);
+  cursor: help;
+  font-size: 11px;
+  line-height: 14px;
+  text-align: center;
 }
 
 .group-item {
