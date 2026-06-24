@@ -20,58 +20,51 @@ function WARN() {
     echo -e "${WARN} ${1}"
 }
 
-# 校正设置目录
 CONFIG_DIR="${CONFIG_DIR:-/config}"
 
-# 1. 设置用户和权限 (这部分不变)
-INFO "→ 设置用户权限..."
+# 1. Set runtime user and persistent directory ownership.
+INFO "Setting user permissions..."
 groupmod -o -g "${PGID}" embytoolkit
 usermod -o -u "${PUID}" embytoolkit
-INFO "→ 快速设置持久化目录权限..."
+INFO "Setting persistent directory permissions..."
 chown embytoolkit:embytoolkit "${HOME}" "${CONFIG_DIR}"
 if [ -d "${CONFIG_DIR}" ]; then
     find "${CONFIG_DIR}" -maxdepth 1 -mindepth 1 -exec chown embytoolkit:embytoolkit {} +
 fi
 umask "${UMASK}"
 
-# 2. 生成 Nginx 配置文件
-INFO "→ 生成 Nginx 配置文件..."
-# ★★★ 核心修正 ★★★
-# 移除 gosu，让此命令以 root 身份运行，这样它才有权限写入 /etc/nginx 目录
+# 2. Generate nginx config as root because it writes under /etc/nginx.
+INFO "Generating Nginx config..."
 python3 /app/web_app.py generate-nginx-config
-INFO "→ Nginx 配置文件生成完毕。"
+INFO "Nginx config generated."
 
-# 3. 检查是否存在 docker.sock
+# p115client may create its HOME cache while the root-only nginx config command
+# imports application modules. Hand ownership back before the main app drops
+# privileges, otherwise the runtime user cannot create file locks there.
+P115_CACHE_DIR="${HOME}/.p115client.cache.d"
+mkdir -p "${P115_CACHE_DIR}"
+chown -R embytoolkit:embytoolkit "${P115_CACHE_DIR}"
+
+# 3. Allow the non-root runtime user to access the mounted Docker socket.
 if [ -S "/var/run/docker.sock" ]; then
-    INFO "→ 检测到 Docker Socket，正在调整权限以允许非 Root 用户访问..."
-    # 方法 A (推荐): 修改 Socket 组为当前 PGID (更安全)
-    # chown root:${PGID} /var/run/docker.sock
-    
-    # 方法 B (暴力但最有效): 允许所有人读写 Socket (模拟 MP 的兼容性)
-    # 因为这是在容器内部，只影响容器内映射的那个文件句柄，风险可控
+    INFO "Detected Docker socket, adjusting permissions..."
     chmod 666 /var/run/docker.sock
 fi
 
-# 4. 启动 Nginx 服务 (修改了这里)
-# 检查生成的配置文件，如果包含禁用标记，则不启动 Nginx
+# 4. Start nginx unless proxy is disabled.
 if grep -q "# Proxy disabled" /etc/nginx/conf.d/default.conf; then
-    INFO "→ 检测到反向代理未启用，跳过启动 Nginx 服务。"
+    INFO "Reverse proxy disabled, skipping Nginx startup."
 else
-    INFO "→ 在后台启动 Nginx 服务..."
+    INFO "Starting Nginx in background..."
     nginx -g "daemon off;" &
 fi
 
-# 5. 启动主应用
-# 在这里，我们才使用 gosu 将权限降级为普通用户，以保证应用运行时的安全
-INFO "→ 启动 Emby Toolkit 主应用服务..."
+# 5. Start the main application.
+INFO "Starting Emby Toolkit..."
 if [ "${PUID}" -eq 0 ]; then
-    # --- Root 模式 ---
-    INFO "→ 检测到 PUID=0，以原生 Root 身份运行 (特权模式)..."
-    # 直接运行，不使用 gosu，拥有最高权限，无视 docker.sock 权限问题
+    INFO "PUID=0 detected, running as root."
     exec dumb-init python3 /app/web_app.py
 else
-    # --- 普通用户模式 (LinuxServer 风格) ---
-    INFO "→ 以普通用户 (UID:${PUID}, GID:${PGID}) 运行..."
-    # 使用 gosu 降级身份
+    INFO "Running as embytoolkit (UID:${PUID}, GID:${PGID})."
     exec dumb-init gosu embytoolkit:embytoolkit python3 /app/web_app.py
 fi
