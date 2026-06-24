@@ -643,6 +643,9 @@ class SharedCenterClient:
             timeout=25,
         )
 
+    def disable_source_scope(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post('/api/v1/sources/disable-scope', payload or {}, timeout=60)
+
     def logical_season_manifest(self, group_id: str) -> Dict[str, Any]:
         return self._get(f"/api/v1/logical-seasons/{urllib.parse.quote(str(group_id))}/manifest", timeout=30)
 

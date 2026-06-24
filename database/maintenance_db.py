@@ -979,6 +979,56 @@ def _cleanup_shared_sources_for_deleted_file_identities(contexts: List[Dict[str,
         return {'ok': False, 'matched': 0, 'disabled': 0, 'failed': 1, 'error': str(e), 'items': []}
 
 
+def _shared_cleanup_center_scope_payloads(contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把本地删除上下文合并成中心端可一次处理的范围下架请求。"""
+    series = set()
+    seasons = set()
+    episodes = set()
+    movies = set()
+
+    for ctx in contexts or []:
+        scope = str(ctx.get('scope') or '').strip()
+        tmdb_id = str(ctx.get('parent_tmdb_id') or ctx.get('tmdb_id') or '').strip()
+        if not scope or not tmdb_id:
+            continue
+        season_number = ctx.get('season_number')
+        episode_number = ctx.get('episode_number')
+        if scope == 'series':
+            series.add(tmdb_id)
+        elif scope == 'season' and season_number not in (None, ''):
+            seasons.add((tmdb_id, _safe_int(season_number, 0)))
+        elif scope == 'episode' and episode_number not in (None, ''):
+            episodes.add((tmdb_id, _safe_int(season_number, 0), _safe_int(episode_number, 0)))
+        elif scope == 'movie':
+            movies.add(tmdb_id)
+
+    payloads: List[Dict[str, Any]] = []
+    for tmdb_id in sorted(movies):
+        payloads.append({'scope': 'movie', 'tmdb_id': tmdb_id, 'message': 'local media deleted: movie_offline'})
+    for tmdb_id in sorted(series):
+        payloads.append({'scope': 'series', 'tmdb_id': tmdb_id, 'message': 'local media deleted: series_offline'})
+    for tmdb_id, season_number in sorted(seasons):
+        if tmdb_id in series:
+            continue
+        payloads.append({
+            'scope': 'season',
+            'tmdb_id': tmdb_id,
+            'season_number': season_number,
+            'message': 'local media deleted: season_offline',
+        })
+    for tmdb_id, season_number, episode_number in sorted(episodes):
+        if tmdb_id in series or (tmdb_id, season_number) in seasons:
+            continue
+        payloads.append({
+            'scope': 'episode',
+            'tmdb_id': tmdb_id,
+            'season_number': season_number,
+            'episode_number': episode_number,
+            'message': 'local media deleted: episode_offline',
+        })
+    return payloads
+
+
 def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
     file_cleanup = _cleanup_shared_sources_for_deleted_file_identities(contexts)
     if file_cleanup.get('failed'):
@@ -1016,18 +1066,37 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
         logger.debug("  ➜ [共享资源删除善后] 共享中心未启用，跳过实时下架。")
         return {'ok': True, 'matched': len(rows), 'disabled': 0, 'failed': 0, 'skipped': True}
 
-    client = SharedCenterClient()
     disabled = failed = 0
     deleted = 0
     items = []
+
+    def disable_center_for_row(row: Dict[str, Any]) -> Dict[str, Any]:
+        local_id = int(row.get('id') or 0)
+        source_kind = str(row.get('source_kind') or '').strip()
+        center_source_id = str(row.get('center_source_id') or '').strip()
+        reason = str(row.get('offline_reason') or 'media_deleted')
+        if not center_source_id:
+            return {'ok': True, 'id': local_id, 'center': {}}
+        try:
+            center_resp = SharedCenterClient().disable_source(
+                source_kind,
+                center_source_id,
+                message=f'local media deleted: {reason}',
+            ) or {}
+            if center_resp.get('ok') is False:
+                raise RuntimeError(center_resp.get('message') or center_resp.get('error') or center_resp)
+            return {'ok': True, 'id': local_id, 'center': center_resp}
+        except Exception as e:
+            return {'ok': False, 'id': local_id, 'error': str(e)}
+
+    center_results: Dict[int, Dict[str, Any]] = {}
+    normal_rows = []
     for row in rows:
         local_id = int(row.get('id') or 0)
         source_kind = str(row.get('source_kind') or '').strip()
         center_source_id = str(row.get('center_source_id') or '').strip()
         title = str(row.get('title') or row.get('file_name') or row.get('tmdb_id') or local_id)
         reason = str(row.get('offline_reason') or 'media_deleted')
-        message = f'local media deleted: {reason}'
-        center_resp = {}
 
         if source_kind == 'completed_season':
             delete_reason = 'legacy_completed_season_source_removed'
@@ -1040,29 +1109,88 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
             )
             continue
 
-        if center_source_id:
+        normal_rows.append(row)
+
+    rows_with_center = [r for r in normal_rows if str(r.get('center_source_id') or '').strip()]
+    scope_payloads = _shared_cleanup_center_scope_payloads(contexts)
+    if rows_with_center and scope_payloads:
+        try:
+            client = SharedCenterClient()
+            scope_results = []
+            for payload in scope_payloads:
+                scope_results.append(client.disable_source_scope(payload) or {})
+            center_scope_resp = {'scope_batch': True, 'scope_payloads': scope_payloads, 'scope_results': scope_results}
+            for row in rows_with_center:
+                center_results[int(row.get('id') or 0)] = {'ok': True, 'id': int(row.get('id') or 0), 'center': center_scope_resp}
+            logger.info(
+                "  ➜ [共享资源删除善后] 已按范围批量下架中心共享源: scopes=%s, local_sources=%s",
+                len(scope_payloads),
+                len(rows_with_center),
+            )
+        except Exception as e:
+            logger.warning(
+                "  ➜ [共享资源删除善后] 中心范围下架失败，回退逐源下架: scopes=%s, err=%s",
+                len(scope_payloads),
+                e,
+            )
+
+    rows_with_center = [r for r in rows_with_center if int(r.get('id') or 0) not in center_results]
+    if len(rows_with_center) > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        max_workers = min(12, len(rows_with_center))
+        logger.info(
+            "  ➜ [共享资源删除善后] 准备批量下架中心共享源: total=%s, workers=%s",
+            len(rows_with_center),
+            max_workers,
+        )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(disable_center_for_row, row): int(row.get('id') or 0) for row in rows_with_center}
+            for future in as_completed(futures):
+                result = future.result()
+                center_results[int(result.get('id') or futures[future] or 0)] = result
+    else:
+        for row in rows_with_center:
+            result = disable_center_for_row(row)
+            center_results[int(result.get('id') or row.get('id') or 0)] = result
+
+    for row in normal_rows:
+        local_id = int(row.get('id') or 0)
+        source_kind = str(row.get('source_kind') or '').strip()
+        center_source_id = str(row.get('center_source_id') or '').strip()
+        title = str(row.get('title') or row.get('file_name') or row.get('tmdb_id') or local_id)
+        reason = str(row.get('offline_reason') or 'media_deleted')
+        center_result = center_results.get(local_id) or {'ok': True, 'center': {}}
+        center_resp = center_result.get('center') or {}
+        if center_result.get('ok') is False:
+            failed += 1
+            err = center_result.get('error') or 'unknown error'
             try:
-                center_resp = client.disable_source(source_kind, center_source_id, message=message) or {}
-                if center_resp.get('ok') is False:
-                    raise RuntimeError(center_resp.get('message') or center_resp.get('error') or center_resp)
-            except Exception as e:
-                failed += 1
-                try:
-                    shared_share_db.update_local_source(local_id, last_error=f'删除善后下架中心失败: {e}')
-                except Exception:
-                    pass
-                logger.warning(
-                    "  ➜ [共享资源删除善后] 中心下架失败，保留 active 等维护任务重试: id=%s, kind=%s, center=%s, title=%s, err=%s",
-                    local_id, source_kind, center_source_id, title, e,
-                )
-                continue
+                shared_share_db.update_local_source(local_id, last_error=f'删除善后下架中心失败: {err}')
+            except Exception:
+                pass
+            logger.warning(
+                "  ➜ [共享资源删除善后] 中心下架失败，保留 active 等维护任务重试: id=%s, kind=%s, center=%s, title=%s, err=%s",
+                local_id, source_kind, center_source_id, title, err,
+            )
+            continue
 
         shared_share_db.disable_local_source(local_id, reason=reason, center_response=center_resp)
         disabled += 1
         items.append({'id': local_id, 'source_kind': source_kind, 'center_source_id': center_source_id, 'title': title, 'reason': reason})
-        logger.info(
+        log_method = logger.debug if len(normal_rows) > 1 else logger.info
+        log_method(
             "  ➜ [共享资源删除善后] 已实时下架失效共享源: id=%s, kind=%s, center=%s, title=%s, reason=%s",
             local_id, source_kind, center_source_id or '-', title, reason,
+        )
+
+    if len(normal_rows) > 1:
+        logger.info(
+            "  ➜ [共享资源删除善后] 批量下架完成: matched=%s, disabled=%s, deleted=%s, failed=%s",
+            len(rows),
+            disabled,
+            deleted,
+            failed + int(file_cleanup.get('failed') or 0),
         )
 
     total_failed = failed + int(file_cleanup.get('failed') or 0)
