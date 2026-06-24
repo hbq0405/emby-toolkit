@@ -247,13 +247,7 @@
                   <n-tag size="small" round :type="centerDeviceStatusTagType(centerConfigDeviceStatus.status)">
                     {{ centerConfigDeviceStatusLabel }}
                   </n-tag>
-                  <span class="center-device-status-name">{{ centerConfigDeviceStatus.name || centerConfigDeviceStatus.id || '未连接中心' }}</span>
-                </div>
-                <div v-if="centerConfigDeviceStatus.id" class="center-device-status-grid">
-                  <span>设备 ID：{{ centerConfigDeviceStatus.id }}</span>
-                  <span>本机 ServerID Hash：{{ centerConfigLocalServerHash || '-' }}</span>
-                  <span>中心 ServerID Hash：{{ centerConfigDeviceStatus.server_id_hash || '-' }}</span>
-                  <span>最后在线：{{ fmtDate(centerConfigDeviceStatus.last_seen_at) }}</span>
+                  <span class="center-device-status-name">ServerID Hash：{{ centerConfigServerIdHash || '-' }}</span>
                 </div>
                 <n-alert v-if="centerConfigForcedOfflineReason" type="error" :bordered="false" class="center-device-status-alert">
                   封禁理由：{{ centerConfigForcedOfflineReason }}
@@ -2100,6 +2094,7 @@ const centerDeviceStatusTagType = (status) => {
 };
 const centerConfigDeviceStatus = computed(() => centerDeviceStatusData.value?.device || {});
 const centerConfigLocalServerHash = computed(() => String(centerDeviceStatusData.value?.local_server_id_hash || '').trim());
+const centerConfigServerIdHash = computed(() => String(centerConfigDeviceStatus.value?.server_id_hash || centerConfigLocalServerHash.value || '').trim());
 const centerConfigForcedOfflineReason = computed(() => {
   const device = centerConfigDeviceStatus.value || {};
   if (!centerDeviceForcedOffline(device)) return '';
