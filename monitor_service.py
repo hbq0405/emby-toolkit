@@ -100,6 +100,7 @@ class MediaFileHandler(FileSystemEventHandler):
             def _runner():
                 time.sleep(DEBOUNCE_DELAY)
                 res = upload_intro_for_mediainfo_path(file_path, reason='monitor_update')
+                logger.info(f"  ➜ [shared intro] mediainfo update result: {os.path.basename(file_path)} -> {res}")
                 if res.get('ok'):
                     logger.info(f"  ➜ [共享片头] 已上传片头章节：{os.path.basename(file_path)}")
                 elif not res.get('skipped'):
