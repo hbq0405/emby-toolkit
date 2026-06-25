@@ -707,6 +707,13 @@ class WatchlistProcessor:
                 'Content-Type': 'application/json',
                 'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
             }
+            try:
+                from handler.shared_center_client import _current_server_id_hash
+                server_id_hash = _current_server_id_hash()
+                if server_id_hash:
+                    headers['X-Server-ID-Hash'] = server_id_hash
+            except Exception:
+                pass
             kwargs = {'timeout': 60}
             try:
                 import config_manager
