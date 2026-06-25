@@ -195,7 +195,7 @@ def _fix_mp_tv_parent_id(client, file_info):
         if not file_id:
             return
 
-        # 直接通过 OpenAPI 获取真实的文件详情
+        # 通过 115 聚合客户端按接口优先级获取真实的文件详情
         info_res = client.fs_get_info(file_id)
         if info_res and info_res.get('state') and info_res.get('data'):
             data = info_res['data']

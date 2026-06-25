@@ -2474,32 +2474,14 @@ class P115Service:
                 return resp
 
             def fs_get_info(self, file_id):
-                # 详情优先走 OpenAPI 获取完整父目录；访问上限/失败时用 Cookie 备用，再从本地缓存反推 parent_id。
-                openapi_resp = None
-                if self._openapi:
-                    openapi_resp = self._call_api(
-                        'fs_get_info',
-                        file_id,
-                        normalizer=_p115_normalize_info_response,
-                        force_openapi=True,
-                    )
-                    if _p115_success(openapi_resp):
-                        return openapi_resp
-
-                if self._cookie:
-                    cookie_resp = self._call_api(
-                        'fs_get_info',
-                        file_id,
-                        normalizer=_p115_normalize_info_response,
-                        force_cookie=True,
-                    )
-                    if _p115_success(cookie_resp):
-                        return self._fill_info_parent_from_cache(cookie_resp, file_id)
-                    return cookie_resp
-
-                if openapi_resp is not None:
-                    return openapi_resp
-                return {'state': False, 'error_msg': '未配置可用的 115 OpenAPI 或 Cookie，无法查询文件详情'}
+                resp = self._call_api(
+                    'fs_get_info',
+                    file_id,
+                    normalizer=_p115_normalize_info_response,
+                )
+                if _p115_success(resp):
+                    return self._fill_info_parent_from_cache(resp, file_id)
+                return resp
 
             def _is_exists_error(self, resp):
                 text = json.dumps(resp, ensure_ascii=False).lower() if resp is not None else ""
