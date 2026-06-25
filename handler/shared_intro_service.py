@@ -262,6 +262,7 @@ def scan_and_upload_local_intro(limit: int = 500) -> Dict[str, Any]:
         return {"ok": False, "skipped": True, "reason": "local_root_missing"}
     scanned = uploaded = failed = skipped = 0
     errors = []
+    candidates = []
     for root, _dirs, files in os.walk(local_root):
         for filename in files:
             if not filename.lower().endswith("-mediainfo.json"):
@@ -269,17 +270,40 @@ def scan_and_upload_local_intro(limit: int = 500) -> Dict[str, Any]:
             scanned += 1
             path = os.path.join(root, filename)
             try:
-                res = upload_intro_for_mediainfo_path(path, reason="maintenance_backfill")
-                if res.get("ok"):
-                    uploaded += 1
-                elif res.get("skipped"):
+                data = _load_json_file(path)
+                chapters = extract_intro_chapters(data)
+                if not chapters:
                     skipped += 1
-                else:
-                    failed += 1
-                    errors.append({"file": path, "message": res.get("message") or res.get("reason")})
+                    continue
+                sha1 = sha1_for_mediainfo_path(path)
+                if not sha1:
+                    skipped += 1
+                    continue
+                candidates.append((path, sha1, chapters))
             except Exception as e:
                 failed += 1
                 errors.append({"file": path, "message": str(e)})
             if scanned >= int(limit or 500):
-                return {"ok": failed == 0, "scanned": scanned, "uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errors[:20]}
+                break
+        if scanned >= int(limit or 500):
+            break
+
+    for path, sha1, chapters in candidates:
+        try:
+            resp = SharedCenterClient().upload_intro_chapters(
+                sha1,
+                chapters,
+                file_name=os.path.basename(path).replace("-mediainfo.json", ""),
+                reason="maintenance_backfill",
+            )
+            if resp.get("duplicate"):
+                skipped += 1
+            elif resp.get("ok", True):
+                uploaded += 1
+            else:
+                failed += 1
+                errors.append({"file": path, "message": resp.get("message") or resp.get("detail") or "upload_failed"})
+        except Exception as e:
+            failed += 1
+            errors.append({"file": path, "message": str(e)})
     return {"ok": failed == 0, "scanned": scanned, "uploaded": uploaded, "skipped": skipped, "failed": failed, "errors": errors[:20]}

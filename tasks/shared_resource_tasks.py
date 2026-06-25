@@ -7607,8 +7607,11 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
         if raw_repair.get('missing_local'):
             parts.append(f"本地缺失RAW={raw_repair.get('missing_local')}")
     intro_backfill = result.get('intro_backfill') if isinstance(result.get('intro_backfill'), dict) else {}
-    if intro_backfill and not intro_backfill.get('skipped'):
+    intro_disabled = intro_backfill.get('skipped') is True and bool(intro_backfill.get('reason'))
+    if intro_backfill and not intro_disabled:
         parts.append(f"片头补齐={intro_backfill.get('uploaded', 0)}/{intro_backfill.get('scanned', 0)}")
+        if intro_backfill.get('skipped'):
+            parts.append(f"片头跳过={intro_backfill.get('skipped')}")
         if intro_backfill.get('failed'):
             parts.append(f"片头补齐失败={intro_backfill.get('failed')}")
     share_repair = result.get('logical_season_share_repair') if isinstance(result.get('logical_season_share_repair'), dict) else {}
