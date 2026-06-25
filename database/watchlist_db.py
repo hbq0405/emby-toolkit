@@ -898,7 +898,7 @@ def get_series_seasons_lock_info(parent_tmdb_id: str) -> Dict[int, Dict[str, Any
         logger.error(f"  ➜ 获取剧集 {parent_tmdb_id} 的分季锁定信息时出错: {e}", exc_info=True)
         return {}
     
-def update_specific_season_total_episodes(parent_tmdb_id: str, season_number: int, total: int, locked: bool = False):
+def update_specific_season_total_episodes(parent_tmdb_id: str, season_number: int, total: int, locked: bool = False, update_lock: bool = True):
     """
     更新指定剧集特定季的总集数。
     支持同时更新锁定状态。
@@ -906,19 +906,58 @@ def update_specific_season_total_episodes(parent_tmdb_id: str, season_number: in
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # ★★★ 修改 SQL，增加 total_episodes_locked 字段更新
-            sql = """
-                UPDATE media_metadata
-                SET total_episodes = %s,
-                    total_episodes_locked = %s
-                WHERE parent_series_tmdb_id = %s 
-                  AND item_type = 'Season' 
-                  AND season_number = %s
-            """
-            cursor.execute(sql, (total, locked, parent_tmdb_id, season_number))
+            if update_lock:
+                sql = """
+                    UPDATE media_metadata
+                    SET total_episodes = %s,
+                        total_episodes_locked = %s
+                    WHERE parent_series_tmdb_id = %s 
+                      AND item_type = 'Season' 
+                      AND season_number = %s
+                """
+                cursor.execute(sql, (total, locked, parent_tmdb_id, season_number))
+            else:
+                sql = """
+                    UPDATE media_metadata
+                    SET total_episodes = %s
+                    WHERE parent_series_tmdb_id = %s 
+                      AND item_type = 'Season' 
+                      AND season_number = %s
+                """
+                cursor.execute(sql, (total, parent_tmdb_id, season_number))
             conn.commit()
     except Exception as e:
         logger.error(f"更新季 {parent_tmdb_id} S{season_number} 总集数失败: {e}")
+
+def revive_completed_series_and_season(parent_tmdb_id: str, season_number: int):
+    """
+    老季复活专用：只把已完结的剧和目标季恢复为追剧中。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE media_metadata
+                SET watching_status = 'Watching',
+                    watchlist_last_checked_at = NOW(),
+                    force_ended = FALSE,
+                    paused_until = NULL
+                WHERE tmdb_id = %s
+                  AND item_type = 'Series'
+                  AND watching_status = 'Completed'
+            """, (parent_tmdb_id,))
+            cursor.execute("""
+                UPDATE media_metadata
+                SET watching_status = 'Watching',
+                    watchlist_last_checked_at = NOW()
+                WHERE parent_series_tmdb_id = %s
+                  AND item_type = 'Season'
+                  AND season_number = %s
+                  AND watching_status = 'Completed'
+            """, (parent_tmdb_id, season_number))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"复活剧集 {parent_tmdb_id} S{season_number} 追剧状态失败: {e}", exc_info=True)
 
 def update_watching_status_by_tmdb_id(tmdb_id: str, item_type: str, new_status: str):
     """
