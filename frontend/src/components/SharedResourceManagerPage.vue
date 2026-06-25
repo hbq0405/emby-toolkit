@@ -1024,10 +1024,8 @@ const centerCreatedTime = (row) => {
 const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink(row), ...parts.filter(Boolean)]);
 
 const centerDeviceId = computed(() => String((summary.value.credit || {}).device_id || '').trim());
-const sharedDeviceToken = computed(() => String(sharedConfigForm.p115_shared_device_token || '').trim());
 const hasCenterDevice = computed(() => Boolean(centerDeviceId.value));
-const hasSharedDeviceToken = computed(() => Boolean(sharedDeviceToken.value));
-const needsCenterDeviceToken = computed(() => !hasSharedDeviceToken.value);
+const needsCenterDeviceToken = computed(() => !centerConfigServerIdHash.value && !hasCenterDevice.value);
 const centerDeviceRegisterButtonText = computed(() => centerDeviceId.value ? '重新连接' : '连接中心');
 const centerDeviceTokenAlertText = computed(() => {
   if (hasCenterDevice.value) {
@@ -3891,7 +3889,7 @@ const loadLedger = async () => {
   ledgerLoading.value = true;
   try {
     const res = await axios.get('/api/shared/resources/credit/ledger', {
-      params: { limit: 200, actual_only: 1, sync_center: hasSharedDeviceToken.value ? 1 : 0 },
+      params: { limit: 200, actual_only: 1, sync_center: 1 },
     });
     ledgerItems.value = res.data?.items || [];
   } catch {

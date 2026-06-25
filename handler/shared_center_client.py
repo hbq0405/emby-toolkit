@@ -299,16 +299,14 @@ class SharedCenterClient:
     def __init__(self):
         cfg = _shared_cfg()
         self.base_url = str(cfg.get('p115_shared_center_url') or 'https://shared.55565576.xyz').rstrip('/')
-        self.device_token = str(cfg.get('p115_shared_device_token') or '').strip()
 
     @property
     def ready(self) -> bool:
-        return bool(self.base_url and self.device_token)
+        return bool(self.base_url and _current_server_id_hash())
 
     def _headers(self) -> Dict[str, str]:
         version = _app_version()
         headers = {
-            'X-Device-Token': self.device_token,
             'X-Client-Version': version,
             'X-ETK-Version': version,
             'Content-Type': 'application/json',
@@ -321,7 +319,7 @@ class SharedCenterClient:
 
     def _post(self, path: str, payload: Dict[str, Any] | None = None, timeout: int = 20) -> Dict[str, Any]:
         if not self.ready:
-            raise RuntimeError('共享中心地址或 device_token 未配置')
+            raise RuntimeError('共享中心地址或 Emby ServerID 未配置')
         url = f"{self.base_url}{path}"
         resp = _CENTER_HTTP.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)
@@ -329,7 +327,7 @@ class SharedCenterClient:
 
     def _get(self, path: str, params: Dict[str, Any] | None = None, timeout: int = 15) -> Dict[str, Any]:
         if not self.ready:
-            raise RuntimeError('共享中心地址或 device_token 未配置')
+            raise RuntimeError('共享中心地址或 Emby ServerID 未配置')
         url = f"{self.base_url}{path}"
         resp = _CENTER_HTTP.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
         _raise_for_center_error(resp)

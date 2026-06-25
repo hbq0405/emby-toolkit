@@ -1684,7 +1684,7 @@ def api_center_sources_home():
             False,
         )
         home_sections = _shared_resource_config_payload().get('p115_shared_center_home_sections') or []
-        identity_key = _current_server_id_hash() or client.device_token
+        identity_key = _current_server_id_hash()
         cache_key = (client.base_url, identity_key, limit_per_section, json.dumps(home_sections, sort_keys=True, ensure_ascii=False))
         if not force_refresh:
             cached = _center_home_proxy_cache_get(cache_key)
@@ -1838,7 +1838,7 @@ def api_center_source_detail():
         cache_key = (
             'detail:v2',
             client.base_url,
-            client.device_token,
+            _current_server_id_hash(),
             request.args.get('source_kind') or '',
             request.args.get('source_id') or '',
             request.args.get('hub_id') or '',
@@ -1955,7 +1955,6 @@ def api_register_center_device():
         client = SharedCenterClient()
         resp = client.register_device(name=name)
         cfg.update({
-            'p115_shared_device_token': resp.get('device_token') or '',
             'p115_shared_resource_enabled': True,
         })
         saved = _save_shared_config(cfg)

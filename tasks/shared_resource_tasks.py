@@ -17,7 +17,7 @@ import constants
 import utils
 from database import shared_credit_db, shared_share_db, settings_db
 from database.connection import get_db_connection
-from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+from handler.shared_center_client import SharedCenterClient, shared_center_enabled, _current_server_id_hash
 from handler import shared_subscription_service as shared_subscription_service
 from handler.shared_subscription_service import poll_and_consume_once as _raw_poll_and_consume_once
 from handler import tmdb as tmdb_handler
@@ -60,18 +60,17 @@ def _shared_resource_switch_enabled() -> bool:
 def _shared_center_runtime_config() -> Dict[str, str]:
     """读取共享中心运行必要配置。
 
-    shared_center_enabled() 在部分旧版本只判断中心 URL/开关，可能不校验
-    p115_shared_device_token。长轮询/签名轮询没有 token 时不能启动，
-    否则启动阶段会反复初始化中心客户端或进入无意义长轮询，表现为卡死。
+    中心端身份只认 Emby ServerID；长轮询/签名轮询启动前只需要确认中心 URL
+    和本机可读取 ServerID。
     """
     try:
         cfg = settings_db.get_shared_resource_config() or {}
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 读取共享中心配置失败，按未配置处理: {e}")
-        return {'center_url': '', 'device_token': ''}
+        return {'center_url': '', 'server_id_hash': ''}
     return {
         'center_url': str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/'),
-        'device_token': str(cfg.get('p115_shared_device_token') or '').strip(),
+        'server_id_hash': _current_server_id_hash(),
     }
 
 
@@ -82,8 +81,8 @@ def _shared_center_runtime_ready(*, log_missing: bool = False) -> bool:
     missing = []
     if not cfg.get('center_url'):
         missing.append('center_url')
-    if not cfg.get('device_token'):
-        missing.append('device_token')
+    if not cfg.get('server_id_hash'):
+        missing.append('server_id')
     if missing:
         reason = 'missing_' + '_'.join(missing)
         if log_missing and reason not in _CENTER_CONFIG_WARNED_REASONS:
@@ -2033,11 +2032,11 @@ def _direct_center_share_sync_heartbeat(payload: Dict[str, Any]) -> Dict[str, An
     """直连中心端分享同步签到接口。SharedCenterClient 未升级时兜底使用。"""
     cfg = settings_db.get_shared_resource_config() or {}
     base_url = str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
-    token = str(cfg.get('p115_shared_device_token') or '').strip()
-    if not base_url or not token:
-        raise RuntimeError('共享中心地址或设备 Token 未配置')
+    server_id_hash = _current_server_id_hash()
+    if not base_url or not server_id_hash:
+        raise RuntimeError('共享中心地址或 Emby ServerID 未配置')
     headers = {
-        'X-Device-Token': token,
+        'X-Server-ID-Hash': server_id_hash,
         'Content-Type': 'application/json',
         'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
     }
@@ -2771,11 +2770,11 @@ def _direct_center_transfer_lease(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     cfg = settings_db.get_shared_resource_config() or {}
     base_url = str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
-    token = str(cfg.get('p115_shared_device_token') or '').strip()
-    if not base_url or not token:
-        raise RuntimeError('共享中心地址或设备 Token 未配置')
+    server_id_hash = _current_server_id_hash()
+    if not base_url or not server_id_hash:
+        raise RuntimeError('共享中心地址或 Emby ServerID 未配置')
     headers = {
-        'X-Device-Token': token,
+        'X-Server-ID-Hash': server_id_hash,
         'Content-Type': 'application/json',
         'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
     }
@@ -7110,9 +7109,8 @@ def _cleanup_offline_local_sources(limit: int = 300) -> Dict[str, Any]:
 
 
 def _center_request_headers_for_display_meta() -> Dict[str, str]:
-    cfg = settings_db.get_shared_resource_config() or {}
     return {
-        'X-Device-Token': str(cfg.get('p115_shared_device_token') or '').strip(),
+        'X-Server-ID-Hash': _current_server_id_hash(),
         'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
         'Content-Type': 'application/json',
     }
@@ -7226,8 +7224,8 @@ def _fetch_center_missing_display_meta_rows(limit: int = 500) -> Dict[str, Any]:
     """
     base_url = _center_base_url_for_display_meta()
     headers = _center_request_headers_for_display_meta()
-    if not base_url or not headers.get('X-Device-Token'):
-        return {'ok': False, 'items': [], 'message': '共享中心 URL 或设备 Token 未配置'}
+    if not base_url or not headers.get('X-Server-ID-Hash'):
+        return {'ok': False, 'items': [], 'message': '共享中心 URL 或 Emby ServerID 未配置'}
     try:
         resp = requests.get(
             f"{base_url}/api/v1/metadata/display/missing",
@@ -7433,8 +7431,8 @@ def _build_display_meta_backfill_bundles(limit: int = 500) -> Dict[str, Any]:
 def _post_center_display_meta_backfill(bundles: List[Dict[str, Any]], *, batch_size: int = 100) -> Dict[str, Any]:
     base_url = _center_base_url_for_display_meta()
     headers = _center_request_headers_for_display_meta()
-    if not base_url or not headers.get('X-Device-Token'):
-        return {'ok': False, 'message': '共享中心 URL 或设备 Token 未配置', 'posted_batches': 0, 'accepted_meta_items': 0}
+    if not base_url or not headers.get('X-Server-ID-Hash'):
+        return {'ok': False, 'message': '共享中心 URL 或 Emby ServerID 未配置', 'posted_batches': 0, 'accepted_meta_items': 0}
 
     batch_size = max(1, min(int(batch_size or 100), 300))
     accepted_meta_items = 0
