@@ -45,6 +45,8 @@ class MediaFileHandler(FileSystemEventHandler):
         logger.trace(f"  [实时监控] 已加载监控后缀: {self.extensions}")
 
     def _is_valid_media_file(self, file_path: str) -> bool:
+        if str(file_path or '').lower().endswith('-mediainfo.json'):
+            return True
         if os.path.exists(file_path) and os.path.isdir(file_path): 
             return False
         
@@ -59,12 +61,38 @@ class MediaFileHandler(FileSystemEventHandler):
         return True
 
     def on_created(self, event):
+        if not event.is_directory and str(event.src_path or '').lower().endswith('-mediainfo.json'):
+            self._handle_mediainfo_update(event.src_path)
+            return
         if not event.is_directory and self._is_valid_media_file(event.src_path):
             self._enqueue_file(event.src_path)
 
+    def on_modified(self, event):
+        if not event.is_directory and str(event.src_path or '').lower().endswith('-mediainfo.json'):
+            self._handle_mediainfo_update(event.src_path)
+
     def on_moved(self, event):
+        if not event.is_directory and str(event.dest_path or '').lower().endswith('-mediainfo.json'):
+            self._handle_mediainfo_update(event.dest_path)
+            return
         if not event.is_directory and self._is_valid_media_file(event.dest_path):
             self._enqueue_file(event.dest_path)
+
+    def _handle_mediainfo_update(self, file_path: str):
+        try:
+            from handler.shared_intro_service import upload_intro_for_mediainfo_path, shared_intro_enabled
+            if not shared_intro_enabled():
+                return
+            def _runner():
+                time.sleep(DEBOUNCE_DELAY)
+                res = upload_intro_for_mediainfo_path(file_path, reason='monitor_update')
+                if res.get('ok'):
+                    logger.info(f"  ➜ [共享片头] 已上传片头章节：{os.path.basename(file_path)}")
+                elif not res.get('skipped'):
+                    logger.debug(f"  ➜ [共享片头] 片头上传未完成：{os.path.basename(file_path)} -> {res}")
+            threading.Thread(target=_runner, name='SharedIntroUpload', daemon=True).start()
+        except Exception as e:
+            logger.debug(f"  ➜ [共享片头] 处理 mediainfo 更新失败：{file_path} -> {e}")
 
     def _enqueue_file(self, file_path: str):
         """新增/移动文件入队"""

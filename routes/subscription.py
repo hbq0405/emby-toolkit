@@ -572,6 +572,8 @@ def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
     if center_labels:
         for label in center_labels:
             add(label, "default", True)
+        if item.get("has_intro_chapters") and "片头" not in center_labels:
+            add("片头", "default", True)
         return tags
 
     if _shared_pool_flag_enabled(item, "is_clean_version", "clean_version_meta_json"):
@@ -588,6 +590,8 @@ def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
         add("特效", "warning", False)
     if _shared_pool_has_bilingual_subtitle(item):
         add("双语", "info", False)
+    if item.get("has_intro_chapters"):
+        add("片头", "default", True)
 
     # 保留中心端扩展标签；已完结/连载中由现有 _completion_label 单独展示，避免重复。
     for label in _shared_pool_plain_tag_labels(item):

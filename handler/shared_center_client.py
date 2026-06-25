@@ -783,3 +783,16 @@ class SharedCenterClient:
             },
             timeout=max(60, min(180, 15 + len(sha1s) * 2)),
         )
+
+    def upload_intro_chapters(self, sha1: str, chapters: List[Dict[str, Any]], file_name: str = '', reason: str = '') -> Dict[str, Any]:
+        return self._post('/api/v1/intro-chapters/upload', {
+            'sha1': str(sha1 or '').strip().upper(),
+            'chapters': chapters or [],
+            'file_name': file_name or '',
+            'reason': reason or '',
+        }, timeout=20)
+
+    def intro_chapters_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
+        return self._post('/api/v1/intro-chapters/batch', {
+            'sha1_list': list(sha1_list or []),
+        }, timeout=max(20, min(120, 10 + len(sha1_list or []) * 2)))

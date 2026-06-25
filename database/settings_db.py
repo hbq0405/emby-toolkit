@@ -273,6 +273,8 @@ DEFAULT_SHARED_RESOURCE_CONFIG = {
     'p115_shared_block_clean_version_transfer': False,
     # 开启后，消费中心资源时会跳过被中心标记为“短剧”的资源。
     'p115_shared_block_short_drama_transfer': False,
+    # 开启后，才允许上传、拉取、合并共享片头章节。
+    'p115_shared_intro_enabled': False,
     'p115_shared_auto_share_requests_enabled': False,
     'p115_shared_center_home_sections': [],
 }
@@ -376,6 +378,7 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
             merged.get('p115_shared_block_short_drama_transfer', merged.get('shared_block_short_drama_transfer')),
             False,
         ),
+        'p115_shared_intro_enabled': _shared_bool(merged.get('p115_shared_intro_enabled'), False),
         'p115_shared_auto_share_requests_enabled': _shared_bool(merged.get('p115_shared_auto_share_requests_enabled'), False),
         'p115_shared_center_home_sections': _shared_center_home_sections(merged.get('p115_shared_center_home_sections')),
     }

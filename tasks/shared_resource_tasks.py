@@ -2080,17 +2080,6 @@ def _report_share_sync_heartbeat(summary: Dict[str, Any] = None, *, status: str 
     method = getattr(client, 'share_sync_heartbeat', None)
     if callable(method):
         return method(payload)
-    for name in ('post', '_post'):
-        fn = getattr(client, name, None)
-        if callable(fn):
-            return fn('/api/v1/devices/share-sync/heartbeat', payload)
-    for name in ('request', '_request'):
-        fn = getattr(client, name, None)
-        if callable(fn):
-            try:
-                return fn('POST', '/api/v1/devices/share-sync/heartbeat', json=payload)
-            except TypeError:
-                return fn('POST', '/api/v1/devices/share-sync/heartbeat', payload)
     return _direct_center_share_sync_heartbeat(payload)
 
 def _sync_completed_season_share_channels_once(limit: int = 50) -> Dict[str, Any]:
@@ -7617,6 +7606,11 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
         parts.append(f"残缺RAW补齐={raw_repair.get('uploaded', 0)}/{raw_repair.get('checked', 0)}")
         if raw_repair.get('missing_local'):
             parts.append(f"本地缺失RAW={raw_repair.get('missing_local')}")
+    intro_backfill = result.get('intro_backfill') if isinstance(result.get('intro_backfill'), dict) else {}
+    if intro_backfill and not intro_backfill.get('skipped'):
+        parts.append(f"片头补齐={intro_backfill.get('uploaded', 0)}/{intro_backfill.get('scanned', 0)}")
+        if intro_backfill.get('failed'):
+            parts.append(f"片头补齐失败={intro_backfill.get('failed')}")
     share_repair = result.get('logical_season_share_repair') if isinstance(result.get('logical_season_share_repair'), dict) else {}
     if share_repair:
         parts.append(f"分享回填={share_repair.get('backfilled', 0)}/{share_repair.get('missing_share_code', 0)}")
@@ -7631,7 +7625,7 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
             parts.append(f"分享全量对账跳过={share_reconcile.get('message')}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
-    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'display_meta_backfill_error', 'raw_repair_backfill_error', 'logical_season_share_repair_error', 'credit_error'):
+    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'display_meta_backfill_error', 'raw_repair_backfill_error', 'intro_backfill_error', 'logical_season_share_repair_error', 'credit_error'):
         if result.get(key):
             parts.append(f"{key}={result.get(key)}")
     return '，'.join(parts)
@@ -7667,6 +7661,11 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['raw_repair_backfill'] = _backfill_center_raw_repair_queue(limit=200)
     except Exception as e:
         result['raw_repair_backfill_error'] = str(e)
+    try:
+        from handler.shared_intro_service import scan_and_upload_local_intro
+        result['intro_backfill'] = scan_and_upload_local_intro(limit=1000)
+    except Exception as e:
+        result['intro_backfill_error'] = str(e)
     try:
         result['logical_season_share_repair'] = repair_logical_season_share_channels_from_115(max_pages=20, dry_run=False)
     except Exception as e:

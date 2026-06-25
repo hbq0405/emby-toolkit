@@ -277,6 +277,13 @@
             </n-switch>
             <template #feedback>中心资源被标记为短剧时跳过秒传；短剧按单个视频实际时长低于 25 分钟识别，季包按包内多数集统计。</template>
           </n-form-item>
+          <n-form-item label="共享片头">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_intro_enabled">
+              <template #checked>上传并复用片头</template>
+              <template #unchecked>关闭</template>
+            </n-switch>
+            <template #feedback>开启后才会上传神医片头、维护补齐片头，并在秒传/转存共享资源时合并中心片头数据。</template>
+          </n-form-item>
           <n-form-item label="自动响应求共享">
             <n-switch v-model:value="sharedConfigForm.p115_shared_auto_share_requests_enabled">
               <template #checked>自动共享别人所求</template>
@@ -562,6 +569,7 @@ const sharedConfigForm = reactive({
   p115_shared_disable_episode_transfer: false,
   p115_shared_block_clean_version_transfer: false,
   p115_shared_block_short_drama_transfer: false,
+  p115_shared_intro_enabled: false,
   p115_shared_auto_share_requests_enabled: false,
   p115_shared_center_home_sections: [],
 });
@@ -755,6 +763,7 @@ const CENTER_HOME_TAG_FALLBACK_OPTIONS = [
   { label: '连载中', value: 'ongoing' },
   { label: '短剧', value: 'short_drama' },
   { label: '纯净版', value: 'clean_version' },
+  { label: '片头', value: 'intro' },
   { label: '原盘', value: 'original_disc' },
   { label: '国语', value: 'mandarin_audio' },
   { label: '中字', value: 'chinese_subtitle' },
@@ -3399,6 +3408,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
     p115_shared_block_short_drama_transfer: Boolean(data.p115_shared_block_short_drama_transfer),
+    p115_shared_intro_enabled: Boolean(data.p115_shared_intro_enabled),
     p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
     p115_shared_center_home_sections: normalizeCenterHomeSections(data.p115_shared_center_home_sections),
   });

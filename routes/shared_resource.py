@@ -104,6 +104,7 @@ def _shared_resource_config_payload() -> Dict[str, Any]:
     payload.setdefault('p115_shared_disable_episode_transfer', False)
     payload.setdefault('p115_shared_block_clean_version_transfer', False)
     payload.setdefault('p115_shared_block_short_drama_transfer', False)
+    payload.setdefault('p115_shared_intro_enabled', False)
     payload.setdefault('p115_shared_auto_share_requests_enabled', False)
     payload.setdefault('p115_shared_center_home_sections', [])
     return payload
@@ -118,6 +119,7 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data['p115_shared_disable_episode_transfer'] = _boolish(data.get('p115_shared_disable_episode_transfer'), False)
     data['p115_shared_block_clean_version_transfer'] = _boolish(data.get('p115_shared_block_clean_version_transfer'), False)
     data['p115_shared_block_short_drama_transfer'] = _boolish(data.get('p115_shared_block_short_drama_transfer'), False)
+    data['p115_shared_intro_enabled'] = _boolish(data.get('p115_shared_intro_enabled'), False)
     data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
     sections = data.get('p115_shared_center_home_sections')
     data['p115_shared_center_home_sections'] = sections if isinstance(sections, list) else []
@@ -1655,6 +1657,7 @@ def api_center_source_tags():
         {'label': '连载中', 'value': 'ongoing'},
         {'label': '短剧', 'value': 'short_drama'},
         {'label': '纯净版', 'value': 'clean_version'},
+        {'label': '片头', 'value': 'intro'},
         {'label': '原盘', 'value': 'original_disc'},
         {'label': '国语', 'value': 'mandarin_audio'},
         {'label': '中字', 'value': 'chinese_subtitle'},
@@ -2023,6 +2026,14 @@ LEDGER_EVENT_LABEL_MAP = {
     'center_rapid_sign_job_failed': '秒传签名失败',
     'center_rapid_raw_uploaded': '上传媒体信息',
     'center_rapid_raw_ffprobe_uploaded': '上传媒体信息',
+    'center_intro_chapters_uploaded': '上传片头',
+    'center_intro_chapters_batch_fetched': '使用共享片头',
+    'center_intro_chapters_served': '共享片头被使用',
+    'center_intro_chapters_consumed': '使用共享片头',
+    'intro_chapters_uploaded': '上传片头',
+    'intro_chapters_batch_fetched': '使用共享片头',
+    'intro_chapters_served': '共享片头被使用',
+    'intro_chapters_consumed': '使用共享片头',
     'center_daily_grant': 'Pro每日赠送额度',
     'center_rapid_quota_consumed': 'Pro额度抵扣',
     'center_tier_cap_adjust': 'Pro等级上限调整',
@@ -2057,6 +2068,8 @@ LEDGER_REASON_LABEL_MAP = {
     'backup_source_registered': '备份共享入池',
     'shared_source_served': '共享资源被他人秒传',
     'shared_source_consumed': '从共享中心秒传资源',
+    'intro_chapters_served': '共享片头被使用',
+    'intro_chapters_consumed': '使用共享片头',
     'daily_grant': 'Pro每日赠送额度',
     'rapid_quota_consumed': 'Pro额度抵扣',
     'tier_cap_adjust': 'Pro等级上限调整',

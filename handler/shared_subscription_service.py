@@ -1627,6 +1627,25 @@ def _prepare_files_before_rapid_transfer(
         f"失败 {len(cache_errors)}"
     )
 
+    intro_merged = 0
+    intro_errors = []
+    try:
+        from handler.shared_intro_service import fetch_intro_map, merge_intro_into_local_cache
+        intro_map = fetch_intro_map([_norm_sha1(f.get('sha1')) for f in files])
+        for sha1, chapters in intro_map.items():
+            try:
+                if merge_intro_into_local_cache(sha1, chapters):
+                    intro_merged += 1
+            except Exception as e:
+                intro_errors.append(f"{sha1[:12]}:{e}")
+    except Exception as e:
+        intro_errors.append(str(e))
+    if intro_merged or intro_errors:
+        logger.debug(
+            f"  ➜ [共享片头] 秒传前预检合并完成：成功 {intro_merged}，"
+            f"失败 {len(intro_errors)}"
+        )
+
     if conflict_mode != 'replace':
         logger.info(
             f"  ➜ [共享资源] 秒传前预检结束：当前覆盖模式为 {conflict_mode or '未配置'}，"
@@ -1635,6 +1654,8 @@ def _prepare_files_before_rapid_transfer(
         return files, {
             'raw_cached_count': cached,
             'raw_cache_errors': cache_errors[:20],
+            'intro_merged_count': intro_merged,
+            'intro_merge_errors': intro_errors[:20],
             'washing_checked': False,
             'message': f'当前覆盖模式为 {conflict_mode or "未配置"}，跳过洗版预检',
         }
