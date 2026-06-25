@@ -27,6 +27,12 @@ MEDIAINFO_DIR_SCAN_LOCK = threading.Lock()
 MEDIAINFO_DIR_SCAN_TIMERS = {}
 MEDIAINFO_DIR_SCAN_WINDOW_SECONDS = 600
 MEDIAINFO_DIR_SCAN_LIMIT = 30
+MEDIAINFO_UPLOAD_LOCK = threading.Lock()
+MEDIAINFO_UPLOAD_TIMERS = {}
+MEDIAINFO_UPLOAD_RECENT = {}
+MEDIAINFO_UPLOAD_INFLIGHT = set()
+MEDIAINFO_UPLOAD_DEDUPE_SECONDS = 300
+MEDIAINFO_UPLOAD_LOG_DEDUPE_SECONDS = 120
 DEBOUNCE_DELAY = 3 # 防抖延迟秒数
 
 # --- 全局队列抑制标志 ---
@@ -93,21 +99,35 @@ class MediaFileHandler(FileSystemEventHandler):
             self._enqueue_file(event.dest_path)
 
     def _handle_mediainfo_update(self, file_path: str):
+        if not file_path or _is_path_excluded(file_path, self.exclude_dirs):
+            return
         try:
-            from handler.shared_intro_service import upload_intro_for_mediainfo_path, shared_intro_enabled
+            from handler.shared_intro_service import shared_intro_enabled
             if not shared_intro_enabled():
                 return
-            def _runner():
-                time.sleep(DEBOUNCE_DELAY)
-                res = upload_intro_for_mediainfo_path(file_path, reason='monitor_update')
-                logger.info(f"  ➜ [shared intro] mediainfo update result: {os.path.basename(file_path)} -> {res}")
-                if res.get('ok'):
-                    logger.info(f"  ➜ [共享片头] 已上传片头章节：{os.path.basename(file_path)}")
-                elif not res.get('skipped'):
-                    logger.debug(f"  ➜ [共享片头] 片头上传未完成：{os.path.basename(file_path)} -> {res}")
-            threading.Thread(target=_runner, name='SharedIntroUpload', daemon=True).start()
-        except Exception as e:
-            logger.debug(f"  ➜ [共享片头] 处理 mediainfo 更新失败：{file_path} -> {e}")
+        except Exception:
+            return
+        norm_path = os.path.normpath(file_path)
+
+        with MEDIAINFO_UPLOAD_LOCK:
+            old_timer = MEDIAINFO_UPLOAD_TIMERS.get(norm_path)
+            if old_timer:
+                try:
+                    old_timer.cancel()
+                except Exception:
+                    pass
+            timer_ref = {}
+            def _timer_runner():
+                with MEDIAINFO_UPLOAD_LOCK:
+                    if MEDIAINFO_UPLOAD_TIMERS.get(norm_path) is not timer_ref.get("timer"):
+                        return
+                    MEDIAINFO_UPLOAD_TIMERS.pop(norm_path, None)
+                _run_mediainfo_intro_upload(norm_path)
+            timer = threading.Timer(DEBOUNCE_DELAY, _timer_runner)
+            timer_ref["timer"] = timer
+            timer.daemon = True
+            MEDIAINFO_UPLOAD_TIMERS[norm_path] = timer
+            timer.start()
 
     def _handle_mediainfo_dir_update(self, dir_path: str):
         if not dir_path or _is_path_excluded(dir_path, self.exclude_dirs):
@@ -141,7 +161,7 @@ class MediaFileHandler(FileSystemEventHandler):
                 if not candidates:
                     return
                 candidates.sort(reverse=True)
-                logger.info(f"  ➜ [shared intro] directory event scan found {len(candidates)} mediainfo file(s): {norm_dir}")
+                logger.debug(f"  ➜ [共享片头] 目录变化，发现 {len(candidates)} 个最近更新的媒体信息文件。")
                 for _mtime, path in candidates[:MEDIAINFO_DIR_SCAN_LIMIT]:
                     self._handle_mediainfo_update(path)
             finally:
@@ -173,6 +193,92 @@ def _is_path_excluded(file_path: str, exclude_paths: List[str]) -> bool:
         if norm_file == norm_exc or norm_file.startswith(norm_exc + os.sep):
             return True
     return False
+
+def _intro_chapters_key(chapters: Any) -> tuple:
+    key = []
+    for item in chapters or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            ticks = int(item.get("StartPositionTicks") or 0)
+        except Exception:
+            ticks = 0
+        key.append((str(item.get("MarkerType") or ""), ticks))
+    return tuple(sorted(key))
+
+def _shared_intro_skip_reason(reason: str) -> str:
+    return {
+        "no_intro_chapters": "未检测到片头章节",
+        "sha1_not_found": "未找到本地 SHA1 缓存",
+        "shared_center_disabled": "共享中心未启用",
+        "shared_intro_disabled": "共享片头未启用",
+    }.get(str(reason or ""), str(reason or "无需上传"))
+
+def _should_log_mediainfo_intro_state(file_path: str, state_key: tuple, seconds: int = MEDIAINFO_UPLOAD_LOG_DEDUPE_SECONDS) -> bool:
+    now = time.time()
+    with MEDIAINFO_UPLOAD_LOCK:
+        last_key, last_time = MEDIAINFO_UPLOAD_RECENT.get(file_path, (None, 0))
+        if last_key == state_key and now - last_time <= seconds:
+            return False
+        MEDIAINFO_UPLOAD_RECENT[file_path] = (state_key, now)
+        return True
+
+def _run_mediainfo_intro_upload(file_path: str):
+    basename = os.path.basename(file_path)
+    dedupe_key = None
+    try:
+        from handler.shared_intro_service import (
+            _load_json_file,
+            extract_intro_chapters,
+            sha1_for_mediainfo_path,
+            upload_intro_for_mediainfo_path,
+        )
+        data = _load_json_file(file_path)
+        chapters = extract_intro_chapters(data)
+        if not chapters:
+            if _should_log_mediainfo_intro_state(file_path, ("skip", "no_intro_chapters")):
+                logger.info(f"  ➜ [共享片头] 跳过：{basename}（未检测到片头章节）")
+            return
+        sha1 = sha1_for_mediainfo_path(file_path)
+        if not sha1:
+            if _should_log_mediainfo_intro_state(file_path, ("skip", "sha1_not_found")):
+                logger.info(f"  ➜ [共享片头] 跳过：{basename}（未找到本地 SHA1 缓存）")
+            return
+
+        chapter_key = _intro_chapters_key(chapters)
+        dedupe_key = (sha1, chapter_key)
+        now = time.time()
+        with MEDIAINFO_UPLOAD_LOCK:
+            last_key, last_time = MEDIAINFO_UPLOAD_RECENT.get(file_path, (None, 0))
+            if last_key == dedupe_key and now - last_time <= MEDIAINFO_UPLOAD_DEDUPE_SECONDS:
+                return
+            if dedupe_key in MEDIAINFO_UPLOAD_INFLIGHT:
+                return
+            MEDIAINFO_UPLOAD_INFLIGHT.add(dedupe_key)
+
+        res = upload_intro_for_mediainfo_path(file_path, reason='monitor_update')
+
+        if res.get("ok"):
+            with MEDIAINFO_UPLOAD_LOCK:
+                MEDIAINFO_UPLOAD_RECENT[file_path] = (dedupe_key, now)
+            logger.info(f"  ➜ [共享片头] 已上传：{basename}（SHA1 {sha1[:12]}，{len(chapters)} 个章节）")
+            return
+
+        if res.get("skipped"):
+            logger.info(f"  ➜ [共享片头] 跳过：{basename}（{_shared_intro_skip_reason(res.get('reason'))}）")
+            return
+
+        message = res.get("message") or res.get("reason") or "未知错误"
+        center = res.get("center")
+        if isinstance(center, dict):
+            message = center.get("detail") or center.get("message") or message
+        logger.warning(f"  ➜ [共享片头] 上传失败：{basename}（{message}）")
+    except Exception as e:
+        logger.warning(f"  ➜ [共享片头] 上传失败：{basename}（{e}）")
+    finally:
+        with MEDIAINFO_UPLOAD_LOCK:
+            if dedupe_key:
+                MEDIAINFO_UPLOAD_INFLIGHT.discard(dedupe_key)
 
 def _is_etk_standard_strm(file_path: str) -> bool:
     if not str(file_path or '').lower().endswith('.strm'):

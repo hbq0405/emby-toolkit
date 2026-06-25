@@ -3192,6 +3192,24 @@ class P115CacheManager:
     _rapid_preid_hints_lock = threading.Lock()
 
     @staticmethod
+    def _merge_center_intro_before_mediainfo_cache(sha1: str, mediainfo_json):
+        if not sha1 or not mediainfo_json:
+            return mediainfo_json
+        try:
+            from handler.shared_intro_service import extract_intro_chapters, fetch_intro_map, merge_intro_chapters
+            if extract_intro_chapters(mediainfo_json):
+                return mediainfo_json
+            intro_map = fetch_intro_map([sha1])
+            chapters = intro_map.get(str(sha1).upper())
+            if not chapters:
+                return mediainfo_json
+            merge_intro_chapters(mediainfo_json, chapters)
+            logger.debug(f"  ➜ [共享片头] 写入媒体信息缓存前已合并中心片头：{str(sha1).upper()[:12]}...")
+        except Exception as e:
+            logger.debug(f"  ➜ [共享片头] 写入媒体信息缓存前合并中心片头失败：{str(sha1).upper()[:12]}... -> {e}")
+        return mediainfo_json
+
+    @staticmethod
     def get_local_path(cid):
         """从本地数据库获取已缓存的完整相对路径"""
         if not cid: return None
@@ -4297,6 +4315,7 @@ class P115CacheManager:
 
             sha1 = str(sha1).upper()
             raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
+            mediainfo_json = P115CacheManager._merge_center_intro_before_mediainfo_cache(sha1, mediainfo_json)
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
