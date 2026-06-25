@@ -31,6 +31,7 @@ _LISTENER_LOCK = threading.Lock()
 _FULL_SHARE_LOCK = threading.Lock()
 _CENTER_CONFIG_WARNED_REASONS = set()
 _LISTENER_FAILURE_WARN_THRESHOLD = 3
+_LISTENER_BACKOFF_MAX_SECONDS = 300
 
 
 def _cfg_bool(value: Any, default: bool = False) -> bool:
@@ -6129,6 +6130,21 @@ def poll_and_process_rapid_sign_jobs_once(timeout: int = 1, limit: int = 3) -> D
             results.append({'job_id': job_id, 'ok': False, 'error': str(e), 'submit': submit})
     return {'ok': True, 'count': len(jobs), 'items': results}
 
+def _listener_failure_backoff_seconds(consecutive_failures: int, *, base: int) -> int:
+    if consecutive_failures <= 0:
+        return 0
+    if consecutive_failures < _LISTENER_FAILURE_WARN_THRESHOLD:
+        return int(base)
+    exponent = min(consecutive_failures - _LISTENER_FAILURE_WARN_THRESHOLD, 6)
+    return min(_LISTENER_BACKOFF_MAX_SECONDS, int(base) * (2 ** exponent))
+
+
+def _listener_should_log_failure(consecutive_failures: int) -> bool:
+    if consecutive_failures <= _LISTENER_FAILURE_WARN_THRESHOLD:
+        return True
+    return consecutive_failures in {5, 8, 13, 21, 34, 55, 89}
+
+
 def _sign_listener_loop():
     """独立处理中心 sign_job。
 
@@ -6147,11 +6163,16 @@ def _sign_listener_loop():
             consecutive_failures = 0
         except Exception as e:
             consecutive_failures += 1
-            if consecutive_failures >= _LISTENER_FAILURE_WARN_THRESHOLD:
-                logger.warning(f"  ➜ [共享签名监听] 连续 {consecutive_failures} 轮处理失败: {e}")
-            else:
-                logger.debug(f"  ➜ [共享签名监听] 本轮处理失败: {e}")
-            _LISTENER_STOP.wait(3)
+            wait_seconds = _listener_failure_backoff_seconds(consecutive_failures, base=3)
+            if _listener_should_log_failure(consecutive_failures):
+                if consecutive_failures >= _LISTENER_FAILURE_WARN_THRESHOLD:
+                    logger.warning(
+                        "  ➜ [共享签名监听] 连续 %s 轮处理失败，暂停 %s 秒后重试: %s",
+                        consecutive_failures, wait_seconds, e,
+                    )
+                else:
+                    logger.debug(f"  ➜ [共享签名监听] 本轮处理失败: {e}")
+            _LISTENER_STOP.wait(wait_seconds)
     logger.info('  ➜ [共享签名监听] Rapid v2 sign_job 长轮询监听已停止。')
 
 
@@ -6172,11 +6193,16 @@ def _event_listener_loop():
             consecutive_failures = 0
         except Exception as e:
             consecutive_failures += 1
-            if consecutive_failures >= _LISTENER_FAILURE_WARN_THRESHOLD:
-                logger.warning(f"  ➜ [共享事件监听] 连续 {consecutive_failures} 轮处理失败: {e}")
-            else:
-                logger.debug(f"  ➜ [共享事件监听] 本轮处理失败: {e}")
-            _LISTENER_STOP.wait(10)
+            wait_seconds = _listener_failure_backoff_seconds(consecutive_failures, base=10)
+            if _listener_should_log_failure(consecutive_failures):
+                if consecutive_failures >= _LISTENER_FAILURE_WARN_THRESHOLD:
+                    logger.warning(
+                        "  ➜ [共享事件监听] 连续 %s 轮处理失败，暂停 %s 秒后重试: %s",
+                        consecutive_failures, wait_seconds, e,
+                    )
+                else:
+                    logger.debug(f"  ➜ [共享事件监听] 本轮处理失败: {e}")
+            _LISTENER_STOP.wait(wait_seconds)
     logger.info('  ➜ [共享事件监听] Rapid v2 长轮询监听已停止。')
 
 

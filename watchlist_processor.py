@@ -698,22 +698,16 @@ class WatchlistProcessor:
         try:
             cfg = settings_db.get_shared_resource_config() or {}
             base_url = str(cfg.get('p115_shared_center_url') or '').strip().rstrip('/')
-            token = str(cfg.get('p115_shared_device_token') or '').strip()
-            if not base_url or not token:
-                return {'ok': False, 'skipped': True, 'reason': 'center_not_configured', 'message': '共享中心 URL 或设备 Token 未配置'}
+            from handler.shared_center_client import _current_server_id_hash
+            server_id_hash = _current_server_id_hash()
+            if not base_url or not server_id_hash:
+                return {'ok': False, 'skipped': True, 'reason': 'center_not_configured', 'message': '共享中心 URL 或 Emby ServerID 未配置'}
 
             headers = {
-                'X-Device-Token': token,
+                'X-Server-ID-Hash': server_id_hash,
                 'Content-Type': 'application/json',
                 'X-Client-Version': str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0'),
             }
-            try:
-                from handler.shared_center_client import _current_server_id_hash
-                server_id_hash = _current_server_id_hash()
-                if server_id_hash:
-                    headers['X-Server-ID-Hash'] = server_id_hash
-            except Exception:
-                pass
             kwargs = {'timeout': 60}
             try:
                 import config_manager

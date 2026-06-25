@@ -266,7 +266,6 @@ SHARED_RESOURCE_CONFIG_KEY = getattr(constants, 'APP_SETTING_SHARED_RESOURCE_CON
 DEFAULT_SHARED_RESOURCE_CONFIG = {
     'p115_shared_resource_enabled': False,
     'p115_shared_center_url': 'https://shared.55565576.xyz',
-    'p115_shared_device_token': '',
     # 虚拟入库已移除：共享资源消费模式固定为 permanent。
     'p115_shared_resource_mode': 'permanent',
     'p115_shared_disable_episode_transfer': False,
@@ -275,7 +274,6 @@ DEFAULT_SHARED_RESOURCE_CONFIG = {
     # 开启后，消费中心资源时会跳过被中心标记为“短剧”的资源。
     'p115_shared_block_short_drama_transfer': False,
     'p115_shared_auto_share_requests_enabled': False,
-    'p115_shared_install_id': '',
     'p115_shared_center_home_sections': [],
 }
 
@@ -368,7 +366,6 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
     return {
         'p115_shared_resource_enabled': _shared_bool(merged.get('p115_shared_resource_enabled'), False),
         'p115_shared_center_url': center_url,
-        'p115_shared_device_token': str(merged.get('p115_shared_device_token') or '').strip(),
         'p115_shared_resource_mode': mode,
         'p115_shared_disable_episode_transfer': _shared_bool(merged.get('p115_shared_disable_episode_transfer'), False),
         'p115_shared_block_clean_version_transfer': _shared_bool(
@@ -380,7 +377,6 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
             False,
         ),
         'p115_shared_auto_share_requests_enabled': _shared_bool(merged.get('p115_shared_auto_share_requests_enabled'), False),
-        'p115_shared_install_id': str(merged.get('p115_shared_install_id') or '').strip(),
         'p115_shared_center_home_sections': _shared_center_home_sections(merged.get('p115_shared_center_home_sections')),
     }
 

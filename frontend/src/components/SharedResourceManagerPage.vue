@@ -14,7 +14,7 @@
                 <template #icon><n-icon :component="SettingsIcon" /></template>
                 配置
               </n-button>
-              <n-button v-if="needsCenterDeviceToken" type="warning" ghost :loading="registeringDevice" @click="registerCenterDevice">
+              <n-button v-if="needsCenterServerId" type="warning" ghost :loading="registeringDevice" @click="registerCenterDevice">
                 <template #icon><n-icon :component="SyncIcon" /></template>
                 {{ centerDeviceRegisterButtonText }}
               </n-button>
@@ -30,8 +30,8 @@
           </div>
         </template>
 
-        <n-alert v-if="needsCenterDeviceToken" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
-          {{ centerDeviceTokenAlertText }}
+        <n-alert v-if="needsCenterServerId" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
+          {{ centerServerIdAlertText }}
         </n-alert>
 
         <n-grid class="stat-grid" :cols="isMobile ? 2 : 5" :x-gap="12" :y-gap="12">
@@ -558,8 +558,6 @@ const centerDeviceStatusData = ref({});
 const sharedConfigForm = reactive({
   p115_shared_resource_enabled: false,
   p115_shared_center_url: 'https://shared.55565576.xyz',
-  p115_shared_install_id: '',
-  p115_shared_device_token: '',
   p115_shared_resource_mode: 'rapid',
   p115_shared_disable_episode_transfer: false,
   p115_shared_block_clean_version_transfer: false,
@@ -1025,11 +1023,11 @@ const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink
 
 const centerDeviceId = computed(() => String((summary.value.credit || {}).device_id || '').trim());
 const hasCenterDevice = computed(() => Boolean(centerDeviceId.value));
-const needsCenterDeviceToken = computed(() => !centerConfigServerIdHash.value && !hasCenterDevice.value);
+const needsCenterServerId = computed(() => !centerConfigServerIdHash.value && !hasCenterDevice.value);
 const centerDeviceRegisterButtonText = computed(() => centerDeviceId.value ? '重新连接' : '连接中心');
-const centerDeviceTokenAlertText = computed(() => {
+const centerServerIdAlertText = computed(() => {
   if (hasCenterDevice.value) {
-    return '共享资源中心设备记录还在，但本地连接凭据缺失。点击“重新连接”会使用 Emby ServerID 取回同一设备身份。';
+    return '共享资源中心设备记录还在，但本机 ServerID 状态未确认。点击“重新连接”会使用 Emby ServerID 取回同一中心身份。';
   }
   return '共享资源中心尚未连接。点击“连接中心”后，系统会使用 Emby ServerID 注册中心身份。';
 });
@@ -3397,8 +3395,6 @@ const applySharedConfig = (data = {}) => {
   Object.assign(sharedConfigForm, {
     p115_shared_resource_enabled: Boolean(data.p115_shared_resource_enabled),
     p115_shared_center_url: data.p115_shared_center_url || 'https://shared.55565576.xyz',
-    p115_shared_install_id: data.p115_shared_install_id || '',
-    p115_shared_device_token: data.p115_shared_device_token || '',
     p115_shared_resource_mode: 'rapid',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_block_clean_version_transfer: Boolean(data.p115_shared_block_clean_version_transfer),
@@ -3948,7 +3944,7 @@ const registerCenterDevice = async () => {
 };
 
 const refreshCredit = async () => {
-  if (needsCenterDeviceToken.value) {
+  if (needsCenterServerId.value) {
     message.warning('共享资源中心未连接，请先连接中心。');
     return;
   }

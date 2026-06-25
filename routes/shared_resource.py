@@ -100,8 +100,6 @@ def _shared_resource_config_payload() -> Dict[str, Any]:
     payload = settings_db.get_shared_resource_config() or {}
     payload.setdefault('p115_shared_resource_enabled', False)
     payload.setdefault('p115_shared_center_url', 'https://shared.55565576.xyz')
-    payload.setdefault('p115_shared_device_token', '')
-    payload.setdefault('p115_shared_install_id', '')
     payload['p115_shared_resource_mode'] = 'rapid'
     payload.setdefault('p115_shared_disable_episode_transfer', False)
     payload.setdefault('p115_shared_block_clean_version_transfer', False)
@@ -115,7 +113,6 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(data or {})
     data['p115_shared_resource_enabled'] = _boolish(data.get('p115_shared_resource_enabled'), False)
     data['p115_shared_center_url'] = str(data.get('p115_shared_center_url') or 'https://shared.55565576.xyz').rstrip('/')
-    data['p115_shared_device_token'] = str(data.get('p115_shared_device_token') or '').strip()
     data['p115_shared_resource_mode'] = 'rapid'
     data.pop('p115_shared_max_active_shares', None)
     data['p115_shared_disable_episode_transfer'] = _boolish(data.get('p115_shared_disable_episode_transfer'), False)
@@ -124,8 +121,6 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
     sections = data.get('p115_shared_center_home_sections')
     data['p115_shared_center_home_sections'] = sections if isinstance(sections, list) else []
-    install_id = str(data.get('p115_shared_install_id') or '').strip()
-    data['p115_shared_install_id'] = install_id
     return settings_db.save_shared_resource_config(data)
 
 
