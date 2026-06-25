@@ -2050,13 +2050,13 @@ def _direct_center_share_sync_heartbeat(payload: Dict[str, Any]) -> Dict[str, An
                 kwargs['proxies'] = proxies
         except Exception:
             pass
-    resp = requests.post(f'{base_url}/api/v1/devices/share-sync/heartbeat', headers=headers, json=payload, **kwargs)
-    try:
-        data = resp.json()
-    except Exception:
-        data = {'raw_text': resp.text[:1000]}
-    if resp.status_code >= 400:
-        raise RuntimeError(f'中心分享同步签到接口 HTTP {resp.status_code}: {data}')
+    with requests.post(f'{base_url}/api/v1/devices/share-sync/heartbeat', headers=headers, json=payload, **kwargs) as resp:
+        try:
+            data = resp.json()
+        except Exception:
+            data = {'raw_text': resp.text[:1000]}
+        if resp.status_code >= 400:
+            raise RuntimeError(f'中心分享同步签到接口 HTTP {resp.status_code}: {data}')
     return data if isinstance(data, dict) else {'data': data}
 
 
@@ -2774,13 +2774,13 @@ def _direct_center_transfer_lease(payload: Dict[str, Any]) -> Dict[str, Any]:
         proxies = getter()
         if proxies:
             kwargs['proxies'] = proxies
-    resp = requests.post(f'{base_url}/api/v1/transfers/lease', headers=headers, json=payload, **kwargs)
-    try:
-        data = resp.json()
-    except Exception:
-        data = {'raw_text': resp.text[:1000]}
-    if resp.status_code >= 400:
-        raise RuntimeError(f'中心秒传许可接口 HTTP {resp.status_code}: {data}')
+    with requests.post(f'{base_url}/api/v1/transfers/lease', headers=headers, json=payload, **kwargs) as resp:
+        try:
+            data = resp.json()
+        except Exception:
+            data = {'raw_text': resp.text[:1000]}
+        if resp.status_code >= 400:
+            raise RuntimeError(f'中心秒传许可接口 HTTP {resp.status_code}: {data}')
     return data if isinstance(data, dict) else {'data': data}
 
 
@@ -7242,15 +7242,15 @@ def _fetch_center_missing_display_meta_rows(limit: int = 500) -> Dict[str, Any]:
     if not base_url or not headers.get('X-Server-ID-Hash'):
         return {'ok': False, 'items': [], 'message': '共享中心 URL 或 Emby ServerID 未配置'}
     try:
-        resp = requests.get(
+        with requests.get(
             f"{base_url}/api/v1/metadata/display/missing",
             headers=headers,
             params={'limit': max(1, min(int(limit or 500), 5000))},
             **_center_request_kwargs_for_display_meta(timeout=60),
-        )
-        if resp.status_code >= 400:
-            return {'ok': False, 'items': [], 'message': f"HTTP {resp.status_code}: {resp.text[:300]}"}
-        data = resp.json() if resp.content else {}
+        ) as resp:
+            if resp.status_code >= 400:
+                return {'ok': False, 'items': [], 'message': f"HTTP {resp.status_code}: {resp.text[:300]}"}
+            data = resp.json() if resp.content else {}
         items = [x for x in (data.get('items') or []) if isinstance(x, dict)]
         return {'ok': True, 'items': items, 'count': len(items), 'raw': data}
     except Exception as e:
@@ -7461,16 +7461,16 @@ def _post_center_display_meta_backfill(bundles: List[Dict[str, Any]], *, batch_s
         if not batch:
             continue
         try:
-            resp = requests.post(
+            with requests.post(
                 url,
                 headers=headers,
                 json={'items': batch, 'skip_logical_share_dispatch': True},
                 **_center_request_kwargs_for_display_meta(timeout=90),
-            )
-            posted_batches += 1
-            if resp.status_code >= 400:
-                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-            data = resp.json() if resp.content else {}
+            ) as resp:
+                posted_batches += 1
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                data = resp.json() if resp.content else {}
             accepted_meta_items += _safe_int(data.get('accepted_meta_items'), 0)
             accepted_bundles += _safe_int(data.get('accepted_bundles'), 0)
             if data.get('errors'):

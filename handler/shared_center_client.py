@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import logging
+import threading
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -16,9 +17,33 @@ from database import settings_db
 
 logger = logging.getLogger(__name__)
 
-_CENTER_HTTP = requests.Session()
-_CENTER_HTTP.mount('http://', requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=128))
-_CENTER_HTTP.mount('https://', requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=128))
+_CENTER_HTTP_LOCAL = threading.local()
+
+
+def _new_center_http_session() -> requests.Session:
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16, pool_block=False)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+
+def _center_http_session() -> requests.Session:
+    session = getattr(_CENTER_HTTP_LOCAL, 'session', None)
+    if session is None:
+        session = _new_center_http_session()
+        _CENTER_HTTP_LOCAL.session = session
+    return session
+
+
+def _reset_center_http_session() -> None:
+    session = getattr(_CENTER_HTTP_LOCAL, 'session', None)
+    if session is not None:
+        try:
+            session.close()
+        except Exception:
+            pass
+        _CENTER_HTTP_LOCAL.session = None
 
 
 
@@ -321,17 +346,50 @@ class SharedCenterClient:
         if not self.ready:
             raise RuntimeError('共享中心地址或 Emby ServerID 未配置')
         url = f"{self.base_url}{path}"
-        resp = _CENTER_HTTP.post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
-        _raise_for_center_error(resp)
-        return resp.json() if resp.text else {}
+        resp = None
+        try:
+            resp = _center_http_session().post(url, headers=self._headers(), json=payload or {}, **_request_kwargs(timeout))
+            _raise_for_center_error(resp)
+            return resp.json() if resp.text else {}
+        except requests.exceptions.RequestException:
+            _reset_center_http_session()
+            raise
+        finally:
+            if resp is not None:
+                resp.close()
 
     def _get(self, path: str, params: Dict[str, Any] | None = None, timeout: int = 15) -> Dict[str, Any]:
         if not self.ready:
             raise RuntimeError('共享中心地址或 Emby ServerID 未配置')
         url = f"{self.base_url}{path}"
-        resp = _CENTER_HTTP.get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
-        _raise_for_center_error(resp)
-        return resp.json() if resp.text else {}
+        resp = None
+        try:
+            resp = _center_http_session().get(url, headers=self._headers(), params=params or {}, **_request_kwargs(timeout))
+            _raise_for_center_error(resp)
+            return resp.json() if resp.text else {}
+        except requests.exceptions.RequestException:
+            _reset_center_http_session()
+            raise
+        finally:
+            if resp is not None:
+                resp.close()
+
+    def _long_poll_get(self, path: str, params: Dict[str, Any] | None = None, timeout: int = 35) -> Dict[str, Any]:
+        if not self.ready:
+            raise RuntimeError('共享中心地址或 Emby ServerID 未配置')
+        url = f"{self.base_url}{path}"
+        headers = self._headers()
+        headers['Connection'] = 'close'
+        session = _new_center_http_session()
+        resp = None
+        try:
+            resp = session.get(url, headers=headers, params=params or {}, **_request_kwargs(timeout))
+            _raise_for_center_error(resp)
+            return resp.json() if resp.text else {}
+        finally:
+            if resp is not None:
+                resp.close()
+            session.close()
 
     def register_device(self, name: str = '') -> Dict[str, Any]:
         if not self.base_url:
@@ -344,9 +402,17 @@ class SharedCenterClient:
             'server_id_hash': server_id_hash,
         }
         headers = {'X-Client-Version': _app_version(), 'X-ETK-Version': _app_version(), 'Content-Type': 'application/json', 'User-Agent': _client_user_agent()}
-        resp = _CENTER_HTTP.post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
-        _raise_for_center_error(resp)
-        return resp.json() if resp.text else {}
+        resp = None
+        try:
+            resp = _center_http_session().post(f"{self.base_url}/api/v1/devices/register", headers=headers, json=payload, **_request_kwargs(20))
+            _raise_for_center_error(resp)
+            return resp.json() if resp.text else {}
+        except requests.exceptions.RequestException:
+            _reset_center_http_session()
+            raise
+        finally:
+            if resp is not None:
+                resp.close()
 
     def me(self) -> Dict[str, Any]:
         return self._get('/api/v1/me', timeout=12)
@@ -714,13 +780,13 @@ class SharedCenterClient:
         )
 
     def poll_rapid_sign_jobs(self, *, timeout: int = 1, limit: int = 3) -> Dict[str, Any]:
-        return self._get('/api/v1/rapid-sign/jobs/poll', {'timeout': max(0, min(int(timeout or 1), 55)), 'limit': max(1, min(int(limit or 3), 20))}, timeout=max(8, int(timeout or 1) + 8))
+        return self._long_poll_get('/api/v1/rapid-sign/jobs/poll', {'timeout': max(0, min(int(timeout or 1), 55)), 'limit': max(1, min(int(limit or 3), 20))}, timeout=max(8, int(timeout or 1) + 8))
 
     def submit_rapid_sign_job(self, job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post(f"/api/v1/rapid-sign/jobs/{urllib.parse.quote(str(job_id))}/submit", payload or {}, timeout=15)
 
     def poll_device_events(self, *, timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
-        return self._get('/api/v1/device-events/poll', {'timeout': max(1, min(int(timeout or 25), 55)), 'limit': max(1, min(int(limit or 5), 50))}, timeout=max(10, int(timeout or 25) + 10))
+        return self._long_poll_get('/api/v1/device-events/poll', {'timeout': max(1, min(int(timeout or 25), 55)), 'limit': max(1, min(int(limit or 5), 50))}, timeout=max(10, int(timeout or 25) + 10))
 
     def ack_device_events(self, event_ids: List[str], result: str = 'ok', message: str = '') -> Dict[str, Any]:
         return self._post('/api/v1/device-events/ack', {'event_ids': event_ids or [], 'result': result or 'ok', 'message': message or ''}, timeout=15)
