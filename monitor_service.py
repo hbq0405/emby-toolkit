@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 FILE_EVENT_QUEUE = set() 
 QUEUE_LOCK = threading.Lock()
 DEBOUNCE_TIMER = None
+MEDIAINFO_DIR_SCAN_LOCK = threading.Lock()
+MEDIAINFO_DIR_SCAN_TIMERS = {}
+MEDIAINFO_DIR_SCAN_WINDOW_SECONDS = 600
+MEDIAINFO_DIR_SCAN_LIMIT = 30
 DEBOUNCE_DELAY = 3 # 防抖延迟秒数
 
 # --- 全局队列抑制标志 ---
@@ -33,6 +37,7 @@ class MediaFileHandler(FileSystemEventHandler):
     文件系统事件处理器 (纯净版：仅监控媒体文件的新增和移动)
     """
     def __init__(self, extensions: List[str], exclude_dirs: List[str] = None):
+        self.exclude_dirs = exclude_dirs or []
         self.extensions = []
         for ext in extensions:
             if not ext: continue
@@ -61,6 +66,9 @@ class MediaFileHandler(FileSystemEventHandler):
         return True
 
     def on_created(self, event):
+        if event.is_directory:
+            self._handle_mediainfo_dir_update(event.src_path)
+            return
         if not event.is_directory and str(event.src_path or '').lower().endswith('-mediainfo.json'):
             self._handle_mediainfo_update(event.src_path)
             return
@@ -68,10 +76,16 @@ class MediaFileHandler(FileSystemEventHandler):
             self._enqueue_file(event.src_path)
 
     def on_modified(self, event):
+        if event.is_directory:
+            self._handle_mediainfo_dir_update(event.src_path)
+            return
         if not event.is_directory and str(event.src_path or '').lower().endswith('-mediainfo.json'):
             self._handle_mediainfo_update(event.src_path)
 
     def on_moved(self, event):
+        if event.is_directory:
+            self._handle_mediainfo_dir_update(event.dest_path)
+            return
         if not event.is_directory and str(event.dest_path or '').lower().endswith('-mediainfo.json'):
             self._handle_mediainfo_update(event.dest_path)
             return
@@ -93,6 +107,57 @@ class MediaFileHandler(FileSystemEventHandler):
             threading.Thread(target=_runner, name='SharedIntroUpload', daemon=True).start()
         except Exception as e:
             logger.debug(f"  ➜ [共享片头] 处理 mediainfo 更新失败：{file_path} -> {e}")
+
+    def _handle_mediainfo_dir_update(self, dir_path: str):
+        if not dir_path or _is_path_excluded(dir_path, self.exclude_dirs):
+            return
+        try:
+            from handler.shared_intro_service import shared_intro_enabled
+            if not shared_intro_enabled():
+                return
+        except Exception:
+            return
+        norm_dir = os.path.normpath(dir_path)
+
+        def _runner():
+            try:
+                now = time.time()
+                candidates = []
+                if not os.path.isdir(norm_dir):
+                    return
+                with os.scandir(norm_dir) as it:
+                    for entry in it:
+                        if not entry.is_file():
+                            continue
+                        if not entry.name.lower().endswith('-mediainfo.json'):
+                            continue
+                        try:
+                            mtime = entry.stat().st_mtime
+                        except Exception:
+                            continue
+                        if now - mtime <= MEDIAINFO_DIR_SCAN_WINDOW_SECONDS:
+                            candidates.append((mtime, entry.path))
+                if not candidates:
+                    return
+                candidates.sort(reverse=True)
+                logger.info(f"  ➜ [shared intro] directory event scan found {len(candidates)} mediainfo file(s): {norm_dir}")
+                for _mtime, path in candidates[:MEDIAINFO_DIR_SCAN_LIMIT]:
+                    self._handle_mediainfo_update(path)
+            finally:
+                with MEDIAINFO_DIR_SCAN_LOCK:
+                    MEDIAINFO_DIR_SCAN_TIMERS.pop(norm_dir, None)
+
+        with MEDIAINFO_DIR_SCAN_LOCK:
+            old_timer = MEDIAINFO_DIR_SCAN_TIMERS.get(norm_dir)
+            if old_timer:
+                try:
+                    old_timer.cancel()
+                except Exception:
+                    pass
+            timer = threading.Timer(DEBOUNCE_DELAY, _runner)
+            timer.daemon = True
+            MEDIAINFO_DIR_SCAN_TIMERS[norm_dir] = timer
+            timer.start()
 
     def _enqueue_file(self, file_path: str):
         """新增/移动文件入队"""
