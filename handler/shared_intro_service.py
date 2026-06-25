@@ -148,6 +148,32 @@ def sha1_for_mediainfo_path(mediainfo_path: str) -> str:
     return ""
 
 
+def _mediainfo_path_for_sha1(sha1: str) -> str:
+    sha1 = _norm_sha1(sha1)
+    if not sha1:
+        return ""
+    local_root = _local_root()
+    if not local_root:
+        return ""
+    try:
+        row = P115CacheManager.get_file_cache_by_sha1(sha1) or {}
+    except Exception:
+        row = {}
+    local_path = str(row.get("local_path") or "").strip().replace("\\", "/").lstrip("/")
+    if not local_path:
+        return ""
+    full_path = os.path.join(local_root, local_path)
+    base, ext = os.path.splitext(full_path)
+    candidates = []
+    if ext:
+        candidates.append(base + "-mediainfo.json")
+    candidates.append(full_path + "-mediainfo.json")
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ""
+
+
 def upload_intro_for_mediainfo_path(mediainfo_path: str, *, reason: str = "") -> Dict[str, Any]:
     if not shared_intro_enabled():
         return {"ok": False, "skipped": True, "reason": "shared_intro_disabled"}
@@ -257,43 +283,34 @@ def merge_intro_into_mediainfo_file(mediainfo_path: str, sha1: str = "") -> Dict
 def scan_and_upload_local_intro(limit: int = 500) -> Dict[str, Any]:
     if not shared_intro_enabled():
         return {"ok": False, "skipped": True, "reason": "shared_intro_disabled"}
-    local_root = _local_root()
-    if not local_root or not os.path.isdir(local_root):
-        return {"ok": False, "skipped": True, "reason": "local_root_missing"}
     scanned = uploaded = failed = skipped = 0
     errors = []
-    candidates = []
-    for root, _dirs, files in os.walk(local_root):
-        for filename in files:
-            if not filename.lower().endswith("-mediainfo.json"):
-                continue
-            scanned += 1
-            path = os.path.join(root, filename)
-            try:
-                data = _load_json_file(path)
-                chapters = extract_intro_chapters(data)
-                if not chapters:
-                    skipped += 1
-                    continue
-                sha1 = sha1_for_mediainfo_path(path)
-                if not sha1:
-                    skipped += 1
-                    continue
-                candidates.append((path, sha1, chapters))
-            except Exception as e:
-                failed += 1
-                errors.append({"file": path, "message": str(e)})
-            if scanned >= int(limit or 500):
-                break
-        if scanned >= int(limit or 500):
-            break
+    try:
+        resp = SharedCenterClient().intro_chapters_missing(limit=limit)
+    except Exception as e:
+        return {"ok": False, "scanned": 0, "uploaded": 0, "skipped": 0, "failed": 1, "errors": [{"message": str(e)}]}
 
-    for path, sha1, chapters in candidates:
+    items = [x for x in (resp.get("items") or []) if isinstance(x, dict)]
+    for item in items:
+        scanned += 1
+        sha1 = _norm_sha1(item.get("sha1"))
+        if not sha1:
+            skipped += 1
+            continue
+        path = _mediainfo_path_for_sha1(sha1)
+        if not path:
+            skipped += 1
+            continue
         try:
+            data = _load_json_file(path)
+            chapters = extract_intro_chapters(data)
+            if not chapters:
+                skipped += 1
+                continue
             resp = SharedCenterClient().upload_intro_chapters(
                 sha1,
                 chapters,
-                file_name=os.path.basename(path).replace("-mediainfo.json", ""),
+                file_name=str(item.get("file_name") or "").strip() or os.path.basename(path).replace("-mediainfo.json", ""),
                 reason="maintenance_backfill",
             )
             if resp.get("duplicate"):

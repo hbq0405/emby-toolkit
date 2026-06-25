@@ -792,6 +792,11 @@ class SharedCenterClient:
             'reason': reason or '',
         }, timeout=20)
 
+    def intro_chapters_missing(self, limit: int = 500) -> Dict[str, Any]:
+        return self._get('/api/v1/intro-chapters/missing', params={
+            'limit': max(1, min(int(limit or 500), 5000)),
+        }, timeout=60)
+
     def intro_chapters_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
         return self._post('/api/v1/intro-chapters/batch', {
             'sha1_list': list(sha1_list or []),

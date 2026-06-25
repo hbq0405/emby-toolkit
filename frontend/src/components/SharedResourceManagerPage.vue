@@ -282,7 +282,7 @@
               <template #checked>上传并复用片头</template>
               <template #unchecked>关闭</template>
             </n-switch>
-            <template #feedback>开启后才会上传神医片头、维护补齐片头，并在秒传/转存共享资源时合并中心片头数据。</template>
+            <template #feedback>开启后会上传片头数据，并在入库时从中心匹配片头数据。</template>
           </n-form-item>
           <n-form-item label="自动响应求共享">
             <n-switch v-model:value="sharedConfigForm.p115_shared_auto_share_requests_enabled">
