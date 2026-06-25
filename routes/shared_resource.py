@@ -1833,23 +1833,6 @@ def api_center_source_detail():
         client = SharedCenterClient()
         include_people = str(request.args.get('include_people') or '0').strip().lower() not in {'0', 'false', 'no', 'off'}
         limit = int(request.args.get('limit') or 200)
-        cache_key = (
-            'detail:v2',
-            client.base_url,
-            _current_server_id_hash(),
-            request.args.get('source_kind') or '',
-            request.args.get('source_id') or '',
-            request.args.get('hub_id') or '',
-            request.args.get('tmdb_id') or '',
-            request.args.get('item_type') or '',
-            request.args.get('season_number') or '',
-            limit,
-            include_people,
-        )
-        if not _boolish(request.args.get('force_refresh') or request.args.get('refresh') or request.args.get('no_cache'), False):
-            cached = _center_proxy_cache_get(_CENTER_DETAIL_PROXY_CACHE, cache_key)
-            if cached:
-                return jsonify(cached)
 
         resp = client.display_detail(
             source_kind=request.args.get('source_kind') or '',
@@ -1903,7 +1886,6 @@ def api_center_source_detail():
         resp['children'] = []
         resp['pack_items'] = []
         payload = {'success': True, 'data': resp, **resp}
-        _center_proxy_cache_set(_CENTER_DETAIL_PROXY_CACHE, cache_key, payload)
         return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e), 'data': {}, 'resources': [], 'versions': [], 'children': []}), 500
