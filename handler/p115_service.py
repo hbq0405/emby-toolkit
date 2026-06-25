@@ -4371,7 +4371,34 @@ class P115CacheManager:
                         (sha1,)
                     )
                     row = cursor.fetchone()
-                    return row['mediainfo_json_text'] if row and row.get('mediainfo_json_text') else None
+                    text = row['mediainfo_json_text'] if row and row.get('mediainfo_json_text') else None
+                    if not text:
+                        return None
+
+                    try:
+                        from psycopg2.extras import Json
+                        from handler.shared_intro_service import extract_intro_chapters, fetch_intro_map, merge_intro_chapters
+
+                        mediainfo_json = json.loads(text)
+                        if extract_intro_chapters(mediainfo_json):
+                            return text
+
+                        intro_map = fetch_intro_map([sha1])
+                        chapters = intro_map.get(sha1)
+                        if not chapters:
+                            return text
+
+                        merge_intro_chapters(mediainfo_json, chapters)
+                        cursor.execute(
+                            "UPDATE p115_mediainfo_cache SET mediainfo_json = %s WHERE sha1 = %s",
+                            (Json(mediainfo_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)), sha1)
+                        )
+                        conn.commit()
+                        logger.info(f"  ➜ [共享片头] 读取媒体信息缓存时已合并中心片头：{sha1[:12]}...（{len(chapters)} 个章节）")
+                        return json.dumps(mediainfo_json, ensure_ascii=False)
+                    except Exception as merge_error:
+                        logger.debug(f"  ➜ [共享片头] 读取媒体信息缓存时合并中心片头失败：{sha1[:12]}... -> {merge_error}")
+                        return text
         except Exception as e:
             logger.error(f"  ➜ 读取 p115_mediainfo_cache 失败: {e}")
             return None
