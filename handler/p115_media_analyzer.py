@@ -532,11 +532,25 @@ class P115MediaAnalyzerMixin:
                     return val
             return None
 
+        def _first_file_identity(*keys):
+            # 季集号是文件级身份；多季批量整理时不能被外层 SmartOrganizer 季号覆盖。
+            for source in (
+                metadata_context,
+                file_node,
+                {
+                    "season_number": getattr(self, "forced_season", None),
+                },
+            ):
+                val = _read(source, *keys)
+                if val not in [None, "", [], {}]:
+                    return val
+            return None
+
         tmdb_id = _first("tmdb_id", "tmdbid", "tmdbId", "TMDbId", "tmdb")
         media_type = _first("media_type", "item_type", "type", "Type")
         original_language = _first("original_language", "original_lang", "originalLanguage", "OriginalLanguage")
-        season_number = _first("season_number", "season", "seasonNumber", "SeasonNumber", "_forced_season")
-        episode_number = _first("episode_number", "episode", "episodeNumber", "EpisodeNumber", "_forced_episode")
+        season_number = _first_file_identity("season_number", "season", "seasonNumber", "SeasonNumber", "_forced_season")
+        episode_number = _first_file_identity("episode_number", "episode", "episodeNumber", "EpisodeNumber", "_forced_episode")
 
         def _etk_int(value):
             try:

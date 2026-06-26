@@ -5796,6 +5796,45 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         return None
 
+    @classmethod
+    def _extract_season_episode_from_file_node(cls, file_node):
+        if not isinstance(file_node, dict):
+            return None, None
+
+        name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name') or ''
+        rel_path = file_node.get('rel_path') or file_node.get('_etk_rel_dir') or ''
+        combined = f"{rel_path}/{name}" if rel_path else str(name)
+
+        match = re.search(r'(?i)(?<![A-Za-z0-9])S(\d{1,4})[ ._-]*E(\d{1,4})\b', combined)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+
+        season_num = cls._extract_season_from_path_or_text(rel_path)
+        episode_num = None
+        match = re.search(
+            r'(?i)(?:^|[ ._\-\[\(])(?:ep|episode)[ ._-]*(\d{1,4})\b'
+            r'|(?:^|[ ._\-\[\(])e(\d{1,4})\b'
+            r'|第\s*(\d{1,4})\s*[集话話回]',
+            str(name)
+        )
+        if match:
+            episode_num = next((int(v) for v in match.groups() if v is not None), None)
+        elif season_num is not None:
+            name_without_ext = str(name).rsplit('.', 1)[0]
+            if name_without_ext.isdigit():
+                episode_num = int(name_without_ext)
+
+        return season_num, episode_num
+
+    @classmethod
+    def _inject_file_node_identity(cls, file_node):
+        season_num, episode_num = cls._extract_season_episode_from_file_node(file_node)
+        if season_num is not None and file_node.get('season_number') in (None, ''):
+            file_node['season_number'] = season_num
+        if episode_num is not None and file_node.get('episode_number') in (None, ''):
+            file_node['episode_number'] = episode_num
+        return season_num, episode_num
+
     def _rename_renderer(self):
         return P115RenameRenderer(self.details, self.tmdb_id, self.original_title, self.rename_config)
 
@@ -5910,7 +5949,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         return None, None, None
 
-    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False, recognition_hints=None):
+    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False, recognition_hints=None, patch_raw_identity=True):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         rel_path = file_node.get('rel_path', '')
         rule_result = _build_rule_parse_result(
@@ -6278,7 +6317,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         # raw_ffprobe_json 生成早于最终识别结果；此时 TMDb 身份与季集号已经落定，
         # 反向补写本地 RAW。手动重组时强制覆盖 _etk.tmdb_id/type，避免旧错误身份继续污染共享 RAW。
-        if not is_sub:
+        if not is_sub and patch_raw_identity:
             try:
                 raw_patch_sha1 = file_node.get('sha1') or file_node.get('sha')
                 force_identity = bool(getattr(self, 'is_manual_correct', False))
@@ -6618,6 +6657,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         pre_fetched_mediainfo = None
         local_pre_fetched_mediainfo = None
         if first_video and not getattr(self, 'is_manual_correct', False) and not getattr(self, 'is_from_memory', False):
+            self._inject_file_node_identity(first_video)
             v_sha1 = first_video.get('sha1') or first_video.get('sha')
             v_fid = first_video.get('fid') or first_video.get('file_id')
             
@@ -7015,6 +7055,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
             if ext in known_video_exts:
+                self._inject_file_node_identity(file_item)
                 sha1 = file_item.get('sha1') or file_item.get('sha')
                 if not sha1:
                     fid = file_item.get('fid') or file_item.get('file_id')
@@ -7049,6 +7090,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
                         silent_log=True,  # ★ 开启静默，防止预扫描时重复打印日志
                         recognition_hints=self.recognition_hints,
+                        patch_raw_identity=False,
                     )
                     video_base_name = fn.rsplit('.', 1)[0]
                     if not keep_original:

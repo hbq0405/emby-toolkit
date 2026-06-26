@@ -293,6 +293,38 @@ def _should_force_nested_package_scan(top_name):
     return True
 
 
+def _build_standard_season_dir_groups(top_name, gathered_files, *, is_tv_group=False, has_season_dir=False):
+    if not is_tv_group or not has_season_dir:
+        return []
+
+    grouped = {}
+    ungrouped_videos = []
+
+    for item in list(gathered_files or []):
+        file_name = item.get('fn') or item.get('n') or item.get('file_name', '')
+        ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+        rel_dir = item.get('_etk_rel_dir', '')
+        season_num = _extract_season_number(rel_dir)
+
+        if season_num is None:
+            if ext in KNOWN_VIDEO_EXTS:
+                ungrouped_videos.append(item)
+            continue
+
+        grouped.setdefault(season_num, {
+            "top_name": top_name,
+            "files": [],
+            "is_tv": True,
+            "has_season_dir": True,
+            "forced_season": season_num,
+        })["files"].append(item)
+
+    if ungrouped_videos or len(grouped) <= 1:
+        return []
+
+    return [grouped[s_num] for s_num in sorted(grouped)]
+
+
 def _build_filewise_big_package_groups(gathered_files, top_name, ai_translator=None, use_ai=False):
     grouped = {}
     unresolved = []
@@ -771,8 +803,17 @@ def task_scan_and_organize_115(processor=None):
                     or force_nested_package_scan
                     or _should_use_filewise_big_package(top_name, is_tv_group, has_season_dir, has_tmdb, valid_video_files)
                 )
+                season_dir_groups = _build_standard_season_dir_groups(
+                    top_name,
+                    gathered_files,
+                    is_tv_group=is_tv_group,
+                    has_season_dir=has_season_dir,
+                )
 
-                if should_use_filewise:
+                if season_dir_groups:
+                    logger.info(f"  ➜ [分季批处理] 检测到标准多季目录，已拆分为 {len(season_dir_groups)} 个季批次。")
+                    groups_to_process.extend(season_dir_groups)
+                elif should_use_filewise:
                     logger.info(f"  ➜ [大包模式] 检测到深层嵌套资源目录 '{top_name}'，执行逐文件识别...")
                     filewise_groups, filewise_unresolved = _build_filewise_big_package_groups(
                         gathered_files,
