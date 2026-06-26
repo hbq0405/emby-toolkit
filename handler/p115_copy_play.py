@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 COPY_PLAY_CLONES_KEY = "p115_copy_play_clones"
 COPY_PLAY_TTL_SECONDS = 12 * 60 * 60
+COPY_PLAY_TEMP_DIR_NAME = "ETK复制播放"
 MEDIA_EXTENSIONS = ("mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm", "iso")
 
 
@@ -22,10 +23,63 @@ def is_copy_play_enabled():
     return bool(cfg.get(constants.CONFIG_OPTION_115_COPY_PLAY_ENABLED))
 
 
-def _copy_play_temp_cid():
-    cfg = config_manager.APP_CONFIG or {}
-    cid = str(cfg.get(constants.CONFIG_OPTION_115_COPY_PLAY_TEMP_CID) or "").strip()
-    return cid if cid and cid != "0" else ""
+def _item_id(item):
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("fid") or item.get("file_id") or item.get("id") or item.get("cid") or "").strip()
+
+
+def _item_name(item):
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("name") or item.get("file_name") or item.get("fn") or item.get("n") or "").strip()
+
+
+def _item_is_dir(item):
+    if not isinstance(item, dict):
+        return False
+    item_type = item.get("fc")
+    if item_type is None:
+        item_type = item.get("file_category")
+    if item_type is not None:
+        return str(item_type) == "0"
+    icon = str(item.get("ico") or item.get("icon") or "").lower()
+    return icon in ("folder", "dir", "directory") or str(item.get("is_dir")).lower() in ("1", "true")
+
+
+def _list_child_folders(client, parent_cid):
+    resp = client.fs_files({"cid": str(parent_cid), "limit": 1000, "offset": 0})
+    if not isinstance(resp, dict) or not resp.get("state"):
+        raise RuntimeError((resp or {}).get("error_msg") or (resp or {}).get("message") or "读取复制播放目录失败")
+    folders = []
+    for item in resp.get("data") or []:
+        if _item_is_dir(item):
+            cid = _item_id(item)
+            name = _item_name(item)
+            if cid and name:
+                folders.append({"cid": cid, "name": name})
+    return folders
+
+
+def _ensure_copy_play_temp_dir(client):
+    for folder in _list_child_folders(client, "0"):
+        if folder["name"] == COPY_PLAY_TEMP_DIR_NAME:
+            return folder["cid"]
+
+    resp = client.fs_mkdir(COPY_PLAY_TEMP_DIR_NAME, "0")
+    if not isinstance(resp, dict) or not resp.get("state"):
+        raise RuntimeError((resp or {}).get("error_msg") or (resp or {}).get("message") or "创建复制播放目录失败")
+
+    cid = str(resp.get("cid") or "").strip()
+    if not cid and isinstance(resp.get("data"), dict):
+        cid = _item_id(resp["data"])
+    if cid:
+        return cid
+
+    for folder in _list_child_folders(client, "0"):
+        if folder["name"] == COPY_PLAY_TEMP_DIR_NAME:
+            return folder["cid"]
+    raise RuntimeError("复制播放目录已创建但未能确认 CID")
 
 
 def _safe_json(value, limit=800):
@@ -158,9 +212,9 @@ def _duplicate_name_index(actual_name, expected_name):
 def _item_to_clone(item, fallback_parent_id="", fallback_name=""):
     if not isinstance(item, dict):
         return {}
-    fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
+    fid = _item_id(item)
     pc = str(item.get("pick_code") or item.get("pc") or item.get("pickcode") or "").strip()
-    name = str(item.get("name") or item.get("file_name") or item.get("fn") or fallback_name or "").strip()
+    name = _item_name(item) or str(fallback_name or "").strip()
     parent_id = str(item.get("parent_id") or item.get("pid") or item.get("cid") or fallback_parent_id or "").strip()
     if not fid or not pc:
         return {}
@@ -178,14 +232,12 @@ def _list_temp_candidates(client, temp_cid, source_row, file_name):
     expected_name = str(file_name or source_row.get("name") or "").strip()
     payload = {
         "cid": temp_cid,
-        "limit": 100,
+        "limit": 1000,
         "offset": 0,
         "show_dir": 0,
         "record_open_time": 0,
         "count_folders": 0,
     }
-    if expected_name:
-        payload["search_value"] = expected_name
 
     resp = client.fs_files(payload)
     items = resp.get("data") if isinstance(resp, dict) else []
@@ -197,7 +249,7 @@ def _list_temp_candidates(client, temp_cid, source_row, file_name):
     if logger.isEnabledFor(logging.DEBUG):
         names = []
         for item in (items or [])[:8]:
-            names.append(str(item.get("name") or item.get("file_name") or item.get("fn") or item.get("n") or ""))
+            names.append(_item_name(item))
         logger.debug("  ➜ [复制播放] 临时目录回查摘要：候选文件=%s", names)
     return items if isinstance(items, list) else []
 
@@ -210,9 +262,11 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
     best_index = -1
 
     for item in items:
-        item_name = str(item.get("name") or item.get("file_name") or item.get("fn") or "").strip()
+        if _item_is_dir(item):
+            continue
+        item_name = _item_name(item)
         item_size = _norm_size(item.get("size") or item.get("fs"))
-        fid = str(item.get("fid") or item.get("file_id") or item.get("id") or "").strip()
+        fid = _item_id(item)
         duplicate_index = _duplicate_name_index(item_name, expected_name)
         if duplicate_index < 0:
             continue
@@ -224,7 +278,7 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
     if best_item:
         logger.debug(
             "  ➜ [复制播放] 临时目录命中克隆体：文件=%s，重复序号=%s",
-            best_item.get("name") or best_item.get("file_name") or best_item.get("fn") or "-",
+            _item_name(best_item) or "-",
             best_index,
         )
     return best_item
@@ -451,14 +505,15 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
     if not is_copy_play_enabled():
         return source_pick_code
 
-    temp_cid = _copy_play_temp_cid()
-    if not temp_cid:
-        logger.warning("  ➜ [复制播放] 已开启但未配置临时目录，终止本次点播。")
-        return ""
-
     client = P115Service.get_client()
     if not client:
         logger.warning("  ➜ [复制播放] 115 客户端未初始化，终止本次点播。")
+        return ""
+
+    try:
+        temp_cid = _ensure_copy_play_temp_dir(client)
+    except Exception as e:
+        logger.warning("  ➜ [复制播放] 无法确认复制播放目录，终止本次点播：%s", e)
         return ""
 
     try:

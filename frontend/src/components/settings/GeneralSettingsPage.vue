@@ -564,25 +564,8 @@
                             <template #unchecked>直接播放源文件</template>
                         </n-switch>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">实验功能：点播前复制到临时目录，停止播放后自动删除临时克隆文件。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">实验功能：点播前自动复制到根目录 / ETK复制播放，停止播放后自动删除临时克隆文件。</n-text>
                         </template>
-                    </n-form-item>
-
-                    <n-form-item v-if="configModel.p115_copy_play_enabled" label="复制播放临时目录" path="p115_copy_play_temp_cid">
-                      <n-input-group>
-                        <n-input
-                          :value="configModel.p115_copy_play_temp_name || configModel.p115_copy_play_temp_cid"
-                          placeholder="选择临时克隆目录"
-                          readonly
-                          @click="openFolderSelector('copy_play_temp', configModel.p115_copy_play_temp_cid)"
-                        >
-                          <template #prefix><n-icon :component="FolderIcon" /></template>
-                        </n-input>
-                        <n-button type="primary" ghost @click="openFolderSelector('copy_play_temp', configModel.p115_copy_play_temp_cid)">选择</n-button>
-                      </n-input-group>
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">建议单独建一个空目录，ETK 会清理自己创建的临时克隆文件。</n-text>
-                      </template>
                     </n-form-item>
 
                     <n-form-item label="本地 STRM 根目录" path="local_strm_root">
@@ -3246,9 +3229,6 @@ const confirmFolderSelection = () => {
   } else if (selectorContext.value === 'media_root') {
     configModel.value.p115_media_root_cid = cid;
     configModel.value.p115_media_root_name = name;
-  } else if (selectorContext.value === 'copy_play_temp') {
-    configModel.value.p115_copy_play_temp_cid = cid;
-    configModel.value.p115_copy_play_temp_name = name;
   } else if (selectorContext.value === 'shared_cache_path') {
     configModel.value.p115_shared_cache_cid = cid;
     configModel.value.p115_shared_cache_name = name;
