@@ -492,6 +492,12 @@ def _lookup_preid_from_p115_cache(file_info: Dict[str, Any]) -> str:
     preid = _norm_preid(file_info.get('preid') or meta.get('preid') or meta.get('pre_sha1') or meta.get('pre_sha1_128k'))
     if preid:
         return preid
+    raw = file_info.get('raw_ffprobe_json') if isinstance(file_info.get('raw_ffprobe_json'), dict) else file_info.get('raw')
+    etk = raw.get('_etk') if isinstance(raw, dict) and isinstance(raw.get('_etk'), dict) else {}
+    preid = _norm_preid(etk.get('preid') or etk.get('pre_sha1') or etk.get('pre_sha1_128k'))
+    if preid:
+        _save_preid_to_p115_cache(file_info, preid)
+        return preid
     sha1 = _norm_sha1(file_info.get('sha1'))
     fid = str(file_info.get('fid') or file_info.get('file_id') or '').strip()
     pc = str(file_info.get('pick_code') or file_info.get('pc') or meta.get('pick_code') or meta.get('pc') or '').strip()
@@ -3151,6 +3157,9 @@ def _raw_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
     etk = raw.get('_etk') if isinstance(raw.get('_etk'), dict) else {}
     etk = dict(etk or {})
     etk.setdefault('sha1', sha1)
+    preid = _norm_preid(file_info.get('preid') or etk.get('preid'))
+    if preid:
+        etk['preid'] = preid
     if file_info.get('tmdb_id'):
         etk.setdefault('tmdb_id', str(file_info.get('tmdb_id')))
     if file_info.get('item_type') in ('Movie', 'Episode', 'Season'):

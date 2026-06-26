@@ -4162,7 +4162,7 @@ class P115CacheManager:
         if isinstance(ctx, dict):
             # 只保留跨账号、长期稳定的共享字段。
             # season_number / episode_number 是媒体身份的一部分，上传到中心后可避免消费端再次从文件名正则猜集号。
-            allowed = {"tmdb_id", "type", "original_language", "sha1", "season_number", "episode_number"}
+            allowed = {"tmdb_id", "type", "original_language", "sha1", "preid", "season_number", "episode_number"}
             raw_ffprobe_json["_etk"] = {
                 k: v for k, v in ctx.items()
                 if k in allowed and v not in [None, "", [], {}]
@@ -4176,6 +4176,22 @@ class P115CacheManager:
     def _norm_preid(value):
         text = str(value or '').strip().upper()
         return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+    @staticmethod
+    def _extract_preid_from_raw_etk(raw_ffprobe_json):
+        try:
+            if isinstance(raw_ffprobe_json, str):
+                raw_ffprobe_json = json.loads(raw_ffprobe_json)
+        except Exception:
+            return ''
+        if not isinstance(raw_ffprobe_json, dict):
+            return ''
+        ctx = raw_ffprobe_json.get('_etk')
+        if not isinstance(ctx, dict):
+            return ''
+        return P115CacheManager._norm_preid(
+            ctx.get('preid') or ctx.get('pre_sha1') or ctx.get('pre_sha1_128k')
+        )
 
     @staticmethod
     def _ensure_preid_column():
@@ -4316,6 +4332,24 @@ class P115CacheManager:
         if existing:
             return existing
 
+        raw_preid = P115CacheManager._extract_preid_from_raw_etk(
+            item.get('raw_ffprobe_json') or item.get('raw')
+        )
+        if raw_preid:
+            P115CacheManager._update_preid_for_existing_cache(
+                raw_preid,
+                fid=fid,
+                parent_id=item.get('parent_id') or item.get('pid') or item.get('cid'),
+                name=file_name,
+                sha1=sha1,
+                pick_code=pick_code,
+            )
+            logger.debug(
+                f"  ➜ [115缓存] 命中 RAW _etk.preid，跳过直链 Range: "
+                f"{file_name or sha1 or pick_code} -> {raw_preid[:12]}..."
+            )
+            return raw_preid
+
         hinted_preid = P115CacheManager._lookup_preid_hint(
             item,
             sha1=sha1,
@@ -4424,6 +4458,30 @@ class P115CacheManager:
             raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
             mediainfo_json = P115CacheManager._merge_center_intro_before_mediainfo_cache(sha1, mediainfo_json)
 
+            # 整理/MP直出提取媒体信息时顺手补齐 preid，并写进 RAW _etk。
+            # 后续入库/共享登记可直接复用，避免再次拉直链 Range 计算前 128KB SHA1。
+            preid = P115CacheManager._extract_preid_from_raw_etk(raw_ffprobe_json)
+            try:
+                if not preid:
+                    preid = P115CacheManager.ensure_file_preid(
+                        file_info if isinstance(file_info, dict) else {'sha1': sha1},
+                        sha1=sha1,
+                        fid=fid,
+                        pick_code=pick_code,
+                        file_name=file_name,
+                    )
+                if preid and isinstance(file_info, dict):
+                    file_info['preid'] = preid
+                if preid and isinstance(raw_ffprobe_json, dict):
+                    ctx = raw_ffprobe_json.get('_etk') if isinstance(raw_ffprobe_json.get('_etk'), dict) else {}
+                    ctx = dict(ctx or {})
+                    ctx.setdefault('sha1', sha1)
+                    ctx['preid'] = preid
+                    raw_ffprobe_json['_etk'] = ctx
+                    raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
+            except Exception as e_preid:
+                logger.debug(f"  ➜ [媒体信息缓存] 顺手计算 preid 失败: sha1={sha1[:12]}..., err={e_preid}")
+
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
@@ -4440,21 +4498,6 @@ class P115CacheManager:
                         Json(raw_ffprobe_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)) if raw_ffprobe_json else None
                     ))
                     conn.commit()
-
-            # 整理/MP直出提取媒体信息时顺手补齐 preid：
-            # 只读取前 128KB，写入 p115_filesystem_cache，供后续 Rapid v2 登记/秒传直接复用。
-            try:
-                preid = P115CacheManager.ensure_file_preid(
-                    file_info if isinstance(file_info, dict) else {'sha1': sha1},
-                    sha1=sha1,
-                    fid=fid,
-                    pick_code=pick_code,
-                    file_name=file_name,
-                )
-                if preid and isinstance(file_info, dict):
-                    file_info['preid'] = preid
-            except Exception as e_preid:
-                logger.debug(f"  ➜ [媒体信息缓存] 顺手计算 preid 失败: sha1={sha1[:12]}..., err={e_preid}")
 
             logger.debug(f"  ➜ [媒体信息缓存] 已写入本地 p115_mediainfo_cache -> {sha1[:12]}...")
             return True
@@ -4537,11 +4580,16 @@ class P115CacheManager:
                 m.parent_series_tmdb_id,
                 m.season_number,
                 m.episode_number,
-                COALESCE(NULLIF(m.original_language, ''), NULLIF(p.original_language, '')) AS original_language
+                COALESCE(NULLIF(m.original_language, ''), NULLIF(p.original_language, '')) AS original_language,
+                fc.preid
             FROM media_metadata m
             LEFT JOIN media_metadata p
               ON p.tmdb_id = m.parent_series_tmdb_id
              AND p.item_type = 'Series'
+            LEFT JOIN p115_filesystem_cache fc
+              ON UPPER(fc.sha1) = %s
+             AND fc.preid IS NOT NULL
+             AND fc.preid <> ''
             WHERE m.file_sha1_json ? %s
             ORDER BY
                 CASE m.item_type
@@ -4555,7 +4603,7 @@ class P115CacheManager:
                 m.last_updated_at DESC NULLS LAST
             LIMIT 1
             """,
-            (sha1,)
+            (sha1, sha1)
         )
         row = cursor.fetchone()
         if not row:
@@ -4588,6 +4636,7 @@ class P115CacheManager:
             'season_number': _ctx_int(row.get('season_number')),
             'episode_number': _ctx_int(row.get('episode_number')),
             'sha1': sha1,
+            'preid': P115CacheManager._norm_preid(row.get('preid')),
         }
         return {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
 
@@ -4671,8 +4720,8 @@ class P115CacheManager:
                     ctx = raw_probe.get('_etk') if isinstance(raw_probe.get('_etk'), dict) else {}
                     need_backfill = not P115CacheManager._raw_ffprobe_has_useful_etk(raw_probe)
 
-                    # 即使已有 _etk，也允许补齐缺失的 original_language / sha1 / 季集号。
-                    if not ctx.get('original_language') or not ctx.get('sha1'):
+                    # 即使已有 _etk，也允许补齐缺失的 original_language / sha1 / preid / 季集号。
+                    if not ctx.get('original_language') or not ctx.get('sha1') or not P115CacheManager._norm_preid(ctx.get('preid')):
                         need_backfill = True
                     if str(ctx.get('type') or '').strip().lower() in ('tv', 'series', 'season', 'episode'):
                         if ctx.get('season_number') in (None, '') or ctx.get('episode_number') in (None, ''):
@@ -8505,13 +8554,15 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 probe_sha1 = sha1 or file_item.get('sha1') or file_item.get('sha')
                                 if probe_sha1:
                                     probe_sha1 = str(probe_sha1).upper()
-                                    P115CacheManager.save_mediainfo_cache(probe_sha1, emby_obj, raw_ffprobe)
-                                    try:
-                                        cached_preid = P115CacheManager.ensure_file_preid(file_item, sha1=probe_sha1, fid=fid, pick_code=pick_code, file_name=original_name)
-                                        if cached_preid:
-                                            file_item['preid'] = cached_preid
-                                    except Exception as e_preid:
-                                        logger.debug(f"  ➜ [MP直出] 媒体信息提取后计算 preid 失败: {original_name} -> {e_preid}")
+                                    P115CacheManager.save_mediainfo_cache(
+                                        probe_sha1,
+                                        emby_obj,
+                                        raw_ffprobe,
+                                        file_info=file_item,
+                                        fid=fid,
+                                        pick_code=pick_code,
+                                        file_name=original_name,
+                                    )
                                     sha1 = probe_sha1
                                     file_item['sha1'] = probe_sha1
                                 mediainfo_text = json.dumps(emby_obj, ensure_ascii=False, indent=2)
@@ -8635,6 +8686,7 @@ def _extract_raw_ffprobe_identity(raw_ffprobe_json):
     media_type = ctx.get("type") or ctx.get("media_type") or ctx.get("item_type")
     original_language = ctx.get("original_language")
     sha1 = ctx.get("sha1")
+    preid = P115CacheManager._norm_preid(ctx.get("preid") or ctx.get("pre_sha1") or ctx.get("pre_sha1_128k"))
 
     def _identity_int(*values):
         for value in values:
@@ -8667,6 +8719,7 @@ def _extract_raw_ffprobe_identity(raw_ffprobe_json):
         "season_number": season_number,
         "episode_number": episode_number,
         "sha1": str(sha1).strip().upper() if sha1 not in [None, ""] else None,
+        "preid": preid,
     }
     return {k: v for k, v in identity.items() if v not in [None, "", [], {}]}
 

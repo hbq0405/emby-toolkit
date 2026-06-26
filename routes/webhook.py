@@ -186,22 +186,77 @@ def _drain_pending_webhook_tasks():
             _schedule_pending_webhook_drain()
 
 
-def _fix_mp_tv_parent_id(client, file_info):
-    """MP 直出剧集父目录轻量修正：直接使用 fs_get_info 获取真实的父目录 ID。"""
-    try:
-        if (file_info.get('media_type') or '').lower() != 'tv':
-            return
+def _first_mp_detail_value(data, *keys):
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, '', [], {}):
+            return value
+    return None
 
+
+def _normalize_mp_detail_size(value):
+    if value in (None, '', [], {}):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            size = int(value)
+            return size if size > 0 else None
+        text = str(value).strip().replace(',', '')
+        if not text:
+            return None
+        if re.fullmatch(r'\d+(?:\.\d+)?', text):
+            size = int(float(text))
+            return size if size > 0 else None
+    except Exception:
+        return None
+    return None
+
+
+def _refresh_mp_file_info_from_115(client, file_info):
+    """Use 115 file detail as the authority for MP webhook file identity."""
+    try:
         file_id = file_info.get('file_id')
         if not file_id:
             return
 
-        # 通过 115 聚合客户端按接口优先级获取真实的文件详情
         info_res = client.fs_get_info(file_id)
         if info_res and info_res.get('state') and info_res.get('data'):
             data = info_res['data']
-            
-            # ★ 兼容 OpenAPI 的 paths 字段提取父目录 ID
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            if not isinstance(data, dict):
+                return
+
+            detail_size = _normalize_mp_detail_size(
+                _first_mp_detail_value(data, 'size_byte', 'fs', 'file_size', 'size', 's')
+            )
+            if detail_size:
+                old_size = _normalize_mp_detail_size(file_info.get('size') or file_info.get('fs'))
+                file_info['size'] = detail_size
+                file_info['fs'] = detail_size
+                if old_size and old_size != detail_size:
+                    logger.warning(
+                        f"  ➜ [MP上传] 已用 115 实时详情修正文件大小: "
+                        f"fid={file_id}, {old_size} -> {detail_size} | {file_info.get('name')}"
+                    )
+                else:
+                    logger.debug(
+                        f"  ➜ [MP上传] 已采用 115 实时详情文件大小: "
+                        f"fid={file_id}, size={detail_size} | {file_info.get('name')}"
+                    )
+
+            detail_sha1 = _first_mp_detail_value(data, 'sha1', 'sha', 'file_sha1')
+            if detail_sha1:
+                file_info['sha1'] = str(detail_sha1).strip().upper()
+
+            detail_pickcode = _first_mp_detail_value(data, 'pc', 'pick_code', 'pickcode')
+            if detail_pickcode:
+                file_info['pickcode'] = str(detail_pickcode).strip()
+
+            detail_name = _first_mp_detail_value(data, 'fn', 'n', 'file_name', 'name')
+            if detail_name and not file_info.get('name'):
+                file_info['name'] = str(detail_name)
+
             real_parent_id = data.get('parent_id') or data.get('pid') or data.get('cid')
             if not real_parent_id and 'paths' in data and isinstance(data['paths'], list) and len(data['paths']) > 0:
                 last_path_node = data['paths'][-1]
@@ -210,13 +265,12 @@ def _fix_mp_tv_parent_id(client, file_info):
             if real_parent_id and str(real_parent_id) != str(file_info.get('parent_id')):
                 old_parent_id = file_info.get('parent_id')
                 file_info['parent_id'] = str(real_parent_id)
-                
                 logger.info(
-                    f"  ➜ [MP直出] 季目录已修正: "
+                    f"  ➜ [MP上传] 父目录已修正: "
                     f"{old_parent_id} -> {real_parent_id} | {file_info.get('name')}"
                 )
     except Exception as e:
-        logger.warning(f"  ➜ [MP直出] 查询真实父目录CID失败，沿用 MP 目录ID: {file_info.get('name')} -> {e}")
+        logger.warning(f"  ➜ [MP上传] 查询 115 文件详情失败，沿用 MP 通知字段: {file_info.get('name')} -> {e}")
 
 def _flush_mp_batch(key):
     """缓冲结束，将收集到的同集视频和字幕打包送入核心处理"""
@@ -250,6 +304,7 @@ def _flush_mp_batch(key):
 
         file_nodes = []
         for f in files:
+            _refresh_mp_file_info_from_115(client, f)
             file_nodes.append({
                 'fid': f.get('file_id'),
                 'file_id': f.get('file_id'),
@@ -261,6 +316,7 @@ def _flush_mp_batch(key):
                 'parent_id': f.get('parent_id'),
                 'pc': f.get('pickcode'),
                 'pick_code': f.get('pickcode'),
+                'sha1': f.get('sha1'),
                 'size': f.get('size'),
                 'fs': f.get('fs') or f.get('size'),
                 '115_path': f.get('115_path'), # ★ 核心新增：将 115 物理路径传递给底层
@@ -306,7 +362,8 @@ def _process_mp_passthrough_immediate(file_info):
     title = file_info.get('title') or ''
     file_name = file_info.get('name')
 
-    _fix_mp_tv_parent_id(client, file_info)
+    _refresh_mp_file_info_from_115(client, file_info)
+    file_name = file_info.get('name') or file_name
 
     logger.info(f"  ➜ [MP直出] 开始处理单文件：{file_name}。")
     logger.debug(f"  ➜ [MP直出] 单文件处理详情：TMDb={tmdb_id}, 类型={media_type}")
@@ -328,6 +385,7 @@ def _process_mp_passthrough_immediate(file_info):
             'parent_id': file_info.get('parent_id'),
             'pc': file_info.get('pickcode'),
             'pick_code': file_info.get('pickcode'),
+            'sha1': file_info.get('sha1'),
             'size': file_info.get('size'),
             'fs': file_info.get('fs') or file_info.get('size'),
             '115_path': file_info.get('115_path'),
@@ -1547,12 +1605,6 @@ def emby_webhook():
             pickcode = target_item.get("pickcode")
             dir_cid = target_dir.get("fileid")
 
-            file_size = (
-                target_item.get("size")
-                or source_item.get("size")
-                or transfer_info.get("total_size")
-            )
-            
             tmdb_id = media_info.get("tmdb_id")
             media_type_cn = media_info.get("type") 
             title = media_info.get("title")
@@ -1577,8 +1629,8 @@ def emby_webhook():
                     'title': title,
                     'season_num': begin_season,
                     'episode_num': begin_episode,
-                    'size': file_size,
-                    'fs': file_size,
+                    'size': None,
+                    'fs': None,
                     '115_path': target_item.get("path") # ★ 核心新增：直接提取 115 物理路径
                 }
                 
