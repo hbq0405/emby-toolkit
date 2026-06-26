@@ -26,6 +26,7 @@ from handler.p115_copy_play import (
     prepare_copy_play_pick_code,
     recycle_clone_after_direct_url,
 )
+from handler import p115_play_pool
 from utils import extract_pickcode_from_strm_url
 
 import extensions
@@ -973,6 +974,36 @@ def proxy_all(path):
             # ====================================================================
             if pick_code:
                 player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+                play_client_key = "|".join([
+                    request.args.get('DeviceId') or request.args.get('X-Emby-Device-Id') or request.headers.get('X-Emby-Device-Id') or request.remote_addr or "",
+                    request.headers.get('X-Emby-Client') or "",
+                    request.headers.get('User-Agent') or "",
+                ])
+
+                if p115_play_pool.has_usable_pool():
+                    try:
+                        play_result = p115_play_pool.prepare_play_pool_pick_code(
+                            pick_code,
+                            file_name=display_name,
+                            item_id=item_id,
+                            play_session_id=play_session_id,
+                            user_id=request.args.get('UserId', ''),
+                            source='reverse_proxy',
+                            client_key=play_client_key,
+                            user_agent=player_ua,
+                        )
+                        real_115_url = p115_play_pool.get_direct_url(play_result, user_agent=player_ua)
+                        if real_115_url:
+                            p115_play_pool.recycle_session_after_direct_url(play_result, "起播后清理")
+                            response = redirect(real_115_url, code=302)
+                            response.headers['Access-Control-Allow-Origin'] = '*'
+                            return response
+                        logger.warning("  ⚠️ [小号播放] 小号池未拿到直链，已按小号池优先规则中止本次播放。")
+                        return Response("Play pool failed.", status=503)
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ [小号播放] 小号池播放失败，已按小号池优先规则中止本次播放: {e}")
+                        return Response(f"Play pool failed: {e}", status=503)
+
                 client = P115Service.get_client()
                 if not client:
                     return "115 Client not initialized", 500
@@ -983,11 +1014,7 @@ def proxy_all(path):
                     "play_session_id": play_session_id,
                     "user_id": request.args.get('UserId', ''),
                     "source": 'reverse_proxy',
-                    "client_key": "|".join([
-                        request.args.get('DeviceId') or request.args.get('X-Emby-Device-Id') or request.headers.get('X-Emby-Device-Id') or request.remote_addr or "",
-                        request.headers.get('X-Emby-Client') or "",
-                        request.headers.get('User-Agent') or "",
-                    ]),
+                    "client_key": play_client_key,
                     "client_name": request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
                 }
                 play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)

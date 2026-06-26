@@ -17,6 +17,7 @@ from gevent.lock import Semaphore
 import task_manager
 import handler.emby as emby
 from handler.p115_copy_play import cleanup_for_playback_stop
+from handler import p115_play_pool
 import config_manager
 import constants
 import handler.telegram as telegram
@@ -1722,6 +1723,7 @@ def emby_webhook():
                         cleanup_data = dict(data)
                         cleanup_data['_etk_webhook_remote_addr'] = request.remote_addr or ''
                         spawn(cleanup_for_playback_stop, cleanup_data)
+                        spawn(p115_play_pool.cleanup_for_playback_stop, cleanup_data)
                     except Exception as e:
                         logger.error(f"  ➜ [复制播放] 停止播放清理任务分配失败: {e}")
 

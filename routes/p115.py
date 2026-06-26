@@ -21,6 +21,7 @@ from handler.p115_copy_play import (
     prepare_copy_play_pick_code,
     recycle_clone_after_direct_url,
 )
+from handler import p115_play_pool
 import constants
 import config_manager
 from functools import lru_cache, wraps
@@ -238,6 +239,15 @@ _cookie_qrcode_data = {
     "sign": None
 }
 
+_play_pool_cookie_qrcode_data = {
+    "uid": None,
+    "time": None,
+    "sign": None,
+    "app_type": "alipaymini",
+}
+_play_pool_cookie_qrcode_sessions = {}
+_play_pool_cookie_qrcode_lock = threading.Lock()
+
 @p115_bp.route('/cookie_qrcode', methods=['GET'])
 @admin_required
 def get_cookie_qrcode():
@@ -334,6 +344,87 @@ def save_manual_cookie():
         return jsonify({"success": True, "message": "Cookie 已保存"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+@p115_bp.route('/play_pool/cookie_qrcode', methods=['GET'])
+@admin_required
+def get_play_pool_cookie_qrcode():
+    app_type = request.args.get('app', 'alipaymini')
+    try:
+        from handler.p115_service import get_115_ua
+        headers = {"User-Agent": get_115_ua(app_type)}
+        url = f"https://qrcodeapi.115.com/api/1.0/{app_type}/1.0/token/?app={app_type}"
+        resp = requests.get(url, headers=headers, timeout=10).json()
+        if resp.get('state') == 1:
+            data = resp.get('data', {})
+            uid = data.get('uid')
+            session = {
+                "uid": uid,
+                "time": data.get('time'),
+                "sign": data.get('sign'),
+                "app_type": app_type,
+                "created_at": time.time(),
+            }
+            with _play_pool_cookie_qrcode_lock:
+                _play_pool_cookie_qrcode_data.update(session)
+                if uid:
+                    _play_pool_cookie_qrcode_sessions[str(uid)] = session
+                    cutoff = time.time() - 600
+                    for key, value in list(_play_pool_cookie_qrcode_sessions.items()):
+                        if float(value.get("created_at") or 0) < cutoff:
+                            _play_pool_cookie_qrcode_sessions.pop(key, None)
+            return jsonify({"success": True, "data": {"qrcode": data.get('qrcode'), "uid": uid}})
+        return jsonify({"success": False, "message": resp.get('message', '获取失败')}), 500
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@p115_bp.route('/play_pool/cookie_qrcode/status', methods=['GET'])
+@admin_required
+def check_play_pool_cookie_qrcode_status():
+    request_uid = str(request.args.get('uid') or '').strip()
+    with _play_pool_cookie_qrcode_lock:
+        session = _play_pool_cookie_qrcode_sessions.get(request_uid) if request_uid else None
+        if not session:
+            session = dict(_play_pool_cookie_qrcode_data)
+    app_type = request.args.get('app', session.get('app_type', 'alipaymini'))
+    uid = session.get('uid')
+    time_val = session.get('time')
+    sign = session.get('sign')
+    if not uid:
+        return jsonify({"success": False, "status": "expired", "message": "请先获取二维码"})
+    try:
+        from handler.p115_service import get_115_ua
+        headers = {"User-Agent": get_115_ua(app_type)}
+        url = f"https://qrcodeapi.115.com/get/status/?uid={uid}&time={time_val}&sign={sign}"
+        resp = requests.get(url, headers=headers, timeout=10).json()
+        state = resp.get('state')
+        if state == 0:
+            return jsonify({"success": False, "status": "expired", "message": "二维码已过期"})
+        if state == 1:
+            status = resp.get('data', {}).get('status')
+            if status == 1:
+                return jsonify({"success": True, "status": "waiting", "message": "等待扫码"})
+            if status == 2:
+                login_url = f"https://passportapi.115.com/app/1.0/{app_type}/1.0/login/qrcode"
+                login_resp = requests.post(login_url, data={"account": uid, "app": app_type}, headers=headers, timeout=10)
+                login_data = login_resp.json()
+                if login_data.get('state') == 1:
+                    cookies_dict = login_resp.cookies.get_dict()
+                    cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
+                    return jsonify({
+                        "success": True,
+                        "status": "success",
+                        "message": "Cookie 获取成功",
+                        "data": {
+                            "cookie": cookie_str,
+                            "app_type": app_type,
+                        }
+                    })
+                return jsonify({"success": False, "status": "error", "message": login_data.get('message', '登录失败')})
+        return jsonify({"success": True, "status": "waiting", "message": "等待扫码"})
+    except Exception as e:
+        return jsonify({"success": False, "status": "error", "message": str(e)}), 500
 
 # --- 授权码模式登录 API ---
 @p115_bp.route('/auto_save_auth', methods=['GET'])
@@ -925,6 +1016,66 @@ def create_115_directory():
             return jsonify({"status": "error", "message": resp.get('error_msg', '创建失败')}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@p115_bp.route('/play_pool', methods=['GET'])
+@admin_required
+def get_play_pool_config():
+    return jsonify({'success': True, 'data': p115_play_pool.get_public_config()})
+
+
+@p115_bp.route('/play_pool', methods=['POST'])
+@admin_required
+def save_play_pool_config():
+    data = request.json or {}
+    if 'enabled' in data:
+        result = p115_play_pool.save_pool_enabled(bool(data.get('enabled')))
+    else:
+        result = p115_play_pool.get_public_config()
+    return jsonify({'success': True, 'data': result})
+
+
+@p115_bp.route('/play_pool/accounts', methods=['POST'])
+@admin_required
+def add_play_pool_account():
+    data = request.json or {}
+    if not str(data.get('cookie') or '').strip():
+        return jsonify({'success': False, 'message': 'Cookie 不能为空'}), 400
+    item = p115_play_pool.upsert_account(data)
+    return jsonify({'success': True, 'data': item})
+
+
+@p115_bp.route('/play_pool/accounts/<account_id>', methods=['PUT'])
+@admin_required
+def update_play_pool_account(account_id):
+    item = p115_play_pool.upsert_account(request.json or {}, account_id=account_id)
+    return jsonify({'success': True, 'data': item})
+
+
+@p115_bp.route('/play_pool/accounts/<account_id>', methods=['DELETE'])
+@admin_required
+def delete_play_pool_account(account_id):
+    ok = p115_play_pool.delete_account(account_id)
+    return jsonify({'success': ok})
+
+
+@p115_bp.route('/play_pool/accounts/<account_id>/speedtest', methods=['POST'])
+@admin_required
+def speedtest_play_pool_account(account_id):
+    try:
+        browser_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        result = p115_play_pool.speedtest_account(account_id, user_agent=browser_ua)
+        return jsonify({'success': True, 'data': result})
+    except Exception as e:
+        logger.error(f"  ➜ [小号播放] 小号测速失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@p115_bp.route('/play_pool/cleanup', methods=['POST'])
+@admin_required
+def cleanup_play_pool_sessions():
+    removed = p115_play_pool.cleanup_expired_sessions()
+    return jsonify({'success': True, 'removed': removed})
 
 
 def _p115_folder_id(item):

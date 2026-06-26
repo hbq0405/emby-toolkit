@@ -979,7 +979,8 @@ class P115OpenAPIClient:
             except Exception:
                 pass
 
-        # 缓存仍缺 size 时，只要能定位 fid，就实时查 115 详情补齐。
+        # 只要能定位 fid，就用 115 实时详情校正身份字段。部分文件的本地缓存 size
+        # 可能来自历史错误字段，upload/init 对 size 严格，错 1 字节都会导致秒传失败。
         if (size <= 0 or not file_name or not pick_code) and not fid and pick_code:
             if cache_mgr and hasattr(cache_mgr, 'get_fid_by_pickcode'):
                 try:
@@ -987,21 +988,29 @@ class P115OpenAPIClient:
                 except Exception:
                     fid = ''
 
-        if (size <= 0 or not file_name or not pick_code or not sha1) and fid:
+        if fid:
             try:
                 info_res = self.fs_get_info(fid)
                 data = info_res.get('data') if isinstance(info_res, dict) else {}
                 if isinstance(data, list):
                     data = data[0] if data else {}
                 if isinstance(data, dict):
+                    detail_sha1 = str(data.get('sha1') or data.get('sha') or data.get('file_sha1') or '').strip().upper()
+                    detail_size = _safe_size(data.get('size_byte') or data.get('fs') or data.get('size') or data.get('file_size'))
                     if not sha1:
-                        sha1 = str(data.get('sha1') or data.get('sha') or data.get('file_sha1') or '').strip().upper()
+                        sha1 = detail_sha1
                     if not pick_code:
                         pick_code = str(data.get('pc') or data.get('pick_code') or data.get('pickcode') or '').strip()
                     if not file_name:
                         file_name = str(data.get('fn') or data.get('n') or data.get('file_name') or data.get('name') or '').strip()
-                    if size <= 0:
-                        size = _safe_size(data.get('size_byte') or data.get('fs') or data.get('size') or data.get('file_size'))
+                    if detail_size and (size <= 0 or (sha1 and detail_sha1 and sha1 == detail_sha1 and size != detail_size)):
+                        old_size = size
+                        size = detail_size
+                        if old_size and old_size != detail_size:
+                            logger.warning(
+                                f"  ➜ [共享秒传] 已用 115 实时详情修正 size: "
+                                f"fid={fid}, sha1={sha1[:12]}..., {old_size} -> {detail_size}"
+                            )
 
                     parent_id = data.get('parent_id') or data.get('pid') or data.get('cid')
                     if cache_mgr and fid and parent_id and file_name and hasattr(cache_mgr, 'save_file_cache'):
@@ -1648,6 +1657,11 @@ class P115CookieClient:
             rapid_meta.get('pick_code'), rapid_meta.get('pickcode'), rapid_meta.get('pc'),
             source_meta.get('pick_code'), source_meta.get('pickcode'), source_meta.get('pc'),
         ) or '').strip()
+        fid = str(_first(
+            payload.get('fid'), payload.get('file_id'), payload.get('id'),
+            rapid_meta.get('fid'), rapid_meta.get('file_id'), rapid_meta.get('id'),
+            source_meta.get('fid'), source_meta.get('file_id'), source_meta.get('id'),
+        ) or '').strip()
         file_name = str(_first(
             payload.get('file_name'), payload.get('filename'), payload.get('name'),
             rapid_meta.get('file_name'), rapid_meta.get('filename'), rapid_meta.get('name'),
@@ -1673,14 +1687,63 @@ class P115CookieClient:
                     row = cache_mgr.get_file_cache_by_sha1(sha1)
                 if not row and pick_code and hasattr(cache_mgr, 'get_file_cache_by_pickcode'):
                     row = cache_mgr.get_file_cache_by_pickcode(pick_code)
+                if not row and fid and hasattr(cache_mgr, 'get_file_cache_by_id'):
+                    row = cache_mgr.get_file_cache_by_id(fid)
                 if row:
                     row = dict(row)
+                    fid = fid or str(row.get('id') or row.get('fid') or '').strip()
                     pick_code = pick_code or str(row.get('pick_code') or '').strip()
                     file_name = file_name or str(row.get('name') or '').strip()
                     if size <= 0:
                         size = _safe_size(row.get('size'))
             except Exception as e:
                 logger.debug(f"  ➜ [Cookie秒传] 查询 p115_filesystem_cache 失败: {e}")
+
+        if not fid and pick_code and cache_mgr and hasattr(cache_mgr, 'get_fid_by_pickcode'):
+            try:
+                fid = str(cache_mgr.get_fid_by_pickcode(pick_code) or '').strip()
+            except Exception:
+                fid = ''
+
+        if fid:
+            try:
+                info_res = self.fs_get_info(fid)
+                data = info_res.get('data') if isinstance(info_res, dict) else {}
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+                if isinstance(data, dict):
+                    detail_sha1 = str(data.get('sha1') or data.get('sha') or data.get('file_sha1') or '').strip().upper()
+                    detail_size = _safe_size(data.get('size_byte') or data.get('fs') or data.get('size') or data.get('file_size'))
+                    if not sha1:
+                        sha1 = detail_sha1
+                    if not pick_code:
+                        pick_code = str(data.get('pc') or data.get('pick_code') or data.get('pickcode') or '').strip()
+                    if not file_name:
+                        file_name = str(data.get('fn') or data.get('n') or data.get('file_name') or data.get('name') or '').strip()
+                    if detail_size and (size <= 0 or (sha1 and detail_sha1 and sha1 == detail_sha1 and size != detail_size)):
+                        old_size = size
+                        size = detail_size
+                        if old_size and old_size != detail_size:
+                            logger.warning(
+                                f"  ➜ [Cookie秒传] 已用 115 实时详情修正 size: "
+                                f"fid={fid}, sha1={sha1[:12]}..., {old_size} -> {detail_size}"
+                            )
+                    parent_id = data.get('parent_id') or data.get('pid') or data.get('cid')
+                    if cache_mgr and fid and parent_id and file_name and hasattr(cache_mgr, 'save_file_cache'):
+                        try:
+                            cache_mgr.save_file_cache(
+                                fid=fid,
+                                parent_id=parent_id,
+                                name=file_name,
+                                sha1=sha1 or None,
+                                pick_code=pick_code or None,
+                                local_path=None,
+                                size=size or 0,
+                            )
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"  ➜ [Cookie秒传] 实时查询 115 文件详情失败 fid={fid}: {e}")
 
         if not target_cid:
             return {'state': False, 'error_msg': 'Cookie 秒传缺少目标目录 cid', '_rapid_upload_backend': 'cookie'}
