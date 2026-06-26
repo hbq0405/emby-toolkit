@@ -237,12 +237,12 @@ def _run_mediainfo_intro_upload(file_path: str):
         chapters = extract_intro_chapters(data)
         if not chapters:
             if _should_log_mediainfo_intro_state(file_path, ("skip", "no_intro_chapters")):
-                logger.info(f"  ➜ [共享片头] 跳过：{basename}（未检测到片头章节）")
+                logger.debug(f"  ➜ [共享片头] 跳过：{basename}（未检测到片头章节）")
             return
         sha1 = sha1_for_mediainfo_path(file_path)
         if not sha1:
             if _should_log_mediainfo_intro_state(file_path, ("skip", "sha1_not_found")):
-                logger.info(f"  ➜ [共享片头] 跳过：{basename}（未找到本地 SHA1 缓存）")
+                logger.debug(f"  ➜ [共享片头] 跳过：{basename}（未找到本地 SHA1 缓存）")
             return
 
         chapter_key = _intro_chapters_key(chapters)
@@ -265,7 +265,7 @@ def _run_mediainfo_intro_upload(file_path: str):
             return
 
         if res.get("skipped"):
-            logger.info(f"  ➜ [共享片头] 跳过：{basename}（{_shared_intro_skip_reason(res.get('reason'))}）")
+            logger.debug(f"  ➜ [共享片头] 跳过：{basename}（{_shared_intro_skip_reason(res.get('reason'))}）")
             return
 
         message = res.get("message") or res.get("reason") or "未知错误"
