@@ -5,7 +5,7 @@ import requests
 import re
 import os
 import json
-from flask import Flask, request, Response, redirect, send_file
+from flask import Flask, request, Response, redirect, send_file, session
 from urllib.parse import urlparse, urlunparse
 from datetime import datetime, timedelta
 import time
@@ -58,6 +58,68 @@ def _get_real_emby_url_and_key():
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
+
+
+def _extract_emby_token_from_request():
+    token = (
+        request.args.get('api_key')
+        or request.args.get('AccessToken')
+        or request.args.get('X-Emby-Token')
+        or request.args.get('X-MediaBrowser-Token')
+        or request.headers.get('X-Emby-Token')
+        or request.headers.get('X-MediaBrowser-Token')
+        or ''
+    )
+    if token:
+        return str(token).strip()
+    auth = request.headers.get('Authorization') or ''
+    match = re.search(r'(?:Token|token)="?([^",\s]+)', auth)
+    return match.group(1).strip() if match else ''
+
+
+def _resolve_request_user_id(base_url, api_key, full_path="", play_session_id=""):
+    user_id = (
+        request.args.get('UserId')
+        or request.args.get('userId')
+        or request.args.get('user_id')
+        or ''
+    )
+    if user_id:
+        return str(user_id).strip()
+
+    user_id_match = re.search(r'/Users/([^/]+)/', full_path or '', re.IGNORECASE)
+    if user_id_match:
+        return user_id_match.group(1).strip()
+
+    token = _extract_emby_token_from_request()
+    if token and token != api_key:
+        try:
+            resp = requests.get(
+                f"{base_url.rstrip('/')}/emby/Users/Me",
+                headers={"X-Emby-Token": token, "Accept": "application/json"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                user_id = str((resp.json() or {}).get('Id') or '').strip()
+                if user_id:
+                    return user_id
+        except Exception as e:
+            logger.debug(f"  ➜ [小号播放] 通过请求 Token 解析用户失败: {e}")
+
+    if play_session_id:
+        try:
+            resp = requests.get(f"{base_url.rstrip('/')}/emby/Sessions", params={"api_key": api_key}, timeout=5)
+            if resp.status_code == 200:
+                for item in resp.json() or []:
+                    item_play_state = item.get('PlayState') or {}
+                    if str(item_play_state.get('PlaySessionId') or item.get('PlaySessionId') or '') == str(play_session_id):
+                        user_id = str(item.get('UserId') or (item.get('User') or {}).get('Id') or '').strip()
+                        if user_id:
+                            return user_id
+        except Exception as e:
+            logger.debug(f"  ➜ [小号播放] 通过 Emby Sessions 解析用户失败: {e}")
+
+    return str(session.get('emby_user_id') or '').strip()
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     """
@@ -931,12 +993,13 @@ def proxy_all(path):
             display_name = "未知文件" # ★ 新增：用于记录人看的文件名
             source_paths = []
             base_url, api_key = _get_real_emby_url_and_key()
+            current_user_id = _resolve_request_user_id(base_url, api_key, full_path, play_session_id)
 
             try:
                 playback_info_url = f"{base_url}/emby/Items/{item_id}/PlaybackInfo"
                 params = {
                     'api_key': api_key,
-                    'UserId': request.args.get('UserId', ''),
+                    'UserId': current_user_id,
                     'MaxStreamingBitrate': 140000000,
                     'PlaySessionId': play_session_id,
                 }
@@ -980,7 +1043,6 @@ def proxy_all(path):
                     request.headers.get('User-Agent') or "",
                 ])
 
-                current_user_id = request.args.get('UserId', '')
                 if p115_play_pool.has_usable_pool_for_user(current_user_id):
                     try:
                         play_result = p115_play_pool.prepare_play_pool_pick_code(
@@ -1004,6 +1066,8 @@ def proxy_all(path):
                     except Exception as e:
                         logger.warning(f"  ⚠️ [小号播放] 小号池播放失败，已按小号池优先规则中止本次播放: {e}")
                         return Response(f"Play pool failed: {e}", status=503)
+                elif p115_play_pool.has_usable_pool():
+                    logger.debug("  ➜ [小号播放] 当前用户无可用小号，回退复制播放：user_id=%s", current_user_id or "-")
 
                 client = P115Service.get_client()
                 if not client:

@@ -603,6 +603,8 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
     )
     if reusable:
         account = next((x for x in config.get("accounts") or [] if str(x.get("id")) == str(reusable.get("account_id"))), None)
+        if account and not _account_allowed_for_user(account, user_id):
+            account = None
         if reusable.get("direct_url") or (account and account.get("enabled") and account.get("cookie")):
             logger.info(
                 "  ➜ [小号播放] 复用已有小号播放记录：%s | account=%s | session=%s | direct_url=%s",
