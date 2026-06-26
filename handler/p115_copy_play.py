@@ -261,44 +261,6 @@ def _item_sha1(item):
     return str(item.get("sha1") or item.get("sha") or item.get("file_sha1") or "").strip().upper()
 
 
-def _refresh_source_cache_size_if_needed(source_row, item, *, reason=""):
-    source_fid = str(source_row.get("id") or "").strip()
-    parent_id = str(source_row.get("parent_id") or "").strip()
-    name = str(source_row.get("name") or "").strip()
-    source_pc = str(source_row.get("pick_code") or "").strip()
-    source_sha1 = _source_sha1(source_row)
-    source_size = _norm_size(source_row.get("size"))
-    item_size = _norm_size(item.get("size") or item.get("fs") or item.get("file_size")) if isinstance(item, dict) else 0
-    item_sha1 = _item_sha1(item)
-    if not source_fid or not parent_id or not name or not item_size:
-        return False
-    if source_size == item_size:
-        return False
-    if source_sha1 and item_sha1 and source_sha1 != item_sha1:
-        return False
-    try:
-        P115CacheManager.save_file_cache(
-            fid=source_fid,
-            parent_id=parent_id,
-            name=name,
-            sha1=source_sha1 or None,
-            pick_code=source_pc or None,
-            local_path=source_row.get("local_path"),
-            size=item_size,
-            preid=source_row.get("preid"),
-        )
-        source_row["size"] = item_size
-        logger.warning(
-            "  ➜ [复制播放] 已修正源文件缓存 size：FID=%s，%s -> %s%s",
-            source_fid,
-            source_size or "-",
-            item_size,
-            f"，原因={reason}" if reason else "",
-        )
-        return True
-    except Exception as e:
-        logger.debug("  ➜ [复制播放] 修正源文件缓存 size 失败：FID=%s，err=%s", source_fid, e)
-        return False
 
 
 def _probe_clone_direct_url(client, pick_code):
@@ -439,8 +401,6 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
         if duplicate_index < 0:
             continue
         if expected_sha1 and item_sha1 and item_sha1 == expected_sha1:
-            if expected_size and item_size and item_size != expected_size:
-                _refresh_source_cache_size_if_needed(source_row, item, reason="克隆文件同 SHA1")
             if fid and duplicate_index >= best_index:
                 best_item = item
                 best_index = duplicate_index
