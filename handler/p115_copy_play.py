@@ -35,6 +35,12 @@ def _item_name(item):
     return str(item.get("name") or item.get("file_name") or item.get("fn") or item.get("n") or "").strip()
 
 
+def _item_pick_code(item):
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("pick_code") or item.get("pc") or item.get("pickcode") or "").strip()
+
+
 def _item_is_dir(item):
     if not isinstance(item, dict):
         return False
@@ -88,6 +94,20 @@ def _safe_json(value, limit=800):
     except Exception:
         text = str(value)
     return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _item_brief(item):
+    if not isinstance(item, dict):
+        return {"type": type(item).__name__}
+    keys = (
+        "fid", "file_id", "id", "cid", "pid", "parent_id",
+        "name", "file_name", "fn", "n",
+        "pick_code", "pc", "pickcode",
+        "sha1", "sha", "size", "fs", "file_size",
+        "fc", "file_category", "ico", "is_dir",
+        "status", "errno", "code", "message", "error_msg",
+    )
+    return {key: item.get(key) for key in keys if key in item and item.get(key) not in (None, "", [], {})}
 
 
 def _json_text(value):
@@ -213,7 +233,7 @@ def _item_to_clone(item, fallback_parent_id="", fallback_name=""):
     if not isinstance(item, dict):
         return {}
     fid = _item_id(item)
-    pc = str(item.get("pick_code") or item.get("pc") or item.get("pickcode") or "").strip()
+    pc = _item_pick_code(item)
     name = _item_name(item) or str(fallback_name or "").strip()
     parent_id = str(item.get("parent_id") or item.get("pid") or item.get("cid") or fallback_parent_id or "").strip()
     if not fid or not pc:
@@ -228,8 +248,89 @@ def _item_to_clone(item, fallback_parent_id="", fallback_name=""):
     }
 
 
+def _probe_clone_direct_url(client, pick_code):
+    pc = str(pick_code or "").strip()
+    if not pc:
+        return {"ok": False, "reason": "missing_pick_code"}
+    user_agent = "Mozilla/5.0"
+    attempts = []
+    for method_name in ("download_url", "openapi_downurl"):
+        method = getattr(client, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            url = method(pc, user_agent=user_agent)
+            ok = bool(url)
+            attempts.append({"method": method_name, "ok": ok})
+            if ok:
+                return {"ok": True, "method": method_name}
+        except Exception as e:
+            attempts.append({"method": method_name, "ok": False, "error": str(e)[:200]})
+    return {"ok": False, "attempts": attempts}
+
+
+def _diagnose_copy_clone_failure(client, temp_cid, source_row, file_name, *, backend="", copy_resp=None, response_fids=None):
+    expected_name = str(source_row.get("name") or file_name or "").strip()
+    expected_size = _norm_size(source_row.get("size"))
+    response_fids = response_fids or []
+    try:
+        items = _list_temp_candidates(client, temp_cid, source_row, file_name)
+    except Exception as e:
+        logger.warning("  ➜ [复制播放诊断] 临时目录回查异常：%s", e)
+        return
+
+    matched = []
+    for item in items:
+        if _item_is_dir(item):
+            continue
+        item_name = _item_name(item)
+        item_size = _norm_size(item.get("size") or item.get("fs"))
+        duplicate_index = _duplicate_name_index(item_name, expected_name)
+        if duplicate_index < 0:
+            continue
+        if expected_size and item_size and item_size != expected_size:
+            continue
+        matched.append((duplicate_index, item))
+    matched.sort(key=lambda pair: pair[0], reverse=True)
+
+    logger.warning(
+        "  ➜ [复制播放诊断] %s 复制成功但未拿到可播放克隆 PC：源FID=%s，源PC=%s，SHA1=%s，size=%s，目录候选=%s，同名匹配=%s，复制返回FID=%s",
+        backend or "-",
+        source_row.get("id") or "-",
+        (str(source_row.get("pick_code") or "")[:8] + "...") if source_row.get("pick_code") else "-",
+        (str(source_row.get("sha1") or "")[:12] + "...") if source_row.get("sha1") else "-",
+        source_row.get("size") or "-",
+        len(items),
+        len(matched),
+        response_fids[:8],
+    )
+    logger.debug("  ➜ [复制播放诊断] 复制接口摘要：%s", _safe_json(copy_resp, limit=1200))
+
+    for index, item in matched[:5]:
+        fid = _item_id(item)
+        pc = _item_pick_code(item)
+        detail = {}
+        detail_resp = None
+        if fid and hasattr(client, "fs_get_info"):
+            try:
+                detail_resp = client.fs_get_info(fid)
+                detail = detail_resp.get("data") if isinstance(detail_resp, dict) else {}
+            except Exception as e:
+                detail_resp = {"state": False, "error_msg": str(e)}
+        detail_pc = _item_pick_code(detail)
+        probe_pc = detail_pc or pc
+        probe = _probe_clone_direct_url(client, probe_pc) if probe_pc else {"ok": False, "reason": "detail_missing_pick_code"}
+        logger.warning(
+            "  ➜ [复制播放诊断] 匹配克隆：序号=%s，列表=%s，详情=%s，直链探测=%s",
+            index,
+            _safe_json(_item_brief(item), limit=500),
+            _safe_json(_item_brief(detail) if detail else detail_resp, limit=700),
+            _safe_json(probe, limit=500),
+        )
+
+
 def _list_temp_candidates(client, temp_cid, source_row, file_name):
-    expected_name = str(file_name or source_row.get("name") or "").strip()
+    expected_name = str(source_row.get("name") or file_name or "").strip()
     payload = {
         "cid": temp_cid,
         "limit": 1000,
@@ -255,7 +356,7 @@ def _list_temp_candidates(client, temp_cid, source_row, file_name):
 
 
 def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
-    expected_name = str(file_name or source_row.get("name") or "").strip()
+    expected_name = str(source_row.get("name") or file_name or "").strip()
     expected_size = _norm_size(source_row.get("size"))
     items = _list_temp_candidates(client, temp_cid, source_row, file_name)
     best_item = {}
@@ -602,6 +703,15 @@ def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", p
         if clone:
             break
         last_copy_error = f"{backend} 已复制但未拿到克隆 PC"
+        _diagnose_copy_clone_failure(
+            client,
+            temp_cid,
+            source_row,
+            display_name,
+            backend=backend,
+            copy_resp=copy_resp,
+            response_fids=response_fids,
+        )
         logger.warning("  ➜ [复制播放] %s 已确认复制成功，但临时目录仍未刷出克隆体，终止本次点播，避免重复复制。", backend)
         break
 
