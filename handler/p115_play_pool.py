@@ -71,10 +71,14 @@ def _display_title(file_name):
     if not text:
         return "未知影片"
     text = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", text)
+    episode_match = re.search(r"\bS\d{1,2}E\d{1,3}\b", text, re.IGNORECASE)
+    episode_text = episode_match.group(0).upper() if episode_match else ""
     match = re.match(r"^(.+?\(\d{4}\))", text)
     if match:
-        return match.group(1).strip()
-    return text.split(" · ", 1)[0].strip() or text
+        title = match.group(1).strip()
+    else:
+        title = text.split(" · ", 1)[0].strip() or text
+    return f"{title} - {episode_text}" if episode_text else title
 
 
 def _display_user_name(user_id):
@@ -155,6 +159,7 @@ def _load_config():
         account["last_speed_bps"] = _safe_int(account.get("last_speed_bps"), 0)
         account["allowed_user_ids"] = _normalize_user_ids(account.get("allowed_user_ids"))
         account["allowed_effective_user_ids"] = _normalize_user_ids(account.get("allowed_effective_user_ids"))
+        account.pop("last_failed_at", None)
         clean_accounts.append(account)
     return {
         "enabled": bool(data.get("enabled", False)),
@@ -386,13 +391,10 @@ def _select_account(config, user_id=""):
             active_counts[account_id] = active_counts.get(account_id, 0) + 1
 
     candidates = []
-    cooldown_before = now - 300
     for account in config.get("accounts") or []:
         if not account.get("enabled") or not account.get("cookie"):
             continue
         if not _account_allowed_for_user(account, user_id):
-            continue
-        if float(account.get("last_failed_at") or 0) > cooldown_before:
             continue
         account = dict(account)
         account["_active_count"] = active_counts.get(str(account.get("id")), 0)
@@ -706,7 +708,7 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
         resp = client.rapid_upload(payload)
 
     if not isinstance(resp, dict) or not resp.get("state"):
-        _mark_account(account["id"], {"last_error": str((resp or {}).get("error_msg") or resp), "last_failed_at": _now_ts()})
+        _mark_account(account["id"], {"last_error": str((resp or {}).get("error_msg") or resp)})
         raise RuntimeError(f"小号秒传失败: {(resp or {}).get('error_msg') or resp}")
 
     clone = _extract_clone_from_rapid_response(resp, client, temp_cid, display_name, sha1, size)
