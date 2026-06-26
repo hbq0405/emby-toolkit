@@ -22,6 +22,8 @@ PLAY_POOL_TEMP_DIR_NAME = "ETK小号播放临时目录"
 PLAY_POOL_SESSION_TTL_SECONDS = 12 * 60 * 60
 _PREPARE_LOCKS = {}
 _PREPARE_LOCKS_GUARD = threading.Lock()
+_SESSION_LOCKS = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
 _ALLOWED_USER_EXPAND_CACHE = {}
 _ALLOWED_USER_EXPAND_TTL_SECONDS = 60
 
@@ -516,6 +518,26 @@ def _get_prepare_lock(key):
         return lock
 
 
+def _get_session_lock(key):
+    key = str(key or "").strip() or "default"
+    with _SESSION_LOCKS_GUARD:
+        lock = _SESSION_LOCKS.get(key)
+        if not lock:
+            lock = threading.Lock()
+            _SESSION_LOCKS[key] = lock
+        return lock
+
+
+def _find_session_by_id(session_id):
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return {}
+    for session in reversed(_load_sessions()):
+        if session_id == str(session.get("session_id") or "").strip():
+            return session
+    return {}
+
+
 def _find_reusable_session(*, source_pick_code="", item_id="", play_session_id="", user_id="", client_key=""):
     source_pick_code = str(source_pick_code or "").strip()
     item_id = str(item_id or "").strip()
@@ -806,17 +828,27 @@ def get_direct_url(play_result, user_agent=""):
     pick_code = play_result.get("pick_code")
     if not client or not pick_code:
         return ""
-    url = client.download_url(pick_code, user_agent=user_agent)
     session_id = str(((play_result or {}).get("session") or {}).get("session_id") or "").strip()
-    if url and session_id:
-        _patch_session(session_id, {
-            "direct_url": url,
-            "direct_url_cached_at": _now_ts(),
-        })
-        session = play_result.get("session") or {}
-        session["direct_url"] = url
-        session["direct_url_cached_at"] = _now_ts()
-    return url
+    lock = _get_session_lock(session_id or pick_code)
+    with lock:
+        fresh_session = _find_session_by_id(session_id)
+        cached_url = str(fresh_session.get("direct_url") or "").strip()
+        if cached_url:
+            session = play_result.get("session") or {}
+            session["direct_url"] = cached_url
+            session["direct_url_cached_at"] = fresh_session.get("direct_url_cached_at") or _now_ts()
+            return cached_url
+
+        url = client.download_url(pick_code, user_agent=user_agent)
+        if url and session_id:
+            _patch_session(session_id, {
+                "direct_url": url,
+                "direct_url_cached_at": _now_ts(),
+            })
+            session = play_result.get("session") or {}
+            session["direct_url"] = url
+            session["direct_url_cached_at"] = _now_ts()
+        return url
 
 
 def recycle_session_after_direct_url(play_result, reason="起播后清理"):
@@ -828,32 +860,34 @@ def recycle_session_after_direct_url(play_result, reason="起播后清理"):
     if not temp_pick_code and not session_id:
         return False
 
-    sessions = _load_sessions()
-    if not sessions:
-        return False
+    lock = _get_session_lock(session_id or temp_pick_code)
+    with lock:
+        sessions = _load_sessions()
+        if not sessions:
+            return False
 
-    target = None
-    for item in sessions:
-        if session_id and session_id == str(item.get("session_id") or ""):
-            target = item
-            break
-        if temp_pick_code and temp_pick_code == str(item.get("temp_pick_code") or "").strip():
-            target = item
-            break
-    if not target:
-        return False
+        target = None
+        for item in sessions:
+            if session_id and session_id == str(item.get("session_id") or ""):
+                target = item
+                break
+            if temp_pick_code and temp_pick_code == str(item.get("temp_pick_code") or "").strip():
+                target = item
+                break
+        if not target or target.get("recycled_after_direct_url"):
+            return False
 
-    account_id = str(target.get("account_id") or "")
-    account = next((x for x in _load_config().get("accounts") or [] if str(x.get("id")) == account_id), None)
-    if not account:
-        return False
-    if not _delete_session_file(account, target, reason):
-        return False
+        account_id = str(target.get("account_id") or "")
+        account = next((x for x in _load_config().get("accounts") or [] if str(x.get("id")) == account_id), None)
+        if not account:
+            return False
+        if not _delete_session_file(account, target, reason):
+            return False
 
-    target["recycled_after_direct_url"] = True
-    target["recycled_at"] = _now_ts()
-    _save_sessions(sessions)
-    return True
+        target["recycled_after_direct_url"] = True
+        target["recycled_at"] = _now_ts()
+        _save_sessions(sessions)
+        return True
 
 
 def cleanup_expired_sessions():
