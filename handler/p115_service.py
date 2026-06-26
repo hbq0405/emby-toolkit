@@ -2841,18 +2841,62 @@ class P115Service:
                 except Exception:
                     app_type = 'web'
                 sign_ua = str(_first(payload.get('sign_user_agent'), payload.get('user_agent'), payload.get('ua'), get_115_ua(app_type)) or get_115_ua('web'))
-                priority = get_115_api_priority()
-                order = [('download_url', 'Cookie蜂群Holder'), ('openapi_downurl', 'OpenAPI蜂群Holder')] if priority == 'cookie' else [('openapi_downurl', 'OpenAPI蜂群Holder'), ('download_url', 'Cookie蜂群Holder')]
+                def _sign_cookie_downurl(_pc, user_agent=None):
+                    if not self._cookie:
+                        raise RuntimeError('未配置 115 Cookie，无法执行签名取链')
+                    cache_key = (f"sign_cookie_{_pc}", user_agent)
+                    cached = _DIRECT_URL_CACHE.get(cache_key)
+                    if cached and time.time() < cached.get('expire_at', 0):
+                        return cached.get('url')
+                    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(self._cookie.download_url, _pc, user_agent)
+                    try:
+                        url = _p115_extract_down_url(future.result(timeout=12))
+                    except TimeoutError:
+                        P115Service.reset_cookie_client()
+                        raise RuntimeError('Cookie 签名取链超时')
+                    finally:
+                        try:
+                            executor.shutdown(wait=False)
+                        except Exception:
+                            pass
+                    if not url:
+                        repaired = self._repair_stale_pick_code_downurl(_pc, user_agent, backend='cookie')
+                        url = repaired.get('url') if isinstance(repaired, dict) else ''
+                    if url:
+                        _DIRECT_URL_CACHE[cache_key] = {'url': url, 'name': file_name or _pc, 'expire_at': time.time() + 180}
+                    return url
+
+                def _sign_openapi_downurl(_pc, user_agent=None):
+                    if not self._openapi:
+                        raise RuntimeError('未配置 115 Token，无法执行签名取链')
+                    cache_key = (f"sign_openapi_{_pc}", user_agent)
+                    cached = _DIRECT_URL_CACHE.get(cache_key)
+                    if cached and time.time() < cached.get('expire_at', 0):
+                        return cached.get('url')
+                    res = self._openapi.fs_downurl(_pc, user_agent)
+                    url = _p115_extract_down_url(res)
+                    if not url:
+                        repaired = self._repair_stale_pick_code_downurl(_pc, user_agent, backend='openapi')
+                        url = repaired.get('url') if isinstance(repaired, dict) else ''
+                    if url:
+                        _DIRECT_URL_CACHE[cache_key] = {'url': url, 'name': file_name or _pc, 'expire_at': time.time() + 180}
+                    return url
+
+                primary = get_115_api_priority()
+                order = (
+                    [(_sign_openapi_downurl, 'OpenAPI优先签名'), (_sign_cookie_downurl, 'Cookie备用签名')]
+                    if primary == 'cookie'
+                    else [(_sign_cookie_downurl, 'Cookie优先签名'), (_sign_openapi_downurl, 'OpenAPI备用签名')]
+                )
                 last_error = None
-                for method_name, label in order:
-                    method = getattr(self, method_name, None)
-                    if not callable(method):
-                        continue
+                for method, label in order:
                     try:
                         sign_result = _p115_try_local_holder_sign(
                             pick_code=pc,
                             sign_check=sign_check,
-                            downurl_getter=lambda _pc, _ua, _m=method: _m(_pc, user_agent=_ua),
+                            downurl_getter=method,
                             user_agent=sign_ua,
                             label=label,
                             sha1=sha1,
