@@ -305,6 +305,18 @@ def _diagnose_copy_clone_failure(client, temp_cid, source_row, file_name, *, bac
         response_fids[:8],
     )
     logger.debug("  ➜ [复制播放诊断] 复制接口摘要：%s", _safe_json(copy_resp, limit=1200))
+    if not matched:
+        candidate_briefs = []
+        for item in items[:10]:
+            if _item_is_dir(item):
+                continue
+            candidate_briefs.append(_item_brief(item))
+        logger.warning(
+            "  ➜ [复制播放诊断] 未匹配到同名克隆：期望文件=%s，期望大小=%s，目录文件=%s",
+            expected_name or "-",
+            expected_size or "-",
+            _safe_json(candidate_briefs, limit=1500),
+        )
 
     for index, item in matched[:5]:
         fid = _item_id(item)
@@ -376,6 +388,24 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
         if fid and duplicate_index >= best_index:
             best_item = item
             best_index = duplicate_index
+    if not best_item and expected_size:
+        same_size_items = []
+        for item in items:
+            if _item_is_dir(item):
+                continue
+            item_size = _norm_size(item.get("size") or item.get("fs"))
+            fid = _item_id(item)
+            if fid and item_size == expected_size:
+                same_size_items.append(item)
+        if len(same_size_items) == 1:
+            best_item = same_size_items[0]
+            best_index = 0
+            logger.warning(
+                "  ➜ [复制播放] 临时目录按大小兜底命中克隆体：期望文件=%s，实际文件=%s，size=%s",
+                expected_name or "-",
+                _item_name(best_item) or "-",
+                expected_size,
+            )
     if best_item:
         logger.debug(
             "  ➜ [复制播放] 临时目录命中克隆体：文件=%s，重复序号=%s",
