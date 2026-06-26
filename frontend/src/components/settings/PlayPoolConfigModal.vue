@@ -2,7 +2,7 @@
   <n-modal v-model:show="showModal" preset="card" title="小号 Cookie 池" style="width: 760px; max-width: calc(100vw - 24px);" :mask-closable="false" class="custom-modal glass-modal">
     <n-space vertical :size="16">
       <n-alert type="info" :show-icon="true">
-        有可用小号池时，播放链路会优先使用小号秒传并获取直链；没有可用小号池时才按复制播放配置回退。
+        有可用小号时，播放链路会优先使用小号秒传并获取直链；没有可用小号会回退主账号播放。
       </n-alert>
 
       <div class="play-pool-toolbar">
@@ -36,6 +36,13 @@
               <template #checked>启用</template>
               <template #unchecked>停用</template>
             </n-switch>
+            <n-input-number
+              v-model:value="playPoolAccountForm.daily_traffic_limit_gb"
+              :min="0"
+              :precision="0"
+              placeholder="单日上限 GB"
+              style="width: 140px;"
+            />
           </n-space>
 
           <n-input
@@ -106,13 +113,15 @@
               <n-tag size="small" :type="account.enabled && account.cookie_mask ? 'success' : 'default'">
                 {{ account.enabled ? '启用' : '停用' }}
               </n-tag>
+              <n-tag v-if="account.daily_traffic_limited" size="small" type="warning">今日达限</n-tag>
               <n-tag size="small" :bordered="false">{{ account.cookie_mask || '未配置 Cookie' }}</n-tag>
               <n-tag size="small" :bordered="false" type="info">{{ accountScopeText(account) }}</n-tag>
             </n-space>
             <n-space class="play-pool-stats" :size="12">
               <span>速度：{{ account.last_speed_text || '未测速' }}</span>
               <span>播放：{{ account.play_count || 0 }} 次</span>
-              <span>流量：{{ account.traffic_text || '0 B' }}</span>
+              <span>今日：{{ account.daily_traffic_text || '0 B' }}{{ account.daily_traffic_limit_text ? ` / ${account.daily_traffic_limit_text}` : '' }}</span>
+              <span>历史：{{ account.traffic_text || '0 B' }}</span>
             </n-space>
             <n-text v-if="account.last_error" type="error" depth="3" class="play-pool-error">{{ account.last_error }}</n-text>
           </div>
@@ -167,6 +176,7 @@ const playPoolAccountForm = ref({
   cookie: '',
   app_type: 'alipaymini',
   enabled: true,
+  daily_traffic_limit_gb: null,
   allowed_user_ids: []
 });
 
@@ -263,6 +273,7 @@ const resetPlayPoolAccountForm = () => {
     cookie: '',
     app_type: 'alipaymini',
     enabled: true,
+    daily_traffic_limit_gb: null,
     allowed_user_ids: []
   };
 };
@@ -294,6 +305,7 @@ const savePlayPoolAccount = async () => {
       alias: String(form.alias || '小号').trim() || '小号',
       app_type: form.app_type || 'alipaymini',
       enabled: Boolean(form.enabled),
+      daily_traffic_limit_gb: Number(form.daily_traffic_limit_gb || 0),
       allowed_user_ids: Array.isArray(form.allowed_user_ids) ? form.allowed_user_ids : []
     };
     if (cookie) payload.cookie = cookie;
@@ -324,6 +336,7 @@ const editPlayPoolAccount = (account) => {
     cookie: '',
     app_type: account.app_type || 'alipaymini',
     enabled: Boolean(account.enabled),
+    daily_traffic_limit_gb: Number(account.daily_traffic_limit_gb || 0) || null,
     allowed_user_ids: Array.isArray(account.allowed_user_ids) ? [...account.allowed_user_ids] : []
   };
 };

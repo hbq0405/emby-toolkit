@@ -34,11 +34,24 @@ def _now_text():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _today_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def _safe_int(value, default=0):
     try:
         if value in (None, "", [], {}):
             return default
         return int(float(value))
+    except Exception:
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if value in (None, "", [], {}):
+            return default
+        return float(value)
     except Exception:
         return default
 
@@ -64,6 +77,30 @@ def _human_bytes(value):
         size /= 1024.0
         idx += 1
     return f"{int(size)} {units[idx]}" if idx == 0 else f"{size:.2f} {units[idx]}"
+
+
+def _limit_gb_to_bytes(value):
+    gb = _safe_float(value, 0.0)
+    return int(gb * 1024 * 1024 * 1024) if gb > 0 else 0
+
+
+def _human_gb_limit(value):
+    bytes_value = _limit_gb_to_bytes(value)
+    return _human_bytes(bytes_value) if bytes_value > 0 else ""
+
+
+def _account_daily_limited(account):
+    daily_limit_bytes = _limit_gb_to_bytes((account or {}).get("daily_traffic_limit_gb"))
+    return bool(daily_limit_bytes and _safe_int((account or {}).get("daily_traffic_bytes"), 0) >= daily_limit_bytes)
+
+
+def _normalize_daily_traffic(account):
+    today = _today_key()
+    if str(account.get("daily_traffic_date") or "") != today:
+        account["daily_traffic_date"] = today
+        account["daily_traffic_bytes"] = 0
+    else:
+        account["daily_traffic_bytes"] = _safe_int(account.get("daily_traffic_bytes"), 0)
 
 
 def _display_title(file_name):
@@ -155,6 +192,8 @@ def _load_config():
         account["temp_cid"] = str(account.get("temp_cid") or "").strip()
         account["play_count"] = _safe_int(account.get("play_count"), 0)
         account["traffic_bytes"] = _safe_int(account.get("traffic_bytes"), 0)
+        account["daily_traffic_limit_gb"] = _safe_float(account.get("daily_traffic_limit_gb"), 0.0)
+        _normalize_daily_traffic(account)
         account["active_count"] = _safe_int(account.get("active_count"), 0)
         account["last_speed_bps"] = _safe_int(account.get("last_speed_bps"), 0)
         account["allowed_user_ids"] = _normalize_user_ids(account.get("allowed_user_ids"))
@@ -184,6 +223,9 @@ def _public_account(account):
     out.pop("allowed_effective_user_ids", None)
     out["cookie_mask"] = _mask_cookie(account.get("cookie"))
     out["traffic_text"] = _human_bytes(account.get("traffic_bytes"))
+    out["daily_traffic_text"] = _human_bytes(account.get("daily_traffic_bytes"))
+    out["daily_traffic_limit_text"] = _human_gb_limit(account.get("daily_traffic_limit_gb"))
+    out["daily_traffic_limited"] = _account_daily_limited(account)
     speed = _safe_int(account.get("last_speed_bps"), 0)
     out["last_speed_text"] = f"{_human_bytes(speed)}/s" if speed > 0 else "未测速"
     return out
@@ -194,7 +236,7 @@ def get_public_config():
     return {
         "enabled": config["enabled"],
         "accounts": [_public_account(x) for x in config["accounts"]],
-        "usable_count": len([x for x in config["accounts"] if x.get("enabled") and x.get("cookie")]),
+        "usable_count": len([x for x in config["accounts"] if x.get("enabled") and x.get("cookie") and not _account_daily_limited(x)]),
         "temp_dir_name": PLAY_POOL_TEMP_DIR_NAME,
     }
 
@@ -240,6 +282,8 @@ def upsert_account(payload, account_id=None):
         target["enabled"] = bool(payload.get("enabled"))
     elif "enabled" not in target:
         target["enabled"] = True
+    if "daily_traffic_limit_gb" in payload:
+        target["daily_traffic_limit_gb"] = max(0.0, _safe_float(payload.get("daily_traffic_limit_gb"), 0.0))
     if "allowed_user_ids" in payload:
         target["allowed_user_ids"] = _normalize_user_ids(payload.get("allowed_user_ids"))
         target["allowed_effective_user_ids"] = _expand_allowed_user_ids(target["allowed_user_ids"])
@@ -395,6 +439,9 @@ def _select_account(config, user_id=""):
         if not account.get("enabled") or not account.get("cookie"):
             continue
         if not _account_allowed_for_user(account, user_id):
+            continue
+        _normalize_daily_traffic(account)
+        if _account_daily_limited(account):
             continue
         account = dict(account)
         account["_active_count"] = active_counts.get(str(account.get("id")), 0)
@@ -735,11 +782,17 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
         "created_at_text": _now_text(),
     }
     _record_session(record)
+    today = _today_key()
+    account_daily_bytes = _safe_int(account.get("daily_traffic_bytes"), 0)
+    if str(account.get("daily_traffic_date") or "") != today:
+        account_daily_bytes = 0
     _mark_account(account["id"], {
         "last_used_at": _now_ts(),
         "last_error": "",
         "play_count": _safe_int(account.get("play_count"), 0) + 1,
         "traffic_bytes": _safe_int(account.get("traffic_bytes"), 0) + size,
+        "daily_traffic_date": today,
+        "daily_traffic_bytes": account_daily_bytes + size,
         "temp_cid": temp_cid,
     })
     return {"pick_code": clone["pick_code"], "client": client, "account": account, "session": record}

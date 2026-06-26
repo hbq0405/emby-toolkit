@@ -772,7 +772,7 @@
                         </div>
                       </template>
                       <n-alert :type="playPoolConfig.enabled && playPoolConfig.usable_count > 0 ? 'success' : 'info'" :show-icon="true">
-                        {{ playPoolSummaryText }}。启用后优先使用小号秒传播放；没有可用小号池时才按复制播放配置回退。
+                        {{ playPoolSummaryText }}。启用后优先使用小号秒传播放，没有可用小号时回退主账号播放。
                       </n-alert>
                     </n-card>
 
