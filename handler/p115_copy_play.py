@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -16,6 +17,8 @@ COPY_PLAY_CLONES_KEY = "p115_copy_play_clones"
 COPY_PLAY_TTL_SECONDS = 12 * 60 * 60
 COPY_PLAY_TEMP_DIR_NAME = "ETK复制播放"
 MEDIA_EXTENSIONS = ("mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm", "iso")
+_PREPARE_LOCKS = {}
+_PREPARE_LOCKS_GUARD = threading.Lock()
 
 
 def is_copy_play_enabled():
@@ -583,6 +586,28 @@ def _friendly_client_name(value):
     return text.split("/", 1)[0].strip()[:40]
 
 
+def _prepare_lock_key(source_pick_code, item_id="", play_session_id="", user_id="", client_key=""):
+    source_pick_code = str(source_pick_code or "").strip()
+    play_session_id = str(play_session_id or "").strip()
+    if play_session_id:
+        return f"{source_pick_code}|ps:{play_session_id}"
+    return "|".join([
+        source_pick_code,
+        str(item_id or "").strip(),
+        str(user_id or "").strip(),
+        str(client_key or "").strip(),
+    ])
+
+
+def _get_prepare_lock(key):
+    with _PREPARE_LOCKS_GUARD:
+        lock = _PREPARE_LOCKS.get(key)
+        if not lock:
+            lock = threading.Lock()
+            _PREPARE_LOCKS[key] = lock
+        return lock
+
+
 def _lookup_emby_item_id_by_pick_code(pick_code):
     pc = str(pick_code or "").strip()
     if not pc:
@@ -692,6 +717,23 @@ def cleanup_expired_clones(client=None):
 
 
 def prepare_copy_play_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", client_name="", force_new=False):
+    lock_key = _prepare_lock_key(source_pick_code, item_id, play_session_id, user_id, client_key)
+    lock = _get_prepare_lock(lock_key)
+    with lock:
+        return _prepare_copy_play_pick_code_locked(
+            source_pick_code,
+            file_name=file_name,
+            item_id=item_id,
+            play_session_id=play_session_id,
+            user_id=user_id,
+            source=source,
+            client_key=client_key,
+            client_name=client_name,
+            force_new=force_new,
+        )
+
+
+def _prepare_copy_play_pick_code_locked(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", client_name="", force_new=False):
     if not is_copy_play_enabled():
         return source_pick_code
 

@@ -480,6 +480,60 @@ def _force_refresh_preid(source_row, pick_code, sha1, file_name):
     return preid
 
 
+def _detail_size_from_info(data):
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        return 0, "", "", "", ""
+    sha1 = str(data.get("sha1") or data.get("sha") or data.get("file_sha1") or "").strip().upper()
+    size = _safe_int(data.get("size_byte") or data.get("fs") or data.get("size") or data.get("file_size"), 0)
+    pick_code = str(data.get("pc") or data.get("pick_code") or data.get("pickcode") or "").strip()
+    name = str(data.get("fn") or data.get("n") or data.get("file_name") or data.get("name") or "").strip()
+    parent_id = str(data.get("parent_id") or data.get("pid") or data.get("cid") or "").strip()
+    return size, sha1, pick_code, name, parent_id
+
+
+def _refresh_source_size_from_115(source_row, source_pick_code, sha1, size, file_name):
+    fid = str((source_row or {}).get("id") or (source_row or {}).get("fid") or "").strip()
+    if not fid:
+        return size
+    client = P115Service.get_client()
+    if not client:
+        return size
+    try:
+        info_res = client.fs_get_info(fid)
+        data = info_res.get("data") if isinstance(info_res, dict) else {}
+        detail_size, detail_sha1, detail_pc, detail_name, detail_parent_id = _detail_size_from_info(data)
+        if not detail_size:
+            return size
+        if sha1 and detail_sha1 and sha1 != detail_sha1:
+            return size
+        if size == detail_size:
+            return size
+        P115CacheManager.save_file_cache(
+            fid=fid,
+            parent_id=detail_parent_id or (source_row or {}).get("parent_id"),
+            name=detail_name or file_name or (source_row or {}).get("name"),
+            sha1=detail_sha1 or sha1,
+            pick_code=detail_pc or source_pick_code,
+            local_path=(source_row or {}).get("local_path"),
+            size=detail_size,
+            preid=(source_row or {}).get("preid"),
+        )
+        source_row["size"] = detail_size
+        logger.warning(
+            "  ➜ [小号播放] 已用 115 实时详情修正源文件 size：FID=%s，sha1=%s...，%s -> %s",
+            fid,
+            (detail_sha1 or sha1 or "")[:12],
+            size or "-",
+            detail_size,
+        )
+        return detail_size
+    except Exception as e:
+        logger.debug("  ➜ [小号播放] 实时修正源文件 size 失败：FID=%s，err=%s", fid, e)
+        return size
+
+
 def prepare_play_pool_pick_code(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", user_agent=""):
     lock_key = _prepare_lock_key(source_pick_code, item_id, play_session_id, user_id, client_key)
     lock = _get_prepare_lock(lock_key)
@@ -511,6 +565,7 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
     display_name = _pick_upload_file_name(file_name, source_row.get("name"), f"{sha1 or source_pick_code}.mkv")
     if not re.fullmatch(r"[A-F0-9]{40}", sha1 or "") or size <= 0:
         raise RuntimeError("小号播放需要源文件 SHA1 和 size，本地 115 缓存未命中完整信息")
+    size = _refresh_source_size_from_115(source_row, source_pick_code, sha1, size, display_name)
     if not re.fullmatch(r"[A-F0-9]{40}", preid or ""):
         try:
             preid = P115CacheManager.ensure_file_preid(
