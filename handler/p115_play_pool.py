@@ -22,6 +22,8 @@ PLAY_POOL_TEMP_DIR_NAME = "ETK小号播放临时目录"
 PLAY_POOL_SESSION_TTL_SECONDS = 12 * 60 * 60
 _PREPARE_LOCKS = {}
 _PREPARE_LOCKS_GUARD = threading.Lock()
+_ALLOWED_USER_EXPAND_CACHE = {}
+_ALLOWED_USER_EXPAND_TTL_SECONDS = 60
 
 
 def _now_ts():
@@ -81,18 +83,26 @@ def _expand_allowed_user_ids(selected_user_ids):
     selected = _normalize_user_ids(selected_user_ids)
     if not selected:
         return []
+    cache_key = tuple(selected)
+    cached = _ALLOWED_USER_EXPAND_CACHE.get(cache_key)
+    now = _now_ts()
+    if cached and now - float(cached.get("ts") or 0) < _ALLOWED_USER_EXPAND_TTL_SECONDS:
+        return list(cached.get("value") or [])
     try:
         expanded = user_db.expand_template_user_ids(selected)
     except Exception as e:
         logger.warning("  ➜ [小号播放] 展开小号可用用户失败，将仅使用原始选择: %s", e)
         expanded = selected
-    return _normalize_user_ids(list(selected) + list(expanded or []))
+    result = _normalize_user_ids(list(selected) + list(expanded or []))
+    _ALLOWED_USER_EXPAND_CACHE[cache_key] = {"ts": now, "value": result}
+    return result
 
 
 def _account_allowed_for_user(account, user_id):
-    allowed = _normalize_user_ids((account or {}).get("allowed_effective_user_ids"))
+    raw_allowed = _normalize_user_ids((account or {}).get("allowed_user_ids"))
+    allowed = _expand_allowed_user_ids(raw_allowed) if raw_allowed else []
     if not allowed:
-        allowed = _normalize_user_ids((account or {}).get("allowed_user_ids"))
+        allowed = _normalize_user_ids((account or {}).get("allowed_effective_user_ids"))
     if not allowed:
         return True
     user_id = str(user_id or "").strip()
