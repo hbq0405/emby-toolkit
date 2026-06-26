@@ -5,6 +5,7 @@ import requests
 import re
 import os
 import json
+import threading
 from flask import Flask, request, Response, redirect, send_file, session
 from urllib.parse import urlparse, urlunparse
 from datetime import datetime, timedelta
@@ -34,6 +35,9 @@ import handler.emby as emby
 logger = logging.getLogger(__name__)
 
 MISSING_ID_PREFIX = "-800000_"
+_USER_CONTEXT_TTL_SECONDS = 2 * 60 * 60
+_USER_CONTEXT_LOCK = threading.Lock()
+_USER_CONTEXT_CACHE = {}
 
 def to_missing_item_id(tmdb_id): 
     return f"{MISSING_ID_PREFIX}{tmdb_id}"
@@ -77,7 +81,67 @@ def _extract_emby_token_from_request():
     return match.group(1).strip() if match else ''
 
 
-def _resolve_request_user_id(base_url, api_key, full_path="", play_session_id=""):
+def _request_context_keys(full_path="", play_session_id=""):
+    keys = []
+
+    def add(prefix, value):
+        value = str(value or "").strip()
+        if value:
+            keys.append(f"{prefix}:{value}")
+
+    token = _extract_emby_token_from_request()
+    add("token", token)
+    add("device", request.args.get('DeviceId') or request.args.get('X-Emby-Device-Id') or request.headers.get('X-Emby-Device-Id'))
+    add("play_session", play_session_id or request.args.get('PlaySessionId'))
+    add("remote", request.remote_addr)
+    add("client", "|".join([
+        request.remote_addr or "",
+        request.headers.get('X-Emby-Client') or "",
+        request.headers.get('User-Agent') or "",
+    ]))
+
+    item_match = re.search(r'/(?:videos|items)/(\d+)/', full_path or '', re.IGNORECASE)
+    if item_match:
+        add("item_client", "|".join([
+            item_match.group(1),
+            request.headers.get('X-Emby-Client') or "",
+            request.headers.get('User-Agent') or "",
+        ]))
+
+    return list(dict.fromkeys(keys))
+
+
+def _cache_request_user_context(user_id, full_path="", play_session_id=""):
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return
+    expires_at = time.time() + _USER_CONTEXT_TTL_SECONDS
+    with _USER_CONTEXT_LOCK:
+        for key in _request_context_keys(full_path, play_session_id):
+            _USER_CONTEXT_CACHE[key] = (user_id, expires_at)
+        if len(_USER_CONTEXT_CACHE) > 2000:
+            now = time.time()
+            for key, (_, expire_at) in list(_USER_CONTEXT_CACHE.items()):
+                if expire_at < now:
+                    _USER_CONTEXT_CACHE.pop(key, None)
+
+
+def _lookup_cached_request_user(full_path="", play_session_id=""):
+    now = time.time()
+    with _USER_CONTEXT_LOCK:
+        for key in _request_context_keys(full_path, play_session_id):
+            cached = _USER_CONTEXT_CACHE.get(key)
+            if not cached:
+                continue
+            user_id, expires_at = cached
+            if expires_at < now:
+                _USER_CONTEXT_CACHE.pop(key, None)
+                continue
+            return user_id
+    return ""
+
+
+def _extract_user_id_from_request_path_or_args(full_path=""):
     user_id = (
         request.args.get('UserId')
         or request.args.get('userId')
@@ -86,10 +150,19 @@ def _resolve_request_user_id(base_url, api_key, full_path="", play_session_id=""
     )
     if user_id:
         return str(user_id).strip()
-
     user_id_match = re.search(r'/Users/([^/]+)/', full_path or '', re.IGNORECASE)
-    if user_id_match:
-        return user_id_match.group(1).strip()
+    return user_id_match.group(1).strip() if user_id_match else ""
+
+
+def _resolve_request_user_id(base_url, api_key, full_path="", play_session_id=""):
+    user_id = _extract_user_id_from_request_path_or_args(full_path)
+    if user_id:
+        _cache_request_user_context(user_id, full_path, play_session_id)
+        return str(user_id).strip()
+
+    user_id = _lookup_cached_request_user(full_path, play_session_id)
+    if user_id:
+        return user_id
 
     token = _extract_emby_token_from_request()
     if token and token != api_key:
@@ -102,6 +175,7 @@ def _resolve_request_user_id(base_url, api_key, full_path="", play_session_id=""
             if resp.status_code == 200:
                 user_id = str((resp.json() or {}).get('Id') or '').strip()
                 if user_id:
+                    _cache_request_user_context(user_id, full_path, play_session_id)
                     return user_id
         except Exception as e:
             logger.debug(f"  ➜ [小号播放] 通过请求 Token 解析用户失败: {e}")
@@ -115,11 +189,15 @@ def _resolve_request_user_id(base_url, api_key, full_path="", play_session_id=""
                     if str(item_play_state.get('PlaySessionId') or item.get('PlaySessionId') or '') == str(play_session_id):
                         user_id = str(item.get('UserId') or (item.get('User') or {}).get('Id') or '').strip()
                         if user_id:
+                            _cache_request_user_context(user_id, full_path, play_session_id)
                             return user_id
         except Exception as e:
             logger.debug(f"  ➜ [小号播放] 通过 Emby Sessions 解析用户失败: {e}")
 
-    return str(session.get('emby_user_id') or '').strip()
+    user_id = str(session.get('emby_user_id') or '').strip()
+    if user_id:
+        _cache_request_user_context(user_id, full_path, play_session_id)
+    return user_id
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     """
@@ -952,6 +1030,9 @@ def proxy_all(path):
     # --- 3. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
+        observed_user_id = _extract_user_id_from_request_path_or_args(full_path)
+        if observed_user_id:
+            _cache_request_user_context(observed_user_id, full_path, request.args.get('PlaySessionId', ''))
         # ===== 调试日志：打印所有请求路径 =====
         # logger.info(f"[PROXY] 请求路径: {full_path}")
         
