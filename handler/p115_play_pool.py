@@ -66,6 +66,28 @@ def _human_bytes(value):
     return f"{int(size)} {units[idx]}" if idx == 0 else f"{size:.2f} {units[idx]}"
 
 
+def _display_title(file_name):
+    text = str(file_name or "").strip()
+    if not text:
+        return "未知影片"
+    text = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", text)
+    match = re.match(r"^(.+?\(\d{4}\))", text)
+    if match:
+        return match.group(1).strip()
+    return text.split(" · ", 1)[0].strip() or text
+
+
+def _display_user_name(user_id):
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return "未知用户"
+    try:
+        return user_db.get_username_by_id(user_id) or user_id
+    except Exception as e:
+        logger.debug("  ➜ [小号播放] 查询 Emby 用户名失败: user_id=%s, err=%s", user_id, e)
+        return user_id
+
+
 def _normalize_user_ids(value):
     if not isinstance(value, list):
         return []
@@ -616,7 +638,7 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
         if account and not _account_allowed_for_user(account, user_id):
             account = None
         if reusable.get("direct_url") or (account and account.get("enabled") and account.get("cookie")):
-            logger.info(
+            logger.debug(
                 "  ➜ [小号播放] 复用已有小号播放记录：%s | account=%s | session=%s | direct_url=%s",
                 reusable.get("file_name") or display_name,
                 (account or {}).get("alias") or (account or {}).get("id") or reusable.get("account_alias") or "-",
@@ -649,19 +671,17 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
     if preid:
         payload["preid"] = preid
     logger.info(
-        "  ➜ [小号播放] 准备秒传到小号：%s | sha1=%s... | preid=%s | size=%s | account=%s",
-        display_name,
-        sha1[:12],
-        (preid[:12] + "...") if preid else "-",
-        size,
-        account.get("alias") or account.get("id"),
+        "  ➜ [小号播放] 准备播放：%s %s/%s",
+        _display_title(display_name),
+        account.get("alias") or account.get("id") or "小号",
+        _display_user_name(user_id),
     )
 
     resp = client.rapid_upload(payload)
     if _is_plain_upload_response(resp):
         fresh_preid = _force_refresh_preid(source_row, source_pick_code, sha1, display_name)
         if fresh_preid and fresh_preid != preid:
-            logger.warning(
+            logger.debug(
                 "  ➜ [小号播放] 小号秒传返回普通上传，已强制刷新 preid 后重试：%s -> %s",
                 (preid[:12] + "...") if preid else "-",
                 fresh_preid[:12] + "...",
@@ -814,7 +834,7 @@ def _delete_session_file(account, session, reason):
         resp = client.fs_delete([fid])
         ok = bool(isinstance(resp, dict) and resp.get("state"))
         if ok:
-            logger.info("  ➜ [小号播放] 已删除临时文件: %s，原因=%s", session.get("file_name") or fid, reason)
+            logger.debug("  ➜ [小号播放] 已删除临时文件: %s，原因=%s", session.get("file_name") or fid, reason)
         else:
             logger.warning("  ➜ [小号播放] 删除临时文件失败: %s，resp=%s", session.get("file_name") or fid, resp)
         return ok
@@ -962,7 +982,7 @@ def speedtest_account(account_id, sample_pick_code="", user_agent=""):
     if _is_plain_upload_response(resp):
         fresh_preid = _force_refresh_preid(source_row, sample_pick_code, sha1, file_name)
         if fresh_preid and fresh_preid != preid:
-            logger.warning(
+            logger.debug(
                 "  ➜ [小号播放] 测速样本返回普通上传，已强制刷新 preid 后重试：%s -> %s",
                 (preid[:12] + "...") if preid else "-",
                 fresh_preid[:12] + "...",

@@ -160,7 +160,7 @@ class P115PlayPoolClient:
             init_payload["sign_key"] = str(sign_key)
             init_payload["sign_val"] = str(sign_val).upper()
 
-        logger.info(
+        logger.debug(
             "  ➜ [小号专用秒传] 初始化上传: %s | sha1=%s... | preid=%s | size=%s | app=%s",
             file_name,
             sha1[:12],
@@ -239,7 +239,7 @@ def _normalize_upload_init_response(resp, sha1, size, file_name, target_cid, pic
         out["success"] = True
         out.setdefault("message", "小号专用 initupload 秒传成功")
         out.setdefault("rapid_upload", True)
-        logger.info("  ➜ [小号专用秒传] initupload 秒传成功: %s", file_name)
+        logger.debug("  ➜ [小号专用秒传] initupload 秒传成功: %s", file_name)
         return out
 
     if status == "1":
@@ -251,7 +251,7 @@ def _normalize_upload_init_response(resp, sha1, size, file_name, target_cid, pic
     if status == "7":
         sign_key_text = str(out.get("sign_key") or data.get("sign_key") or "")
         sign_check_text = str(out.get("sign_check") or data.get("sign_check") or "")
-        logger.warning(
+        logger.debug(
             "  ➜ [小号专用秒传] initupload 返回 status=7：sha1=%s..., pc=%s..., sign_check=%s, sign_key_prefix=%s..., sign_key_len=%s",
             sha1[:12],
             (pick_code or "-")[:8],
