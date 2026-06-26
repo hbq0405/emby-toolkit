@@ -14,11 +14,13 @@ from handler.p115_service import P115CacheManager, P115Service
 logger = logging.getLogger(__name__)
 
 COPY_PLAY_CLONES_KEY = "p115_copy_play_clones"
+COPY_PLAY_ACTIVE_SOURCES_KEY = "p115_copy_play_active_sources"
 COPY_PLAY_TTL_SECONDS = 12 * 60 * 60
 COPY_PLAY_TEMP_DIR_NAME = "ETK复制播放"
 MEDIA_EXTENSIONS = ("mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm", "iso")
 _PREPARE_LOCKS = {}
 _PREPARE_LOCKS_GUARD = threading.Lock()
+_ACTIVE_SOURCES_LOCK = threading.Lock()
 
 
 def is_copy_play_enabled():
@@ -162,6 +164,34 @@ def _load_clones():
 
 def _save_clones(clones):
     settings_db.save_setting(COPY_PLAY_CLONES_KEY, clones[-300:])
+
+
+def _load_active_sources():
+    data = settings_db.get_setting(COPY_PLAY_ACTIVE_SOURCES_KEY) or []
+    return data if isinstance(data, list) else []
+
+
+def _save_active_sources(records):
+    settings_db.save_setting(COPY_PLAY_ACTIVE_SOURCES_KEY, records[-500:])
+
+
+def _active_source_key(record):
+    return "|".join([
+        str(record.get("source_pick_code") or "").strip(),
+        str(record.get("item_id") or "").strip(),
+        str(record.get("play_session_id") or "").strip(),
+        str(record.get("user_id") or "").strip(),
+        str(record.get("client_key") or "").strip(),
+    ])
+
+
+def _active_sources_without_expired(records=None):
+    now = _now_ts()
+    records = _load_active_sources() if records is None else records
+    return [
+        record for record in records
+        if now - float(record.get("updated_at") or record.get("created_at") or 0) <= COPY_PLAY_TTL_SECONDS
+    ]
 
 
 def _extract_ids_from_copy_response(resp):
@@ -524,6 +554,98 @@ def _client_key_device_id(client_key):
     return str(client_key or "").split("|", 1)[0].strip()
 
 
+def _is_same_viewer(record, *, play_session_id="", user_id="", client_key=""):
+    record_session = str(record.get("play_session_id") or "").strip()
+    record_user_id = str(record.get("user_id") or "").strip()
+    record_client_key = str(record.get("client_key") or "").strip()
+    request_device_id = _client_key_device_id(client_key)
+    record_device_id = _client_key_device_id(record_client_key)
+
+    if play_session_id and record_session == str(play_session_id):
+        return True
+    if user_id and record_user_id and record_user_id == str(user_id):
+        return True
+    if client_key and record_client_key == str(client_key):
+        return True
+    return bool(request_device_id and record_device_id and request_device_id == record_device_id)
+
+
+def _matches_playback_stop(record, *, play_session_id="", item_id="", user_id="", client_key=""):
+    match_session = play_session_id and play_session_id == str(record.get("play_session_id") or "")
+    match_item = item_id and item_id == str(record.get("item_id") or "")
+    record_client_key = str(record.get("client_key") or "")
+    device_id = _client_key_device_id(client_key)
+    match_client = bool(
+        (client_key and client_key == record_client_key)
+        or (device_id and _client_key_device_id(record_client_key) == device_id)
+    )
+    record_user_id = str(record.get("user_id") or "")
+    match_user = not user_id or not record_user_id or user_id == record_user_id
+    return bool(match_session or (match_item and match_client and match_user))
+
+
+def should_use_copy_play_for_source(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", client_name=""):
+    pc = str(source_pick_code or "").strip()
+    if not pc or not is_copy_play_enabled():
+        return False
+
+    with _ACTIVE_SOURCES_LOCK:
+        records = _load_active_sources()
+        active_records = _active_sources_without_expired(records)
+        if len(active_records) != len(records):
+            _save_active_sources(active_records)
+
+        for record in active_records:
+            if str(record.get("source_pick_code") or "").strip() != pc:
+                continue
+            if _is_same_viewer(record, play_session_id=play_session_id, user_id=user_id, client_key=client_key):
+                continue
+            logger.debug(
+                "  ➜ [复制播放] 检测到同源并发播放，启用复制播放：%s",
+                file_name or pc[:8] + "...",
+            )
+            return True
+    return False
+
+
+def record_source_play(source_pick_code, *, file_name="", item_id="", play_session_id="", user_id="", source="", client_key="", client_name=""):
+    pc = str(source_pick_code or "").strip()
+    if not pc or not is_copy_play_enabled():
+        return False
+
+    now = _now_ts()
+    record = {
+        "source_pick_code": pc,
+        "file_name": str(file_name or ""),
+        "item_id": str(item_id or ""),
+        "play_session_id": str(play_session_id or ""),
+        "user_id": str(user_id or ""),
+        "client_key": str(client_key or ""),
+        "source": source,
+        "created_at": now,
+        "updated_at": now,
+        "created_at_text": datetime.now(timezone.utc).isoformat(),
+    }
+    record_key = _active_source_key(record)
+
+    with _ACTIVE_SOURCES_LOCK:
+        records = _active_sources_without_expired()
+        kept = []
+        replaced = False
+        for existing in records:
+            if _active_source_key(existing) == record_key:
+                record["created_at"] = float(existing.get("created_at") or now)
+                record["created_at_text"] = existing.get("created_at_text") or record["created_at_text"]
+                kept.append(record)
+                replaced = True
+            else:
+                kept.append(existing)
+        if not replaced:
+            kept.append(record)
+        _save_active_sources(kept)
+    return True
+
+
 def _friendly_client_name(value):
     text = str(value or "").strip()
     if not text:
@@ -844,13 +966,34 @@ def cleanup_for_playback_stop(data):
     user_id = str(user.get("Id") or "").strip()
     client_key = _client_key_from_webhook(data)
 
+    removed_active = 0
+    with _ACTIVE_SOURCES_LOCK:
+        previous_active_records = _load_active_sources()
+        active_records = _active_sources_without_expired(previous_active_records)
+        kept_active = []
+        for record in active_records:
+            if _matches_playback_stop(
+                record,
+                play_session_id=play_session_id,
+                item_id=item_id,
+                user_id=user_id,
+                client_key=client_key,
+            ):
+                removed_active += 1
+                continue
+            kept_active.append(record)
+        if removed_active or len(kept_active) != len(previous_active_records):
+            _save_active_sources(kept_active)
+        if removed_active:
+            logger.debug("  ➜ [复制播放] 停止播放清理源文件活跃记录：%s", removed_active)
+
     clones = _load_clones()
     if not clones:
-        return 0
+        return removed_active
     client = P115Service.get_client()
     if not client:
         logger.warning("  ➜ [复制播放] 停止播放后清理失败：115 客户端未初始化。")
-        return 0
+        return removed_active
     try:
         cleanup_expired_clones(client)
     except Exception as e:
@@ -859,17 +1002,13 @@ def cleanup_for_playback_stop(data):
     kept = []
     removed = 0
     for clone in clones:
-        match_session = play_session_id and play_session_id == str(clone.get("play_session_id") or "")
-        match_item = item_id and item_id == str(clone.get("item_id") or "")
-        clone_client_key = str(clone.get("client_key") or "")
-        device_id = _client_key_device_id(client_key)
-        match_client = bool(
-            (client_key and client_key == clone_client_key)
-            or (device_id and _client_key_device_id(clone_client_key) == device_id)
-        )
-        clone_user_id = str(clone.get("user_id") or "")
-        match_user = not user_id or not clone_user_id or user_id == clone_user_id
-        if match_session or (match_item and match_client and match_user):
+        if _matches_playback_stop(
+            clone,
+            play_session_id=play_session_id,
+            item_id=item_id,
+            user_id=user_id,
+            client_key=client_key,
+        ):
             if clone.get("recycled_after_direct_url"):
                 removed += 1
                 continue
@@ -880,4 +1019,4 @@ def cleanup_for_playback_stop(data):
     if removed:
         _save_clones(kept)
         logger.debug("  ➜ [复制播放] 停止播放清理完成：删除 %s 个临时克隆文件。", removed)
-    return removed
+    return removed_active + removed

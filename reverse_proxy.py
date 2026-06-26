@@ -25,7 +25,9 @@ from handler.p115_copy_play import (
     discard_copy_play_clone,
     is_copy_play_missing_error,
     prepare_copy_play_pick_code,
+    record_source_play,
     recycle_clone_after_direct_url,
+    should_use_copy_play_for_source,
 )
 from handler import p115_play_pool
 from utils import extract_pickcode_from_strm_url
@@ -1163,9 +1165,12 @@ def proxy_all(path):
                     "client_key": play_client_key,
                     "client_name": request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
                 }
-                play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
-                if not play_pick_code:
-                    return Response("Copy play failed.", status=503)
+                use_copy_play = should_use_copy_play_for_source(pick_code, **copy_play_kwargs)
+                play_pick_code = pick_code
+                if use_copy_play:
+                    play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
+                    if not play_pick_code:
+                        return Response("Copy play failed.", status=503)
 
                 max_retries = 10 
                 retry_count = 0
@@ -1183,13 +1188,16 @@ def proxy_all(path):
                             real_115_url = client.download_url(play_pick_code, user_agent=player_ua)
                             
                         if real_115_url:
-                            recycle_clone_after_direct_url(play_pick_code, "起播后清理")
+                            if str(play_pick_code) != str(pick_code):
+                                recycle_clone_after_direct_url(play_pick_code, "起播后清理")
+                            else:
+                                record_source_play(pick_code, **copy_play_kwargs)
                             break 
                         else:
                             logger.warning(f"  ⚠️ [获取直链] {'OpenAPI' if use_openapi else 'Cookie'} 未拿到直链，切换接口重试 ({retry_count+1}/{max_retries})...")
                     except Exception as e:
                         err_str = str(e)
-                        if str(play_pick_code) != str(pick_code) and is_copy_play_missing_error(e):
+                        if use_copy_play and str(play_pick_code) != str(pick_code) and is_copy_play_missing_error(e):
                             discard_copy_play_clone(play_pick_code)
                             if rebuilt_copy_play:
                                 return Response("Copy play clone expired.", status=503)
