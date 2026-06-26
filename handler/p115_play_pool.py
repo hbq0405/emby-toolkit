@@ -346,6 +346,22 @@ def _record_session(record):
     _save_sessions(sessions)
 
 
+def _patch_session(session_id, patch):
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return False
+    sessions = _load_sessions()
+    changed = False
+    for item in sessions:
+        if session_id == str(item.get("session_id") or "").strip():
+            item.update(patch)
+            changed = True
+            break
+    if changed:
+        _save_sessions(sessions)
+    return changed
+
+
 def _prepare_lock_key(source_pick_code, item_id, play_session_id, user_id, client_key):
     source_pick_code = str(source_pick_code or "").strip()
     play_session_id = str(play_session_id or "").strip()
@@ -384,7 +400,9 @@ def _find_reusable_session(*, source_pick_code="", item_id="", play_session_id="
             continue
         if source_pick_code != str(session.get("source_pick_code") or ""):
             continue
-        if not session.get("temp_pick_code") or not session.get("temp_fid"):
+        has_direct_url = bool(str(session.get("direct_url") or "").strip())
+        has_temp_file = bool(session.get("temp_pick_code") and session.get("temp_fid"))
+        if not has_direct_url and not has_temp_file:
             continue
 
         session_play_session_id = str(session.get("play_session_id") or "")
@@ -429,6 +447,9 @@ def _cleanup_superseded_sessions(*, source_pick_code="", user_id="", client_key=
         match_user = bool(user_id and session_user_id and user_id == session_user_id)
         match_client = bool(client_key and session_client_key and client_key == session_client_key)
         if match_user and (match_client or not session_client_key):
+            if session.get("recycled_after_direct_url"):
+                removed += 1
+                continue
             account = account_map.get(str(session.get("account_id") or ""))
             if account and _delete_session_file(account, session, "下一集起播清理"):
                 removed += 1
@@ -586,14 +607,21 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
     )
     if reusable:
         account = next((x for x in config.get("accounts") or [] if str(x.get("id")) == str(reusable.get("account_id"))), None)
-        if account and account.get("enabled") and account.get("cookie"):
+        if reusable.get("direct_url") or (account and account.get("enabled") and account.get("cookie")):
             logger.info(
-                "  ➜ [小号播放] 复用已有小号临时文件：%s | account=%s | session=%s",
+                "  ➜ [小号播放] 复用已有小号播放记录：%s | account=%s | session=%s | direct_url=%s",
                 reusable.get("file_name") or display_name,
-                account.get("alias") or account.get("id"),
+                (account or {}).get("alias") or (account or {}).get("id") or reusable.get("account_alias") or "-",
                 reusable.get("session_id") or "-",
+                "yes" if reusable.get("direct_url") else "no",
             )
-            return {"pick_code": reusable["temp_pick_code"], "client": _account_client(account), "account": account, "session": reusable}
+            return {
+                "pick_code": reusable.get("temp_pick_code") or "",
+                "client": _account_client(account) if account and account.get("cookie") else None,
+                "account": account or {},
+                "session": reusable,
+                "direct_url": reusable.get("direct_url") or "",
+            }
 
     _cleanup_superseded_sessions(
         source_pick_code=source_pick_code,
@@ -688,15 +716,30 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
 
 
 def get_direct_url(play_result, user_agent=""):
+    cached_url = str((play_result or {}).get("direct_url") or ((play_result or {}).get("session") or {}).get("direct_url") or "").strip()
+    if cached_url:
+        return cached_url
     client = play_result.get("client")
     pick_code = play_result.get("pick_code")
     if not client or not pick_code:
         return ""
-    return client.download_url(pick_code, user_agent=user_agent)
+    url = client.download_url(pick_code, user_agent=user_agent)
+    session_id = str(((play_result or {}).get("session") or {}).get("session_id") or "").strip()
+    if url and session_id:
+        _patch_session(session_id, {
+            "direct_url": url,
+            "direct_url_cached_at": _now_ts(),
+        })
+        session = play_result.get("session") or {}
+        session["direct_url"] = url
+        session["direct_url_cached_at"] = _now_ts()
+    return url
 
 
 def recycle_session_after_direct_url(play_result, reason="起播后清理"):
     session = (play_result or {}).get("session") or {}
+    if session.get("recycled_after_direct_url"):
+        return False
     temp_pick_code = str((play_result or {}).get("pick_code") or session.get("temp_pick_code") or "").strip()
     session_id = str(session.get("session_id") or "").strip()
     if not temp_pick_code and not session_id:
@@ -724,11 +767,9 @@ def recycle_session_after_direct_url(play_result, reason="起播后清理"):
     if not _delete_session_file(account, target, reason):
         return False
 
-    _save_sessions([
-        item for item in sessions
-        if str(item.get("session_id") or "") != str(target.get("session_id") or "")
-        and str(item.get("temp_pick_code") or "").strip() != str(target.get("temp_pick_code") or "").strip()
-    ])
+    target["recycled_after_direct_url"] = True
+    target["recycled_at"] = _now_ts()
+    _save_sessions(sessions)
     return True
 
 
@@ -743,6 +784,9 @@ def cleanup_expired_sessions():
     for session in sessions:
         created_at = float(session.get("created_at") or 0)
         if created_at and now - created_at > PLAY_POOL_SESSION_TTL_SECONDS:
+            if session.get("recycled_after_direct_url"):
+                removed += 1
+                continue
             account = account_map.get(str(session.get("account_id") or ""))
             if account and _delete_session_file(account, session, "过期清理"):
                 removed += 1
