@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from database import settings_db
+from database import settings_db, user_db
 from handler.p115_play_pool_client import P115PlayPoolClient
 from handler.p115_service import P115CacheManager, P115Service
 
@@ -64,6 +64,41 @@ def _human_bytes(value):
     return f"{int(size)} {units[idx]}" if idx == 0 else f"{size:.2f} {units[idx]}"
 
 
+def _normalize_user_ids(value):
+    if not isinstance(value, list):
+        return []
+    seen = set()
+    result = []
+    for item in value:
+        user_id = str(item or "").strip()
+        if user_id and user_id not in seen:
+            seen.add(user_id)
+            result.append(user_id)
+    return result
+
+
+def _expand_allowed_user_ids(selected_user_ids):
+    selected = _normalize_user_ids(selected_user_ids)
+    if not selected:
+        return []
+    try:
+        expanded = user_db.expand_template_user_ids(selected)
+    except Exception as e:
+        logger.warning("  ➜ [小号播放] 展开小号可用用户失败，将仅使用原始选择: %s", e)
+        expanded = selected
+    return _normalize_user_ids(list(selected) + list(expanded or []))
+
+
+def _account_allowed_for_user(account, user_id):
+    allowed = _normalize_user_ids((account or {}).get("allowed_effective_user_ids"))
+    if not allowed:
+        allowed = _normalize_user_ids((account or {}).get("allowed_user_ids"))
+    if not allowed:
+        return True
+    user_id = str(user_id or "").strip()
+    return bool(user_id and user_id in set(allowed))
+
+
 def _load_config():
     data = settings_db.get_setting(PLAY_POOL_CONFIG_KEY) or {}
     if not isinstance(data, dict):
@@ -86,6 +121,8 @@ def _load_config():
         account["traffic_bytes"] = _safe_int(account.get("traffic_bytes"), 0)
         account["active_count"] = _safe_int(account.get("active_count"), 0)
         account["last_speed_bps"] = _safe_int(account.get("last_speed_bps"), 0)
+        account["allowed_user_ids"] = _normalize_user_ids(account.get("allowed_user_ids"))
+        account["allowed_effective_user_ids"] = _normalize_user_ids(account.get("allowed_effective_user_ids"))
         clean_accounts.append(account)
     return {
         "enabled": bool(data.get("enabled", False)),
@@ -107,6 +144,7 @@ def _save_config(config):
 def _public_account(account):
     out = dict(account or {})
     out.pop("cookie", None)
+    out.pop("allowed_effective_user_ids", None)
     out["cookie_mask"] = _mask_cookie(account.get("cookie"))
     out["traffic_text"] = _human_bytes(account.get("traffic_bytes"))
     speed = _safe_int(account.get("last_speed_bps"), 0)
@@ -165,6 +203,12 @@ def upsert_account(payload, account_id=None):
         target["enabled"] = bool(payload.get("enabled"))
     elif "enabled" not in target:
         target["enabled"] = True
+    if "allowed_user_ids" in payload:
+        target["allowed_user_ids"] = _normalize_user_ids(payload.get("allowed_user_ids"))
+        target["allowed_effective_user_ids"] = _expand_allowed_user_ids(target["allowed_user_ids"])
+    else:
+        target["allowed_user_ids"] = _normalize_user_ids(target.get("allowed_user_ids"))
+        target["allowed_effective_user_ids"] = _normalize_user_ids(target.get("allowed_effective_user_ids"))
     target["updated_at"] = _now_text()
     target.setdefault("temp_cid", "")
     _save_config(config)
@@ -297,7 +341,7 @@ def _extract_clone_from_rapid_response(resp, client, temp_cid, file_name, sha1, 
     return {}
 
 
-def _select_account(config):
+def _select_account(config, user_id=""):
     sessions = _load_sessions()
     active_counts = {}
     now = _now_ts()
@@ -314,6 +358,8 @@ def _select_account(config):
     for account in config.get("accounts") or []:
         if not account.get("enabled") or not account.get("cookie"):
             continue
+        if not _account_allowed_for_user(account, user_id):
+            continue
         if float(account.get("last_failed_at") or 0) > cooldown_before:
             continue
         account = dict(account)
@@ -328,6 +374,11 @@ def _select_account(config):
 def has_usable_pool():
     config = _load_config()
     return bool(config.get("enabled") and _select_account(config))
+
+
+def has_usable_pool_for_user(user_id=""):
+    config = _load_config()
+    return bool(config.get("enabled") and _select_account(config, user_id=user_id))
 
 
 def _mark_account(account_id, patch):
@@ -521,7 +572,7 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
     config = _load_config()
     if not config.get("enabled"):
         return {}
-    account = _select_account(config)
+    account = _select_account(config, user_id=user_id)
     if not account:
         return {}
 

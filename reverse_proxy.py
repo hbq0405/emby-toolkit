@@ -980,14 +980,15 @@ def proxy_all(path):
                     request.headers.get('User-Agent') or "",
                 ])
 
-                if p115_play_pool.has_usable_pool():
+                current_user_id = request.args.get('UserId', '')
+                if p115_play_pool.has_usable_pool_for_user(current_user_id):
                     try:
                         play_result = p115_play_pool.prepare_play_pool_pick_code(
                             pick_code,
                             file_name=display_name,
                             item_id=item_id,
                             play_session_id=play_session_id,
-                            user_id=request.args.get('UserId', ''),
+                            user_id=current_user_id,
                             source='reverse_proxy',
                             client_key=play_client_key,
                             user_agent=player_ua,
@@ -1012,7 +1013,7 @@ def proxy_all(path):
                     "file_name": display_name,
                     "item_id": item_id,
                     "play_session_id": play_session_id,
-                    "user_id": request.args.get('UserId', ''),
+                    "user_id": current_user_id,
                     "source": 'reverse_proxy',
                     "client_key": play_client_key,
                     "client_name": request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",

@@ -45,6 +45,20 @@
             :rows="3"
           />
 
+          <div class="play-pool-user-scope">
+            <n-text depth="2" class="play-pool-field-label">可用用户</n-text>
+            <n-select
+              v-model:value="playPoolAccountForm.allowed_user_ids"
+              multiple
+              filterable
+              clearable
+              placeholder="默认对所有用户可用"
+              :options="embyUserOptions"
+              :loading="embyUsersLoading"
+              :render-label="renderUserOption"
+            />
+          </div>
+
           <n-space justify="space-between" :vertical="isMobile">
             <n-space>
               <n-button secondary @click="refreshPlayPoolQrcode" :loading="playPoolQrcodeLoading">
@@ -93,6 +107,7 @@
                 {{ account.enabled ? '启用' : '停用' }}
               </n-tag>
               <n-tag size="small" :bordered="false">{{ account.cookie_mask || '未配置 Cookie' }}</n-tag>
+              <n-tag size="small" :bordered="false" type="info">{{ accountScopeText(account) }}</n-tag>
             </n-space>
             <n-space class="play-pool-stats" :size="12">
               <span>速度：{{ account.last_speed_text || '未测速' }}</span>
@@ -119,8 +134,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
-import { useMessage, useDialog } from 'naive-ui';
+import { h, ref, onMounted, onUnmounted } from 'vue';
+import { NTag, useMessage, useDialog } from 'naive-ui';
 import { Add as AddIcon, RefreshOutline as RefreshIcon } from '@vicons/ionicons5';
 import axios from 'axios';
 
@@ -138,6 +153,8 @@ const playPoolQrcodeStatus = ref('idle');
 const playPoolQrcodeLoading = ref(false);
 const playPoolQrcodePolling = ref(null);
 const playPoolQrcodeUid = ref('');
+const embyUsersLoading = ref(false);
+const embyUserOptions = ref([]);
 const playPoolConfig = ref({
   enabled: false,
   usable_count: 0,
@@ -149,7 +166,8 @@ const playPoolAccountForm = ref({
   alias: '',
   cookie: '',
   app_type: 'alipaymini',
-  enabled: true
+  enabled: true,
+  allowed_user_ids: []
 });
 
 const cookieAppOptions = [
@@ -162,6 +180,39 @@ const cookieAppOptions = [
 const updateViewportState = () => {
   if (typeof window === 'undefined') return;
   isMobile.value = window.innerWidth <= 768;
+};
+
+const renderUserOption = (option) => {
+  if (!option.is_template_source) return option.label;
+  return [
+    option.label,
+    h(
+      NTag,
+      { type: 'success', size: 'small', bordered: false, style: 'margin-left: 8px;' },
+      { default: () => '模板源' }
+    )
+  ];
+};
+
+const accountScopeText = (account) => {
+  const allowed = Array.isArray(account?.allowed_user_ids) ? account.allowed_user_ids : [];
+  if (!allowed.length) return '所有用户';
+  const optionMap = new Map(embyUserOptions.value.map(item => [item.value, item.label]));
+  const names = allowed.map(id => optionMap.get(id) || id).filter(Boolean);
+  if (!names.length) return `指定 ${allowed.length} 人`;
+  return names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 人`;
+};
+
+const loadEmbyUsers = async () => {
+  embyUsersLoading.value = true;
+  try {
+    const res = await axios.get('/api/custom_collections/config/emby_users');
+    embyUserOptions.value = Array.isArray(res.data) ? res.data : [];
+  } catch (e) {
+    message.error('加载 Emby 用户失败: ' + (e.response?.data?.message || e.message));
+  } finally {
+    embyUsersLoading.value = false;
+  }
 };
 
 const applyConfig = (data) => {
@@ -190,7 +241,7 @@ const loadPlayPoolConfig = async () => {
 
 const open = async () => {
   showModal.value = true;
-  await loadPlayPoolConfig();
+  await Promise.all([loadPlayPoolConfig(), loadEmbyUsers()]);
 };
 
 const close = () => {
@@ -211,7 +262,8 @@ const resetPlayPoolAccountForm = () => {
     alias: '',
     cookie: '',
     app_type: 'alipaymini',
-    enabled: true
+    enabled: true,
+    allowed_user_ids: []
   };
 };
 
@@ -241,7 +293,8 @@ const savePlayPoolAccount = async () => {
     const payload = {
       alias: String(form.alias || '小号').trim() || '小号',
       app_type: form.app_type || 'alipaymini',
-      enabled: Boolean(form.enabled)
+      enabled: Boolean(form.enabled),
+      allowed_user_ids: Array.isArray(form.allowed_user_ids) ? form.allowed_user_ids : []
     };
     if (cookie) payload.cookie = cookie;
     if (form.id) {
@@ -270,7 +323,8 @@ const editPlayPoolAccount = (account) => {
     alias: account.alias || '小号',
     cookie: '',
     app_type: account.app_type || 'alipaymini',
-    enabled: Boolean(account.enabled)
+    enabled: Boolean(account.enabled),
+    allowed_user_ids: Array.isArray(account.allowed_user_ids) ? [...account.allowed_user_ids] : []
   };
 };
 
@@ -393,6 +447,13 @@ defineExpose({ open });
 }
 .play-pool-form-card {
   background: var(--n-action-color);
+}
+.play-pool-user-scope {
+  display: grid;
+  gap: 6px;
+}
+.play-pool-field-label {
+  font-size: 13px;
 }
 .play-pool-qrcode {
   display: flex;
