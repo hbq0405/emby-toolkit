@@ -764,7 +764,7 @@
                     <n-card :bordered="false" class="dashboard-card">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
-                          <span class="card-title">小号 Cookie 池</span>
+                          <span class="card-title">小号池</span>
                           <n-button secondary type="primary" @click="playPoolModalRef?.open()">
                             <template #icon><n-icon :component="OptionsIcon" /></template>
                             配置
