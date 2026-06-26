@@ -53,7 +53,7 @@
           />
 
           <div class="play-pool-user-scope">
-            <n-text depth="2" class="play-pool-field-label">可用用户</n-text>
+            <n-text depth="2" class="play-pool-field-label">指定用户或用户组（模板源）</n-text>
             <n-select
               v-model:value="playPoolAccountForm.allowed_user_ids"
               multiple
