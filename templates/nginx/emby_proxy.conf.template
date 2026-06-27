@@ -8,6 +8,17 @@ upstream virtual_library_proxy {
     server {{ PROXY_UPSTREAM }};
 }
 
+map $arg_ParentId $items_proxy_upstream {
+    default http://emby_server;
+    ~^-\d+$ http://virtual_library_proxy;
+}
+
+map "$arg_ParentId:$arg_customViewId" $metadata_proxy_upstream {
+    default http://emby_server;
+    ~^-\d+: http://virtual_library_proxy;
+    ~^[^:]*:-\d+$ http://virtual_library_proxy;
+}
+
 server {
     listen 0.0.0.0:{{ NGINX_LISTEN_PORT }};
     listen [::]:{{ NGINX_LISTEN_PORT }} ipv6only=on;
@@ -47,13 +58,7 @@ server {
     # ★★★ 规则 2：【新增的关键规则】拦截“获取库内容”的请求 ★★★
     # 这是我们之前一直缺失的规则！
     location ~ /emby/Users/([a-f0-9]+)/Items$ {
-        # 检查 URL 参数中是否包含 ParentId=-xxxxx
-        if ($arg_ParentId ~ ^-\d+$) {
-            # 如果是，就转发给 Python 代理
-            proxy_pass http://virtual_library_proxy;
-        }
-        # 如果不是，就执行默认行为，转发给真实 Emby
-        proxy_pass http://emby_server;
+        proxy_pass $items_proxy_upstream;
     }
 
     # 规则 3：拦截所有路径中包含虚拟ID的请求 (例如获取图片)
@@ -63,13 +68,7 @@ server {
 
     # 规则 4：拦截虚拟库内的“元数据筛选”和“最新添加”请求
     location ~ /Items/(Prefixes|Genres|Studios|Tags|OfficialRatings|Years|Latest)$ {
-        if ($arg_ParentId ~ ^-\d+$) {
-            proxy_pass http://virtual_library_proxy;
-        }
-        if ($arg_customViewId ~ ^-\d+$) {
-            proxy_pass http://virtual_library_proxy;
-        }
-        proxy_pass http://emby_server;
+        proxy_pass $metadata_proxy_upstream;
     }
 
     # 规则 5：拦截视频播放和嗅探请求，交由 Python 代理处理 302 直链 
@@ -81,6 +80,30 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         # 确保跨域和客户端信息透传给 Python
         proxy_pass_request_headers on;
+    }
+
+    # Emby Web 的 htmlvideoplayer 会给 video 设置 crossOrigin，浏览器会按 CORS 模式请求 115 CDN。
+    # 115 CDN 不返回 CORS 头时会触发 DirectPlayError，因此这里只补丁播放器 JS，不中转视频流。
+    location = /web/modules/htmlvideoplayer/plugin.js {
+        proxy_pass http://emby_server;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Range $http_range;
+        proxy_set_header If-Range $http_if_range;
+        proxy_pass_request_headers on;
+        proxy_set_header Accept-Encoding "";
+        sub_filter_types application/javascript text/javascript application/x-javascript text/plain;
+        sub_filter_once off;
+        sub_filter "initialSubtitleStream&&(elem.crossOrigin=initialSubtitleStream);" "elem.removeAttribute('crossorigin');";
+        proxy_hide_header ETag;
+        proxy_hide_header Cache-Control;
+        proxy_hide_header Expires;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
     }
 
     # 规则 6: WebSocket (保持不变)
