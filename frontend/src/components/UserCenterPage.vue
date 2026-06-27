@@ -85,7 +85,7 @@
                   <div class="card-title" style="margin-bottom: 10px;">115 Cookie</div>
                   <n-space vertical :size="12">
                     <n-alert type="info" :show-icon="true">
-                      默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
+                      仅本人使用会员五折，共享使用会员八折。
                     </n-alert>
                     <n-space :size="8">
                       <n-tag size="small" type="success">累计奖励 {{ userCookieReward.total_days || 0 }} 天</n-tag>
@@ -272,7 +272,7 @@
           <div class="card-title" style="margin-bottom: 10px;">115 Cookie</div>
           <n-space vertical :size="12">
             <n-alert type="info" :show-icon="true">
-              默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
+              仅本人使用会员五折，共享使用会员八折。
             </n-alert>
             <n-space :size="8">
               <n-tag size="small" type="success">累计奖励 {{ userCookieReward.total_days || 0 }} 天</n-tag>
