@@ -73,6 +73,19 @@ def _should_patch_emby_web_player_js(path, resp):
     content_type = str(resp.headers.get('Content-Type') or '').lower()
     return not content_type or 'javascript' in content_type or 'text/plain' in content_type
 
+
+def _is_emby_transcode_playback_request(full_path_lower):
+    if '/videos/' not in full_path_lower:
+        return False
+    if any(token in full_path_lower for token in ('master.m3u8', 'main.m3u8', '.m3u8', '/hls', 'transcode')):
+        return True
+    return bool(request.args.get('TranscodeReasons') or request.args.get('TranscodingMaxAudioChannels'))
+
+
+def _block_emby_transcode_playback(full_path):
+    logger.warning("  ⚠️ [302反代] 已阻断 Emby 转码回落：%s", full_path)
+    return Response("Emby transcoding fallback is disabled for 115 direct playback.", status=409)
+
 def to_missing_item_id(tmdb_id): 
     return f"{MISSING_ID_PREFIX}{tmdb_id}"
 
@@ -1074,6 +1087,8 @@ def proxy_all(path):
         # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
         # ====================================================================
         full_path_lower = full_path.lower()
+        if _is_emby_transcode_playback_request(full_path_lower):
+            return _block_emby_transcode_playback(full_path)
         
         if ('/videos/' in full_path_lower and ('/stream' in full_path_lower or '/original' in full_path_lower)) or ('/items/' in full_path_lower and '/download' in full_path_lower):
             # 检测浏览器客户端

@@ -72,7 +72,7 @@ server {
     }
 
     # 规则 5：拦截视频播放和嗅探请求，交由 Python 代理处理 302 直链 
-    location ~* /(videos/.*(?:stream|original)|Items/.*/(?:PlaybackInfo|Download)) {
+    location ~* /(videos/.*(?:stream|original|master\.m3u8|main\.m3u8|hls|transcode)|Items/.*/(?:PlaybackInfo|Download)) {
         proxy_pass http://virtual_library_proxy;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

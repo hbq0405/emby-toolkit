@@ -1659,11 +1659,12 @@ def play_115_video(pick_code, filename=None):
         if any(kw in client_ua_lower for kw in ['emby', 'jellyfin', 'lavf', 'kodi']):
             is_emby_server = True
 
-        # 2. 决定申请直链使用的 UA
-        # 如果是 Emby 服务端，用标准 Chrome UA 伪装骗过 115
-        # 如果是真实客户端，必须用客户端自己的 UA，否则 302 后 115 会报 403 防盗链！
-        fake_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        request_ua = fake_ua if is_emby_server else client_ua
+        if is_emby_server:
+            logger.warning("  ⚠️ [115直链] 已阻断 Emby 服务端中转回落，避免 115 流量归因错误：ua=%s", client_ua[:120])
+            return "Server-side 115 proxy fallback is disabled.", 409
+
+        # 2. 决定申请直链使用的 UA：必须使用真实客户端 UA，否则 302 后 115 会报 403 防盗链。
+        request_ua = client_ua
         
         client = P115Service.get_client()
         if not client:
@@ -1691,18 +1692,6 @@ def play_115_video(pick_code, filename=None):
                     logger.warning("  ⚠️ [小号播放] 路由层未拿到小号直链，已按小号池优先规则中止本次播放。")
                     return "Play pool failed", 503
                 p115_play_pool.recycle_session_after_direct_url(play_result, "起播后清理")
-                if is_emby_server:
-                    headers_to_115 = {
-                        "User-Agent": request_ua,
-                        "Accept": "*/*",
-                        "Connection": "keep-alive",
-                    }
-                    if 'Range' in request.headers:
-                        headers_to_115['Range'] = request.headers['Range']
-                    resp = requests.get(real_url, headers=headers_to_115, stream=True, timeout=10)
-                    excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
-                    response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
-                    return Response(stream_with_context(resp.iter_content(chunk_size=8192)), status=resp.status_code, headers=response_headers)
                 response = redirect(real_url, code=302)
                 response.headers['Access-Control-Allow-Origin'] = '*'
                 return response
@@ -1752,33 +1741,10 @@ def play_115_video(pick_code, filename=None):
 
         recycle_clone_after_direct_url(play_pick_code, "起播后清理")
 
-        # =================================================================
-        # ★★★ 核心分流逻辑 ★★★
-        # =================================================================
-        if is_emby_server:
-            # logger.info(f"  ➜ 检测到 Emby 服务端介入 ({client_ua})，启动中转代理！")
-            
-            headers_to_115 = {
-                "User-Agent": request_ua,
-                "Accept": "*/*",
-                "Connection": "keep-alive"
-            }
-            if 'Range' in request.headers:
-                headers_to_115['Range'] = request.headers['Range']
-
-            resp = requests.get(real_url, headers=headers_to_115, stream=True, timeout=10)
-            
-            excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
-            response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
-            
-            return Response(stream_with_context(resp.iter_content(chunk_size=8192)), status=resp.status_code, headers=response_headers)
-
-        else:
-            # 正常第三方客户端，下发 302，让它自己去连 115！
-            # logger.info(f"  ➜ 客户端 ({client_ua})，下发 302 直链！")
-            response = redirect(real_url, code=302)
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            return response
+        # 正常第三方客户端，下发 302，让它自己去连 115。
+        response = redirect(real_url, code=302)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
         
     except Exception as e:
         logger.error(f"  ➜ 直链解析发生异常: {e}")
