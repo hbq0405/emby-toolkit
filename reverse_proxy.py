@@ -83,7 +83,7 @@ def _is_emby_transcode_playback_request(full_path_lower):
 
 
 def _block_emby_transcode_playback(full_path):
-    logger.warning("  ⚠️ [302反代] 已阻断 Emby 转码回落：%s", full_path)
+    logger.debug("  ⚠️ [302反代] 已阻断 Emby 转码回落：%s", full_path)
     return Response("Emby transcoding fallback is disabled for 115 direct playback.", status=409)
 
 def to_missing_item_id(tmdb_id): 
