@@ -349,6 +349,18 @@ def get_public_account(account_id):
     return _public_account(account, config) if account else None
 
 
+def get_public_account_by_owner(owner_type, owner_user_id):
+    config = _load_config()
+    owner_type = _normalize_owner_type(owner_type)
+    owner_user_id = str(owner_user_id or "").strip()
+    for account in reversed(config.get("accounts") or []):
+        if _normalize_owner_type(account.get("owner_type")) != owner_type:
+            continue
+        if str(account.get("owner_user_id") or "").strip() == owner_user_id:
+            return _public_account(account, config)
+    return None
+
+
 def save_pool_settings(data):
     data = data if isinstance(data, dict) else {}
     config = _load_config()
@@ -690,6 +702,10 @@ def _find_session_by_id(session_id):
     return {}
 
 
+def _same_user_agent(left, right):
+    return str(left or "").strip() == str(right or "").strip()
+
+
 def _find_reusable_session(*, source_pick_code="", item_id="", play_session_id="", user_id="", client_key=""):
     source_pick_code = str(source_pick_code or "").strip()
     item_id = str(item_id or "").strip()
@@ -858,22 +874,28 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
     )
     if reusable:
         account = next((x for x in config.get("accounts") or [] if str(x.get("id")) == str(reusable.get("account_id"))), None)
-        if account and not _account_allowed_for_user(account, user_id):
-            account = None
-        if reusable.get("direct_url") or (account and account.get("enabled") and account.get("cookie")):
+        account_usable = bool(
+            account
+            and account.get("enabled")
+            and account.get("cookie")
+            and _account_allowed_for_user(account, user_id)
+        )
+        direct_url = str(reusable.get("direct_url") or "").strip()
+        direct_url_usable = bool(direct_url and _same_user_agent(reusable.get("direct_url_user_agent"), user_agent))
+        if account_usable and (not direct_url or direct_url_usable):
             logger.debug(
                 "  ➜ [小号播放] 复用已有小号播放记录：%s | account=%s | session=%s | direct_url=%s",
                 reusable.get("file_name") or display_name,
-                (account or {}).get("alias") or (account or {}).get("id") or reusable.get("account_alias") or "-",
+                account.get("alias") or account.get("id") or reusable.get("account_alias") or "-",
                 reusable.get("session_id") or "-",
-                "yes" if reusable.get("direct_url") else "no",
+                "yes" if direct_url_usable else "no",
             )
             return {
                 "pick_code": reusable.get("temp_pick_code") or "",
-                "client": _account_client(account) if account and account.get("cookie") else None,
-                "account": account or {},
+                "client": _account_client(account),
+                "account": account,
                 "session": reusable,
-                "direct_url": reusable.get("direct_url") or "",
+                "direct_url": direct_url if direct_url_usable else "",
             }
 
     _cleanup_superseded_sessions(
@@ -973,8 +995,10 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
 
 
 def get_direct_url(play_result, user_agent=""):
-    cached_url = str((play_result or {}).get("direct_url") or ((play_result or {}).get("session") or {}).get("direct_url") or "").strip()
-    if cached_url:
+    user_agent = str(user_agent or "").strip()
+    session = (play_result or {}).get("session") or {}
+    cached_url = str((play_result or {}).get("direct_url") or session.get("direct_url") or "").strip()
+    if cached_url and _same_user_agent(session.get("direct_url_user_agent"), user_agent):
         return cached_url
     client = play_result.get("client")
     pick_code = play_result.get("pick_code")
@@ -985,10 +1009,11 @@ def get_direct_url(play_result, user_agent=""):
     with lock:
         fresh_session = _find_session_by_id(session_id)
         cached_url = str(fresh_session.get("direct_url") or "").strip()
-        if cached_url:
+        if cached_url and _same_user_agent(fresh_session.get("direct_url_user_agent"), user_agent):
             session = play_result.get("session") or {}
             session["direct_url"] = cached_url
             session["direct_url_cached_at"] = fresh_session.get("direct_url_cached_at") or _now_ts()
+            session["direct_url_user_agent"] = fresh_session.get("direct_url_user_agent") or user_agent
             return cached_url
 
         url = client.download_url(pick_code, user_agent=user_agent)
@@ -996,10 +1021,12 @@ def get_direct_url(play_result, user_agent=""):
             _patch_session(session_id, {
                 "direct_url": url,
                 "direct_url_cached_at": _now_ts(),
+                "direct_url_user_agent": user_agent,
             })
             session = play_result.get("session") or {}
             session["direct_url"] = url
             session["direct_url_cached_at"] = _now_ts()
+            session["direct_url_user_agent"] = user_agent
         return url
 
 

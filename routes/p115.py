@@ -1136,6 +1136,15 @@ def save_user_play_pool_account():
     return jsonify({'success': True, 'data': public_item})
 
 
+@p115_bp.route('/play_pool/user-account', methods=['GET'])
+@emby_login_required
+def get_user_play_pool_account():
+    emby_user_id = session.get('emby_user_id')
+    item = p115_play_pool.get_public_account_by_owner('user', emby_user_id) or {}
+    item['reward_summary'] = _public_user_reward(_user_reward_entry(_load_play_pool_user_rewards(), emby_user_id))
+    return jsonify({'success': True, 'data': item})
+
+
 @p115_bp.route('/play_pool/user-account/rewards', methods=['GET'])
 @emby_login_required
 def get_user_play_pool_rewards():

@@ -525,6 +525,24 @@ const loadUserCookieReward = async () => {
   }
 };
 
+const loadUserCookieAccount = async () => {
+  try {
+    const res = await axios.get('/api/p115/play_pool/user-account');
+    if (res.data?.success && res.data.data) {
+      const data = res.data.data;
+      if (data.id) {
+        userCookieShared.value = Boolean(data.shared);
+        userCookieAppType.value = data.app_type || 'alipaymini';
+      }
+      if (data.reward_summary) {
+        userCookieReward.value = data.reward_summary;
+      }
+    }
+  } catch (error) {
+    console.error('加载 115 Cookie 状态失败', error);
+  }
+};
+
 const saveUserCookie = async (cookie, appType) => {
   const alias = accountInfo.value?.name || authStore.username || '用户小号';
   const res = await axios.post('/api/p115/play_pool/user-account', {
@@ -681,6 +699,7 @@ onMounted(async () => {
         telegramChatId.value = accountInfo.value.telegram_chat_id || '';
     }
     fetchStats();
+    loadUserCookieAccount();
     loadUserCookieReward();
     await fetchSubscriptionHistory();
   } catch (error) {
