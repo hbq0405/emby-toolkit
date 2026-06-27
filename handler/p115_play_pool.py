@@ -58,6 +58,25 @@ def _safe_float(value, default=0.0):
         return default
 
 
+def _safe_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y", "on"):
+        return True
+    if text in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
+
+def _normalize_owner_type(value):
+    return "user" if str(value or "").strip().lower() == "user" else "admin"
+
+
 def _mask_cookie(cookie):
     text = str(cookie or "")
     if not text:
@@ -96,6 +115,34 @@ def _account_daily_limited(account):
     return bool(daily_limit_bytes and _safe_int((account or {}).get("daily_traffic_bytes"), 0) >= daily_limit_bytes)
 
 
+def _speedtest_threshold_bps(account):
+    mbps = _safe_float((account or {}).get("auto_speedtest_threshold_mbps"), 0.0)
+    return int(mbps * 1024 * 1024) if mbps > 0 else 0
+
+
+def _find_account_by_id(account_id):
+    account_id = str(account_id or "").strip()
+    if not account_id:
+        return None
+    for account in _load_config().get("accounts") or []:
+        if str(account.get("id")) == account_id:
+            return account
+    return None
+
+
+def _find_account_by_owner(owner_type, owner_user_id):
+    owner_type = _normalize_owner_type(owner_type)
+    owner_user_id = str(owner_user_id or "").strip()
+    if not owner_user_id:
+        return None
+    for account in reversed(_load_config().get("accounts") or []):
+        if _normalize_owner_type(account.get("owner_type")) != owner_type:
+            continue
+        if str(account.get("owner_user_id") or "").strip() == owner_user_id:
+            return account
+    return None
+
+
 def _normalize_daily_traffic(account):
     today = _today_key()
     if str(account.get("daily_traffic_date") or "") != today:
@@ -103,6 +150,28 @@ def _normalize_daily_traffic(account):
         account["daily_traffic_bytes"] = 0
     else:
         account["daily_traffic_bytes"] = _safe_int(account.get("daily_traffic_bytes"), 0)
+
+
+def _apply_speedtest_gate(account_id, speed_bps, *, error_msg=""):
+    account = _find_account_by_id(account_id)
+    if not account:
+        return {}
+    gate_enabled = _safe_bool(account.get("auto_speedtest_enabled"), True)
+    threshold_bps = _speedtest_threshold_bps(account)
+    patch = {
+        "last_speed_bps": _safe_int(speed_bps, 0),
+        "last_speed_at": _now_text(),
+        "last_error": str(error_msg or "").strip(),
+    }
+    if gate_enabled and threshold_bps > 0:
+        enabled = _safe_int(speed_bps, 0) >= threshold_bps
+        patch["enabled"] = enabled
+        if not enabled:
+            patch["last_error"] = f"测速 {_human_bytes(speed_bps)}/s 低于阈值 {_human_bytes(threshold_bps)}/s，已自动停用"
+    elif error_msg:
+        patch["enabled"] = False
+    _mark_account(account_id, patch)
+    return patch
 
 
 def _display_title(file_name):
@@ -164,9 +233,15 @@ def _expand_allowed_user_ids(selected_user_ids):
 
 
 def _account_allowed_for_user(account, user_id):
+    owner_type = _normalize_owner_type((account or {}).get("owner_type"))
+    owner_user_id = str((account or {}).get("owner_user_id") or "").strip()
+    if owner_type == "user" and not _safe_bool((account or {}).get("shared"), False):
+        return bool(str(user_id or "").strip() and str(user_id).strip() == owner_user_id)
     raw_allowed = _normalize_user_ids((account or {}).get("allowed_user_ids"))
     allowed = _expand_allowed_user_ids(raw_allowed) if raw_allowed else []
     if not allowed:
+        if owner_type == "user" and _safe_bool((account or {}).get("shared"), False):
+            return True
         allowed = _normalize_user_ids((account or {}).get("allowed_effective_user_ids"))
     if not allowed:
         return True
@@ -191,6 +266,11 @@ def _load_config():
         account["cookie"] = str(account.get("cookie") or "").strip()
         account["app_type"] = str(account.get("app_type") or "alipaymini").strip() or "alipaymini"
         account["enabled"] = bool(account.get("enabled", True))
+        account["owner_type"] = _normalize_owner_type(account.get("owner_type"))
+        account["owner_user_id"] = str(account.get("owner_user_id") or "").strip()
+        account["shared"] = _safe_bool(account.get("shared"), account["owner_type"] != "user")
+        account["auto_speedtest_enabled"] = _safe_bool(account.get("auto_speedtest_enabled"), True)
+        account["auto_speedtest_threshold_mbps"] = max(0.0, _safe_float(account.get("auto_speedtest_threshold_mbps"), 0.0))
         account["temp_cid"] = str(account.get("temp_cid") or "").strip()
         account["play_count"] = _safe_int(account.get("play_count"), 0)
         account["traffic_bytes"] = _safe_int(account.get("traffic_bytes"), 0)
@@ -224,6 +304,14 @@ def _public_account(account):
     out.pop("cookie", None)
     out.pop("allowed_effective_user_ids", None)
     out["cookie_mask"] = _mask_cookie(account.get("cookie"))
+    out["owner_type"] = _normalize_owner_type(account.get("owner_type"))
+    out["owner_type_text"] = "用户自有" if out["owner_type"] == "user" else "管理员小号"
+    out["owner_user_id"] = str(account.get("owner_user_id") or "").strip()
+    out["owner_user_name"] = _display_user_name(out["owner_user_id"]) if out["owner_user_id"] else ""
+    out["shared"] = _safe_bool(account.get("shared"), out["owner_type"] != "user")
+    out["auto_speedtest_enabled"] = _safe_bool(account.get("auto_speedtest_enabled"), True)
+    out["auto_speedtest_threshold_mbps"] = _safe_float(account.get("auto_speedtest_threshold_mbps"), 0.0)
+    out["auto_speedtest_threshold_text"] = f"{out['auto_speedtest_threshold_mbps']:.2f} MB/s" if out["auto_speedtest_threshold_mbps"] > 0 else ""
     out["traffic_text"] = _human_bytes(account.get("traffic_bytes"))
     out["daily_traffic_text"] = _human_bytes(account.get("daily_traffic_bytes"))
     out["daily_traffic_limit_text"] = _human_gb_limit(account.get("daily_traffic_limit_gb"))
@@ -261,6 +349,18 @@ def upsert_account(payload, account_id=None):
                 target = item
                 break
     if target is None:
+        owner_type = _normalize_owner_type(payload.get("owner_type"))
+        owner_user_id = str(payload.get("owner_user_id") or "").strip()
+        if owner_type == "user" and owner_user_id:
+            target = _find_account_by_owner(owner_type, owner_user_id)
+    if target is None and not account_id and payload.get("owner_type") == "user" and payload.get("owner_user_id"):
+        target = _find_account_by_owner("user", payload.get("owner_user_id"))
+    if target is None and account_id:
+        for item in accounts:
+            if str(item.get("id")) == str(account_id):
+                target = item
+                break
+    if target is None:
         target = {
             "id": uuid.uuid4().hex,
             "play_count": 0,
@@ -284,6 +384,26 @@ def upsert_account(payload, account_id=None):
         target["enabled"] = bool(payload.get("enabled"))
     elif "enabled" not in target:
         target["enabled"] = True
+    if "owner_type" in payload:
+        target["owner_type"] = _normalize_owner_type(payload.get("owner_type"))
+    elif "owner_type" not in target:
+        target["owner_type"] = "admin"
+    if "owner_user_id" in payload:
+        target["owner_user_id"] = str(payload.get("owner_user_id") or "").strip()
+    elif "owner_user_id" not in target:
+        target["owner_user_id"] = ""
+    if "shared" in payload:
+        target["shared"] = _safe_bool(payload.get("shared"), target.get("owner_type") != "user")
+    elif "shared" not in target:
+        target["shared"] = target.get("owner_type") != "user"
+    if "auto_speedtest_enabled" in payload:
+        target["auto_speedtest_enabled"] = _safe_bool(payload.get("auto_speedtest_enabled"), True)
+    elif "auto_speedtest_enabled" not in target:
+        target["auto_speedtest_enabled"] = True
+    if "auto_speedtest_threshold_mbps" in payload:
+        target["auto_speedtest_threshold_mbps"] = max(0.0, _safe_float(payload.get("auto_speedtest_threshold_mbps"), 0.0))
+    elif "auto_speedtest_threshold_mbps" not in target:
+        target["auto_speedtest_threshold_mbps"] = 0.0
     if "daily_traffic_limit_gb" in payload:
         target["daily_traffic_limit_gb"] = max(0.0, _safe_float(payload.get("daily_traffic_limit_gb"), 0.0))
     if "allowed_user_ids" in payload:
@@ -295,6 +415,18 @@ def upsert_account(payload, account_id=None):
     target["updated_at"] = _now_text()
     target.setdefault("temp_cid", "")
     _save_config(config)
+    if str(target.get("cookie") or "").strip() and _safe_bool(target.get("auto_speedtest_enabled"), True) and not _safe_bool(payload.get("_skip_auto_speedtest"), False):
+        try:
+            speedtest_account(target["id"])
+            target = _find_account_by_id(target["id"]) or target
+        except Exception as e:
+            _mark_account(target["id"], {
+                "enabled": False,
+                "last_error": str(e),
+                "last_speed_bps": 0,
+                "last_speed_at": _now_text(),
+            })
+            target = _find_account_by_id(target["id"]) or target
     return _public_account(target)
 
 
@@ -1044,6 +1176,9 @@ def speedtest_account(account_id, sample_pick_code="", user_agent=""):
     if not sample_pick_code:
         raise RuntimeError("未找到可用于测速的 115 样本文件")
 
+    if not _safe_bool(account.get("auto_speedtest_enabled"), True):
+        raise RuntimeError("该小号已关闭自动测速，不允许继续测速")
+
     source_row = P115CacheManager.get_file_cache_by_pickcode(sample_pick_code) or {}
     sha1 = str(source_row.get("sha1") or "").strip().upper()
     size = _safe_int(source_row.get("size"), 0)
@@ -1104,7 +1239,7 @@ def speedtest_account(account_id, sample_pick_code="", user_agent=""):
         if not url:
             raise RuntimeError("小号获取测速直链失败")
         result = _speedtest_url(url, user_agent=user_agent or "Mozilla/5.0")
-        _mark_account(account_id, {"last_speed_bps": result["bps"], "last_speed_at": _now_text(), "last_error": ""})
+        _apply_speedtest_gate(account_id, result["bps"])
         return result
     finally:
         if clone.get("fid"):

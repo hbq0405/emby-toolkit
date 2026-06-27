@@ -1,46 +1,65 @@
-<template>
-  <n-modal v-model:show="showModal" preset="card" title="小号 Cookie 池" style="width: 760px; max-width: calc(100vw - 24px);" :mask-closable="false" class="custom-modal glass-modal">
+﻿<template>
+  <n-modal v-model:show="showModal" preset="card" title="灏忓彿 Cookie 姹? style="width: 760px; max-width: calc(100vw - 24px);" :mask-closable="false" class="custom-modal glass-modal">
     <n-space vertical :size="16">
       <n-alert type="info" :show-icon="true">
-        有可用小号时，播放链路会优先使用小号秒传并获取直链；没有可用小号会回退主账号播放。
-      </n-alert>
+        鏈夊彲鐢ㄥ皬鍙锋椂锛屾挱鏀鹃摼璺細浼樺厛浣跨敤灏忓彿绉掍紶骞惰幏鍙栫洿閾撅紱娌℃湁鍙敤灏忓彿浼氬洖閫€涓昏处鍙锋挱鏀俱€?      </n-alert>
 
       <div class="play-pool-toolbar">
         <n-space align="center">
           <n-switch v-model:value="playPoolConfig.enabled" @update:value="savePlayPoolEnabled">
-            <template #checked>启用小号池</template>
-            <template #unchecked>关闭小号池</template>
+            <template #checked>鍚敤灏忓彿姹?/template>
+            <template #unchecked>鍏抽棴灏忓彿姹?/template>
           </n-switch>
           <n-tag :type="playPoolConfig.usable_count > 0 ? 'success' : 'default'" size="small">
-            可用 {{ playPoolConfig.usable_count || 0 }} / {{ playPoolConfig.accounts.length }}
+            鍙敤 {{ playPoolConfig.usable_count || 0 }} / {{ playPoolConfig.accounts.length }}
           </n-tag>
-          <n-tag size="small" :bordered="false">{{ playPoolConfig.temp_dir_name || 'ETK小号播放临时目录' }}</n-tag>
+          <n-tag size="small" :bordered="false">{{ playPoolConfig.temp_dir_name || 'ETK灏忓彿鎾斁涓存椂鐩綍' }}</n-tag>
         </n-space>
         <n-button size="small" tertiary @click="loadPlayPoolConfig" :loading="playPoolLoading">
           <template #icon><n-icon :component="RefreshIcon" /></template>
-          刷新
+          鍒锋柊
         </n-button>
       </div>
 
       <n-card :bordered="false" size="small" class="play-pool-form-card">
         <n-space vertical>
           <n-space :vertical="isMobile" :size="12" style="width: 100%;">
-            <n-input v-model:value="playPoolAccountForm.alias" placeholder="小号别名，例如：小号A" style="min-width: 180px;" />
+            <n-input v-model:value="playPoolAccountForm.alias" placeholder="灏忓彿鍒悕锛屼緥濡傦細灏忓彿A" style="min-width: 180px;" />
             <n-select
               v-model:value="playPoolAccountForm.app_type"
               :options="cookieAppOptions"
               style="width: 180px;"
               @update:value="handlePlayPoolAppTypeChange"
             />
+            <n-select
+              v-model:value="playPoolAccountForm.owner_type"
+              :options="ownerTypeOptions"
+              style="width: 140px;"
+            />
             <n-switch v-model:value="playPoolAccountForm.enabled">
-              <template #checked>启用</template>
-              <template #unchecked>停用</template>
+              <template #checked>鍚敤</template>
+              <template #unchecked>鍋滅敤</template>
+            </n-switch>
+            <n-switch v-model:value="playPoolAccountForm.shared" :disabled="playPoolAccountForm.owner_type !== 'user'">
+              <template #checked>共享</template>
+              <template #unchecked>仅本人</template>
+            </n-switch>
+            <n-input-number
+              v-model:value="playPoolAccountForm.auto_speedtest_threshold_mbps"
+              :min="0"
+              :precision="2"
+              placeholder="测速阈值 MB/s"
+              style="width: 150px;"
+            />
+            <n-switch v-model:value="playPoolAccountForm.auto_speedtest_enabled">
+              <template #checked>自动测速</template>
+              <template #unchecked>关闭</template>
             </n-switch>
             <n-input-number
               v-model:value="playPoolAccountForm.daily_traffic_limit_gb"
               :min="0"
               :precision="0"
-              placeholder="单日上限 GB"
+              placeholder="鍗曟棩涓婇檺 GB"
               style="width: 140px;"
             />
           </n-space>
@@ -48,18 +67,18 @@
           <n-input
             v-model:value="playPoolAccountForm.cookie"
             type="textarea"
-            placeholder="粘贴小号 Cookie，或扫码后自动回填：UID=...; CID=...; SEID=..."
+            placeholder="绮樿创灏忓彿 Cookie锛屾垨鎵爜鍚庤嚜鍔ㄥ洖濉細UID=...; CID=...; SEID=..."
             :rows="3"
           />
 
           <div class="play-pool-user-scope">
-            <n-text depth="2" class="play-pool-field-label">指定用户或用户组（模板源）</n-text>
+            <n-text depth="2" class="play-pool-field-label">鎸囧畾鐢ㄦ埛鎴栫敤鎴风粍锛堟ā鏉挎簮锛?/n-text>
             <n-select
               v-model:value="playPoolAccountForm.allowed_user_ids"
               multiple
               filterable
               clearable
-              placeholder="默认对所有用户可用"
+              placeholder="榛樿瀵规墍鏈夌敤鎴峰彲鐢?
               :options="embyUserOptions"
               :loading="embyUsersLoading"
               :render-label="renderUserOption"
@@ -70,32 +89,30 @@
             <n-space>
               <n-button secondary @click="refreshPlayPoolQrcode" :loading="playPoolQrcodeLoading">
                 <template #icon><n-icon :component="RefreshIcon" /></template>
-                扫码获取 Cookie
+                鎵爜鑾峰彇 Cookie
               </n-button>
-              <n-button v-if="playPoolAccountForm.id" tertiary @click="resetPlayPoolAccountForm">取消编辑</n-button>
+              <n-button v-if="playPoolAccountForm.id" tertiary @click="resetPlayPoolAccountForm">鍙栨秷缂栬緫</n-button>
             </n-space>
             <n-button type="primary" @click="savePlayPoolAccount" :loading="playPoolSaving">
               <template #icon><n-icon :component="AddIcon" /></template>
-              {{ playPoolAccountForm.id ? '保存小号' : '添加小号' }}
+              {{ playPoolAccountForm.id ? '淇濆瓨灏忓彿' : '娣诲姞灏忓彿' }}
             </n-button>
           </n-space>
 
           <div v-if="playPoolQrcodeStatus !== 'idle'" class="play-pool-qrcode">
             <n-spin v-if="playPoolQrcodeStatus === 'loading'" size="small">
-              <template #description>正在获取二维码...</template>
+              <template #description>姝ｅ湪鑾峰彇浜岀淮鐮?..</template>
             </n-spin>
             <template v-else-if="playPoolQrcodeStatus === 'waiting' || playPoolQrcodeStatus === 'success'">
               <n-qr-code v-if="playPoolQrcodeUrl" :value="playPoolQrcodeUrl" :size="160" />
               <n-alert v-if="playPoolQrcodeStatus === 'waiting'" type="info" :show-icon="true">
-                使用 115 生活 APP 扫码，成功后 Cookie 会回填到上方输入框。
-              </n-alert>
+                浣跨敤 115 鐢熸椿 APP 鎵爜锛屾垚鍔熷悗 Cookie 浼氬洖濉埌涓婃柟杈撳叆妗嗐€?              </n-alert>
               <n-alert v-if="playPoolQrcodeStatus === 'success'" type="success" :show-icon="true">
-                Cookie 已获取，请确认别名后保存。
-              </n-alert>
+                Cookie 宸茶幏鍙栵紝璇风‘璁ゅ埆鍚嶅悗淇濆瓨銆?              </n-alert>
             </template>
-            <n-result v-else-if="playPoolQrcodeStatus === 'expired'" status="warning" title="二维码已过期">
+            <n-result v-else-if="playPoolQrcodeStatus === 'expired'" status="warning" title="浜岀淮鐮佸凡杩囨湡">
               <template #footer>
-                <n-button type="primary" @click="refreshPlayPoolQrcode">重新获取</n-button>
+                <n-button type="primary" @click="refreshPlayPoolQrcode">閲嶆柊鑾峰彇</n-button>
               </template>
             </n-result>
           </div>
@@ -104,40 +121,39 @@
 
       <div class="play-pool-list">
         <div v-if="!playPoolConfig.accounts.length" class="play-pool-empty">
-          暂未配置小号 Cookie
+          鏆傛湭閰嶇疆灏忓彿 Cookie
         </div>
         <div v-for="account in playPoolConfig.accounts" :key="account.id" class="play-pool-account">
           <div class="play-pool-account-main">
             <n-space align="center" :size="8">
-              <strong>{{ account.alias || '小号' }}</strong>
+              <strong>{{ account.alias || '灏忓彿' }}</strong>
               <n-tag size="small" :type="account.enabled && account.cookie_mask ? 'success' : 'default'">
-                {{ account.enabled ? '启用' : '停用' }}
+                {{ account.enabled ? '鍚敤' : '鍋滅敤' }}
               </n-tag>
-              <n-tag v-if="account.daily_traffic_limited" size="small" type="warning">今日达限</n-tag>
-              <n-tag size="small" :bordered="false">{{ account.cookie_mask || '未配置 Cookie' }}</n-tag>
+              <n-tag v-if="account.daily_traffic_limited" size="small" type="warning">浠婃棩杈鹃檺</n-tag>
+              <n-tag size="small" :bordered="false">{{ account.cookie_mask || '鏈厤缃?Cookie' }}</n-tag>
               <n-tag size="small" :bordered="false" type="info">{{ accountScopeText(account) }}</n-tag>
             </n-space>
             <n-space class="play-pool-stats" :size="12">
-              <span>速度：{{ account.last_speed_text || '未测速' }}</span>
-              <span>播放：{{ account.play_count || 0 }} 次</span>
-              <span>今日：{{ account.daily_traffic_text || '0 B' }}{{ account.daily_traffic_limit_text ? ` / ${account.daily_traffic_limit_text}` : '' }}</span>
-              <span>历史：{{ account.traffic_text || '0 B' }}</span>
+              <span>閫熷害锛歿{ account.last_speed_text || '鏈祴閫? }}</span>
+              <span>鎾斁锛歿{ account.play_count || 0 }} 娆?/span>
+              <span>浠婃棩锛歿{ account.daily_traffic_text || '0 B' }}{{ account.daily_traffic_limit_text ? ` / ${account.daily_traffic_limit_text}` : '' }}</span>
+              <span>鍘嗗彶锛歿{ account.traffic_text || '0 B' }}</span>
             </n-space>
             <n-text v-if="account.last_error" type="error" depth="3" class="play-pool-error">{{ account.last_error }}</n-text>
           </div>
           <n-space>
-            <n-button size="small" tertiary @click="editPlayPoolAccount(account)">编辑</n-button>
+            <n-button size="small" tertiary @click="editPlayPoolAccount(account)">缂栬緫</n-button>
             <n-button size="small" secondary @click="speedtestPlayPoolAccount(account)" :loading="playPoolSpeedTestingId === account.id">
-              测速
-            </n-button>
-            <n-button size="small" tertiary type="error" @click="deletePlayPoolAccount(account)">删除</n-button>
+              娴嬮€?            </n-button>
+            <n-button size="small" tertiary type="error" @click="deletePlayPoolAccount(account)">鍒犻櫎</n-button>
           </n-space>
         </div>
       </div>
     </n-space>
 
     <template #footer>
-      <n-button @click="close">关闭</n-button>
+      <n-button @click="close">鍏抽棴</n-button>
     </template>
   </n-modal>
 </template>
@@ -167,7 +183,7 @@ const embyUserOptions = ref([]);
 const playPoolConfig = ref({
   enabled: false,
   usable_count: 0,
-  temp_dir_name: 'ETK小号播放临时目录',
+  temp_dir_name: 'ETK灏忓彿鎾斁涓存椂鐩綍',
   accounts: []
 });
 const playPoolAccountForm = ref({
@@ -175,16 +191,25 @@ const playPoolAccountForm = ref({
   alias: '',
   cookie: '',
   app_type: 'alipaymini',
+  owner_type: 'admin',
+  shared: true,
   enabled: true,
   daily_traffic_limit_gb: null,
+  auto_speedtest_enabled: true,
+  auto_speedtest_threshold_mbps: null,
   allowed_user_ids: []
 });
 
 const cookieAppOptions = [
-  { label: '支付宝小程序', value: 'alipaymini' },
-  { label: '网页版', value: 'web' },
-  { label: '微信小程序', value: 'wechatmini' },
-  { label: '安卓电视端', value: 'tv' }
+  { label: '鏀粯瀹濆皬绋嬪簭', value: 'alipaymini' },
+  { label: '缃戦〉鐗?, value: 'web' },
+  { label: '寰俊灏忕▼搴?, value: 'wechatmini' },
+  { label: '瀹夊崜鐢佃绔?, value: 'tv' }
+];
+
+const ownerTypeOptions = [
+  { label: '管理员小号', value: 'admin' },
+  { label: '用户自有', value: 'user' }
 ];
 
 const updateViewportState = () => {
@@ -199,18 +224,18 @@ const renderUserOption = (option) => {
     h(
       NTag,
       { type: 'success', size: 'small', bordered: false, style: 'margin-left: 8px;' },
-      { default: () => '模板源' }
+      { default: () => '妯℃澘婧? }
     )
   ];
 };
 
 const accountScopeText = (account) => {
   const allowed = Array.isArray(account?.allowed_user_ids) ? account.allowed_user_ids : [];
-  if (!allowed.length) return '所有用户';
+  if (!allowed.length) return '鎵€鏈夌敤鎴?;
   const optionMap = new Map(embyUserOptions.value.map(item => [item.value, item.label]));
   const names = allowed.map(id => optionMap.get(id) || id).filter(Boolean);
-  if (!names.length) return `指定 ${allowed.length} 人`;
-  return names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 人`;
+  if (!names.length) return `鎸囧畾 ${allowed.length} 浜篳;
+  return names.length <= 2 ? names.join('銆?) : `${names.slice(0, 2).join('銆?)} 绛?${names.length} 浜篳;
 };
 
 const loadEmbyUsers = async () => {
@@ -219,7 +244,7 @@ const loadEmbyUsers = async () => {
     const res = await axios.get('/api/custom_collections/config/emby_users');
     embyUserOptions.value = Array.isArray(res.data) ? res.data : [];
   } catch (e) {
-    message.error('加载 Emby 用户失败: ' + (e.response?.data?.message || e.message));
+    message.error('鍔犺浇 Emby 鐢ㄦ埛澶辫触: ' + (e.response?.data?.message || e.message));
   } finally {
     embyUsersLoading.value = false;
   }
@@ -229,7 +254,7 @@ const applyConfig = (data) => {
   playPoolConfig.value = {
     enabled: Boolean(data?.enabled),
     usable_count: Number(data?.usable_count || 0),
-    temp_dir_name: data?.temp_dir_name || 'ETK小号播放临时目录',
+    temp_dir_name: data?.temp_dir_name || 'ETK灏忓彿鎾斁涓存椂鐩綍',
     accounts: Array.isArray(data?.accounts) ? data.accounts : []
   };
 };
@@ -243,7 +268,7 @@ const loadPlayPoolConfig = async () => {
       emit('updated', res.data.data);
     }
   } catch (e) {
-    message.error('加载小号池失败: ' + (e.response?.data?.message || e.message));
+    message.error('鍔犺浇灏忓彿姹犲け璐? ' + (e.response?.data?.message || e.message));
   } finally {
     playPoolLoading.value = false;
   }
@@ -272,8 +297,12 @@ const resetPlayPoolAccountForm = () => {
     alias: '',
     cookie: '',
     app_type: 'alipaymini',
+    owner_type: 'admin',
+    shared: true,
     enabled: true,
     daily_traffic_limit_gb: null,
+    auto_speedtest_enabled: true,
+    auto_speedtest_threshold_mbps: null,
     allowed_user_ids: []
   };
 };
@@ -285,9 +314,9 @@ const savePlayPoolEnabled = async (enabled) => {
       applyConfig(res.data.data);
       emit('updated', res.data.data);
     }
-    message.success(enabled ? '小号池已启用' : '小号池已关闭');
+    message.success(enabled ? '灏忓彿姹犲凡鍚敤' : '灏忓彿姹犲凡鍏抽棴');
   } catch (e) {
-    message.error('保存小号池开关失败: ' + (e.response?.data?.message || e.message));
+    message.error('淇濆瓨灏忓彿姹犲紑鍏冲け璐? ' + (e.response?.data?.message || e.message));
     await loadPlayPoolConfig();
   }
 };
@@ -296,30 +325,34 @@ const savePlayPoolAccount = async () => {
   const form = playPoolAccountForm.value;
   const cookie = String(form.cookie || '').trim();
   if (!form.id && !cookie) {
-    message.warning('请先扫码或粘贴小号 Cookie');
+    message.warning('璇峰厛鎵爜鎴栫矘璐村皬鍙?Cookie');
     return;
   }
   playPoolSaving.value = true;
   try {
     const payload = {
-      alias: String(form.alias || '小号').trim() || '小号',
+      alias: String(form.alias || '灏忓彿').trim() || '灏忓彿',
       app_type: form.app_type || 'alipaymini',
+      owner_type: form.owner_type || 'admin',
+      shared: form.owner_type === 'user' ? Boolean(form.shared) : true,
       enabled: Boolean(form.enabled),
       daily_traffic_limit_gb: Number(form.daily_traffic_limit_gb || 0),
+      auto_speedtest_enabled: Boolean(form.auto_speedtest_enabled),
+      auto_speedtest_threshold_mbps: Number(form.auto_speedtest_threshold_mbps || 0),
       allowed_user_ids: Array.isArray(form.allowed_user_ids) ? form.allowed_user_ids : []
     };
     if (cookie) payload.cookie = cookie;
     if (form.id) {
       await axios.put(`/api/p115/play_pool/accounts/${form.id}`, payload);
-      message.success('小号已保存');
+      message.success('灏忓彿宸蹭繚瀛?);
     } else {
       await axios.post('/api/p115/play_pool/accounts', payload);
-      message.success('小号已添加');
+      message.success('灏忓彿宸叉坊鍔?);
     }
     resetPlayPoolAccountForm();
     await loadPlayPoolConfig();
   } catch (e) {
-    message.error('保存小号失败: ' + (e.response?.data?.message || e.message));
+    message.error('淇濆瓨灏忓彿澶辫触: ' + (e.response?.data?.message || e.message));
   } finally {
     playPoolSaving.value = false;
   }
@@ -332,28 +365,32 @@ const editPlayPoolAccount = (account) => {
   playPoolQrcodeUid.value = '';
   playPoolAccountForm.value = {
     id: account.id,
-    alias: account.alias || '小号',
+    alias: account.alias || '灏忓彿',
     cookie: '',
     app_type: account.app_type || 'alipaymini',
+    owner_type: account.owner_type || 'admin',
+    shared: Boolean(account.shared),
     enabled: Boolean(account.enabled),
     daily_traffic_limit_gb: Number(account.daily_traffic_limit_gb || 0) || null,
+    auto_speedtest_enabled: account.auto_speedtest_enabled !== false,
+    auto_speedtest_threshold_mbps: Number(account.auto_speedtest_threshold_mbps || 0) || null,
     allowed_user_ids: Array.isArray(account.allowed_user_ids) ? [...account.allowed_user_ids] : []
   };
 };
 
 const deletePlayPoolAccount = (account) => {
   dialog.warning({
-    title: '删除小号',
-    content: `确定删除“${account.alias || '小号'}”吗？`,
-    positiveText: '删除',
-    negativeText: '取消',
+    title: '鍒犻櫎灏忓彿',
+    content: `纭畾鍒犻櫎鈥?{account.alias || '灏忓彿'}鈥濆悧锛焋,
+    positiveText: '鍒犻櫎',
+    negativeText: '鍙栨秷',
     onPositiveClick: async () => {
       try {
         await axios.delete(`/api/p115/play_pool/accounts/${account.id}`);
-        message.success('小号已删除');
+        message.success('灏忓彿宸插垹闄?);
         await loadPlayPoolConfig();
       } catch (e) {
-        message.error('删除失败: ' + (e.response?.data?.message || e.message));
+        message.error('鍒犻櫎澶辫触: ' + (e.response?.data?.message || e.message));
       }
     }
   });
@@ -363,10 +400,10 @@ const speedtestPlayPoolAccount = async (account) => {
   playPoolSpeedTestingId.value = account.id;
   try {
     const res = await axios.post(`/api/p115/play_pool/accounts/${account.id}/speedtest`);
-    message.success(`小号测速完成：${res.data?.data?.speed_text || '已完成'}`);
+    message.success(`灏忓彿娴嬮€熷畬鎴愶細${res.data?.data?.speed_text || '宸插畬鎴?}`);
     await loadPlayPoolConfig();
   } catch (e) {
-    message.error('小号测速失败: ' + (e.response?.data?.message || e.message));
+    message.error('灏忓彿娴嬮€熷け璐? ' + (e.response?.data?.message || e.message));
   } finally {
     playPoolSpeedTestingId.value = '';
   }
@@ -387,11 +424,11 @@ const refreshPlayPoolQrcode = async () => {
       startPlayPoolQrcodePolling();
     } else {
       playPoolQrcodeStatus.value = 'error';
-      message.error(res.data?.message || '获取小号二维码失败');
+      message.error(res.data?.message || '鑾峰彇灏忓彿浜岀淮鐮佸け璐?);
     }
   } catch (e) {
     playPoolQrcodeStatus.value = 'error';
-    message.error('获取小号二维码失败: ' + (e.response?.data?.message || e.message));
+    message.error('鑾峰彇灏忓彿浜岀淮鐮佸け璐? ' + (e.response?.data?.message || e.message));
   } finally {
     playPoolQrcodeLoading.value = false;
   }
@@ -409,13 +446,13 @@ const startPlayPoolQrcodePolling = () => {
         playPoolAccountForm.value.app_type = res.data.data?.app_type || appType;
         playPoolQrcodeStatus.value = 'success';
         stopPlayPoolQrcodePolling();
-        message.success('小号 Cookie 获取成功');
+        message.success('灏忓彿 Cookie 鑾峰彇鎴愬姛');
       } else if (res.data?.status === 'expired') {
         playPoolQrcodeStatus.value = 'expired';
         stopPlayPoolQrcodePolling();
       }
     } catch (e) {
-      console.error('检查小号 Cookie 二维码状态失败', e);
+      console.error('妫€鏌ュ皬鍙?Cookie 浜岀淮鐮佺姸鎬佸け璐?, e);
     }
   }, 2000);
 };
@@ -520,3 +557,5 @@ defineExpose({ open });
   }
 }
 </style>
+
+

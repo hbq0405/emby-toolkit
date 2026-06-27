@@ -11,7 +11,7 @@ import random
 from urllib.parse import urlparse
 import requests
 from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app
-from extensions import admin_required
+from extensions import admin_required, emby_login_required
 from database import settings_db
 from handler import moviepilot
 from handler.p115_service import P115Service, get_config, get_115_api_priority
@@ -1042,6 +1042,38 @@ def add_play_pool_account():
     if not str(data.get('cookie') or '').strip():
         return jsonify({'success': False, 'message': 'Cookie 不能为空'}), 400
     item = p115_play_pool.upsert_account(data)
+    return jsonify({'success': True, 'data': item})
+
+
+@p115_bp.route('/play_pool/user-account', methods=['POST'])
+@emby_login_required
+def save_user_play_pool_account():
+    data = request.json or {}
+    cookie = str(data.get('cookie') or '').strip()
+    if not cookie:
+        return jsonify({'success': False, 'message': 'Cookie 不能为空'}), 400
+    emby_user_id = session.get('emby_user_id')
+    if not emby_user_id:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    payload = {
+        'alias': str(data.get('alias') or session.get('emby_username') or '用户小号').strip() or '用户小号',
+        'cookie': cookie,
+        'app_type': str(data.get('app_type') or 'alipaymini').strip() or 'alipaymini',
+        'enabled': True,
+        'owner_type': 'user',
+        'owner_user_id': emby_user_id,
+        'shared': bool(data.get('shared', False)),
+        'auto_speedtest_enabled': True,
+        'auto_speedtest_threshold_mbps': float(data.get('auto_speedtest_threshold_mbps') or 0),
+        '_skip_auto_speedtest': True,
+    }
+    item = p115_play_pool.upsert_account(payload)
+    try:
+        result = p115_play_pool.speedtest_account(item['id'])
+        item['last_speed_bps'] = result.get('bps', 0)
+    except Exception as e:
+        p115_play_pool.upsert_account({'enabled': False, 'last_error': str(e)}, account_id=item['id'])
+    item = p115_play_pool._find_account_by_id(item['id']) or item
     return jsonify({'success': True, 'data': item})
 
 
