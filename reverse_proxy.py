@@ -54,6 +54,11 @@ def _patch_emby_web_player_js(text):
     ]
     for pattern in patterns:
         patched = re.sub(pattern, ".removeAttribute('crossorigin')", patched)
+    patched = re.sub(
+        r"\b([A-Za-z_$][\w$]*)\s*&&\s*\(\s*([A-Za-z_$][\w$]*)\.crossOrigin\s*=\s*\1\s*\);?",
+        r"\2.removeAttribute('crossorigin');",
+        patched,
+    )
     patched = patched.replace('crossorigin="anonymous"', '')
     patched = patched.replace("crossorigin='anonymous'", '')
     return patched
