@@ -82,6 +82,24 @@ server {
         proxy_pass_request_headers on;
     }
 
+    # 兜底保护：即使浏览器缓存了旧播放器 JS，也禁止 video/audio 再设置 crossorigin。
+    location ~ ^/web/?(?:index\.html)?$ {
+        proxy_pass http://emby_server;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_pass_request_headers on;
+        proxy_set_header Accept-Encoding "";
+        sub_filter_once on;
+        sub_filter "</head>" "<script>(function(){function isMedia(el){return el instanceof HTMLMediaElement;}var proto=HTMLMediaElement.prototype;try{Object.defineProperty(proto,'crossOrigin',{configurable:true,get:function(){return null;},set:function(){this.removeAttribute('crossorigin');}});}catch(e){}var setAttribute=Element.prototype.setAttribute;Element.prototype.setAttribute=function(name,value){if(isMedia(this)&&String(name).toLowerCase()==='crossorigin')return;return setAttribute.apply(this,arguments);};})();</script></head>";
+        proxy_hide_header ETag;
+        proxy_hide_header Cache-Control;
+        proxy_hide_header Expires;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+    }
+
     # Emby Web 的 htmlvideoplayer 会给 video 设置 crossOrigin，浏览器会按 CORS 模式请求 115 CDN。
     # 115 CDN 不返回 CORS 头时会触发 DirectPlayError，因此这里只补丁播放器 JS，不中转视频流。
     location = /web/modules/htmlvideoplayer/plugin.js {
