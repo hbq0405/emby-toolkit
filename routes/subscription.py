@@ -59,7 +59,13 @@ def get_mp_config():
         'moviepilot_recognition': False,
         'link_delete_transfer_history': False,
         'link_delete_download_files': False,
-        'resubscribe_daily_cap': 10, 'resubscribe_delay_seconds': 2.0
+        'resubscribe_daily_cap': 10, 'resubscribe_delay_seconds': 2.0,
+        'movie_protection_days': 180,
+        'movie_search_window_days': 1,
+        'movie_pause_days': 7,
+        'delay_subscription_days': 0,
+        'timeout_revive_days': 0,
+        'download_timeout_hours': 0
     }
     default_cfg.update(cfg)
     return jsonify({"success": True, "data": default_cfg})

@@ -267,7 +267,7 @@
     <n-modal v-model:show="showStrategyModal" preset="card" title="订阅策略配置" style="width: 600px;" :auto-focus="false" class="custom-modal glass-modal">
       <n-form label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         
-        <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
+        <n-divider title-placement="left">订阅源优先级</n-divider>
         <n-form-item label="订阅源">
           <div class="source-list">
             <div 
@@ -287,59 +287,10 @@
           </div>
           <template #feedback>
             <b>拖动调整优先级，勾选启用。</b><br/>
-            共享池为最高优先级（若开启），随后按此列表顺序依次尝试。<br/>
-            <b>云下载：</b>优先从云资源下载，成功则直接 115 秒传整理。<br/>
-            <span style="color: var(--n-warning-color);">* 注：因云资源模糊搜索限制，剧集订阅不保证绝对准确性。</span>
+            系统会按列表顺序依次尝试：共享池、影巢、TG频道、MoviePilot。<br/>
+            <span style="color: var(--n-warning-color);">* 注：云资源搜索存在模糊匹配限制，剧集订阅仍需依赖本地季号过滤。</span>
           </template>
         </n-form-item>
-        <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
-          <li>新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。</li>
-          <li>老片，采用“搜索 N 天 -> 取消订阅 -> 复活”</li>
-        </n-alert>
-
-        <n-card 
-          title="MP订阅策略" 
-          size="small" 
-          embedded 
-          :bordered="false" 
-          style="background: rgba(128,128,128,0.05); margin-top: 12px;"
-        >
-            <n-form-item label="新片保护期 (天)">
-              <n-input-number v-model:value="strategyConfig.movie_protection_days" :min="0" />
-              <template #feedback>发布时间在此天数内的电影启用间歇性搜索机制。超过此天数则视为老片，不再暂停，直接取消订阅。</template>
-            </n-form-item>
-            
-            <n-form-item label="搜索窗口期 (天)">
-              <n-input-number v-model:value="strategyConfig.movie_search_window_days" :min="1" />
-              <template #feedback>新增订阅以及每次复活后，连续搜索的天数 (建议 1 天)。</template>
-            </n-form-item>
-            
-            <n-form-item label="暂停周期 (天)">
-              <n-input-number v-model:value="strategyConfig.movie_pause_days" :min="1" />
-              <template #feedback>搜索无果后，暂停搜索的天数 (建议 7 天)。</template>
-            </n-form-item>
-
-            <n-form-item label="延迟订阅 (天)">
-              <n-input-number v-model:value="strategyConfig.delay_subscription_days" :min="0" />
-              <template #feedback>电影上映后 N 天才允许订阅 (0 表示不延迟)。</template>
-            </n-form-item>
-
-            <n-form-item label="超时复活 (天)">
-              <n-input-number v-model:value="strategyConfig.timeout_revive_days" :min="0" />
-              <template #feedback>
-                因“订阅超时”被移除的项目，在 N 天后自动复活并重新尝试订阅。<br/>
-                <b>0 表示不复活 (默认)</b>。适用于给老片或冷门资源第二次机会。
-              </template>
-            </n-form-item>
-
-            <n-form-item label="下载超时重订 (小时)">
-              <n-input-number v-model:value="strategyConfig.download_timeout_hours" :min="0" />
-              <template #feedback>
-                下载队列中超过 N 小时未完成的任务，将自动删除并重新订阅。<br/>
-                <b>同时会尝试排除原超时种子</b>。0 表示关闭此功能。
-              </template>
-            </n-form-item>
-        </n-card>
       </n-form>
       
       <template #footer>
@@ -393,17 +344,14 @@ const sortOrder = ref('desc');
 const showStrategyModal = ref(false);
 const savingStrategy = ref(false);
 const strategyConfig = ref({
-  movie_protection_days: 180,
-  movie_search_window_days: 1,
-  movie_pause_days: 7,
-  delay_subscription_days: 0,
-  timeout_revive_days: 0,
-  download_timeout_hours: 0,
+  subscription_sources: ['shared_pool', 'hdhive', 'tg_channel', 'mp'],
 });
 
 const sourceList = ref([
+  { label: '共享池', value: 'shared_pool', enabled: true },
+  { label: '影巢', value: 'hdhive', enabled: true },
+  { label: 'TG频道', value: 'tg_channel', enabled: true },
   { label: 'MoviePilot', value: 'mp', enabled: true },
-  { label: '云下载 (影巢/频道)', value: 'hdhive', enabled: false }
 ]);
 
 let draggedIndex = null;
@@ -441,10 +389,7 @@ const loadStrategyConfig = async () => {
   try {
     const res = await axios.get('/api/subscription/strategy');
     
-    let sources = res.data.subscription_sources;
-    if (!sources) {
-      sources = res.data.subscription_priority === 'hdhive' ? ['hdhive', 'mp'] : ['mp'];
-    }
+    let sources = Array.isArray(res.data.subscription_sources) ? res.data.subscription_sources : [];
     
     const newSourceList = [];
     sources.forEach(val => {
@@ -461,12 +406,6 @@ const loadStrategyConfig = async () => {
     sourceList.value = newSourceList;
 
     strategyConfig.value = {
-      movie_protection_days: 180,
-      movie_search_window_days: 1,
-      movie_pause_days: 7,
-      delay_subscription_days: 0,
-      timeout_revive_days: 0,
-      download_timeout_hours: 0,
       ...res.data 
     };
   } catch (e) {
@@ -477,8 +416,11 @@ const loadStrategyConfig = async () => {
 const saveStrategyConfig = async () => {
   savingStrategy.value = true;
   try {
-    strategyConfig.value.subscription_sources = sourceList.value.filter(o => o.enabled).map(o => o.value);
-    await axios.post('/api/subscription/strategy', strategyConfig.value);
+    const payload = {
+      subscription_sources: sourceList.value.filter(o => o.enabled).map(o => o.value)
+    };
+    strategyConfig.value = payload;
+    await axios.post('/api/subscription/strategy', payload);
     message.success('策略配置已保存');
     showStrategyModal.value = false;
   } catch (e) {

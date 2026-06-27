@@ -46,6 +46,31 @@
           <n-input-number v-model:value="formModel.resubscribe_delay_seconds" :min="0.1" :step="0.1" style="width: 100%;" />
           <template #feedback><n-text depth="3" style="font-size:0.8em;">避免请求过快冲击服务器。</n-text></template>
         </n-form-item>
+        <n-divider title-placement="left" style="margin: 10px 0 20px 0;">MP订阅策略</n-divider>
+        <n-form-item label="新片保护期 (天)">
+          <n-input-number v-model:value="formModel.movie_protection_days" :min="0" style="width: 100%;" />
+          <template #feedback><n-text depth="3" style="font-size:0.8em;">发布时间在此天数内的电影启用间歇性搜索机制。超过此天数则视为老片。</n-text></template>
+        </n-form-item>
+        <n-form-item label="搜索窗口期 (天)">
+          <n-input-number v-model:value="formModel.movie_search_window_days" :min="1" style="width: 100%;" />
+          <template #feedback><n-text depth="3" style="font-size:0.8em;">新增订阅以及每次复活后，连续搜索的天数。</n-text></template>
+        </n-form-item>
+        <n-form-item label="暂停周期 (天)">
+          <n-input-number v-model:value="formModel.movie_pause_days" :min="1" style="width: 100%;" />
+          <template #feedback><n-text depth="3" style="font-size:0.8em;">搜索无果后，暂停搜索的天数。</n-text></template>
+        </n-form-item>
+        <n-form-item label="延迟订阅 (天)">
+          <n-input-number v-model:value="formModel.delay_subscription_days" :min="0" style="width: 100%;" />
+          <template #feedback><n-text depth="3" style="font-size:0.8em;">电影上映后 N 天才允许订阅，0 表示不延迟。</n-text></template>
+        </n-form-item>
+        <n-form-item label="超时复活 (天)">
+          <n-input-number v-model:value="formModel.timeout_revive_days" :min="0" style="width: 100%;" />
+          <template #feedback><n-text depth="3" style="font-size:0.8em;">订阅超时移除的项目在 N 天后自动复活，0 表示关闭。</n-text></template>
+        </n-form-item>
+        <n-form-item label="下载超时重订 (小时)">
+          <n-input-number v-model:value="formModel.download_timeout_hours" :min="0" style="width: 100%;" />
+          <template #feedback><n-text depth="3" style="font-size:0.8em;">下载队列超过 N 小时未完成则删除并重新订阅，0 表示关闭。</n-text></template>
+        </n-form-item>
       </n-form>
     </n-spin>
     <template #footer>
@@ -75,7 +100,13 @@ const formModel = ref({
   link_delete_transfer_history: false,
   link_delete_download_files: false,
   resubscribe_daily_cap: 10,
-  resubscribe_delay_seconds: 2.0
+  resubscribe_delay_seconds: 2.0,
+  movie_protection_days: 180,
+  movie_search_window_days: 1,
+  movie_pause_days: 7,
+  delay_subscription_days: 0,
+  timeout_revive_days: 0,
+  download_timeout_hours: 0
 });
 
 const open = async () => {

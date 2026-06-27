@@ -649,18 +649,7 @@ def api_get_subscription_strategy():
         
         # 默认配置
         default_config = {
-            'movie_protection_days': 180,
-            'movie_search_window_days': 1,
-            'movie_pause_days': 7,
-            'delay_subscription_days': 30,
-            'subscription_sources': ['mp'],
-            'subscription_priority': 'mp',
-            'hdhive_free_only': False,      
-            'hdhive_max_points': 10,        
-            'hdhive_max_size_gb': 120,       
-            'hdhive_resolution': 'All',
-            'hdhive_zh_sub_only': True,      
-            'hdhive_exclude_iso': False              
+            'subscription_sources': ['shared_pool', 'hdhive', 'tg_channel', 'mp']
         }
         
         if not config:

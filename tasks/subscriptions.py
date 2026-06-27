@@ -1323,12 +1323,13 @@ def task_auto_subscribe(processor):
 
     # 1. 加载策略配置 (优先从数据库读取，如果没有则使用默认值)
     strategy_config = settings_db.get_setting('subscription_strategy_config') or {}
+    mp_config = settings_db.get_setting('mp_config') or {}
 
     # 默认策略参数
-    movie_protection_days = int(strategy_config.get('movie_protection_days', 180))    # 默认半年新片保护
-    movie_search_window = int(strategy_config.get('movie_search_window_days', 1))     # 默认搜索1天
-    movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
-    timeout_revive_days = int(strategy_config.get('timeout_revive_days', 0))          # 默认不复活超时订阅
+    movie_protection_days = int(mp_config.get('movie_protection_days', 180))    # 默认半年新片保护
+    movie_search_window = int(mp_config.get('movie_search_window_days', 1))     # 默认搜索1天
+    movie_pause_days = int(mp_config.get('movie_pause_days', 7))                # 默认暂停7天
+    timeout_revive_days = int(mp_config.get('timeout_revive_days', 0))          # 默认不复活超时订阅
 
     # 2. 读取请求延迟配置
     try:
@@ -1416,7 +1417,7 @@ def task_auto_subscribe(processor):
         # ======================================================================
         # 阶段 1.5 - 清理下载超时并重新订阅
         # ======================================================================
-        download_timeout_hours = int(strategy_config.get('download_timeout_hours', 0))
+        download_timeout_hours = int(mp_config.get('download_timeout_hours', 0))
         if download_timeout_hours > 0:
             logger.info(f"  ➜ [策略] 检查下载超时超过 {download_timeout_hours} 小时的任务...")
             task_manager.update_status_from_thread(5, "正在检查下载超时任务...")
@@ -1676,8 +1677,10 @@ def task_auto_subscribe(processor):
         failed_notifications_to_send = {}
         quota_exhausted = False
 
+        configured_sources = strategy_config.get('subscription_sources')
+        configured_sources = configured_sources if isinstance(configured_sources, list) else []
         shared_probe_by_key = {}
-        if batch_probe_shared_resources and try_consume_preprobed_shared_resource:
+        if 'shared_pool' in configured_sources and batch_probe_shared_resources and try_consume_preprobed_shared_resource:
             shared_probe_contexts = []
             quota_for_shared_probe = settings_db.get_subscription_quota()
             for _item in wanted_items:
@@ -1820,11 +1823,10 @@ def task_auto_subscribe(processor):
             watchlist_config = settings_db.get_setting('watchlist_config') or {}
             tg_channel_tracking = watchlist_config.get('tg_channel_tracking', False)
 
-            # ==========================================
-            # 共享资源优先：Rapid v2 只查询中心索引，命中后本机 CK 执行秒传。
-            # 中心不保存 CK，也不再返回 share_code/receive_code。
-            # ==========================================
-            if item_type in ['Movie', 'Series', 'Season', 'Episode']:
+            def try_shared_pool_source():
+                nonlocal success, action_type
+                if item_type not in ['Movie', 'Series', 'Season', 'Episode']:
+                    return None
                 try:
                     shared_result = None
                     prepared_ctx = {
@@ -1879,21 +1881,13 @@ def task_auto_subscribe(processor):
                         )
                 except Exception as e:
                     logger.error(f"  ➜ [共享资源] 处理《{title}》时异常，自动降级原有订阅链路: {e}", exc_info=True)
+                return None
 
             # ==========================================
             # 动态订阅源处理 (云资源 / MP)
             # ==========================================
             raw_sources = strategy_config.get('subscription_sources')
-            # 只有当配置完全不存在(None)时，才走兼容老版本的逻辑；如果是空列表[]说明用户全取消勾选了
-            if raw_sources is None:
-                old_priority = strategy_config.get('subscription_priority', 'mp')
-                if old_priority in ['hdhive', 'cloud']:
-                    subscription_sources = ['hdhive', 'mp']
-                else:
-                    subscription_sources = ['mp']
-            else:
-                # 必须 copy 一份，防止后续 remove 操作污染全局配置缓存
-                subscription_sources = list(raw_sources)
+            subscription_sources = list(raw_sources) if isinstance(raw_sources, list) else []
 
             if not is_wanted_subscription:
                 # 只有 WANTED 能进入 MP；其他任何状态都只允许共享池/云资源补库，避免追更季/已订阅项重复投递 MP。
@@ -1907,8 +1901,11 @@ def task_auto_subscribe(processor):
             for source_type in subscription_sources:
                 if success:
                     break
-                    
-                if source_type == 'hdhive':
+
+                if source_type == 'shared_pool':
+                    try_shared_pool_source()
+
+                elif source_type == 'hdhive':
                     if item_type in ['Movie', 'Series', 'Season']:
                         hdhive_tmdb_id = tmdb_id
                         hdhive_media_type = 'movie'
@@ -1965,18 +1962,45 @@ def task_auto_subscribe(processor):
                                 )
 
                         if hdhive_tmdb_id:
-                            cloud_source = _try_download_from_cloud_first(
+                            if _try_download_from_hdhive_first(
                                 int(hdhive_tmdb_id),
                                 hdhive_media_type,
                                 title,
                                 item_label=hdhive_item_label,
                                 target_season=hdhive_target_season,
                                 require_complete=hdhive_require_complete,
-                                year=item_year
-                            )
-                            if cloud_source:
+                            ):
                                 success = True
-                                action_type = cloud_source
+                                action_type = "影巢"
+
+                elif source_type == 'tg_channel':
+                    if item_type in ['Movie', 'Series', 'Season']:
+                        channel_tmdb_id = (parent_tmdb_id or tmdb_id) if item_type in ['Series', 'Season'] else tmdb_id
+                        channel_media_type = 'tv' if item_type in ['Series', 'Season'] else 'movie'
+                        channel_item_label = '剧集' if channel_media_type == 'tv' else '电影'
+                        channel_target_season = int(season_number) if item_type == 'Season' and season_number is not None else None
+                        channel_require_complete = False
+                        if is_wanted_subscription and channel_media_type == 'tv':
+                            try:
+                                channel_require_complete = check_series_completion(
+                                    int(channel_tmdb_id),
+                                    tmdb_api_key,
+                                    season_number=channel_target_season,
+                                    series_name=title
+                                )
+                            except Exception as e:
+                                logger.warning(f"  ➜ [策略] 检查剧集《{title}》完结状态失败，TG频道不强制完结包: {e}")
+                        if _try_download_from_channel_first(
+                            int(channel_tmdb_id),
+                            channel_media_type,
+                            title,
+                            item_label=channel_item_label,
+                            target_season=channel_target_season,
+                            require_complete=channel_require_complete,
+                            year=item_year
+                        ):
+                            success = True
+                            action_type = "频道"
 
                 elif source_type == 'mp':
                     # 双保险：即使上面的订阅源列表未来被改坏，这里也只允许 WANTED 进入 MP。
