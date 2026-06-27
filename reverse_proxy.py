@@ -1044,7 +1044,6 @@ def proxy_all(path):
         full_path_lower = full_path.lower()
         
         if ('/videos/' in full_path_lower and ('/stream' in full_path_lower or '/original' in full_path_lower)) or ('/items/' in full_path_lower and '/download' in full_path_lower):
-            
             # 检测浏览器客户端
             user_agent = request.headers.get('User-Agent', '').lower()
             client_name = request.headers.get('X-Emby-Client', '').lower()
@@ -1052,22 +1051,6 @@ def proxy_all(path):
             native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer', 'applecoremedia']
             if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent or 'applecoremedia' in user_agent:
                 is_browser = False
-            
-            # 浏览器直接转发给 Emby 服务端，不做 302 重定向（115 直链存在跨域问题）
-            if is_browser:
-                base_url, api_key = _get_real_emby_url_and_key()
-                target_url = f"{base_url}/{path.lstrip('/')}"
-                forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-                forward_headers['Host'] = urlparse(base_url).netloc
-                forward_params = request.args.copy()
-                forward_params['api_key'] = api_key
-                current_user_id = _resolve_request_user_id(base_url, api_key, full_path, request.args.get('PlaySessionId', ''))
-                if current_user_id and not forward_params.get('UserId'):
-                    forward_params['UserId'] = current_user_id
-                resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=(10.0, 1800.0), stream=True)
-                excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-                response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
-                return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
             
             # 客户端处理逻辑
             match = re.search(r'/(?:videos|items)/(\d+)/', full_path_lower)
