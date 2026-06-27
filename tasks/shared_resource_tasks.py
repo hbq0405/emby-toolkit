@@ -3399,6 +3399,15 @@ def _center_resolution(width: int, height: int) -> str:
     return f'{height}p' if height else ''
 
 
+def _center_limit_track_list(value, limit: int):
+    if not isinstance(value, list):
+        return value
+    limit = _safe_int(limit, 0)
+    if limit <= 0 or len(value) <= limit:
+        return value
+    return value[:limit]
+
+
 def _center_video_effect(video: Dict[str, Any]) -> str:
     if not video:
         return ''
@@ -3621,10 +3630,10 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
         'size_gb': round(size / 1024 / 1024 / 1024, 2) if size else 0,
         'audio_count': len(audios),
         'subtitle_count': len(subs),
-        'audio_list': audio_list[:16],
-        'subtitle_list': subtitle_list[:24],
-        'audios': audio_items[:16],
-        'subtitles': subtitle_items[:24],
+        'audio_list': _center_limit_track_list(audio_list, 16),
+        'subtitle_list': subtitle_list,
+        'audios': _center_limit_track_list(audio_items, 16),
+        'subtitles': subtitle_items,
         'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
     }
     return _apply_runtime_meta(summary, raw)
@@ -3662,10 +3671,10 @@ def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, A
         'duration_minutes',
     }
     compact = {k: summary.get(k) for k in allowed_keys if k in summary}
-    for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audios', 16), ('subtitles', 24)):
+    for key, max_len in (('audio_list', 16), ('subtitle_list', 0), ('audios', 16), ('subtitles', 0)):
         value = compact.get(key)
         if isinstance(value, list):
-            compact[key] = value[:max_len]
+            compact[key] = _center_limit_track_list(value, max_len)
 
     try:
         return json.loads(json.dumps(compact, ensure_ascii=False, default=str))

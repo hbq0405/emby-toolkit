@@ -468,18 +468,15 @@ def _cloud_track_text_values(value) -> list[str]:
         if v in (None, "", [], {}):
             return
         if isinstance(v, (str, int, float, bool)):
-            add_text(v)
             return
         if isinstance(v, list):
             for x in v[:80]:
                 walk(x, depth + 1)
             return
         if isinstance(v, dict):
-            # 只取音轨/字幕对象常见的描述字段，避免把 unrelated meta 全部拼进去。
+            # 标签只允许从格式化后的 title/Title 识别。
             for key in (
-                "display", "DisplayTitle", "title", "Title", "name", "Name",
-                "language", "Language", "lang", "DisplayLanguage",
-                "codec", "Codec", "channel_layout", "channels"
+                "title", "Title"
             ):
                 if key in v:
                     walk(v.get(key), depth + 1)
@@ -569,6 +566,9 @@ def _shared_pool_cloud_tag_labels(item: dict) -> list[dict]:
     # 旧中心端没有 tag_labels 时，再走本地兜底识别。
     skip = {"已完结", "完结", "已认证完结", "完结认证", "连载中", "可用"}
     center_labels = [label for label in _shared_pool_plain_tag_labels(item) if label not in skip]
+    for label in center_labels:
+        add(label, "default", True)
+    return tags
     if center_labels:
         for label in center_labels:
             add(label, "default", True)
@@ -881,10 +881,7 @@ def _normalize_shared_pool_resource(resource):
     # 不再把“共享秒传 / 版本 x/y / 共享池 · 可秒传”塞进标签或描述，避免和按钮/标签重复。
     remark_parts = [x for x in (item.get("status_message"),) if x]
 
-    has_mandarin_audio = _shared_pool_has_mandarin_audio(item)
-    has_chinese_subtitle = _shared_pool_has_chinese_subtitle(item)
-    has_special_effect_subtitle = _shared_pool_has_special_effect_subtitle(item)
-    has_bilingual_subtitle = _shared_pool_has_bilingual_subtitle(item)
+    center_tag_labels = _shared_pool_cloud_tag_labels(item)
 
     item.update({
         "source_type": "shared_pool",
@@ -906,12 +903,8 @@ def _normalize_shared_pool_resource(resource):
         "_shared_pool_version_label": version_label,
         "_shared_pool_source_count": source_count,
         "_shared_pool_source_label": source_label,
-        "has_mandarin_audio": has_mandarin_audio,
-        "has_chinese_subtitle": has_chinese_subtitle,
-        "has_special_effect_subtitle": has_special_effect_subtitle,
-        "has_bilingual_subtitle": has_bilingual_subtitle,
-        "_shared_pool_tag_labels": _shared_pool_cloud_tag_labels(item),
-        "_shared_pool_tags": _shared_pool_cloud_tag_labels(item),
+        "_shared_pool_tag_labels": center_tag_labels,
+        "_shared_pool_tags": center_tag_labels,
         "_completion_label": "已完结" if item.get("is_completed_certified") or item.get("is_completed") else ("连载中" if item.get("is_ongoing_hub") else ""),
     })
     return item

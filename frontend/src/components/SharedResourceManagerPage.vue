@@ -2535,12 +2535,8 @@ const centerVersionSummary = (it) => {
   if (!v.effect) v.effect = sig.effect_display || sig.effect_key || sig.effect || raw.effect || '';
   if (!v.video_codec && !v.codec) v.video_codec = sig.video_codec || sig.codec_display || sig.codec || raw.video_codec || raw.codec || '';
   if (!v.fps) v.fps = sig.fps || sig.frame_rate || raw.fps || raw.frame_rate || '';
-  if (!v.audio_list) v.audio_list = sig.audio_list || sig.audio_tracks || sig.audios || raw.audio_list || raw.audio_tracks || raw.audios || [];
-  if (!v.subtitle_list) v.subtitle_list = sig.subtitle_list || sig.subtitles || sig.subtitle_tracks || raw.subtitle_list || raw.subtitles || [];
   return v;
 };
-const versionAudioTracks = (it) => centerVersionSummary(it).audio_list || centerVersionSummary(it).audios || centerVersionSummary(it).audio_tracks || centerVersionSummary(it).audio || [];
-const versionSubtitleTracks = (it) => centerVersionSummary(it).subtitle_list || centerVersionSummary(it).subtitles || centerVersionSummary(it).subtitle_tracks || centerVersionSummary(it).subtitle || [];
 const centerTmdbMeta = (row) => {
   if (!row || typeof row !== 'object') return {};
   const meta = (row.tmdb_meta && typeof row.tmdb_meta === 'object') ? row.tmdb_meta : {};
@@ -2920,28 +2916,6 @@ const colorizeCenterTags = (tags, row) => {
     return { ...tag, type };
   });
 };
-const trackTagText = (item) => {
-  if (item == null) return '';
-  if (typeof item === 'string') return item;
-  if (typeof item !== 'object') return String(item || '');
-  // 摘要里的 display 负责紧凑展示；title 负责标签识别。
-  // p115_media_analyzer 已把“国语 / 中字 / 双语 / 特效”统一写进 Title。
-  return [item.display, item.title, item.display_title, item.DisplayTitle, item.DisplayLanguage, item.language, item.lang]
-    .map(v => String(v || '').trim())
-    .filter(Boolean)
-    .join(' ');
-};
-const centerTrackTextForTags = (items) => trackListToArray(items).map(item => trackTagText(item)).filter(Boolean).join(' ');
-const centerTrackFeatureTags = (row) => {
-  const tags = [];
-  const audioText = centerTrackTextForTags(versionAudioTracks(row));
-  const subText = centerTrackTextForTags(versionSubtitleTracks(row));
-  if (/国语|普通话|普通話/.test(audioText)) centerTagPush(tags, '国语', 'success', 'audio-mandarin');
-  if (/中文|简中|繁中|简体|繁体|中英/.test(subText)) centerTagPush(tags, '中字', 'info', 'sub-zh');
-  if (/特效/.test(subText)) centerTagPush(tags, '特效', 'warning', 'sub-effect');
-  if (/双语|雙語/.test(subText)) centerTagPush(tags, '双语', 'info', 'sub-bilingual');
-  return tags;
-};
 const centerSeasonTabNumber = (season) => {
   const raw = (season && typeof season === 'object')
     ? (season.season_number ?? season.active_season_number ?? season.default_season_number)
@@ -3242,17 +3216,9 @@ const centerVersionTags = (row, progressScope = null) => {
     if (cleanFps) centerTagPush(tags, `${cleanFps} fps`, 'info', 'fps'); // 改为 info
   }
   
-  // 4. 业务标签优先使用中心端口径；旧中心端没下发时才兜底。
+  // 4. 业务标签只展示中心端口径。
   const centerLabels = centerProvidedTags(row);
   centerLabels.forEach(t => centerTagPush(tags, t.label, t.type, t.key));
-  if (!centerLabels.length) {
-    if (centerIsOngoingHub(row)) centerTagPush(tags, '连载中', 'info', 'ongoing');
-    if (isCenterAnimation(row)) centerTagPush(tags, '动漫', 'info', 'animation');
-    if (isCenterCleanVersion(row)) centerTagPush(tags, '纯净版', 'warning', 'clean');
-    if (isCenterOriginalDisc(row)) centerTagPush(tags, '原盘', 'warning', 'original-disc');
-    if (isCenterShortDrama(row)) centerTagPush(tags, '短剧', 'success', 'short');
-    centerTrackFeatureTags(row).forEach(t => centerTagPush(tags, t.label, t.type, t.key));
-  }
   return colorizeCenterTags(tags, row);
 };
 const mergeCenterDetailPayload = (base, payload) => {

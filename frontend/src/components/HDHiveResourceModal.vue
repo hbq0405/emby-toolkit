@@ -722,6 +722,7 @@ const sharedPoolTags = (resource) => {
 
 const cloudFeatureTags = (resource) => {
   const tags = isSharedPool(resource) ? sharedPoolTags(resource) : [];
+  if (isSharedPool(resource)) return tags;
   const seen = new Set(tags.map((tag) => String(tag?.label || '').trim()).filter(Boolean));
   const push = (label, type = 'default', bordered = false) => {
     if (!label || seen.has(label)) return;
