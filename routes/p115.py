@@ -10,7 +10,7 @@ import time
 import random
 from urllib.parse import urlparse
 import requests
-from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app
+from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app, session
 from extensions import admin_required, emby_login_required
 from database import settings_db
 from handler import moviepilot
@@ -25,6 +25,8 @@ from handler import p115_play_pool
 import constants
 import config_manager
 from functools import lru_cache, wraps
+from database import user_db
+from handler.telegram import send_telegram_message
 
 # 115扫码登录相关变量 (OAuth 2.0 + PKCE 模式)
 _qrcode_data = {
@@ -38,6 +40,7 @@ _qrcode_data = {
 }
 p115_bp = Blueprint('115_bp', __name__, url_prefix='/api/p115')
 logger = logging.getLogger(__name__)
+PLAY_POOL_USER_REWARD_KEY = 'p115_play_pool_user_cookie_rewards'
 
 # --- 115扫码登录相关API (OAuth 2.0 + PKCE 模式) ---
 
@@ -347,7 +350,7 @@ def save_manual_cookie():
 
 
 @p115_bp.route('/play_pool/cookie_qrcode', methods=['GET'])
-@admin_required
+@emby_login_required
 def get_play_pool_cookie_qrcode():
     app_type = request.args.get('app', 'alipaymini')
     try:
@@ -380,7 +383,7 @@ def get_play_pool_cookie_qrcode():
 
 
 @p115_bp.route('/play_pool/cookie_qrcode/status', methods=['GET'])
-@admin_required
+@emby_login_required
 def check_play_pool_cookie_qrcode_status():
     request_uid = str(request.args.get('uid') or '').strip()
     with _play_pool_cookie_qrcode_lock:
@@ -1028,10 +1031,7 @@ def get_play_pool_config():
 @admin_required
 def save_play_pool_config():
     data = request.json or {}
-    if 'enabled' in data:
-        result = p115_play_pool.save_pool_enabled(bool(data.get('enabled')))
-    else:
-        result = p115_play_pool.get_public_config()
+    result = p115_play_pool.save_pool_settings(data)
     return jsonify({'success': True, 'data': result})
 
 
@@ -1055,6 +1055,7 @@ def save_user_play_pool_account():
     emby_user_id = session.get('emby_user_id')
     if not emby_user_id:
         return jsonify({'success': False, 'message': '未登录'}), 401
+    shared = bool(data.get('shared', False))
     payload = {
         'alias': str(data.get('alias') or session.get('emby_username') or '用户小号').strip() or '用户小号',
         'cookie': cookie,
@@ -1062,19 +1063,47 @@ def save_user_play_pool_account():
         'enabled': True,
         'owner_type': 'user',
         'owner_user_id': emby_user_id,
-        'shared': bool(data.get('shared', False)),
-        'auto_speedtest_enabled': True,
-        'auto_speedtest_threshold_mbps': float(data.get('auto_speedtest_threshold_mbps') or 0),
+        'shared': shared,
         '_skip_auto_speedtest': True,
     }
     item = p115_play_pool.upsert_account(payload)
-    try:
-        result = p115_play_pool.speedtest_account(item['id'])
-        item['last_speed_bps'] = result.get('bps', 0)
-    except Exception as e:
-        p115_play_pool.upsert_account({'enabled': False, 'last_error': str(e)}, account_id=item['id'])
+    speedtest_error = ''
+    speedtest_ok = False
+    config = p115_play_pool.get_public_config()
+    if config.get('auto_speedtest_enabled') is not False:
+        try:
+            result = p115_play_pool.speedtest_account(item['id'])
+            item['last_speed_bps'] = result.get('bps', 0)
+            speedtest_ok = True
+        except Exception as e:
+            speedtest_error = str(e)
+            p115_play_pool.upsert_account({'enabled': False, 'last_error': str(e)}, account_id=item['id'])
     item = p115_play_pool._find_account_by_id(item['id']) or item
-    return jsonify({'success': True, 'data': item})
+    if speedtest_ok and item.get('enabled') and item.get('cookie'):
+        today = datetime.now().strftime('%Y-%m-%d')
+        rewards = settings_db.get_setting(PLAY_POOL_USER_REWARD_KEY) or {}
+        if not isinstance(rewards, dict):
+            rewards = {}
+        if rewards.get(str(emby_user_id)) != today:
+            reward_days = 0.8 if shared else 0.5
+            try:
+                user_db.extend_user_expiration_days(emby_user_id, reward_days)
+                rewards[str(emby_user_id)] = today
+                settings_db.save_setting(PLAY_POOL_USER_REWARD_KEY, rewards)
+                item['reward_days'] = reward_days
+            except Exception as e:
+                logger.error("  ➜ [小号播放] 用户 Cookie 奖励发放失败: user_id=%s, err=%s", emby_user_id, e, exc_info=True)
+    else:
+        chat_id = user_db.get_user_telegram_chat_id(emby_user_id)
+        if speedtest_error and chat_id:
+            try:
+                send_telegram_message(chat_id, f"你的 115 Cookie 未通过可用性检测，本日会员时长奖励未发放。\n原因：{speedtest_error or item.get('last_error') or 'Cookie 不可用'}")
+            except Exception as e:
+                logger.warning("  ➜ [小号播放] 发送用户 Cookie 失效通知失败: user_id=%s, err=%s", emby_user_id, e)
+    public_item = p115_play_pool.get_public_account(item.get('id')) or {}
+    if item.get('reward_days'):
+        public_item['reward_days'] = item.get('reward_days')
+    return jsonify({'success': True, 'data': public_item})
 
 
 @p115_bp.route('/play_pool/accounts/<account_id>', methods=['PUT'])

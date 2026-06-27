@@ -81,6 +81,39 @@
               </div>
             </div>
           </n-card>
+
+          <n-card :bordered="false" class="dashboard-card user-cookie-card" style="margin-top: 16px;">
+            <template #header>
+              <span class="card-title">115 Cookie</span>
+            </template>
+            <n-space vertical :size="12">
+              <n-alert type="info" :show-icon="true">
+                默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
+              </n-alert>
+              <n-space align="center" justify="space-between">
+                <n-switch v-model:value="userCookieShared">
+                  <template #checked>共享</template>
+                  <template #unchecked>仅本人</template>
+                </n-switch>
+                <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
+                  扫码保存 Cookie
+                </n-button>
+              </n-space>
+              <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
+                <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
+                  <template #description>正在获取二维码...</template>
+                </n-spin>
+                <template v-else-if="userCookieQrcodeStatus === 'waiting' || userCookieQrcodeStatus === 'success'">
+                  <n-qr-code v-if="userCookieQrcodeUrl" :value="userCookieQrcodeUrl" :size="150" />
+                  <n-text depth="3">{{ userCookieQrcodeStatus === 'success' ? 'Cookie 已保存' : '使用 115 生活 APP 扫码并确认' }}</n-text>
+                </template>
+                <n-alert v-else-if="userCookieQrcodeStatus === 'expired'" type="warning" :show-icon="true">
+                  二维码已过期，请重新获取。
+                </n-alert>
+              </div>
+              <n-text v-if="userCookieStatusText" depth="3">{{ userCookieStatusText }}</n-text>
+            </n-space>
+          </n-card>
         </n-gi>
 
         <n-gi>
@@ -211,6 +244,36 @@
         </div>
       </n-card>
 
+      <n-card size="small" :bordered="false" title="115 Cookie" style="margin-top: 12px;">
+        <n-space vertical :size="12">
+          <n-alert type="info" :show-icon="true">
+            默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
+          </n-alert>
+          <n-space align="center" justify="space-between">
+            <n-switch v-model:value="userCookieShared">
+              <template #checked>共享</template>
+              <template #unchecked>仅本人</template>
+            </n-switch>
+            <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
+              扫码保存 Cookie
+            </n-button>
+          </n-space>
+          <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
+            <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
+              <template #description>正在获取二维码...</template>
+            </n-spin>
+            <template v-else-if="userCookieQrcodeStatus === 'waiting' || userCookieQrcodeStatus === 'success'">
+              <n-qr-code v-if="userCookieQrcodeUrl" :value="userCookieQrcodeUrl" :size="150" />
+              <n-text depth="3">{{ userCookieQrcodeStatus === 'success' ? 'Cookie 已保存' : '使用 115 生活 APP 扫码并确认' }}</n-text>
+            </template>
+            <n-alert v-else-if="userCookieQrcodeStatus === 'expired'" type="warning" :show-icon="true">
+              二维码已过期，请重新获取。
+            </n-alert>
+          </div>
+          <n-text v-if="userCookieStatusText" depth="3">{{ userCookieStatusText }}</n-text>
+        </n-space>
+      </n-card>
+
       <!-- 3. 订阅历史 (卡片列表) -->
       <n-card size="small" :bordered="false" title="订阅历史" style="margin-top: 12px;">
         <template #header-extra>
@@ -251,14 +314,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed, h, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import axios from 'axios';
 import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NDescriptions, NDescriptionsItem, NTag, NEmpty, NGrid, NGi, 
-  NDataTable, NInputGroup, NInput, NButton, NText, useMessage, NPagination, 
+  NInputGroup, NInput, NButton, NText, useMessage, NPagination, 
   NStatistic, NRadioGroup, NRadioButton, NAvatar, NIcon, NDivider, NTooltip, NSpin,
-  NTabs, NTabPane, NList, NListItem, NThing, NSpace, NAlert
+  NList, NListItem, NThing, NSpace, NAlert, NSwitch, NQrCode
 } from 'naive-ui';
 
 const authStore = useAuthStore();
@@ -272,6 +335,13 @@ const isFetchingBotLink = ref(false);
 const playbackData = ref(null);
 const playbackFilter = ref('all');
 const playbackLoading = ref(false);
+const userCookieShared = ref(false);
+const userCookieQrcodeUrl = ref('');
+const userCookieQrcodeUid = ref('');
+const userCookieQrcodeStatus = ref('idle');
+const userCookieQrcodeLoading = ref(false);
+const userCookieQrcodePolling = ref(null);
+const userCookieStatusText = ref('');
 // 移动端检测
 const isMobile = ref(false);
 const checkMobile = () => {
@@ -394,6 +464,73 @@ const openBotChat = async () => {
   }
 };
 
+const stopUserCookieQrcodePolling = () => {
+  if (userCookieQrcodePolling.value) {
+    clearInterval(userCookieQrcodePolling.value);
+    userCookieQrcodePolling.value = null;
+  }
+};
+
+const saveUserCookie = async (cookie, appType) => {
+  const alias = accountInfo.value?.name || authStore.username || '用户小号';
+  const res = await axios.post('/api/p115/play_pool/user-account', {
+    alias,
+    cookie,
+    app_type: appType || 'alipaymini',
+    shared: Boolean(userCookieShared.value)
+  });
+  userCookieStatusText.value = res.data?.data?.enabled === false
+    ? `Cookie 已保存但当前不可用：${res.data?.data?.last_error || '测速未达标'}`
+    : `Cookie 已保存并启用${res.data?.data?.reward_days ? `，本日奖励 +${res.data.data.reward_days} 天` : ''}`;
+};
+
+const startUserCookieQrcodePolling = () => {
+  stopUserCookieQrcodePolling();
+  userCookieQrcodePolling.value = setInterval(async () => {
+    try {
+      const uid = userCookieQrcodeUid.value ? `&uid=${encodeURIComponent(userCookieQrcodeUid.value)}` : '';
+      const res = await axios.get(`/api/p115/play_pool/cookie_qrcode/status?app=alipaymini${uid}`);
+      if (res.data?.status === 'success') {
+        const data = res.data.data || {};
+        await saveUserCookie(data.cookie || '', data.app_type || 'alipaymini');
+        userCookieQrcodeStatus.value = 'success';
+        stopUserCookieQrcodePolling();
+        message.success('115 Cookie 已保存');
+      } else if (res.data?.status === 'expired') {
+        userCookieQrcodeStatus.value = 'expired';
+        stopUserCookieQrcodePolling();
+      }
+    } catch (error) {
+      console.error('检查 115 Cookie 二维码状态失败', error);
+    }
+  }, 2000);
+};
+
+const refreshUserCookieQrcode = async () => {
+  stopUserCookieQrcodePolling();
+  userCookieQrcodeStatus.value = 'loading';
+  userCookieQrcodeLoading.value = true;
+  userCookieStatusText.value = '';
+  userCookieQrcodeUid.value = '';
+  try {
+    const res = await axios.get('/api/p115/play_pool/cookie_qrcode?app=alipaymini');
+    if (res.data?.success) {
+      userCookieQrcodeUrl.value = res.data.data?.qrcode || '';
+      userCookieQrcodeUid.value = res.data.data?.uid || '';
+      userCookieQrcodeStatus.value = 'waiting';
+      startUserCookieQrcodePolling();
+    } else {
+      userCookieQrcodeStatus.value = 'idle';
+      message.error(res.data?.message || '获取二维码失败');
+    }
+  } catch (error) {
+    userCookieQrcodeStatus.value = 'idle';
+    message.error(error.response?.data?.message || '获取二维码失败');
+  } finally {
+    userCookieQrcodeLoading.value = false;
+  }
+};
+
 const fetchStats = async () => {
   try {
     const res = await axios.get('/api/portal/subscription-stats');
@@ -488,6 +625,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', checkMobile);
+  stopUserCookieQrcodePolling();
 });
 </script>
 

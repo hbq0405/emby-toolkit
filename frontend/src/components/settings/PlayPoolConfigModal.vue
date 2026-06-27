@@ -7,7 +7,7 @@
 
       <div class="play-pool-toolbar">
         <n-space align="center">
-          <n-switch v-model:value="playPoolConfig.enabled" @update:value="savePlayPoolEnabled">
+          <n-switch v-model:value="playPoolConfig.enabled" @update:value="savePlayPoolSettings">
             <template #checked>启用小号池</template>
             <template #unchecked>关闭小号池</template>
           </n-switch>
@@ -20,6 +20,31 @@
           <template #icon><n-icon :component="RefreshIcon" /></template>
           刷新
         </n-button>
+      </div>
+
+      <div class="play-pool-global-settings">
+        <n-space align="center" :vertical="isMobile" :size="12">
+          <n-switch v-model:value="playPoolConfig.auto_speedtest_enabled" @update:value="savePlayPoolSettings">
+            <template #checked>自动测速</template>
+            <template #unchecked>关闭测速</template>
+          </n-switch>
+          <n-input-number
+            v-model:value="playPoolConfig.auto_speedtest_threshold_mbps"
+            :min="0"
+            :precision="2"
+            placeholder="测速阈值 MB/s"
+            style="width: 150px;"
+            @blur="savePlayPoolSettings"
+          />
+          <n-input-number
+            v-model:value="playPoolConfig.daily_traffic_limit_gb"
+            :min="0"
+            :precision="0"
+            placeholder="单日上限 GB"
+            style="width: 150px;"
+            @blur="savePlayPoolSettings"
+          />
+        </n-space>
       </div>
 
       <n-card :bordered="false" size="small" class="play-pool-form-card">
@@ -45,24 +70,6 @@
               <template #checked>共享</template>
               <template #unchecked>仅本人</template>
             </n-switch>
-            <n-input-number
-              v-model:value="playPoolAccountForm.auto_speedtest_threshold_mbps"
-              :min="0"
-              :precision="2"
-              placeholder="测速阈值 MB/s"
-              style="width: 150px;"
-            />
-            <n-switch v-model:value="playPoolAccountForm.auto_speedtest_enabled">
-              <template #checked>自动测速</template>
-              <template #unchecked>关闭</template>
-            </n-switch>
-            <n-input-number
-              v-model:value="playPoolAccountForm.daily_traffic_limit_gb"
-              :min="0"
-              :precision="0"
-              placeholder="单日上限 GB"
-              style="width: 140px;"
-            />
           </n-space>
 
           <n-input
@@ -188,6 +195,9 @@ const playPoolConfig = ref({
   enabled: false,
   usable_count: 0,
   temp_dir_name: 'ETK小号播放临时目录',
+  auto_speedtest_enabled: true,
+  auto_speedtest_threshold_mbps: null,
+  daily_traffic_limit_gb: null,
   accounts: []
 });
 const playPoolAccountForm = ref({
@@ -198,9 +208,6 @@ const playPoolAccountForm = ref({
   owner_type: 'admin',
   shared: true,
   enabled: true,
-  daily_traffic_limit_gb: null,
-  auto_speedtest_enabled: true,
-  auto_speedtest_threshold_mbps: null,
   allowed_user_ids: []
 });
 
@@ -259,6 +266,9 @@ const applyConfig = (data) => {
     enabled: Boolean(data?.enabled),
     usable_count: Number(data?.usable_count || 0),
     temp_dir_name: data?.temp_dir_name || 'ETK小号播放临时目录',
+    auto_speedtest_enabled: data?.auto_speedtest_enabled !== false,
+    auto_speedtest_threshold_mbps: Number(data?.auto_speedtest_threshold_mbps || 0) || null,
+    daily_traffic_limit_gb: Number(data?.daily_traffic_limit_gb || 0) || null,
     accounts: Array.isArray(data?.accounts) ? data.accounts : []
   };
 };
@@ -304,23 +314,25 @@ const resetPlayPoolAccountForm = () => {
     owner_type: 'admin',
     shared: true,
     enabled: true,
-    daily_traffic_limit_gb: null,
-    auto_speedtest_enabled: true,
-    auto_speedtest_threshold_mbps: null,
     allowed_user_ids: []
   };
 };
 
-const savePlayPoolEnabled = async (enabled) => {
+const savePlayPoolSettings = async () => {
   try {
-    const res = await axios.post('/api/p115/play_pool', { enabled });
+    const res = await axios.post('/api/p115/play_pool', {
+      enabled: Boolean(playPoolConfig.value.enabled),
+      auto_speedtest_enabled: Boolean(playPoolConfig.value.auto_speedtest_enabled),
+      auto_speedtest_threshold_mbps: Number(playPoolConfig.value.auto_speedtest_threshold_mbps || 0),
+      daily_traffic_limit_gb: Number(playPoolConfig.value.daily_traffic_limit_gb || 0)
+    });
     if (res.data?.success && res.data.data) {
       applyConfig(res.data.data);
       emit('updated', res.data.data);
     }
-    message.success(enabled ? '小号池已启用' : '小号池已关闭');
+    message.success('小号池配置已保存');
   } catch (e) {
-    message.error('保存小号池开关失败: ' + (e.response?.data?.message || e.message));
+    message.error('保存小号池配置失败: ' + (e.response?.data?.message || e.message));
     await loadPlayPoolConfig();
   }
 };
@@ -340,9 +352,6 @@ const savePlayPoolAccount = async () => {
       owner_type: form.owner_type || 'admin',
       shared: form.owner_type === 'user' ? Boolean(form.shared) : true,
       enabled: Boolean(form.enabled),
-      daily_traffic_limit_gb: Number(form.daily_traffic_limit_gb || 0),
-      auto_speedtest_enabled: Boolean(form.auto_speedtest_enabled),
-      auto_speedtest_threshold_mbps: Number(form.auto_speedtest_threshold_mbps || 0),
       allowed_user_ids: Array.isArray(form.allowed_user_ids) ? form.allowed_user_ids : []
     };
     if (cookie) payload.cookie = cookie;
@@ -375,9 +384,6 @@ const editPlayPoolAccount = (account) => {
     owner_type: account.owner_type || 'admin',
     shared: Boolean(account.shared),
     enabled: Boolean(account.enabled),
-    daily_traffic_limit_gb: Number(account.daily_traffic_limit_gb || 0) || null,
-    auto_speedtest_enabled: account.auto_speedtest_enabled !== false,
-    auto_speedtest_threshold_mbps: Number(account.auto_speedtest_threshold_mbps || 0) || null,
     allowed_user_ids: Array.isArray(account.allowed_user_ids) ? [...account.allowed_user_ids] : []
   };
 };

@@ -110,13 +110,15 @@ def _human_gb_limit(value):
     return _human_bytes(bytes_value) if bytes_value > 0 else ""
 
 
-def _account_daily_limited(account):
-    daily_limit_bytes = _limit_gb_to_bytes((account or {}).get("daily_traffic_limit_gb"))
+def _account_daily_limited(account, daily_limit_gb=None):
+    if daily_limit_gb is None:
+        daily_limit_gb = _load_config().get("daily_traffic_limit_gb", 0.0)
+    daily_limit_bytes = _limit_gb_to_bytes(daily_limit_gb)
     return bool(daily_limit_bytes and _safe_int((account or {}).get("daily_traffic_bytes"), 0) >= daily_limit_bytes)
 
 
-def _speedtest_threshold_bps(account):
-    mbps = _safe_float((account or {}).get("auto_speedtest_threshold_mbps"), 0.0)
+def _speedtest_threshold_bps(config=None):
+    mbps = _safe_float((config or {}).get("auto_speedtest_threshold_mbps"), 0.0)
     return int(mbps * 1024 * 1024) if mbps > 0 else 0
 
 
@@ -156,8 +158,9 @@ def _apply_speedtest_gate(account_id, speed_bps, *, error_msg=""):
     account = _find_account_by_id(account_id)
     if not account:
         return {}
-    gate_enabled = _safe_bool(account.get("auto_speedtest_enabled"), True)
-    threshold_bps = _speedtest_threshold_bps(account)
+    config = _load_config()
+    gate_enabled = _safe_bool(config.get("auto_speedtest_enabled"), True)
+    threshold_bps = _speedtest_threshold_bps(config)
     patch = {
         "last_speed_bps": _safe_int(speed_bps, 0),
         "last_speed_at": _now_text(),
@@ -269,12 +272,9 @@ def _load_config():
         account["owner_type"] = _normalize_owner_type(account.get("owner_type"))
         account["owner_user_id"] = str(account.get("owner_user_id") or "").strip()
         account["shared"] = _safe_bool(account.get("shared"), account["owner_type"] != "user")
-        account["auto_speedtest_enabled"] = _safe_bool(account.get("auto_speedtest_enabled"), True)
-        account["auto_speedtest_threshold_mbps"] = max(0.0, _safe_float(account.get("auto_speedtest_threshold_mbps"), 0.0))
         account["temp_cid"] = str(account.get("temp_cid") or "").strip()
         account["play_count"] = _safe_int(account.get("play_count"), 0)
         account["traffic_bytes"] = _safe_int(account.get("traffic_bytes"), 0)
-        account["daily_traffic_limit_gb"] = _safe_float(account.get("daily_traffic_limit_gb"), 0.0)
         _normalize_daily_traffic(account)
         account["active_count"] = _safe_int(account.get("active_count"), 0)
         account["last_speed_bps"] = _safe_int(account.get("last_speed_bps"), 0)
@@ -284,6 +284,9 @@ def _load_config():
         clean_accounts.append(account)
     return {
         "enabled": bool(data.get("enabled", False)),
+        "auto_speedtest_enabled": _safe_bool(data.get("auto_speedtest_enabled"), True),
+        "auto_speedtest_threshold_mbps": max(0.0, _safe_float(data.get("auto_speedtest_threshold_mbps"), 0.0)),
+        "daily_traffic_limit_gb": max(0.0, _safe_float(data.get("daily_traffic_limit_gb"), 0.0)),
         "accounts": clean_accounts,
         "updated_at": data.get("updated_at") or "",
     }
@@ -292,6 +295,9 @@ def _load_config():
 def _save_config(config):
     payload = {
         "enabled": bool(config.get("enabled", False)),
+        "auto_speedtest_enabled": _safe_bool(config.get("auto_speedtest_enabled"), True),
+        "auto_speedtest_threshold_mbps": max(0.0, _safe_float(config.get("auto_speedtest_threshold_mbps"), 0.0)),
+        "daily_traffic_limit_gb": max(0.0, _safe_float(config.get("daily_traffic_limit_gb"), 0.0)),
         "accounts": config.get("accounts") if isinstance(config.get("accounts"), list) else [],
         "updated_at": _now_text(),
     }
@@ -299,7 +305,8 @@ def _save_config(config):
     return payload
 
 
-def _public_account(account):
+def _public_account(account, config=None):
+    config = config or _load_config()
     out = dict(account or {})
     out.pop("cookie", None)
     out.pop("allowed_effective_user_ids", None)
@@ -309,13 +316,11 @@ def _public_account(account):
     out["owner_user_id"] = str(account.get("owner_user_id") or "").strip()
     out["owner_user_name"] = _display_user_name(out["owner_user_id"]) if out["owner_user_id"] else ""
     out["shared"] = _safe_bool(account.get("shared"), out["owner_type"] != "user")
-    out["auto_speedtest_enabled"] = _safe_bool(account.get("auto_speedtest_enabled"), True)
-    out["auto_speedtest_threshold_mbps"] = _safe_float(account.get("auto_speedtest_threshold_mbps"), 0.0)
-    out["auto_speedtest_threshold_text"] = f"{out['auto_speedtest_threshold_mbps']:.2f} MB/s" if out["auto_speedtest_threshold_mbps"] > 0 else ""
     out["traffic_text"] = _human_bytes(account.get("traffic_bytes"))
     out["daily_traffic_text"] = _human_bytes(account.get("daily_traffic_bytes"))
-    out["daily_traffic_limit_text"] = _human_gb_limit(account.get("daily_traffic_limit_gb"))
-    out["daily_traffic_limited"] = _account_daily_limited(account)
+    daily_limit_gb = _safe_float(config.get("daily_traffic_limit_gb"), 0.0)
+    out["daily_traffic_limit_text"] = _human_gb_limit(daily_limit_gb)
+    out["daily_traffic_limited"] = _account_daily_limited(account, daily_limit_gb)
     speed = _safe_int(account.get("last_speed_bps"), 0)
     out["last_speed_text"] = f"{_human_bytes(speed)}/s" if speed > 0 else "未测速"
     return out
@@ -323,19 +328,44 @@ def _public_account(account):
 
 def get_public_config():
     config = _load_config()
+    threshold_mbps = _safe_float(config.get("auto_speedtest_threshold_mbps"), 0.0)
+    daily_limit_gb = _safe_float(config.get("daily_traffic_limit_gb"), 0.0)
     return {
         "enabled": config["enabled"],
-        "accounts": [_public_account(x) for x in config["accounts"]],
-        "usable_count": len([x for x in config["accounts"] if x.get("enabled") and x.get("cookie") and not _account_daily_limited(x)]),
+        "accounts": [_public_account(x, config) for x in config["accounts"]],
+        "usable_count": len([x for x in config["accounts"] if x.get("enabled") and x.get("cookie") and not _account_daily_limited(x, daily_limit_gb)]),
         "temp_dir_name": PLAY_POOL_TEMP_DIR_NAME,
+        "auto_speedtest_enabled": _safe_bool(config.get("auto_speedtest_enabled"), True),
+        "auto_speedtest_threshold_mbps": threshold_mbps,
+        "auto_speedtest_threshold_text": f"{threshold_mbps:.2f} MB/s" if threshold_mbps > 0 else "",
+        "daily_traffic_limit_gb": daily_limit_gb,
+        "daily_traffic_limit_text": _human_gb_limit(daily_limit_gb),
     }
 
 
-def save_pool_enabled(enabled):
+def get_public_account(account_id):
     config = _load_config()
-    config["enabled"] = bool(enabled)
+    account = _find_account_by_id(account_id)
+    return _public_account(account, config) if account else None
+
+
+def save_pool_settings(data):
+    data = data if isinstance(data, dict) else {}
+    config = _load_config()
+    if "enabled" in data:
+        config["enabled"] = bool(data.get("enabled"))
+    if "auto_speedtest_enabled" in data:
+        config["auto_speedtest_enabled"] = _safe_bool(data.get("auto_speedtest_enabled"), True)
+    if "auto_speedtest_threshold_mbps" in data:
+        config["auto_speedtest_threshold_mbps"] = max(0.0, _safe_float(data.get("auto_speedtest_threshold_mbps"), 0.0))
+    if "daily_traffic_limit_gb" in data:
+        config["daily_traffic_limit_gb"] = max(0.0, _safe_float(data.get("daily_traffic_limit_gb"), 0.0))
     _save_config(config)
     return get_public_config()
+
+
+def save_pool_enabled(enabled):
+    return save_pool_settings({"enabled": enabled})
 
 
 def upsert_account(payload, account_id=None):
@@ -396,16 +426,6 @@ def upsert_account(payload, account_id=None):
         target["shared"] = _safe_bool(payload.get("shared"), target.get("owner_type") != "user")
     elif "shared" not in target:
         target["shared"] = target.get("owner_type") != "user"
-    if "auto_speedtest_enabled" in payload:
-        target["auto_speedtest_enabled"] = _safe_bool(payload.get("auto_speedtest_enabled"), True)
-    elif "auto_speedtest_enabled" not in target:
-        target["auto_speedtest_enabled"] = True
-    if "auto_speedtest_threshold_mbps" in payload:
-        target["auto_speedtest_threshold_mbps"] = max(0.0, _safe_float(payload.get("auto_speedtest_threshold_mbps"), 0.0))
-    elif "auto_speedtest_threshold_mbps" not in target:
-        target["auto_speedtest_threshold_mbps"] = 0.0
-    if "daily_traffic_limit_gb" in payload:
-        target["daily_traffic_limit_gb"] = max(0.0, _safe_float(payload.get("daily_traffic_limit_gb"), 0.0))
     if "allowed_user_ids" in payload:
         target["allowed_user_ids"] = _normalize_user_ids(payload.get("allowed_user_ids"))
         target["allowed_effective_user_ids"] = _expand_allowed_user_ids(target["allowed_user_ids"])
@@ -415,7 +435,7 @@ def upsert_account(payload, account_id=None):
     target["updated_at"] = _now_text()
     target.setdefault("temp_cid", "")
     _save_config(config)
-    if str(target.get("cookie") or "").strip() and _safe_bool(target.get("auto_speedtest_enabled"), True) and not _safe_bool(payload.get("_skip_auto_speedtest"), False):
+    if str(target.get("cookie") or "").strip() and _safe_bool(config.get("auto_speedtest_enabled"), True) and not _safe_bool(payload.get("_skip_auto_speedtest"), False):
         try:
             speedtest_account(target["id"])
             target = _find_account_by_id(target["id"]) or target
@@ -1175,9 +1195,6 @@ def speedtest_account(account_id, sample_pick_code="", user_agent=""):
             sample_pick_code = ""
     if not sample_pick_code:
         raise RuntimeError("未找到可用于测速的 115 样本文件")
-
-    if not _safe_bool(account.get("auto_speedtest_enabled"), True):
-        raise RuntimeError("该小号已关闭自动测速，不允许继续测速")
 
     source_row = P115CacheManager.get_file_cache_by_pickcode(sample_pick_code) or {}
     sha1 = str(source_row.get("sha1") or "").strip().upper()

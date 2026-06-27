@@ -858,6 +858,34 @@ def set_user_expiration_in_db(user_id: str, expiration_date: Optional[str]):
         logger.error(f"更新用户 {user_id} 有效期时出错: {e}", exc_info=True)
         raise
 
+def extend_user_expiration_days(user_id: str, days: float) -> Optional[str]:
+    """从当前到期时间或当前时间中较晚者开始，为用户延长有效期。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT expiration_date FROM emby_users_extended WHERE emby_user_id = %s", (user_id,))
+                row = cursor.fetchone()
+                if not row:
+                    cursor.execute(
+                        "INSERT INTO emby_users_extended (emby_user_id, status, created_by) VALUES (%s, 'active', 'cookie-reward')",
+                        (user_id,)
+                    )
+                cursor.execute(
+                    """
+                    UPDATE emby_users_extended
+                    SET expiration_date = GREATEST(COALESCE(expiration_date, NOW()), NOW()) + (%s * INTERVAL '1 day')
+                    WHERE emby_user_id = %s
+                    RETURNING expiration_date
+                    """,
+                    (float(days or 0), user_id)
+                )
+                updated = cursor.fetchone()
+                conn.commit()
+                return updated['expiration_date'].isoformat() if updated and updated.get('expiration_date') else None
+    except Exception as e:
+        logger.error(f"延长用户 {user_id} 有效期失败: {e}", exc_info=True)
+        raise
+
 def delete_user_from_db(user_id: str) -> int:
     """从本地数据库删除一个用户，返回受影响行数。"""
     try:
