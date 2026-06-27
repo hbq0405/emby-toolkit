@@ -3,7 +3,7 @@ import re
 import time
 import logging
 from handler.hdhive_client import HDHiveClient
-from handler.p115_service import P115Service, SmartOrganizer, get_config
+from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer, get_config
 from handler.telegram import send_hdhive_checkin_notification
 from database import settings_db
 import task_manager
@@ -153,6 +153,23 @@ def task_download_from_hdhive(api_key=None, slug=None, tmdb_id=None, media_type=
         if not receive_title:
             logger.warning("  ➜ 转存成功但未返回文件名，交由全局定时扫描任务处理。")
             return True
+
+        try:
+            if tmdb_id and title:
+                P115CacheManager.save_transfer_context(
+                    root_name=receive_title,
+                    tmdb_id=tmdb_id,
+                    media_type=media_type,
+                    title=title,
+                    source='hdhive-share-import',
+                    source_kind='hdhive',
+                    source_kinds=['hdhive', 'transfer_context'],
+                    confidence='high',
+                    authority_role='expected',
+                    evidence=[f'hdhive:{slug or ""}'],
+                )
+        except Exception as e:
+            logger.debug(f"  ➜ 保存影巢转存整理上下文失败: {receive_title} -> {e}")
 
         # ★ 新增：检查智能整理总开关，未开启则直接下班回家
         enable_organize = config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False)
