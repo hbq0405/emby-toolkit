@@ -1073,28 +1073,30 @@ def add_play_pool_account():
 @emby_login_required
 def save_user_play_pool_account():
     data = request.json or {}
-    cookie = str(data.get('cookie') or '').strip()
-    if not cookie:
-        return jsonify({'success': False, 'message': 'Cookie 不能为空'}), 400
     emby_user_id = session.get('emby_user_id')
     if not emby_user_id:
         return jsonify({'success': False, 'message': '未登录'}), 401
+    cookie = str(data.get('cookie') or '').strip()
+    existing = p115_play_pool.get_public_account_by_owner('user', emby_user_id) or {}
+    if not cookie and not existing.get('id'):
+        return jsonify({'success': False, 'message': 'Cookie 不能为空'}), 400
     shared = bool(data.get('shared', False))
     payload = {
         'alias': str(data.get('alias') or session.get('emby_username') or '用户小号').strip() or '用户小号',
-        'cookie': cookie,
         'app_type': str(data.get('app_type') or 'alipaymini').strip() or 'alipaymini',
-        'enabled': True,
         'owner_type': 'user',
         'owner_user_id': emby_user_id,
         'shared': shared,
         '_skip_auto_speedtest': True,
     }
-    item = p115_play_pool.upsert_account(payload)
+    if cookie:
+        payload['cookie'] = cookie
+        payload['enabled'] = True
+    item = p115_play_pool.upsert_account(payload, account_id=existing.get('id') if existing else None)
     speedtest_error = ''
     speedtest_ok = False
     config = p115_play_pool.get_public_config()
-    if config.get('auto_speedtest_enabled') is not False:
+    if cookie and config.get('auto_speedtest_enabled') is not False:
         try:
             result = p115_play_pool.speedtest_account(item['id'])
             item['last_speed_bps'] = result.get('bps', 0)
@@ -1143,6 +1145,17 @@ def get_user_play_pool_account():
     item = p115_play_pool.get_public_account_by_owner('user', emby_user_id) or {}
     item['reward_summary'] = _public_user_reward(_user_reward_entry(_load_play_pool_user_rewards(), emby_user_id))
     return jsonify({'success': True, 'data': item})
+
+
+@p115_bp.route('/play_pool/user-account', methods=['DELETE'])
+@emby_login_required
+def delete_user_play_pool_account():
+    emby_user_id = session.get('emby_user_id')
+    item = p115_play_pool.get_public_account_by_owner('user', emby_user_id) or {}
+    if not item.get('id'):
+        return jsonify({'success': True, 'deleted': False})
+    ok = p115_play_pool.delete_account(item['id'])
+    return jsonify({'success': True, 'deleted': ok})
 
 
 @p115_bp.route('/play_pool/user-account/rewards', methods=['GET'])

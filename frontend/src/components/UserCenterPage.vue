@@ -110,9 +110,17 @@
                     @update:value="handleUserCookieAppTypeChange"
                   />
                 </n-space>
-                <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
-                  扫码保存 Cookie
-                </n-button>
+                <n-space :size="8">
+                  <n-button secondary size="small" :loading="userCookieSaving" @click="saveUserCookieSettings">
+                    保存设置
+                  </n-button>
+                  <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
+                    扫码保存 Cookie
+                  </n-button>
+                  <n-button secondary type="error" size="small" :disabled="!userCookieAccountId" :loading="userCookieDeleting" @click="deleteUserCookie">
+                    删除 Cookie
+                  </n-button>
+                </n-space>
               </n-space>
               <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
                 <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
@@ -284,9 +292,17 @@
                 @update:value="handleUserCookieAppTypeChange"
               />
             </n-space>
-            <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
-              扫码保存 Cookie
-            </n-button>
+            <n-space :size="8">
+              <n-button secondary size="small" :loading="userCookieSaving" @click="saveUserCookieSettings">
+                保存设置
+              </n-button>
+              <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
+                扫码保存 Cookie
+              </n-button>
+              <n-button secondary type="error" size="small" :disabled="!userCookieAccountId" :loading="userCookieDeleting" @click="deleteUserCookie">
+                删除 Cookie
+              </n-button>
+            </n-space>
           </n-space>
           <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
             <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
@@ -365,12 +381,15 @@ const isFetchingBotLink = ref(false);
 const playbackData = ref(null);
 const playbackFilter = ref('all');
 const playbackLoading = ref(false);
+const userCookieAccountId = ref('');
 const userCookieShared = ref(false);
 const userCookieAppType = ref('alipaymini');
 const userCookieQrcodeUrl = ref('');
 const userCookieQrcodeUid = ref('');
 const userCookieQrcodeStatus = ref('idle');
 const userCookieQrcodeLoading = ref(false);
+const userCookieSaving = ref(false);
+const userCookieDeleting = ref(false);
 const userCookieQrcodePolling = ref(null);
 const userCookieStatusText = ref('');
 const userCookieReward = ref({
@@ -530,6 +549,7 @@ const loadUserCookieAccount = async () => {
     const res = await axios.get('/api/p115/play_pool/user-account');
     if (res.data?.success && res.data.data) {
       const data = res.data.data;
+      userCookieAccountId.value = data.id || '';
       if (data.id) {
         userCookieShared.value = Boolean(data.shared);
         userCookieAppType.value = data.app_type || 'alipaymini';
@@ -551,6 +571,7 @@ const saveUserCookie = async (cookie, appType) => {
     app_type: appType || userCookieAppType.value || 'alipaymini',
     shared: Boolean(userCookieShared.value)
   });
+  userCookieAccountId.value = res.data?.data?.id || userCookieAccountId.value;
   userCookieStatusText.value = res.data?.data?.enabled === false
     ? `Cookie 已保存但当前不可用：${res.data?.data?.last_error || '测速未达标'}`
     : `Cookie 已保存并启用${res.data?.data?.reward_days ? `，本日奖励 +${res.data.data.reward_days} 天` : ''}`;
@@ -558,6 +579,51 @@ const saveUserCookie = async (cookie, appType) => {
     userCookieReward.value = res.data.data.reward_summary;
   } else {
     await loadUserCookieReward();
+  }
+};
+
+const saveUserCookieSettings = async () => {
+  if (!userCookieAccountId.value) {
+    message.warning('请先扫码保存 Cookie');
+    return;
+  }
+  userCookieSaving.value = true;
+  try {
+    const alias = accountInfo.value?.name || authStore.username || '用户小号';
+    const res = await axios.post('/api/p115/play_pool/user-account', {
+      alias,
+      app_type: userCookieAppType.value || 'alipaymini',
+      shared: Boolean(userCookieShared.value)
+    });
+    userCookieAccountId.value = res.data?.data?.id || userCookieAccountId.value;
+    userCookieStatusText.value = 'Cookie 设置已保存';
+    message.success('Cookie 设置已保存');
+  } catch (error) {
+    message.error(error.response?.data?.message || '保存 Cookie 设置失败');
+  } finally {
+    userCookieSaving.value = false;
+  }
+};
+
+const deleteUserCookie = async () => {
+  if (!userCookieAccountId.value) return;
+  if (!window.confirm('确认删除当前 115 Cookie？')) return;
+  userCookieDeleting.value = true;
+  try {
+    await axios.delete('/api/p115/play_pool/user-account');
+    userCookieAccountId.value = '';
+    userCookieShared.value = false;
+    userCookieAppType.value = 'alipaymini';
+    userCookieQrcodeStatus.value = 'idle';
+    userCookieQrcodeUrl.value = '';
+    userCookieQrcodeUid.value = '';
+    userCookieStatusText.value = 'Cookie 已删除';
+    stopUserCookieQrcodePolling();
+    message.success('Cookie 已删除');
+  } catch (error) {
+    message.error(error.response?.data?.message || '删除 Cookie 失败');
+  } finally {
+    userCookieDeleting.value = false;
   }
 };
 
