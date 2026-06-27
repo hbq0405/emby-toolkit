@@ -29,6 +29,37 @@ task_lock = threading.Lock()
 task_queue = Queue()
 task_worker_thread: Optional[threading.Thread] = None
 task_worker_lock = threading.Lock()
+_pending_organize_lock = threading.Lock()
+_pending_organize_requested = False
+
+def _mark_pending_organize(reason: str = '') -> None:
+    global _pending_organize_requested
+    with _pending_organize_lock:
+        if not _pending_organize_requested:
+            logger.info(f"  ➜ [115整理] 当前有任务运行，已合并为待执行整理请求{f'：{reason}' if reason else ''}。")
+        else:
+            logger.debug(f"  ➜ [115整理] 已存在待执行整理请求，本次合并{f'：{reason}' if reason else ''}。")
+        _pending_organize_requested = True
+
+def _consume_pending_organize() -> bool:
+    global _pending_organize_requested
+    with _pending_organize_lock:
+        if not _pending_organize_requested:
+            return False
+        _pending_organize_requested = False
+        return True
+
+def _schedule_pending_organize_if_needed(delay: float = 1.0) -> None:
+    if not _consume_pending_organize():
+        return
+
+    def _runner():
+        if delay and delay > 0:
+            import time
+            time.sleep(delay)
+        trigger_115_organize_task(reason='pending_after_task')
+
+    threading.Thread(target=_runner, name='pending-115-organize-submit', daemon=True).start()
 
 def update_status_from_thread(progress: int, message: str):
     """由处理器或任务函数调用，用于更新任务状态。
@@ -111,6 +142,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
             })
             processor.clear_stop_signal()
             logger.trace(f"后台任务 '{task_name}' 状态已完成并保留最终回调。")
+    _schedule_pending_organize_if_needed()
 
 def task_worker_function():
     """
@@ -236,7 +268,7 @@ def clear_task_queue():
                 break
         logger.info("任务队列已清空。")
 
-def trigger_115_organize_task():
+def trigger_115_organize_task(reason: str = ''):
     """
     【公共接口】触发 115 网盘整理任务。
     通过 Telegram 分享链接后调用此函数来唤醒后台整理任务。
@@ -255,7 +287,7 @@ def trigger_115_organize_task():
         if result:
             logger.info("  ➜ [TG交互] 115 整理任务已成功提交到后台队列。")
         else:
-            logger.warning("  ➜ [TG交互] 115 整理任务提交失败，可能有其他任务正在运行。")
+            _mark_pending_organize(reason or 'task_busy')
         
         return result
     except Exception as e:

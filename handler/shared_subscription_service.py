@@ -52,9 +52,9 @@ def _kick_115_organize_detached(reason: str = '', delay: float = 3.0) -> Dict[st
         if delay and delay > 0:
             time.sleep(delay)
         try:
-            from tasks.p115 import task_scan_and_organize_115
-            logger.info(f"  ➜ [共享资源] 准备扫描待整理...")
-            task_scan_and_organize_115()
+            import task_manager
+            logger.info(f"  ➜ [共享资源] 准备触发待整理扫描...")
+            task_manager.trigger_115_organize_task(reason=reason or 'shared_resource')
         except Exception as e:
             logger.error(f"  ➜ [共享资源] 触发 115 待整理扫描失败: {e}", exc_info=True)
 
