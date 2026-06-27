@@ -67,7 +67,6 @@ CONFIG_OPTION_115_GENERATE_MEDIAINFO = "p115_generate_mediainfo" # 是否生成M
 CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION = "p115_mediainfo_assisted_recognition" # 是否启用MediaInfo辅助识别
 CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"           # 是否下载字幕文件
 CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"           # 是否启用本地清理功能
-CONFIG_OPTION_115_MEDIAINFO_CENTER = "p115_mediainfo_center"     # 分布式媒体信息
 CONFIG_OPTION_115_APP_ID = "p115_app_id"                         # 115 自定义 AppID
 CONFIG_OPTION_115_LIFE_MONITOR_ENABLED = "p115_life_monitor_enabled" # 是否开启生活事件监控
 CONFIG_OPTION_115_LIFE_MONITOR_INTERVAL = "p115_life_monitor_interval" # 监控间隔(分钟)

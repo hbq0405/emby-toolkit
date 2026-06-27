@@ -34,13 +34,6 @@ from ai_translator import AITranslator
 from watchlist_processor import WatchlistProcessor
 from handler.douban import DoubanApi
 import nfo_builder
-# --- P115Center 依赖 ---
-try:
-    from p115center import P115Center
-    P115_AVAILABLE = True
-except ImportError:
-    P115_AVAILABLE = False
-
 logger = logging.getLogger(__name__)
 try:
     from handler.douban import DoubanApi
@@ -126,27 +119,6 @@ class MediaProcessor:
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
         self._global_lib_guid_map = {}
         self._last_lib_map_update = 0
-        # =========================================================
-        # P115Center 初始化 (由 p115_mediainfo_center 开关控制)
-        # =========================================================
-        if P115_AVAILABLE and self.config.get("p115_mediainfo_center", True):
-            machine_id = self.config.get("p115_machine_id", "")
-            auth_file_path = str(Path(__file__).resolve().parent / "extensions.py")
-            license_key = "650ad55de8fc0a81868754d39a2390c498ace7625f4d88d653ba0827132a02b3"
-            
-            try:
-                self.p115_center = P115Center(
-                    machine_id=machine_id,
-                    license=license_key,
-                    file_path=auth_file_path
-                )
-                logger.info("  ➜ P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
-            except Exception as e:
-                logger.error(f"P115Center SDK 初始化失败: {e}")
-                self.p115_center = None
-        else:
-            # ➜ 如果开关关闭或依赖缺失，直接设为 None
-            self.p115_center = None
             
         logger.trace("核心处理器初始化完成。")
 

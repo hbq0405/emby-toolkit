@@ -1211,7 +1211,7 @@ def _dispatch_item(item_id, item_name, item_type):
 
 def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=None):
     """
-    预检视频流数据 + P115Center 神医联动 (完美闭环版)
+    预检视频流数据 + 本地媒体信息缓存神医联动
     """
     if item_type not in ['Movie', 'Episode']:
         _dispatch_item(item_id, item_name, item_type)
@@ -1269,7 +1269,6 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             
             if sha1:
                 media_data = None
-                need_upload = False
                 is_from_local = False
                 
                 # --- 提前查询 115 真实文件大小 (供本地严格比对使用) ---
@@ -1302,21 +1301,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 except Exception as e_db:
                     logger.warning(f"  ➜ [本地缓存] 查询本地数据库失败: {e_db}")
 
-                # --- 第二步：本地没有，再查中心服务器 ---
-                if not is_from_local and getattr(processor, 'p115_center', None):
-                    logger.info(f"  ➜ [P115Center] 本地无缓存，开始查询中心服务器 (SHA1: {sha1})")
-                    
-                    # ★ 撤销传入 file_size_115，防止中心服务器因 HTTP 波动拒收
-                    resp = processor.p115_center.download_emby_mediainfo_data([sha1])
-                    media_data = resp.get(sha1)
-                    
-                    if media_data:
-                        logger.info(f"  ➜ [P115Center] 命中中心缓存，下发给神医恢复...")
-                    else:
-                        logger.info(f"  ➜ [P115Center] 中心无缓存，通知神医提取媒体信息...")
-                        need_upload = True
-
-                # --- 第三步：轮询调用神医接口，死等纯净数据 ---
+                # --- 第二步：轮询调用神医接口，死等纯净数据 ---
                 res_json = None
                 max_api_polls = 15  
                 
@@ -1362,7 +1347,6 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             res_json = None
                             media_data = None # ★ 必须置空，让神医去提取物理文件，而不是再次注入脏数据
                             is_from_local = False
-                            need_upload = True # ★ 标记需要反哺中心服务器
                             
                             sleep(2) 
                             continue
@@ -1371,7 +1355,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
 
                 if res_json:
                     if media_data:
-                        logger.info(f"  ➜ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
+                        logger.info(f"  ➜ [神医] 媒体信息恢复成功！(数据源: 本地数据库)")
                     else:
                         logger.info(f"  ➜ [神医] 媒体信息提取成功！")
 
@@ -1390,19 +1374,8 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         except Exception as e_db:
                             logger.warning(f"  ➜ [本地缓存] 写入数据库失败: {e_db}")
                     
-                    if need_upload and getattr(processor, 'p115_center', None):
-                        try:
-                            # ★ 核心修复：传入 syndrome_size，既满足接口规范，又防止中心服务器 0 容错拒收
-                            if syndrome_size > 0:
-                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json, size=syndrome_size)
-                            else:
-                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f"  ➜ [P115Center] 成功将媒体信息反哺至中心服务器。")
-                        except Exception as e_up:
-                            logger.warning(f"  ➜ [P115Center] 反哺中心服务器失败: {e_up}")
-
         except Exception as e:
-            logger.error(f"  ➜ [P115Center] 联动异常: {e}")
+            logger.error(f"  ➜ [媒体信息] 预检联动异常: {e}")
 
     # =========================================================
     # 2. 物理文件与视频流兜底检查逻辑 
