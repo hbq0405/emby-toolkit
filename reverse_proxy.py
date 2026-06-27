@@ -1264,7 +1264,7 @@ def proxy_all(path):
                 return Response("Only ETK standard 115 STRM playback is supported.", status=409)
 
             # 本地物理视频保留 Emby 原生播放路径，避免误伤普通本地库。
-            logger.info("  ▶️ [本地视频] 未检测到 STRM pick_code，转交 Emby 原生播放。")
+            logger.debug("  ➜ [本地视频] 转交 Emby 原生播放。")
             target_url = f"{base_url}/{path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc

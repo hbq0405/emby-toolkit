@@ -1438,6 +1438,20 @@ const isLedgerProQuotaRow = (row) => {
   const ledgerType = String(row?.ledger_type || '').trim().toLowerCase();
   return ledgerType === 'pro_quota' || ['daily_grant', 'rapid_quota_consumed', 'tier_cap_adjust', 'pro_expired_clear', 'pro_inactive_clear'].includes(reason) || ['center_daily_grant', 'center_rapid_quota_consumed', 'center_tier_cap_adjust', 'center_pro_expired_clear', 'center_pro_inactive_clear'].includes(code);
 };
+const ledgerSha1 = (row = {}) => {
+  const raw = ledgerRawJson(row);
+  const center = (raw.center_ledger && typeof raw.center_ledger === 'object') ? raw.center_ledger : {};
+  const values = [
+    row?.ledger_sha1, row?.sha1, row?.ref_id, row?.source_id,
+    center.sha1, center.ref_id, center.source_id,
+    raw.sha1, raw.file_sha1, raw.ref_id, raw.source_id,
+  ];
+  for (const value of values) {
+    const match = String(value || '').match(/[A-Fa-f0-9]{40}/);
+    if (match) return match[0].toUpperCase();
+  }
+  return '';
+};
 const ledgerSxx = (value) => {
   const n = Number(value || 0);
   return Number.isFinite(n) && n > 0 ? `S${String(Math.trunc(n)).padStart(2, '0')}` : '';
@@ -1678,6 +1692,10 @@ const ledgerSeasonAggregateKey = (row) => {
 };
 const ledgerAggregateKey = (row) => {
   const event = normalizeLedgerKeyPart(row?.event_type || row?.reason);
+  if (isLedgerSignRow(row)) {
+    const sha1 = ledgerSha1(row);
+    if (sha1) return `${event}::sign:sha1:${sha1}`;
+  }
   if (row?.ledger_aggregate_key) return `${event}::${row.ledger_aggregate_key}`;
   if (isLedgerConsumedRow(row)) return `${event}::consume-season::${ledgerSeasonAggregateKey(row)}`;
   return `${event}::${ledgerFileKey(row)}`;
