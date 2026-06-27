@@ -1169,7 +1169,10 @@ def get_user_play_pool_rewards():
 @p115_bp.route('/play_pool/accounts/<account_id>', methods=['PUT'])
 @admin_required
 def update_play_pool_account(account_id):
-    item = p115_play_pool.upsert_account(request.json or {}, account_id=account_id)
+    data = request.json or {}
+    if not str(data.get('cookie') or '').strip():
+        data['_skip_auto_speedtest'] = True
+    item = p115_play_pool.upsert_account(data, account_id=account_id)
     return jsonify({'success': True, 'data': item})
 
 

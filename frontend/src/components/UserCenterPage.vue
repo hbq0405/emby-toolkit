@@ -78,64 +78,64 @@
                 <div style="margin-top: 12px;">
                     <n-button text type="primary" size="tiny" @click="openBotChat">1.点此找机器人发送 /start</n-button>
                 </div>
+
+                <n-divider style="margin: 16px 0 12px;" />
+
+                <div class="user-cookie-section">
+                  <div class="card-title" style="margin-bottom: 10px;">115 Cookie</div>
+                  <n-space vertical :size="12">
+                    <n-alert type="info" :show-icon="true">
+                      默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
+                    </n-alert>
+                    <n-space :size="8">
+                      <n-tag size="small" type="success">累计奖励 {{ userCookieReward.total_days || 0 }} 天</n-tag>
+                      <n-tag v-if="userCookieReward.last_reward_date" size="small" :bordered="false">
+                        最近 {{ userCookieReward.last_reward_date }} +{{ userCookieReward.last_reward_days || 0 }} 天
+                      </n-tag>
+                    </n-space>
+                    <n-space align="center" justify="space-between">
+                      <n-space align="center" :size="8">
+                        <n-switch v-model:value="userCookieShared">
+                          <template #checked>共享</template>
+                          <template #unchecked>仅本人</template>
+                        </n-switch>
+                        <n-select
+                          v-model:value="userCookieAppType"
+                          :options="cookieAppOptions"
+                          size="small"
+                          style="width: 140px;"
+                          @update:value="handleUserCookieAppTypeChange"
+                        />
+                      </n-space>
+                      <n-space :size="8">
+                        <n-button secondary size="small" :loading="userCookieSaving" @click="saveUserCookieSettings">
+                          保存设置
+                        </n-button>
+                        <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
+                          扫码保存 Cookie
+                        </n-button>
+                        <n-button secondary type="error" size="small" :disabled="!userCookieAccountId" :loading="userCookieDeleting" @click="deleteUserCookie">
+                          删除 Cookie
+                        </n-button>
+                      </n-space>
+                    </n-space>
+                    <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
+                      <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
+                        <template #description>正在获取二维码...</template>
+                      </n-spin>
+                      <template v-else-if="userCookieQrcodeStatus === 'waiting' || userCookieQrcodeStatus === 'success'">
+                        <n-qr-code v-if="userCookieQrcodeUrl" :value="userCookieQrcodeUrl" :size="150" />
+                        <n-text depth="3">{{ userCookieQrcodeStatus === 'success' ? 'Cookie 已保存' : '使用 115 生活 APP 扫码并确认' }}</n-text>
+                      </template>
+                      <n-alert v-else-if="userCookieQrcodeStatus === 'expired'" type="warning" :show-icon="true">
+                        二维码已过期，请重新获取。
+                      </n-alert>
+                    </div>
+                    <n-text v-if="userCookieStatusText" depth="3">{{ userCookieStatusText }}</n-text>
+                  </n-space>
+                </div>
               </div>
             </div>
-          </n-card>
-
-          <n-card :bordered="false" class="dashboard-card user-cookie-card" style="margin-top: 16px;">
-            <template #header>
-              <span class="card-title">115 Cookie</span>
-            </template>
-            <n-space vertical :size="12">
-              <n-alert type="info" :show-icon="true">
-                默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
-              </n-alert>
-              <n-space :size="8">
-                <n-tag size="small" type="success">累计奖励 {{ userCookieReward.total_days || 0 }} 天</n-tag>
-                <n-tag v-if="userCookieReward.last_reward_date" size="small" :bordered="false">
-                  最近 {{ userCookieReward.last_reward_date }} +{{ userCookieReward.last_reward_days || 0 }} 天
-                </n-tag>
-              </n-space>
-              <n-space align="center" justify="space-between">
-                <n-space align="center" :size="8">
-                  <n-switch v-model:value="userCookieShared">
-                    <template #checked>共享</template>
-                    <template #unchecked>仅本人</template>
-                  </n-switch>
-                  <n-select
-                    v-model:value="userCookieAppType"
-                    :options="cookieAppOptions"
-                    size="small"
-                    style="width: 140px;"
-                    @update:value="handleUserCookieAppTypeChange"
-                  />
-                </n-space>
-                <n-space :size="8">
-                  <n-button secondary size="small" :loading="userCookieSaving" @click="saveUserCookieSettings">
-                    保存设置
-                  </n-button>
-                  <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
-                    扫码保存 Cookie
-                  </n-button>
-                  <n-button secondary type="error" size="small" :disabled="!userCookieAccountId" :loading="userCookieDeleting" @click="deleteUserCookie">
-                    删除 Cookie
-                  </n-button>
-                </n-space>
-              </n-space>
-              <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
-                <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
-                  <template #description>正在获取二维码...</template>
-                </n-spin>
-                <template v-else-if="userCookieQrcodeStatus === 'waiting' || userCookieQrcodeStatus === 'success'">
-                  <n-qr-code v-if="userCookieQrcodeUrl" :value="userCookieQrcodeUrl" :size="150" />
-                  <n-text depth="3">{{ userCookieQrcodeStatus === 'success' ? 'Cookie 已保存' : '使用 115 生活 APP 扫码并确认' }}</n-text>
-                </template>
-                <n-alert v-else-if="userCookieQrcodeStatus === 'expired'" type="warning" :show-icon="true">
-                  二维码已过期，请重新获取。
-                </n-alert>
-              </div>
-              <n-text v-if="userCookieStatusText" depth="3">{{ userCookieStatusText }}</n-text>
-            </n-space>
           </n-card>
         </n-gi>
 
@@ -265,59 +265,62 @@
             </div>
           </div>
         </div>
-      </n-card>
 
-      <n-card size="small" :bordered="false" title="115 Cookie" style="margin-top: 12px;">
-        <n-space vertical :size="12">
-          <n-alert type="info" :show-icon="true">
-            默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
-          </n-alert>
-          <n-space :size="8">
-            <n-tag size="small" type="success">累计奖励 {{ userCookieReward.total_days || 0 }} 天</n-tag>
-            <n-tag v-if="userCookieReward.last_reward_date" size="small" :bordered="false">
-              最近 {{ userCookieReward.last_reward_date }} +{{ userCookieReward.last_reward_days || 0 }} 天
-            </n-tag>
-          </n-space>
-          <n-space align="center" justify="space-between">
-            <n-space align="center" :size="8">
-              <n-switch v-model:value="userCookieShared">
-                <template #checked>共享</template>
-                <template #unchecked>仅本人</template>
-              </n-switch>
-              <n-select
-                v-model:value="userCookieAppType"
-                :options="cookieAppOptions"
-                size="small"
-                style="width: 140px;"
-                @update:value="handleUserCookieAppTypeChange"
-              />
-            </n-space>
-            <n-space :size="8">
-              <n-button secondary size="small" :loading="userCookieSaving" @click="saveUserCookieSettings">
-                保存设置
-              </n-button>
-              <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
-                扫码保存 Cookie
-              </n-button>
-              <n-button secondary type="error" size="small" :disabled="!userCookieAccountId" :loading="userCookieDeleting" @click="deleteUserCookie">
-                删除 Cookie
-              </n-button>
-            </n-space>
-          </n-space>
-          <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
-            <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
-              <template #description>正在获取二维码...</template>
-            </n-spin>
-            <template v-else-if="userCookieQrcodeStatus === 'waiting' || userCookieQrcodeStatus === 'success'">
-              <n-qr-code v-if="userCookieQrcodeUrl" :value="userCookieQrcodeUrl" :size="150" />
-              <n-text depth="3">{{ userCookieQrcodeStatus === 'success' ? 'Cookie 已保存' : '使用 115 生活 APP 扫码并确认' }}</n-text>
-            </template>
-            <n-alert v-else-if="userCookieQrcodeStatus === 'expired'" type="warning" :show-icon="true">
-              二维码已过期，请重新获取。
+        <n-divider style="margin: 12px 0;" />
+
+        <div class="user-cookie-section">
+          <div class="card-title" style="margin-bottom: 10px;">115 Cookie</div>
+          <n-space vertical :size="12">
+            <n-alert type="info" :show-icon="true">
+              默认仅本人使用；开启共享后，所有用户都可使用该 Cookie 播放。
             </n-alert>
-          </div>
-          <n-text v-if="userCookieStatusText" depth="3">{{ userCookieStatusText }}</n-text>
-        </n-space>
+            <n-space :size="8">
+              <n-tag size="small" type="success">累计奖励 {{ userCookieReward.total_days || 0 }} 天</n-tag>
+              <n-tag v-if="userCookieReward.last_reward_date" size="small" :bordered="false">
+                最近 {{ userCookieReward.last_reward_date }} +{{ userCookieReward.last_reward_days || 0 }} 天
+              </n-tag>
+            </n-space>
+            <n-space align="center" justify="space-between">
+              <n-space align="center" :size="8">
+                <n-switch v-model:value="userCookieShared">
+                  <template #checked>共享</template>
+                  <template #unchecked>仅本人</template>
+                </n-switch>
+                <n-select
+                  v-model:value="userCookieAppType"
+                  :options="cookieAppOptions"
+                  size="small"
+                  style="width: 140px;"
+                  @update:value="handleUserCookieAppTypeChange"
+                />
+              </n-space>
+              <n-space :size="8">
+                <n-button secondary size="small" :loading="userCookieSaving" @click="saveUserCookieSettings">
+                  保存设置
+                </n-button>
+                <n-button secondary size="small" :loading="userCookieQrcodeLoading" @click="refreshUserCookieQrcode">
+                  扫码保存 Cookie
+                </n-button>
+                <n-button secondary type="error" size="small" :disabled="!userCookieAccountId" :loading="userCookieDeleting" @click="deleteUserCookie">
+                  删除 Cookie
+                </n-button>
+              </n-space>
+            </n-space>
+            <div v-if="userCookieQrcodeStatus !== 'idle'" class="user-cookie-qrcode">
+              <n-spin v-if="userCookieQrcodeStatus === 'loading'" size="small">
+                <template #description>正在获取二维码...</template>
+              </n-spin>
+              <template v-else-if="userCookieQrcodeStatus === 'waiting' || userCookieQrcodeStatus === 'success'">
+                <n-qr-code v-if="userCookieQrcodeUrl" :value="userCookieQrcodeUrl" :size="150" />
+                <n-text depth="3">{{ userCookieQrcodeStatus === 'success' ? 'Cookie 已保存' : '使用 115 生活 APP 扫码并确认' }}</n-text>
+              </template>
+              <n-alert v-else-if="userCookieQrcodeStatus === 'expired'" type="warning" :show-icon="true">
+                二维码已过期，请重新获取。
+              </n-alert>
+            </div>
+            <n-text v-if="userCookieStatusText" depth="3">{{ userCookieStatusText }}</n-text>
+          </n-space>
+        </div>
       </n-card>
 
       <!-- 3. 订阅历史 (卡片列表) -->

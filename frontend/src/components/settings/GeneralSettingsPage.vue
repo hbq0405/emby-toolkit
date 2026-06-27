@@ -558,7 +558,7 @@
                       </template>
                     </n-form-item>
 
-                    <n-form-item label="复制播放" path="p115_copy_play_enabled">
+                    <n-form-item label="复制播放（Pro）" path="p115_copy_play_enabled">
                         <n-switch v-model:value="configModel.p115_copy_play_enabled">
                             <template #checked>先复制再播放</template>
                             <template #unchecked>直接播放源文件</template>
@@ -764,7 +764,7 @@
                     <n-card :bordered="false" class="dashboard-card">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
-                          <span class="card-title">小号池</span>
+                          <span class="card-title">小号池（Pro）</span>
                           <n-button secondary type="primary" @click="playPoolModalRef?.open()">
                             <template #icon><n-icon :component="OptionsIcon" /></template>
                             配置
