@@ -589,6 +589,7 @@ def _extract_clone_from_rapid_response(resp, client, temp_cid, file_name, sha1, 
 
 
 def _select_account(config, user_id=""):
+    user_id = str(user_id or "").strip()
     sessions = _load_sessions()
     active_counts = {}
     now = _now_ts()
@@ -611,10 +612,18 @@ def _select_account(config, user_id=""):
             continue
         account = dict(account)
         account["_active_count"] = active_counts.get(str(account.get("id")), 0)
+        owner_type = _normalize_owner_type(account.get("owner_type"))
+        owner_user_id = str(account.get("owner_user_id") or "").strip()
+        if user_id and owner_type == "user" and owner_user_id == user_id:
+            account["_priority"] = 0
+        elif owner_type == "user":
+            account["_priority"] = 1
+        else:
+            account["_priority"] = 2
         candidates.append(account)
     if not candidates:
         return None
-    candidates.sort(key=lambda x: (x.get("_active_count", 0), -_safe_int(x.get("last_speed_bps"), 0), float(x.get("last_used_at") or 0)))
+    candidates.sort(key=lambda x: (x.get("_priority", 9), x.get("_active_count", 0), -_safe_int(x.get("last_speed_bps"), 0), float(x.get("last_used_at") or 0)))
     return candidates[0]
 
 
