@@ -241,6 +241,12 @@ const renderUserOption = (option) => {
 };
 
 const accountScopeText = (account) => {
+  if (account?.owner_type === 'user' && !account?.shared) {
+    return `仅本人：${account.owner_user_name || account.owner_user_id || '未知用户'}`;
+  }
+  if (account?.owner_type === 'user' && account?.shared) {
+    return '所有用户';
+  }
   const allowed = Array.isArray(account?.allowed_user_ids) ? account.allowed_user_ids : [];
   if (!allowed.length) return '所有用户';
   const optionMap = new Map(embyUserOptions.value.map(item => [item.value, item.label]));
