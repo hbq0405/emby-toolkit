@@ -1061,6 +1061,9 @@ def proxy_all(path):
                 forward_headers['Host'] = urlparse(base_url).netloc
                 forward_params = request.args.copy()
                 forward_params['api_key'] = api_key
+                current_user_id = _resolve_request_user_id(base_url, api_key, full_path, request.args.get('PlaySessionId', ''))
+                if current_user_id and not forward_params.get('UserId'):
+                    forward_params['UserId'] = current_user_id
                 resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=(10.0, 1800.0), stream=True)
                 excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
                 response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]

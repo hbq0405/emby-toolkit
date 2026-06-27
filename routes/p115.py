@@ -66,6 +66,26 @@ def _public_user_reward(entry):
         'last_reward_mode': str(entry.get('last_reward_mode') or ''),
     }
 
+
+def _resolve_play_request_user_id():
+    for key in ('UserId', 'userId', 'user_id'):
+        value = request.args.get(key)
+        if value:
+            return str(value).strip()
+    for key in ('X-Emby-User-Id', 'X-Emby-UserId', 'X-MediaBrowser-UserId'):
+        value = request.headers.get(key)
+        if value:
+            return str(value).strip()
+    return str(session.get('emby_user_id') or '').strip()
+
+
+def _play_request_client_key(user_id=""):
+    return "|".join([
+        request.args.get("DeviceId") or request.args.get("X-Emby-Device-Id") or request.headers.get("X-Emby-Device-Id") or request.args.get("PlaySessionId") or request.remote_addr or "",
+        user_id or "",
+        request.args.get("ItemId") or request.args.get("item_id") or "",
+    ])
+
 # --- 115扫码登录相关API (OAuth 2.0 + PKCE 模式) ---
 
 def _generate_pkce_pair():
@@ -1649,19 +1669,49 @@ def play_115_video(pick_code, filename=None):
         if not client:
             return "115 Client not initialized", 500
 
+        current_user_id = _resolve_play_request_user_id()
         copy_play_kwargs = {
             "file_name": filename or "",
             "item_id": request.args.get("ItemId") or request.args.get("item_id") or "",
             "play_session_id": request.args.get("PlaySessionId") or "",
-            "user_id": request.args.get("UserId") or "",
+            "user_id": current_user_id,
             "source": "/api/p115/play",
-            "client_key": "|".join([
-                request.args.get("DeviceId") or request.args.get("X-Emby-Device-Id") or request.headers.get("X-Emby-Device-Id") or request.args.get("PlaySessionId") or request.remote_addr or "",
-                request.args.get("UserId") or "",
-                request.args.get("ItemId") or request.args.get("item_id") or "",
-            ]),
+            "client_key": _play_request_client_key(current_user_id),
             "client_name": request.headers.get("X-Emby-Client") or request.headers.get("User-Agent") or "",
         }
+        if p115_play_pool.has_usable_pool_for_user(current_user_id):
+            try:
+                play_result = p115_play_pool.prepare_play_pool_pick_code(
+                    pick_code,
+                    user_agent=request_ua,
+                    **{k: v for k, v in copy_play_kwargs.items() if k != "client_name"},
+                )
+                real_url = p115_play_pool.get_direct_url(play_result, user_agent=request_ua)
+                if not real_url:
+                    logger.warning("  ⚠️ [小号播放] 路由层未拿到小号直链，已按小号池优先规则中止本次播放。")
+                    return "Play pool failed", 503
+                p115_play_pool.recycle_session_after_direct_url(play_result, "起播后清理")
+                if is_emby_server:
+                    headers_to_115 = {
+                        "User-Agent": request_ua,
+                        "Accept": "*/*",
+                        "Connection": "keep-alive",
+                    }
+                    if 'Range' in request.headers:
+                        headers_to_115['Range'] = request.headers['Range']
+                    resp = requests.get(real_url, headers=headers_to_115, stream=True, timeout=10)
+                    excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
+                    response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
+                    return Response(stream_with_context(resp.iter_content(chunk_size=8192)), status=resp.status_code, headers=response_headers)
+                response = redirect(real_url, code=302)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            except Exception as e:
+                logger.warning(f"  ⚠️ [小号播放] 路由层小号池播放失败，已按小号池优先规则中止本次播放: {e}")
+                return f"Play pool failed: {e}", 503
+        elif p115_play_pool.has_usable_pool():
+            logger.debug("  ➜ [小号播放] 路由层当前用户无可用小号，回退复制播放：user_id=%s", current_user_id or "-")
+
         play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
         if not play_pick_code:
             return "Copy play failed", 503
