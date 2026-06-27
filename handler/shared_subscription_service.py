@@ -702,8 +702,23 @@ def _client_report_transfer_with_retry_queue(
             share_channel_id=payload['share_channel_id'],
         ) or {}
     except Exception as e:
-        queued = _enqueue_pending_transfer_report(payload, error=str(e))
-        return {'ok': False, 'pending_report_queued': True, 'error': str(e), **queued}
+        report_error = str(e)
+        try:
+            queued = _enqueue_pending_transfer_report(payload, error=report_error)
+            return {'ok': False, 'pending_report_queued': True, 'error': report_error, **queued}
+        except Exception as queue_error:
+            logger.error(
+                f"  ➜ [共享资源] 转存结果上报失败，且本地补报队列写入失败："
+                f"{payload.get('source_kind')}:{payload.get('source_id')}，"
+                f"result={payload.get('result')}，report_err={report_error[:180]}，"
+                f"queue_err={str(queue_error)[:180]}"
+            )
+            return {
+                'ok': False,
+                'pending_report_queued': False,
+                'error': report_error,
+                'queue_error': str(queue_error),
+            }
 
 
 def _drain_pending_transfer_reports(client: SharedCenterClient = None, *, limit: int = None, force: bool = False) -> Dict[str, Any]:
@@ -2991,24 +3006,35 @@ def _locate_share_imported_item(p115, *, parent_cid: str, receive_title: str, ma
     """参考影巢逻辑：share_import 成功后按 receive_title 在待整理根目录定位真实 file_id。"""
     parent_cid = str(parent_cid or '').strip()
     receive_title = str(receive_title or '').strip()
-    if not parent_cid or not receive_title or not p115 or not hasattr(p115, 'fs_files'):
+    if not parent_cid or not p115 or not hasattr(p115, 'fs_files'):
         return {}
     for attempt in range(1, max(1, int(max_retries or 3)) + 1):
         wait_time = attempt * 2
         logger.debug(
             f"  ➜ [共享资源] 等待 {wait_time}s 后定位分享转存目录 "
-            f"({attempt}/{max_retries})：{receive_title}"
+            f"({attempt}/{max_retries})：{receive_title or parent_cid}"
         )
         time.sleep(wait_time)
         try:
-            resp = p115.fs_files({'cid': parent_cid, 'search_value': receive_title, 'limit': 10})
+            query = {'cid': parent_cid, 'limit': 100, 'record_open_time': 0, 'count_folders': 0}
+            if receive_title and '等' not in receive_title:
+                query['search_value'] = receive_title
+                query['limit'] = 10
+            resp = p115.fs_files(query)
             items = resp.get('data') if isinstance(resp, dict) else []
             if not isinstance(items, list):
                 items = []
             for item in items:
-                if isinstance(item, dict) and _p115_item_name(item) == receive_title:
+                if isinstance(item, dict) and receive_title and _p115_item_name(item) == receive_title:
                     logger.info(f"  ➜ [共享资源] 已定位分享转存目录：{receive_title} (fid={_p115_item_id(item) or '-'})")
                     return dict(item)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = _p115_item_name(item)
+                if os.path.splitext(name)[1].lower() in VIDEO_EXTS:
+                    logger.info(f"  ➜ [共享资源] 已确认分享转存文件落入标准目录：{parent_cid}，示例={name}")
+                    return {'fid': parent_cid, 'file_id': parent_cid, 'fn': receive_title or name, 'fc': '0'}
             logger.debug(f"  ➜ [共享资源] 第 {attempt}/{max_retries} 次未定位到分享转存目录，等待 115 索引同步。")
         except Exception as e:
             logger.warning(f"  ➜ [共享资源] 定位分享转存目录失败({attempt}/{max_retries})：{e}")
