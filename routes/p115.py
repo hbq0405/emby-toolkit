@@ -42,6 +42,30 @@ p115_bp = Blueprint('115_bp', __name__, url_prefix='/api/p115')
 logger = logging.getLogger(__name__)
 PLAY_POOL_USER_REWARD_KEY = 'p115_play_pool_user_cookie_rewards'
 
+
+def _load_play_pool_user_rewards():
+    rewards = settings_db.get_setting(PLAY_POOL_USER_REWARD_KEY) or {}
+    return rewards if isinstance(rewards, dict) else {}
+
+
+def _user_reward_entry(rewards, user_id):
+    value = rewards.get(str(user_id))
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return {'last_reward_date': value, 'total_days': 0.0}
+    return {'last_reward_date': '', 'total_days': 0.0}
+
+
+def _public_user_reward(entry):
+    total_days = float(entry.get('total_days') or 0)
+    return {
+        'total_days': round(total_days, 2),
+        'last_reward_days': float(entry.get('last_reward_days') or 0),
+        'last_reward_date': str(entry.get('last_reward_date') or ''),
+        'last_reward_mode': str(entry.get('last_reward_mode') or ''),
+    }
+
 # --- 115扫码登录相关API (OAuth 2.0 + PKCE 模式) ---
 
 def _generate_pkce_pair():
@@ -1081,14 +1105,19 @@ def save_user_play_pool_account():
     item = p115_play_pool._find_account_by_id(item['id']) or item
     if speedtest_ok and item.get('enabled') and item.get('cookie'):
         today = datetime.now().strftime('%Y-%m-%d')
-        rewards = settings_db.get_setting(PLAY_POOL_USER_REWARD_KEY) or {}
-        if not isinstance(rewards, dict):
-            rewards = {}
-        if rewards.get(str(emby_user_id)) != today:
+        rewards = _load_play_pool_user_rewards()
+        reward_entry = _user_reward_entry(rewards, emby_user_id)
+        if reward_entry.get('last_reward_date') != today:
             reward_days = 0.8 if shared else 0.5
             try:
                 user_db.extend_user_expiration_days(emby_user_id, reward_days)
-                rewards[str(emby_user_id)] = today
+                reward_entry.update({
+                    'last_reward_date': today,
+                    'last_reward_days': reward_days,
+                    'last_reward_mode': 'shared' if shared else 'private',
+                    'total_days': round(float(reward_entry.get('total_days') or 0) + reward_days, 2),
+                })
+                rewards[str(emby_user_id)] = reward_entry
                 settings_db.save_setting(PLAY_POOL_USER_REWARD_KEY, rewards)
                 item['reward_days'] = reward_days
             except Exception as e:
@@ -1103,7 +1132,16 @@ def save_user_play_pool_account():
     public_item = p115_play_pool.get_public_account(item.get('id')) or {}
     if item.get('reward_days'):
         public_item['reward_days'] = item.get('reward_days')
+    public_item['reward_summary'] = _public_user_reward(_user_reward_entry(_load_play_pool_user_rewards(), emby_user_id))
     return jsonify({'success': True, 'data': public_item})
+
+
+@p115_bp.route('/play_pool/user-account/rewards', methods=['GET'])
+@emby_login_required
+def get_user_play_pool_rewards():
+    emby_user_id = session.get('emby_user_id')
+    rewards = _load_play_pool_user_rewards()
+    return jsonify({'success': True, 'data': _public_user_reward(_user_reward_entry(rewards, emby_user_id))})
 
 
 @p115_bp.route('/play_pool/accounts/<account_id>', methods=['PUT'])
