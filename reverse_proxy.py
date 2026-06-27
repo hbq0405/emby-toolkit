@@ -41,6 +41,33 @@ _USER_CONTEXT_TTL_SECONDS = 2 * 60 * 60
 _USER_CONTEXT_LOCK = threading.Lock()
 _USER_CONTEXT_CACHE = {}
 
+
+def _patch_emby_web_player_js(text):
+    patched = text
+    patterns = [
+        r"\.crossOrigin\s*=\s*['\"]anonymous['\"]",
+        r"\.crossorigin\s*=\s*['\"]anonymous['\"]",
+        r"\[['\"]crossOrigin['\"]\]\s*=\s*['\"]anonymous['\"]",
+        r"\[['\"]crossorigin['\"]\]\s*=\s*['\"]anonymous['\"]",
+        r"\.setAttribute\(\s*['\"]crossorigin['\"]\s*,\s*['\"]anonymous['\"]\s*\)",
+        r"\.setAttribute\(\s*['\"]crossOrigin['\"]\s*,\s*['\"]anonymous['\"]\s*\)",
+    ]
+    for pattern in patterns:
+        patched = re.sub(pattern, ".removeAttribute('crossorigin')", patched)
+    patched = patched.replace('crossorigin="anonymous"', '')
+    patched = patched.replace("crossorigin='anonymous'", '')
+    return patched
+
+
+def _should_patch_emby_web_player_js(path, resp):
+    path_lower = str(path or "").lower()
+    if not path_lower.endswith(".js"):
+        return False
+    if "plugin.js" not in path_lower and "htmlvideoplayer" not in path_lower:
+        return False
+    content_type = str(resp.headers.get('Content-Type') or '').lower()
+    return not content_type or 'javascript' in content_type or 'text/plain' in content_type
+
 def to_missing_item_id(tmdb_id): 
     return f"{MISSING_ID_PREFIX}{tmdb_id}"
 
@@ -1323,6 +1350,18 @@ def proxy_all(path):
         
         excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
         response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+        if _should_patch_emby_web_player_js(path, resp):
+            try:
+                text = resp.content.decode(resp.encoding or 'utf-8', errors='ignore')
+                patched = _patch_emby_web_player_js(text)
+                if patched != text:
+                    headers = [(name, value) for name, value in response_headers if name.lower() not in ('etag', 'last-modified', 'cache-control')]
+                    headers.append(('Content-Type', resp.headers.get('Content-Type') or 'application/javascript; charset=utf-8'))
+                    headers.append(('Cache-Control', 'no-cache, no-store, must-revalidate'))
+                    logger.debug("  ➜ [302播放] 已移除 Emby Web 播放器 crossorigin: %s", path)
+                    return Response(patched, resp.status_code, headers)
+            except Exception as e:
+                logger.debug("  ➜ [302播放] 修补 Emby Web 播放器脚本失败: %s, err=%s", path, e)
         
         return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
         
