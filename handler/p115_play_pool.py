@@ -428,15 +428,15 @@ def upsert_account(payload, account_id=None):
         target["enabled"] = True
     if "owner_type" in payload:
         target["owner_type"] = _normalize_owner_type(payload.get("owner_type"))
-    elif "owner_type" not in target:
+    elif "owner_type" not in target and not account_id:
         target["owner_type"] = "admin"
     if "owner_user_id" in payload:
         target["owner_user_id"] = str(payload.get("owner_user_id") or "").strip()
-    elif "owner_user_id" not in target:
+    elif "owner_user_id" not in target and not account_id:
         target["owner_user_id"] = ""
     if "shared" in payload:
         target["shared"] = _safe_bool(payload.get("shared"), target.get("owner_type") != "user")
-    elif "shared" not in target:
+    elif "shared" not in target and not account_id:
         target["shared"] = target.get("owner_type") != "user"
     if "allowed_user_ids" in payload:
         target["allowed_user_ids"] = _normalize_user_ids(payload.get("allowed_user_ids"))
@@ -499,37 +499,38 @@ def _extract_cid(resp):
     return ""
 
 
-def _ensure_temp_cid(account, client):
-    cid = str(account.get("temp_cid") or "").strip()
-    if cid:
-        return cid
+def _find_temp_cid(client):
+    resp = client.fs_files({
+        "cid": "0",
+        "search_value": PLAY_POOL_TEMP_DIR_NAME,
+        "show_dir": 1,
+        "limit": 1000,
+        "offset": 0,
+        "record_open_time": 0,
+        "count_folders": 0,
+    })
+    if not resp.get("state"):
+        raise RuntimeError(f"查询小号临时目录失败: {resp.get('error_msg') or resp.get('message') or resp}")
+    for item in resp.get("data") or []:
+        name = item.get("name") or item.get("file_name") or item.get("fn")
+        fc = str(item.get("fc") if item.get("fc") is not None else item.get("type") or "")
+        item_id = item.get("fid") or item.get("file_id") or item.get("id") or item.get("cid")
+        if name == PLAY_POOL_TEMP_DIR_NAME and item_id and (not fc or fc == "0"):
+            return str(item_id)
+    return ""
 
-    found = ""
-    try:
-        resp = client.fs_files({
-            "cid": "0",
-            "search_value": PLAY_POOL_TEMP_DIR_NAME,
-            "show_dir": 1,
-            "limit": 100,
-            "offset": 0,
-            "record_open_time": 0,
-            "count_folders": 0,
-        })
-        for item in resp.get("data") or []:
-            name = item.get("name") or item.get("file_name") or item.get("fn")
-            fc = str(item.get("fc") if item.get("fc") is not None else item.get("type") or "")
-            item_id = item.get("fid") or item.get("file_id") or item.get("id") or item.get("cid")
-            if name == PLAY_POOL_TEMP_DIR_NAME and item_id and (not fc or fc == "0"):
-                found = str(item_id)
-                break
-    except Exception as e:
-        logger.debug(f"  ➜ [小号播放] 查询小号临时目录失败: {account.get('alias')}, err={e}")
+
+def _ensure_temp_cid(account, client):
+    found = _find_temp_cid(client)
 
     if not found:
         resp = client.fs_mkdir(PLAY_POOL_TEMP_DIR_NAME, "0")
-        if not resp.get("state"):
+        if resp.get("state"):
+            found = _extract_cid(resp)
+        if not found:
+            found = _find_temp_cid(client)
+        if not found and not resp.get("state"):
             raise RuntimeError(f"创建小号临时目录失败: {resp.get('error_msg') or resp.get('message') or resp}")
-        found = _extract_cid(resp)
     if not found:
         raise RuntimeError("创建小号临时目录后未拿到 CID")
 
