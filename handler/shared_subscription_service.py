@@ -532,8 +532,27 @@ def _client_report_transfer(
 
 
 
+def _writable_queue_path_for_base(base: str) -> str:
+    base = str(base or '').strip()
+    if not base:
+        return ''
+    try:
+        base = os.path.abspath(os.path.expanduser(base))
+        os.makedirs(base, exist_ok=True)
+        probe = os.path.join(base, f'.{_PENDING_TRANSFER_REPORT_QUEUE_FILE}.write_test')
+        with open(probe, 'a', encoding='utf-8'):
+            pass
+        try:
+            os.remove(probe)
+        except Exception:
+            pass
+        return os.path.join(base, _PENDING_TRANSFER_REPORT_QUEUE_FILE)
+    except Exception:
+        return ''
+
+
 def _pending_transfer_report_queue_path() -> str:
-    """本地持久化队列路径。默认落在工作目录 data/ 下，不依赖额外建表。"""
+    """本地持久化队列路径。默认落到容器持久配置目录，避免 /app 只读或非运行用户不可写。"""
     configured = str(
         os.environ.get('ETK_SHARED_TRANSFER_REPORT_QUEUE')
         or _cfg('CONFIG_OPTION_115_SHARED_TRANSFER_REPORT_QUEUE', 'p115_shared_transfer_report_queue_path', '')
@@ -544,25 +563,26 @@ def _pending_transfer_report_queue_path() -> str:
         os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
         return path
 
+    for base in (
+        os.environ.get('APP_DATA_DIR'),
+        os.environ.get('CONFIG_DIR'),
+        os.environ.get('XDG_CONFIG_HOME'),
+        os.environ.get('HOME'),
+    ):
+        path = _writable_queue_path_for_base(base)
+        if path:
+            return path
+
     app_cfg = config_manager.APP_CONFIG if isinstance(config_manager.APP_CONFIG, dict) else {}
     for key in ('data_dir', 'DATA_DIR', 'config_dir', 'CONFIG_DIR', 'db_dir', 'DB_DIR'):
-        base = str(app_cfg.get(key) or '').strip()
-        if not base:
-            continue
-        try:
-            base = os.path.abspath(os.path.expanduser(base))
-            os.makedirs(base, exist_ok=True)
-            return os.path.join(base, _PENDING_TRANSFER_REPORT_QUEUE_FILE)
-        except Exception:
-            pass
+        path = _writable_queue_path_for_base(app_cfg.get(key))
+        if path:
+            return path
 
     for base in (os.path.join(os.getcwd(), 'data'), os.getcwd()):
-        try:
-            base = os.path.abspath(base)
-            os.makedirs(base, exist_ok=True)
-            return os.path.join(base, _PENDING_TRANSFER_REPORT_QUEUE_FILE)
-        except Exception:
-            pass
+        path = _writable_queue_path_for_base(base)
+        if path:
+            return path
     return os.path.join('/tmp', _PENDING_TRANSFER_REPORT_QUEUE_FILE)
 
 
