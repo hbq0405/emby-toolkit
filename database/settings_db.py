@@ -276,6 +276,9 @@ DEFAULT_SHARED_RESOURCE_CONFIG = {
     # 开启后，才允许上传、拉取、合并共享片头章节。
     'p115_shared_intro_enabled': False,
     'p115_shared_auto_share_requests_enabled': False,
+    'p115_shared_virtual_import_enabled': False,
+    'p115_shared_virtual_auto_promote_episodes': 0,
+    'p115_shared_virtual_auto_promote_movie_percent': 0,
     'p115_shared_center_home_sections': [],
 }
 
@@ -380,6 +383,9 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
         ),
         'p115_shared_intro_enabled': _shared_bool(merged.get('p115_shared_intro_enabled'), False),
         'p115_shared_auto_share_requests_enabled': _shared_bool(merged.get('p115_shared_auto_share_requests_enabled'), False),
+        'p115_shared_virtual_import_enabled': _shared_bool(merged.get('p115_shared_virtual_import_enabled'), False),
+        'p115_shared_virtual_auto_promote_episodes': _shared_int(merged.get('p115_shared_virtual_auto_promote_episodes'), 0, 0),
+        'p115_shared_virtual_auto_promote_movie_percent': _shared_int(merged.get('p115_shared_virtual_auto_promote_movie_percent'), 0, 0, 100),
         'p115_shared_center_home_sections': _shared_center_home_sections(merged.get('p115_shared_center_home_sections')),
     }
 
