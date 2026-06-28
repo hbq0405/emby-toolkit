@@ -472,6 +472,82 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
         logger.error(f"处理Emby媒体库/合集数据时发生未知错误: {e}", exc_info=True)
         return None
 
+
+def get_virtual_folders(base_url: str, api_key: str) -> List[Dict[str, Any]]:
+    """获取 Emby 顶层媒体库列表。"""
+    if not base_url or not api_key:
+        return []
+
+    url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
+    response = emby_client.get(url, params={'api_key': api_key})
+    response.raise_for_status()
+    return response.json() or []
+
+
+def _library_options_with_tmdb(collection_type: str) -> Dict[str, Any]:
+    tmdb_fetchers = ['TheMovieDb']
+    item_types = ['Movie', 'BoxSet'] if collection_type == 'movies' else ['Series', 'Season', 'Episode']
+    return {
+        'EnableRealtimeMonitor': True,
+        'SaveLocalMetadata': True,
+        'MetadataSavers': ['Nfo'],
+        'DisabledLocalMetadataReaders': [],
+        'LocalMetadataReaderOrder': ['Nfo'],
+        'DisabledSubtitleFetchers': [],
+        'DisabledLyricsFetchers': [],
+        'SaveLyricsWithMedia': False,
+        'TypeOptions': [
+            {
+                'Type': item_type,
+                'MetadataFetchers': tmdb_fetchers,
+                'MetadataFetcherOrder': tmdb_fetchers,
+                'ImageFetchers': tmdb_fetchers,
+                'ImageFetcherOrder': tmdb_fetchers,
+            }
+            for item_type in item_types
+        ],
+    }
+
+
+def create_library(base_url: str, api_key: str, name: str, collection_type: str, path: str) -> Dict[str, Any]:
+    """创建 Emby 媒体库；如果同名或同路径已存在则直接返回现有库。"""
+    if not all([base_url, api_key, name, collection_type, path]):
+        raise ValueError("创建 Emby 媒体库缺少必要参数")
+
+    norm_path = os.path.normpath(path)
+    for folder in get_virtual_folders(base_url, api_key):
+        locations = folder.get('Locations') or []
+        if folder.get('Name') == name or norm_path in {os.path.normpath(p) for p in locations if p}:
+            return {
+                'name': folder.get('Name') or name,
+                'path': path,
+                'id': str(folder.get('ItemId') or folder.get('Id') or ''),
+                'created': False,
+            }
+
+    payload = {
+        'Name': name,
+        'CollectionType': collection_type,
+        'Paths': [path],
+        'RefreshLibrary': True,
+        'LibraryOptions': _library_options_with_tmdb(collection_type),
+    }
+    url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
+    response = emby_client.post(url, params={'api_key': api_key}, json=payload)
+    response.raise_for_status()
+
+    for folder in get_virtual_folders(base_url, api_key):
+        locations = folder.get('Locations') or []
+        if folder.get('Name') == name or norm_path in {os.path.normpath(p) for p in locations if p}:
+            return {
+                'name': folder.get('Name') or name,
+                'path': path,
+                'id': str(folder.get('ItemId') or folder.get('Id') or ''),
+                'created': True,
+            }
+    return {'name': name, 'path': path, 'id': '', 'created': True}
+
+
 # --- 遍历指定的媒体库，通过分页获取所有独立的、未被聚合的媒体项 ---
 def get_all_library_versions(
     base_url: str,
