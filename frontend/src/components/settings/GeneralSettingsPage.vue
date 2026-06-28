@@ -44,7 +44,7 @@
             </n-gi>
             <n-gi>
               <n-card :bordered="false" class="dashboard-card quick-deploy-card">
-                <template #header><span class="card-title">115 网盘一键部署</span></template>
+                <template #header><span class="card-title">一键部署</span></template>
                 <template #header-extra>
                   <n-button type="primary" ghost :loading="quickDeployLoading" @click="handleQuickDeploy115">
                     <template #icon><n-icon :component="FlashIcon" /></template>
@@ -63,7 +63,7 @@
                     </n-gi>
                   </n-grid>
                   <div class="prerequisite-note">
-                    目录映射一致性会在部署时校验：ETK 与 Emby 必须看到同一个 STRM 根目录，否则会提示修改映射。
+                    请先完成上面清单的配置项，然后执行一键部署。一键部署会在网盘和本地创建基础目录树以及对应的分类、洗版、重命名配置，同时会在Emby创建对应的媒体库。
                   </div>
                   <div v-if="quickDeployLoading || quickDeployProgress > 0" class="quick-deploy-progress">
                     <n-progress
@@ -81,7 +81,7 @@
 
           <n-tabs v-model:value="activeSettingsTab" class="settings-tabs" type="line" animated :size="isMobile ? 'medium' : 'large'" :pane-style="tabPaneStyle">
             <!-- ================== 标签页 1: Emby 前置配置 ================== -->
-            <n-tab-pane name="emby" tab="Emby 前置配置">
+            <n-tab-pane name="emby" tab="Emby & 虚拟库">
               <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
 
                 <!-- ########## 左侧卡片: Emby 连接设置 ########## -->
@@ -190,7 +190,7 @@
                 <!-- ########## 右侧卡片: 虚拟库 (反向代理) ########## -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
-                    <template #header><span class="card-title">302反代（Pro）</span></template>
+                    <template #header><span class="card-title">虚拟库（Pro）</span></template>
                     
                     <!-- 同样使用紧凑双列 -->
                     <n-grid cols="1 m:2" :x-gap="12" :y-gap="12" responsive="screen">
