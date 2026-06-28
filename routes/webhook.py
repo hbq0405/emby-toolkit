@@ -212,12 +212,24 @@ def _normalize_mp_detail_size(value):
     return None
 
 
-def _extract_deep_delete_pickcodes(item_from_webhook):
-    if not isinstance(item_from_webhook, dict):
+def _extract_deep_delete_pickcodes(webhook_payload):
+    if not isinstance(webhook_payload, dict):
         return []
 
     pickcodes = []
     seen = set()
+
+    def _add_pickcode(text):
+        text = str(text or '').strip()
+        if text and text not in seen:
+            seen.add(text)
+            pickcodes.append(text)
+
+    def _add_pickcodes_from_text(text):
+        if text in (None, '', [], {}):
+            return
+        for match in re.finditer(r'/api/p115/play/([^/\s?#]+)', str(text)):
+            _add_pickcode(match.group(1))
 
     def _add_value(value):
         if value in (None, '', [], {}):
@@ -238,20 +250,22 @@ def _extract_deep_delete_pickcodes(item_from_webhook):
             return
 
         text = str(value).strip()
-        if text and text not in seen:
-            seen.add(text)
-            pickcodes.append(text)
+        _add_pickcodes_from_text(text)
+        if '/api/p115/play/' not in text:
+            _add_pickcode(text)
 
-    for key in ('pc', 'pick_code', 'pickcode', 'PickCode'):
-        _add_value(item_from_webhook.get(key))
-
-    for key in ('PickCodes', 'pick_codes', 'Files', 'files'):
-        _add_value(item_from_webhook.get(key))
-
-    nested_item = item_from_webhook.get('Item') or item_from_webhook.get('item')
-    if isinstance(nested_item, dict):
+    def _scan_container(container):
+        if not isinstance(container, dict):
+            return
         for key in ('pc', 'pick_code', 'pickcode', 'PickCode'):
-            _add_value(nested_item.get(key))
+            _add_value(container.get(key))
+        for key in ('PickCodes', 'pick_codes', 'Files', 'files'):
+            _add_value(container.get(key))
+        for key in ('Description', 'Overview', 'Path', 'Url'):
+            _add_pickcodes_from_text(container.get(key))
+
+    _scan_container(webhook_payload)
+    _scan_container(webhook_payload.get('Item') or webhook_payload.get('item'))
 
     return pickcodes
 
@@ -1474,14 +1488,14 @@ def emby_webhook():
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # ★★★            魔法日志 - START            ★★★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    try:
-        import json
-        # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
-        logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
-        # 将整个 JSON 数据格式化后打印出来
-        logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
-    except Exception as e:
-        logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
+    # try:
+    #     import json
+    #     # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
+    #     logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
+    #     # 将整个 JSON 数据格式化后打印出来
+    #     logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
+    # except Exception as e:
+    #     logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
     # # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # # ★★★             魔法日志 - END             ★★★
     # # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
@@ -1506,7 +1520,7 @@ def emby_webhook():
         nb_config = get_config()
         if nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
             try:
-                pickcodes = _extract_deep_delete_pickcodes(item_from_webhook)
+                pickcodes = _extract_deep_delete_pickcodes(data)
                 if pickcodes:
                     logger.info(f"  ➜ 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
                     from handler.p115_service import delete_115_files_by_webhook
