@@ -212,6 +212,50 @@ def _normalize_mp_detail_size(value):
     return None
 
 
+def _extract_deep_delete_pickcodes(item_from_webhook):
+    if not isinstance(item_from_webhook, dict):
+        return []
+
+    pickcodes = []
+    seen = set()
+
+    def _add_value(value):
+        if value in (None, '', [], {}):
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _add_value(item)
+            return
+        if isinstance(value, dict):
+            for key in ('pc', 'pick_code', 'pickcode', 'PickCode', 'PickCodeList', 'pick_codes'):
+                if key in value:
+                    _add_value(value.get(key))
+                    return
+            for key in ('File', 'file', 'Files', 'files', 'Item', 'item', 'Items', 'items'):
+                if key in value:
+                    _add_value(value.get(key))
+                    return
+            return
+
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.add(text)
+            pickcodes.append(text)
+
+    for key in ('pc', 'pick_code', 'pickcode', 'PickCode'):
+        _add_value(item_from_webhook.get(key))
+
+    for key in ('PickCodes', 'pick_codes', 'Files', 'files'):
+        _add_value(item_from_webhook.get(key))
+
+    nested_item = item_from_webhook.get('Item') or item_from_webhook.get('item')
+    if isinstance(nested_item, dict):
+        for key in ('pc', 'pick_code', 'pickcode', 'PickCode'):
+            _add_value(nested_item.get(key))
+
+    return pickcodes
+
+
 def _refresh_mp_file_info_from_115(client, file_info):
     """Use 115 file detail as the authority for MP webhook file identity."""
     try:
@@ -1462,18 +1506,13 @@ def emby_webhook():
         nb_config = get_config()
         if nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
             try:
-                pickcodes = []
-                # 数据库兜底：此时数据库还没被删，可以按 Movie/Episode/Season/Series 层级收集实际文件 PC。
-                if original_item_id:
-                    logger.debug(f"  ➜ [深度删除] 尝试通过 Emby ID ({original_item_id}) 查库收集 PC 码...")
-                    pickcodes = media_db.get_pickcodes_for_deleted_emby_item(original_item_id, original_item_type)
-
+                pickcodes = _extract_deep_delete_pickcodes(item_from_webhook)
                 if pickcodes:
                     logger.info(f"  ➜ 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
                     from handler.p115_service import delete_115_files_by_webhook
                     spawn(delete_115_files_by_webhook, pickcodes)
                 else:
-                    logger.warning("  ➜ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
+                    logger.warning("  ➜ 深度删除通知未携带有效 PC，跳过网盘清理。")
             except Exception as e:
                 logger.error(f"  ➜ 解析深度删除通知失败: {e}", exc_info=True)
         else:

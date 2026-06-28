@@ -1,4 +1,4 @@
-# routes/media_cleanup.py
+﻿# routes/media_cleanup.py
 
 from flask import Blueprint, jsonify, request
 from extensions import task_lock_required, processor_ready_required, admin_required
@@ -293,7 +293,7 @@ def trigger_cleanup_scan():
 @media_cleanup_bp.route('/api/cleanup/delete_version', methods=['POST'])
 @admin_required
 def delete_single_version():
-    """手动删除指定的单一版本 (纯 API 模式，依赖 Webhook 回流处理后续清理)"""
+    """手动删除指定的单一版本，按 media_cleanup_config.delete_mode 执行"""
     data = request.get_json()
     emby_id = data.get('emby_id')
     
@@ -303,22 +303,84 @@ def delete_single_version():
     import config_manager
     import handler.emby as emby
     import json
+    import os
+    import shutil
+    import constants
+    from database import media_db, maintenance_db
     from database.connection import get_db_connection
     
     config = config_manager.APP_CONFIG
+    cleanup_config = settings_db.get_setting('media_cleanup_config') or {}
+    delete_mode = cleanup_config.get('delete_mode', 'physical')
     
     try:
-        # 1. 直接调用 Emby API 删除物理文件和条目
-        # (Emby 删除成功后会触发 Webhook，Webhook 会自动接管 115 联动删除和本地数据库清理)
-        success = emby.delete_item_sy(
-            item_id=emby_id, 
-            emby_server_url=config.get('emby_server_url'), 
-            emby_api_key=config.get('emby_api_key'), 
-            user_id=config.get('emby_user_id')
-        )
-        
-        if not success:
-            return jsonify({"error": "通过 API 删除失败，请检查 Emby 权限或文件状态"}), 500
+        if delete_mode == 'api':
+            success = emby.delete_item_sy(
+                item_id=emby_id,
+                emby_server_url=config.get('emby_server_url'),
+                emby_api_key=config.get('emby_api_key'),
+                user_id=config.get('emby_user_id')
+            )
+
+            if not success:
+                return jsonify({"error": "通过 API 删除失败，请检查 Emby 权限或文件状态"}), 500
+        else:
+            paths = media_db.get_physical_paths_and_sha1s_by_emby_id(emby_id)
+            if not paths:
+                return jsonify({"error": "未找到对应的物理文件路径"}), 404
+
+            local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+            protected_dirs = {os.path.abspath(local_root)} if local_root else set()
+
+            for item in paths:
+                file_path = item.get('path')
+                if not file_path or not os.path.exists(file_path):
+                    continue
+
+                try:
+                    os.remove(file_path)
+
+                    base_dir = os.path.dirname(file_path)
+                    base_name = os.path.splitext(os.path.basename(file_path))[0]
+
+                    mi_path = os.path.join(base_dir, f"{base_name}-mediainfo.json")
+                    if os.path.exists(mi_path):
+                        os.remove(mi_path)
+
+                    for f in os.listdir(base_dir):
+                        if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'png']:
+                            try:
+                                os.remove(os.path.join(base_dir, f))
+                            except Exception:
+                                pass
+
+                    curr_dir = base_dir
+                    while curr_dir and os.path.abspath(curr_dir) not in protected_dirs:
+                        if not os.path.exists(curr_dir):
+                            break
+
+                        has_media = False
+                        for root_dir, _, files in os.walk(curr_dir):
+                            for f in files:
+                                if f.split('.')[-1].lower() in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
+                                    has_media = True
+                                    break
+                            if has_media:
+                                break
+
+                        if has_media:
+                            break
+
+                        shutil.rmtree(curr_dir)
+                        curr_dir = os.path.dirname(curr_dir)
+                except Exception as e:
+                    return jsonify({"error": f"删除物理文件失败: {e}"}), 500
+
+            maintenance_db.cleanup_deleted_media_item(
+                item_id=emby_id,
+                item_name='',
+                item_type='Episode'
+            )
             
         # 2. 从清理任务索引中剔除该版本，保证前端刷新完美同步
         with get_db_connection() as conn:
