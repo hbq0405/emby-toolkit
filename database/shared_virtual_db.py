@@ -158,6 +158,46 @@ def delete_virtual_import(virtual_id: int) -> Dict[str, Any]:
             return row or {}
 
 
+def mark_active_washing_for_virtual_import(virtual_id: int, enabled: bool = True) -> int:
+    row = get_virtual_import(virtual_id)
+    if not row:
+        return 0
+
+    item_type = str(row.get('item_type') or '').strip().lower()
+    season_number = row.get('season_number')
+    episode_number = row.get('episode_number')
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if item_type == 'movie':
+                tmdb_id = str(row.get('tmdb_id') or '').strip()
+                if not tmdb_id:
+                    return 0
+                cur.execute(
+                    """
+                    UPDATE media_metadata
+                    SET active_washing = %s
+                    WHERE tmdb_id = %s AND item_type = 'Movie'
+                    """,
+                    (bool(enabled), tmdb_id),
+                )
+            else:
+                parent_tmdb_id = str(row.get('parent_series_tmdb_id') or row.get('tmdb_id') or '').strip()
+                if not parent_tmdb_id:
+                    return 0
+                args = [bool(enabled), parent_tmdb_id]
+                where = "parent_series_tmdb_id = %s AND item_type = 'Episode'"
+                if season_number is not None:
+                    where += " AND season_number = %s"
+                    args.append(season_number)
+                if episode_number is not None:
+                    where += " AND episode_number = %s"
+                    args.append(episode_number)
+                cur.execute(f"UPDATE media_metadata SET active_washing = %s WHERE {where}", args)
+            count = cur.rowcount or 0
+        conn.commit()
+    return count
+
+
 def record_virtual_play(virtual_id: int, percent: float = 0.0) -> Dict[str, Any]:
     current = get_virtual_import(virtual_id)
     played_percent = max(_safe_float(current.get('played_percent'), 0.0), _safe_float(percent, 0.0))

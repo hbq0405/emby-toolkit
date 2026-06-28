@@ -1225,6 +1225,16 @@ def task_full_sync_strm_and_subs(processor=None):
         path_anomaly_names = []
         path_anomaly_move_failed = 0
 
+        def is_virtual_strm_file(path):
+            try:
+                if not path or not str(path).lower().endswith('.strm') or not os.path.exists(path):
+                    return False
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read(2048)
+                return '/api/p115/virtual-play/' in content
+            except Exception:
+                return False
+
         def first_present(*values):
             for value in values:
                 if value is not None and str(value).strip() != '':
@@ -1768,6 +1778,9 @@ def task_full_sync_strm_and_subs(processor=None):
                             strm_path = os.path.abspath(os.path.join(root_dir, filename))
                             if strm_path in valid_strm_paths:
                                 continue
+                            if is_virtual_strm_file(strm_path):
+                                logger.debug(f"  ➜ [三方对账] 保留虚拟入库 STRM: {strm_path}")
+                                continue
                             try:
                                 os.remove(strm_path)
                                 cleaned_strm_files += 1
@@ -1817,6 +1830,12 @@ def task_full_sync_strm_and_subs(processor=None):
                     
                     # 1. ★ 智能清理：清理失效的 STRM 及其衍生的 nfo, jpg, mediainfo, 字幕等
                     for root_dir, dirs, files in os.walk(target_local_dir):
+                        for file in files:
+                            file_path = os.path.abspath(os.path.join(root_dir, file))
+                            if file.lower().endswith('.strm') and is_virtual_strm_file(file_path):
+                                valid_local_files.add(file_path)
+                                valid_strm_bases.add(os.path.splitext(file_path)[0])
+
                         # 找出当前目录下所有有效的 strm 基础路径
                         current_dir_valid_bases = [
                             b for b in valid_strm_bases 
@@ -1826,7 +1845,7 @@ def task_full_sync_strm_and_subs(processor=None):
                         for file in files:
                             file_path = os.path.abspath(os.path.join(root_dir, file))
                             file_lower = file.lower()
-                            
+
                             # 规则 1: 如果文件在有效名单中 (有效的 strm, 刚下载的字幕, 刚生成的 mediainfo)，保留
                             if file_path in valid_local_files:
                                 continue

@@ -2145,20 +2145,19 @@ def api_promote_virtual_import(virtual_id: int):
     source = row.get('source_payload_json') if isinstance(row.get('source_payload_json'), dict) else {}
     if not source:
         return jsonify({'success': False, 'message': '虚拟记录缺少中心源 payload，无法正式入库'}), 400
-    emby_result = _delete_virtual_emby_item(row)
-    if emby_result.get('found') and not emby_result.get('ok'):
-        return jsonify({'success': False, 'message': 'Emby 虚拟项删除失败，已停止转正', 'data': {'emby_delete': emby_result}}), 500
     source_kind = source.get('source_kind') or row.get('source_kind') or ''
     source_id = source.get('source_id') or source.get('source_ref_id') or row.get('source_id') or ''
-    event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
+    marked = shared_virtual_db.mark_active_washing_for_virtual_import(virtual_id, True)
+    logger.info(f"  ➜ [虚拟入库] 手动转正已开启 active_washing 特权：virtual_id={virtual_id}, rows={marked}")
+    event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': {**source, '_virtual_auto_promote': True, '_virtual_id': virtual_id}}
     result = shared_tasks.consume_device_event_with_transfer_gate(event, ack=False)
     status = 200 if result.get('ok') else 400
     if result.get('ok'):
-        removed = _delete_virtual_import_record_only(row)
+        item = shared_virtual_db.update_virtual_import(virtual_id, status='promoting', promoted_at='NOW()')
         return jsonify({
             'success': True,
-            'message': result.get('message') or '正式入库完成',
-            'data': {'result': result, **removed, 'emby_delete': emby_result},
+            'message': result.get('message') or '已提交转正，等待正式入库完成后清理虚拟记录',
+            'data': {'result': result, 'item': item},
         }), status
     return jsonify({'success': False, 'message': result.get('message') or '正式入库失败', 'data': result}), status
 

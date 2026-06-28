@@ -109,43 +109,6 @@ def _extract_virtual_id_from_webhook(data):
     return 0
 
 
-def _delete_promoted_virtual_import_record(shared_virtual_db, virtual_id: int) -> dict:
-    try:
-        vid = int(virtual_id or 0)
-    except Exception:
-        vid = 0
-    if vid <= 0:
-        return {'deleted_files': 0, 'deleted_cache': 0, 'deleted_row': {}}
-    row = shared_virtual_db.get_virtual_import(vid) or {}
-    deleted_files = 0
-    paths = row.get('strm_paths_json') if isinstance(row.get('strm_paths_json'), list) else []
-    for path in paths:
-        text = str(path or '').strip()
-        if not text:
-            continue
-        for candidate in (text, re.sub(r'\.strm$', '-mediainfo.json', text, flags=re.I)):
-            try:
-                if candidate and os.path.exists(candidate):
-                    os.remove(candidate)
-                    deleted_files += 1
-            except Exception as e:
-                logger.debug(f"  ➜ [虚拟入库] 自动转正后删除本地文件失败: {candidate} -> {e}")
-    deleted_cache = 0
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "DELETE FROM p115_filesystem_cache WHERE parent_id = %s OR id LIKE %s",
-                    (f"virtual:{vid}", f"virtual:{vid}:%"),
-                )
-                deleted_cache = cursor.rowcount or 0
-            conn.commit()
-    except Exception as e:
-        logger.debug(f"  ➜ [虚拟入库] 自动转正后清理 115 虚拟缓存失败: virtual_id={vid} -> {e}")
-    deleted_row = shared_virtual_db.delete_virtual_import(vid)
-    return {'deleted_files': deleted_files, 'deleted_cache': deleted_cache, 'deleted_row': deleted_row}
-
-
 def _maybe_promote_virtual_import_from_playback(data):
     virtual_id = _extract_virtual_id_from_webhook(data or {})
     if not virtual_id:
@@ -195,18 +158,69 @@ def _maybe_promote_virtual_import_from_playback(data):
             'source_ref_id': source.get('source_id') or source.get('source_ref_id') or row.get('source_id') or '',
             'payload_json': {**source, '_virtual_auto_promote': True, '_virtual_id': virtual_id},
         }
+        marked = shared_virtual_db.mark_active_washing_for_virtual_import(virtual_id, True)
+        logger.info(f"  ➜ [虚拟入库] 自动转正已开启 active_washing 特权：virtual_id={virtual_id}, rows={marked}")
         result = consume_device_event_with_transfer_gate(event, ack=False)
         if result.get('ok'):
-            cleanup = _delete_promoted_virtual_import_record(shared_virtual_db, virtual_id)
-            logger.info(
-                "  ➜ [虚拟入库] 播放阈值触发自动转正：virtual_id=%s, deleted_files=%s, deleted_cache=%s, deleted_record=%s",
-                virtual_id,
-                cleanup.get('deleted_files', 0),
-                cleanup.get('deleted_cache', 0),
-                bool(cleanup.get('deleted_row')),
-            )
+            shared_virtual_db.update_virtual_import(virtual_id, status='promoting', promoted_at='NOW()')
+            logger.info(f"  ➜ [虚拟入库] 播放阈值触发自动转正，保留虚拟 STRM 等待正式入库完成：virtual_id={virtual_id}")
     except Exception as e:
         logger.warning(f"  ➜ [虚拟入库] 播放阈值自动转正失败：virtual_id={virtual_id}, err={e}")
+
+
+def _cleanup_promoting_virtual_imports_after_library_ready(item_details: dict, item_type: str, tmdb_id: str) -> dict:
+    tmdb_id = str(tmdb_id or '').strip()
+    if not tmdb_id:
+        return {'records': 0, 'cache': 0}
+
+    try:
+        from database import shared_virtual_db
+        item_type_text = str(item_type or '').strip()
+        season_number = None
+        if item_type_text in {'Season', 'Episode'}:
+            season_number = item_details.get('IndexNumber') if item_type_text == 'Season' else item_details.get('ParentIndexNumber')
+        data = shared_virtual_db.list_virtual_imports(status='promoting', page=1, page_size=200)
+        candidates = []
+        for row in data.get('items') or []:
+            row_item_type = str(row.get('item_type') or '').strip().lower()
+            row_tmdb = str(
+                row.get('parent_series_tmdb_id')
+                or row.get('tmdb_id')
+                or ''
+            ).strip()
+            if item_type_text == 'Movie':
+                if row_item_type == 'movie' and row_tmdb == tmdb_id:
+                    candidates.append(row)
+            elif item_type_text in {'Series', 'Season', 'Episode'}:
+                if row_item_type in {'series', 'season', 'episode', 'tv'} and row_tmdb == tmdb_id:
+                    if season_number in (None, '') or row.get('season_number') in (None, season_number):
+                        candidates.append(row)
+
+        stats = {'records': 0, 'cache': 0}
+        for row in candidates:
+            virtual_id = int(row.get('id') or 0)
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "DELETE FROM p115_filesystem_cache WHERE parent_id = %s OR id LIKE %s",
+                            (f"virtual:{virtual_id}", f"virtual:{virtual_id}:%"),
+                        )
+                        stats['cache'] += cursor.rowcount or 0
+                    conn.commit()
+            except Exception as e:
+                logger.debug(f"  ➜ [虚拟入库] 正式入库后清理虚拟缓存失败: virtual_id={virtual_id} -> {e}")
+            if shared_virtual_db.delete_virtual_import(virtual_id):
+                stats['records'] += 1
+        if stats['records']:
+            logger.info(
+                "  ➜ [虚拟入库] 正式入库完成后清理转正中虚拟记录：records=%s, cache=%s",
+                stats['records'], stats['cache'],
+            )
+        return stats
+    except Exception as e:
+        logger.warning(f"  ➜ [虚拟入库] 正式入库后清理转正中虚拟项失败: {e}")
+        return {'records': 0, 'cache': 0, 'error': str(e)}
 
 
 def _submit_webhook_media_task(
@@ -972,6 +986,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             expected_item_type="Episode",
             log_prefix="Webhook新集指纹补齐",
         )
+
+    _cleanup_promoting_virtual_imports_after_library_ready(item_details, item_type, tmdb_id)
 
     # 3. 共享资源供给侧实时触发：电影/本轮新增分集均在 Webhook 入库完成后登记；中心端负责后续整季归类。
     _submit_shared_auto_share_after_library_ready(
