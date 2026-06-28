@@ -605,6 +605,34 @@ def init_db():
                     )
                 """)
 
+                logger.trace("  ➜ 正在创建共享资源虚拟入库表...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_virtual_imports (
+                        id SERIAL PRIMARY KEY,
+                        source_kind TEXT NOT NULL,
+                        source_id TEXT NOT NULL,
+                        tmdb_id TEXT,
+                        item_type TEXT,
+                        parent_series_tmdb_id TEXT,
+                        season_number INTEGER,
+                        episode_number INTEGER,
+                        title TEXT,
+                        release_year INTEGER,
+                        file_count INTEGER NOT NULL DEFAULT 0,
+                        total_size BIGINT NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'virtual',
+                        watched_count INTEGER NOT NULL DEFAULT 0,
+                        played_percent REAL NOT NULL DEFAULT 0,
+                        strm_paths_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        source_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        files_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        last_played_at TIMESTAMP WITH TIME ZONE,
+                        promoted_at TIMESTAMP WITH TIME ZONE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
 
                 logger.trace("  ➜ 正在创建完结季 115 分享通道本地表...")
                 cursor.execute("""
@@ -863,6 +891,8 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_sha1 ON shared_rapid_source_files(UPPER(sha1));")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_episode ON shared_rapid_source_files(tmdb_id, season_number, episode_number);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_srsf_source_episode_sha1 ON shared_rapid_source_files(local_source_id, tmdb_id, season_number, episode_number, UPPER(sha1));")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_status_updated ON shared_virtual_imports(status, updated_at DESC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_media ON shared_virtual_imports(tmdb_id, item_type, season_number, episode_number);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scssc_channel ON shared_completed_season_share_channels(channel_id);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scssc_center_source ON shared_completed_season_share_channels(center_source_id, status, updated_at DESC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scssc_status_check ON shared_completed_season_share_channels(status, last_checked_at NULLS FIRST, updated_at ASC);")

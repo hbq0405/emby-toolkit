@@ -88,6 +88,75 @@ def _should_skip_non_etk_strm_webhook(item_type: str, item_name: str, item_path:
     return True
 
 
+def _extract_virtual_id_from_webhook(data):
+    texts = []
+    for key in ('Path', 'MediaSourceId'):
+        value = (data.get('Item') or {}).get(key)
+        if value:
+            texts.append(str(value))
+    for key in ('Path', 'Url', 'MediaSourceId'):
+        value = (data.get('PlaybackInfo') or {}).get(key)
+        if value:
+            texts.append(str(value))
+    try:
+        texts.append(json.dumps(data, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+    for text in texts:
+        match = re.search(r'/api/p115/virtual-play/(\d+)', text)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def _maybe_promote_virtual_import_from_playback(data):
+    virtual_id = _extract_virtual_id_from_webhook(data or {})
+    if not virtual_id:
+        return
+    try:
+        from database import shared_virtual_db
+        row = shared_virtual_db.get_virtual_import(virtual_id)
+        if not row or row.get('status') != 'virtual':
+            return
+        cfg = settings_db.get_shared_resource_config() or {}
+        item_type = str(row.get('item_type') or '').lower()
+        playback = data.get('PlaybackInfo') or {}
+        percent = 0.0
+        for key in ('PlayedPercentage', 'PlayedPercent'):
+            if playback.get(key) not in (None, ''):
+                percent = float(playback.get(key) or 0)
+                break
+        if not percent:
+            pos = float(playback.get('PositionTicks') or 0)
+            runtime = float((data.get('Item') or {}).get('RunTimeTicks') or playback.get('RunTimeTicks') or 0)
+            if pos > 0 and runtime > 0:
+                percent = min(100.0, pos * 100.0 / runtime)
+        row = shared_virtual_db.record_virtual_play(virtual_id, percent=percent)
+        episode_threshold = int(cfg.get('p115_shared_virtual_auto_promote_episodes') or 0)
+        movie_threshold = int(cfg.get('p115_shared_virtual_auto_promote_movie_percent') or 0)
+        should_promote = False
+        if item_type == 'movie' and movie_threshold > 0 and float(row.get('played_percent') or 0) >= movie_threshold:
+            should_promote = True
+        elif item_type != 'movie' and episode_threshold > 0 and int(row.get('watched_count') or 0) >= episode_threshold:
+            should_promote = True
+        if not should_promote:
+            return
+        from tasks.shared_resource_tasks import consume_device_event_with_transfer_gate
+        source = row.get('source_payload_json') if isinstance(row.get('source_payload_json'), dict) else {}
+        event = {
+            'event_id': '',
+            'source_kind': source.get('source_kind') or row.get('source_kind') or '',
+            'source_ref_id': source.get('source_id') or source.get('source_ref_id') or row.get('source_id') or '',
+            'payload_json': source,
+        }
+        result = consume_device_event_with_transfer_gate(event, ack=False)
+        if result.get('ok'):
+            shared_virtual_db.update_virtual_import(virtual_id, status='promoted', promoted_at='NOW()')
+            logger.info(f"  ➜ [虚拟入库] 播放阈值触发自动转正：virtual_id={virtual_id}")
+    except Exception as e:
+        logger.warning(f"  ➜ [虚拟入库] 播放阈值自动转正失败：virtual_id={virtual_id}, err={e}")
+
+
 def _submit_webhook_media_task(
     task_name,
     *,
@@ -1802,6 +1871,7 @@ def emby_webhook():
                         cleanup_data['_etk_webhook_remote_addr'] = request.remote_addr or ''
                         spawn(cleanup_for_playback_stop, cleanup_data)
                         spawn(p115_play_pool.cleanup_for_playback_stop, cleanup_data)
+                        spawn(_maybe_promote_virtual_import_from_playback, cleanup_data)
                     except Exception as e:
                         logger.error(f"  ➜ [复制播放] 停止播放清理任务分配失败: {e}")
 

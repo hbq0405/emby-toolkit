@@ -162,6 +162,30 @@
             </n-spin>
           </n-tab-pane>
 
+          <n-tab-pane name="virtual" tab="虚拟入库">
+            <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+              管理已虚拟入库的共享资源。辞退会移除本地虚拟 STRM；转正会执行正式秒传/转存入库。
+            </n-alert>
+            <n-space class="toolbar" :vertical="isMobile" :size="12">
+              <n-input v-model:value="virtualFilters.keyword" placeholder="搜索标题 / TMDb ID / 源 ID" clearable @keyup.enter="loadVirtualImports">
+                <template #prefix><n-icon :component="SearchIcon" /></template>
+              </n-input>
+              <n-select v-model:value="virtualFilters.status" :options="virtualStatusOptions" style="width: 140px" />
+              <n-button type="primary" :loading="virtualLoading" @click="loadVirtualImports">查询</n-button>
+            </n-space>
+            <n-data-table
+              remote
+              :loading="virtualLoading"
+              :columns="virtualColumns"
+              :data="virtualItems"
+              :pagination="virtualPagination"
+              :row-key="row => row.id"
+              :scroll-x="980"
+              @update:page="p => { virtualPagination.page = p; loadVirtualImports(); }"
+              @update:page-size="s => { virtualPagination.pageSize = s; virtualPagination.page = 1; loadVirtualImports(); }"
+            />
+          </n-tab-pane>
+
           <n-tab-pane name="requests" tab="求共享">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
               求共享是共享池悬赏需求：发起时冻结贡献点，参数越精确悬赏越高；其他用户可“同求”助力，也可以点“我有资源”从本地媒体库登记共享源。
@@ -290,6 +314,22 @@
               <template #unchecked>关闭</template>
             </n-switch>
             <template #feedback>维护任务会拉取中心“求共享”列表，跳过自己发起/同求的需求，按参数匹配本地媒体库，命中后直接登记本机秒传索引到中心。</template>
+          </n-form-item>
+          <n-divider title-placement="left">虚拟入库</n-divider>
+          <n-form-item label="虚拟入库">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_virtual_import_enabled">
+              <template #checked>开启</template>
+              <template #unchecked>关闭</template>
+            </n-switch>
+            <template #feedback>开启后中心资源库按钮显示“入库”，先生成本地虚拟 STRM 和媒体信息；点播时才秒传到 115 根目录临时文件夹。</template>
+          </n-form-item>
+          <n-form-item label="剧集自动转正">
+            <n-input-number v-model:value="sharedConfigForm.p115_shared_virtual_auto_promote_episodes" :min="0" :precision="0" style="width: 180px" />
+            <template #feedback>观看达到 N 集后自动转正；填 0 表示不自动转正。</template>
+          </n-form-item>
+          <n-form-item label="电影自动转正">
+            <n-input-number v-model:value="sharedConfigForm.p115_shared_virtual_auto_promote_movie_percent" :min="0" :max="100" :precision="0" style="width: 180px" />
+            <template #feedback>观看进度达到 N% 后自动转正；填 0 表示仅虚拟入库。</template>
           </n-form-item>
 
         </n-form>
@@ -521,7 +561,7 @@ import axios from 'axios';
 import draggable from 'vuedraggable';
 import {
   NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputGroup, NModal, NSelect, NSpace, NSpin, NSwitch,
+  NInputGroup, NInputNumber, NModal, NSelect, NSpace, NSpin, NSwitch,
   NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
 import {
@@ -548,6 +588,7 @@ const loading = ref(false);
 const sharesLoading = ref(false);
 const ledgerLoading = ref(false);
 const centerLoading = ref(false);
+const virtualLoading = ref(false);
 const requestLoading = ref(false);
 const shareRequestSearchLoading = ref(false);
 const shareRequestSubmitting = ref(false);
@@ -571,6 +612,9 @@ const sharedConfigForm = reactive({
   p115_shared_block_short_drama_transfer: false,
   p115_shared_intro_enabled: false,
   p115_shared_auto_share_requests_enabled: false,
+  p115_shared_virtual_import_enabled: false,
+  p115_shared_virtual_auto_promote_episodes: 0,
+  p115_shared_virtual_auto_promote_movie_percent: 0,
   p115_shared_center_home_sections: [],
 });
 const showManualShareModal = ref(false);
@@ -587,6 +631,7 @@ const summary = ref({ shares: {}, credit: {} });
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
+const virtualItems = ref([]);
 const centerHomeSections = ref([]);
 const CENTER_HOME_SECTION_DEFAULTS = [
   { key: 'latest', title: '最新资源', display_type: 'all', order_by: 'pool_time', genre_id: '', tags: [], limit: 10, enabled: true },
@@ -622,6 +667,7 @@ const groupedCenterSources = computed(() => (
 ));
 const shareFilters = reactive({ keyword: '', status: 'usable', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '' });
+const virtualFilters = reactive({ keyword: '', status: 'virtual' });
 const centerHomeMode = computed(() => !String(centerFilters.keyword || '').trim());
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const requestStatusOptions = [
@@ -644,6 +690,7 @@ const requestTargetTypeFilterOptions = [
 ];
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
+const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
@@ -732,6 +779,11 @@ const shareStatusOptions = [
   { label: '不合格/异常', value: 'failed' },
   { label: 'RAW缺失', value: 'raw_missing' },
   { label: '已停用', value: 'disabled' },
+];
+const virtualStatusOptions = [
+  { label: '虚拟中', value: 'virtual' },
+  { label: '已转正', value: 'promoted' },
+  { label: '全部', value: 'all' },
 ];
 
 const typeOptions = [
@@ -1225,6 +1277,37 @@ const shareColumns = [
       title: deleteShareDisabledTitle(row),
       onClick: () => deleteShare(row),
     }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '删除' }),
+  ]}) },
+];
+
+const virtualColumns = [
+  { title: '标题', key: 'title', minWidth: 280, render: row => h('div', [
+    h('div', { class: 'main-title' }, appendYear(row.title || row.source_id || '-', row.release_year)),
+    h('div', { class: 'sub-title' }, [
+      resourceTypeLabel(row.item_type),
+      row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '',
+      row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '',
+      row.tmdb_id ? ` · TMDb ${row.tmdb_id}` : '',
+    ].filter(Boolean).join(''))
+  ]) },
+  { title: '文件', key: 'file_count', width: 90, render: row => `${row.file_count || 0} 个` },
+  { title: '状态', key: 'status', width: 100, render: row => h(NTag, { size: 'small', type: row.status === 'promoted' ? 'success' : 'info' }, { default: () => row.status === 'promoted' ? '已转正' : '虚拟中' }) },
+  { title: '观看', key: 'watched_count', width: 120, render: row => `${row.watched_count || 0} 次 / ${Math.round(Number(row.played_percent || 0))}%` },
+  { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
+  { title: '操作', key: 'actions', width: 170, fixed: 'right', render: row => h(NSpace, { size: 8, align: 'center', wrap: false }, { default: () => [
+    h(NButton, {
+      size: 'small',
+      type: 'primary',
+      secondary: true,
+      disabled: row.status === 'promoted',
+      onClick: () => promoteVirtualImport(row),
+    }, { default: () => '转正' }),
+    h(NButton, {
+      size: 'small',
+      type: 'error',
+      ghost: true,
+      onClick: () => dismissVirtualImport(row),
+    }, { default: () => '辞退' }),
   ]}) },
 ];
 
@@ -2047,7 +2130,7 @@ const centerHasValidShareChannel = (row) => {
     || status === 'valid'
   );
 };
-const centerTransferActionText = (row) => centerHasValidShareChannel(row) ? '转存' : '秒传';
+const centerTransferActionText = (row) => sharedConfigForm.p115_shared_virtual_import_enabled ? '入库' : (centerHasValidShareChannel(row) ? '转存' : '秒传');
 const centerVersionActionDisabled = (row) => false;
 const formatCenterSize = (row) => {
   // 修复：优先使用外层的 size，对于季包来说，外层 size 是 SQL SUM 出来的整包总大小
@@ -3394,6 +3477,9 @@ const applySharedConfig = (data = {}) => {
     p115_shared_block_short_drama_transfer: Boolean(data.p115_shared_block_short_drama_transfer),
     p115_shared_intro_enabled: Boolean(data.p115_shared_intro_enabled),
     p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
+    p115_shared_virtual_import_enabled: Boolean(data.p115_shared_virtual_import_enabled),
+    p115_shared_virtual_auto_promote_episodes: Number(data.p115_shared_virtual_auto_promote_episodes || 0),
+    p115_shared_virtual_auto_promote_movie_percent: Number(data.p115_shared_virtual_auto_promote_movie_percent || 0),
     p115_shared_center_home_sections: normalizeCenterHomeSections(data.p115_shared_center_home_sections),
   });
 };
@@ -3448,6 +3534,54 @@ const saveSharedConfig = async () => {
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { shares: {}, credit: {} }; };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的共享源失败'); } finally { sharesLoading.value = false; } };
+const loadVirtualImports = async () => {
+  virtualLoading.value = true;
+  try {
+    const res = await axios.get('/api/shared/resources/virtual-imports', {
+      params: { ...virtualFilters, page: virtualPagination.page, page_size: virtualPagination.pageSize },
+    });
+    virtualItems.value = res.data?.items || [];
+    virtualPagination.itemCount = Number(res.data?.total || 0);
+  } catch (e) {
+    message.error(e.response?.data?.message || '加载虚拟入库失败');
+  } finally {
+    virtualLoading.value = false;
+  }
+};
+const dismissVirtualImport = (row) => {
+  dialog.warning({
+    title: '辞退虚拟资源',
+    content: `确定辞退《${row.title || row.source_id || '该资源'}》吗？本地虚拟 STRM 和媒体信息文件会被移除。`,
+    positiveText: '辞退',
+    negativeText: '保留',
+    onPositiveClick: async () => {
+      try {
+        const res = await axios.delete(`/api/shared/resources/virtual-imports/${row.id}`);
+        message.success(res.data?.message || '已辞退');
+        await Promise.allSettled([loadVirtualImports(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '辞退失败');
+      }
+    },
+  });
+};
+const promoteVirtualImport = (row) => {
+  dialog.info({
+    title: '虚拟资源转正',
+    content: `确定将《${row.title || row.source_id || '该资源'}》转正吗？会执行正式秒传/转存。`,
+    positiveText: '转正',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const res = await axios.post(`/api/shared/resources/virtual-imports/${row.id}/promote`, {});
+        message.success(res.data?.message || '已转正');
+        await Promise.allSettled([loadVirtualImports(), loadCenterSources(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || '转正失败');
+      }
+    },
+  });
+};
 const normalizeCenterHomeSection = (section = {}, index = 0) => ({
   key: String(section.key || `custom_${Date.now()}_${index}`).trim() || `custom_${Date.now()}_${index}`,
   title: String(section.title || '自定义列表').trim() || '自定义列表',
@@ -3892,6 +4026,7 @@ const loadAll = async (forceRefresh = false) => {
   await loadSharedConfig();
   const tasks = [loadSummary(), loadLedger()];
   if (activeTab.value === 'center') tasks.push(resetCenterSources(forceRefresh));
+  else if (activeTab.value === 'virtual') tasks.push(loadVirtualImports());
   else if (activeTab.value === 'requests') tasks.push(loadShareRequests());
   else tasks.push(loadShares());
   await Promise.allSettled(tasks);
@@ -3903,6 +4038,7 @@ const handleTabChange = async (name) => {
     await nextTick();
     setupCenterInfiniteObserver();
   }
+  if (name === 'virtual') loadVirtualImports();
   if (name === 'requests') loadShareRequests();
   if (name === 'ledger') loadLedger();
 };

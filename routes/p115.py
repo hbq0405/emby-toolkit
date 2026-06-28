@@ -13,9 +13,11 @@ from urllib.parse import urlparse
 import requests
 from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app, session
 from extensions import admin_required, emby_login_required
-from database import settings_db
+from database import settings_db, shared_credit_db, shared_virtual_db
 from handler import moviepilot, emby
 from handler.p115_service import P115Service, get_config, get_115_api_priority
+from handler.shared_center_client import SharedCenterClient
+from handler.shared_subscription_service import rapid_save_virtual_play_file
 from handler.p115_copy_play import (
     discard_copy_play_clone,
     is_copy_play_missing_error,
@@ -1857,10 +1859,180 @@ def play_115_video(pick_code, filename=None):
             response = redirect(real_url, code=302)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
-        
     except Exception as e:
         logger.error(f"  ➜ 直链解析发生异常: {e}")
         return str(e), 500
+
+
+def _norm_sha1(value):
+    text = str(value or '').strip().upper()
+    return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+
+def _extract_pick_code_from_rapid_response(value):
+    if isinstance(value, dict):
+        for key in ('pick_code', 'pickcode', 'pc'):
+            if value.get(key):
+                return str(value.get(key)).strip()
+        for key in ('data', 'file', 'item', 'response'):
+            found = _extract_pick_code_from_rapid_response(value.get(key))
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _extract_pick_code_from_rapid_response(item)
+            if found:
+                return found
+    return ''
+
+
+def _p115_item_id(item):
+    return str((item or {}).get('fid') or (item or {}).get('file_id') or (item or {}).get('id') or '').strip()
+
+
+def _find_virtual_temp_file(client, target_cid, sha1, file_name=''):
+    sha1 = _norm_sha1(sha1)
+    target_cid = str(target_cid or '').strip()
+    if not target_cid:
+        return {}
+    try:
+        resp = client.fs_files(target_cid)
+        items = []
+        if isinstance(resp, dict):
+            items = resp.get('data') or resp.get('items') or resp.get('list') or []
+            if isinstance(items, dict):
+                items = items.get('list') or items.get('items') or []
+        elif isinstance(resp, list):
+            items = resp
+        wanted_name = str(file_name or '').strip()
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            item_sha1 = _norm_sha1(item.get('sha1') or item.get('sha'))
+            item_name = str(item.get('n') or item.get('name') or item.get('file_name') or item.get('fn') or '').strip()
+            if (sha1 and item_sha1 == sha1) or (wanted_name and item_name == wanted_name):
+                return item
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟播放] 定位临时文件失败：cid={target_cid}, sha1={sha1[:12]}..., err={e}")
+    return {}
+
+
+def _delete_virtual_temp_file(client, item):
+    fid = _p115_item_id(item)
+    if not fid:
+        return
+    try:
+        client.fs_delete([fid])
+        logger.debug(f"  ➜ [虚拟播放] 已删除临时文件：fid={fid}")
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟播放] 删除临时文件失败：fid={fid}, err={e}")
+
+
+@p115_bp.route('/virtual-play/<int:virtual_id>/<sha1>', methods=['GET', 'HEAD'])
+@p115_bp.route('/virtual-play/<int:virtual_id>/<sha1>/<path:filename>', methods=['GET', 'HEAD'])
+def play_virtual_115_video(virtual_id, sha1, filename=None):
+    if request.method == 'HEAD':
+        return '', 200
+    sha1 = _norm_sha1(sha1)
+    if not sha1:
+        return "Invalid virtual sha1", 400
+    row = shared_virtual_db.get_virtual_import(virtual_id)
+    if not row:
+        return "Virtual import not found", 404
+    files = row.get('files_json') if isinstance(row.get('files_json'), list) else []
+    file_info = next((dict(f) for f in files if isinstance(f, dict) and _norm_sha1(f.get('sha1')) == sha1), None)
+    if not file_info:
+        return "Virtual file not found", 404
+
+    client_ua = request.headers.get('User-Agent', '')
+    client_ua_lower = client_ua.lower()
+    is_emby_server = any(kw in client_ua_lower for kw in ['emby', 'jellyfin', 'lavf', 'kodi'])
+    fake_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    request_ua = fake_ua if is_emby_server else client_ua
+
+    try:
+        save_result = rapid_save_virtual_play_file(virtual_id, file_info)
+        if not save_result.get('ok'):
+            return save_result.get('message') or "Virtual rapid save failed", 503
+        client = P115Service.get_client()
+        if not client:
+            return "115 Client not initialized", 500
+        pick_code = _extract_pick_code_from_rapid_response(save_result.get('response')) or str(save_result.get('pick_code') or '')
+        temp_item = {}
+        if not pick_code:
+            temp_item = _find_virtual_temp_file(
+                client,
+                save_result.get('virtual_target_cid') or save_result.get('target_cid'),
+                sha1,
+                save_result.get('file_name') or file_info.get('file_name') or filename or '',
+            )
+            pick_code = str(temp_item.get('pick_code') or temp_item.get('pc') or '').strip()
+        if not pick_code:
+            return "Virtual temp pick_code not found", 503
+
+        try:
+            shared_credit_db.add_credit_ledger(
+                'virtual_play',
+                delta=-10,
+                reason='虚拟播放',
+                ref_id=str(virtual_id),
+                source_id=str(row.get('source_id') or ''),
+                virtual_id=str(virtual_id),
+                tmdb_id=row.get('tmdb_id') or '',
+                item_type=row.get('item_type') or '',
+                title=row.get('title') or file_info.get('file_name') or '',
+                raw_json={'virtual_import': row, 'file': file_info, 'sha1': sha1},
+            )
+        except Exception as e:
+            logger.debug(f"  ➜ [虚拟播放] 写入本地贡献点流水失败：{e}")
+        try:
+            SharedCenterClient().report_transfer(
+                row.get('source_kind') or file_info.get('source_kind') or '',
+                row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or '',
+                'success',
+                success_count=10,
+                total_count=10,
+                message=f"虚拟播放：{file_info.get('file_name') or filename or sha1}",
+                transfer_mode='virtual',
+            )
+        except Exception as e:
+            logger.debug(f"  ➜ [虚拟播放] 上报中心虚拟播放失败：{e}")
+
+        shared_virtual_db.record_virtual_play(virtual_id, percent=0)
+
+        real_url = None
+        api_priority = get_115_api_priority('openapi')
+        use_openapi = (api_priority != 'cookie')
+        for _ in range(4):
+            try:
+                real_url = client.openapi_downurl(pick_code, user_agent=request_ua) if use_openapi else client.download_url(pick_code, user_agent=request_ua)
+                if real_url:
+                    break
+            except Exception as e:
+                logger.warning(f"  ➜ [虚拟播放] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
+            use_openapi = not use_openapi
+            time.sleep(0.5)
+        if not real_url:
+            return "Failed to get virtual download URL", 404
+
+        if not temp_item:
+            temp_item = _find_virtual_temp_file(client, save_result.get('virtual_target_cid') or save_result.get('target_cid'), sha1, save_result.get('file_name') or file_info.get('file_name') or '')
+        _delete_virtual_temp_file(client, temp_item)
+
+        if is_emby_server:
+            headers_to_115 = {"User-Agent": request_ua, "Accept": "*/*", "Connection": "keep-alive"}
+            if 'Range' in request.headers:
+                headers_to_115['Range'] = request.headers['Range']
+            resp = requests.get(real_url, headers=headers_to_115, stream=True, timeout=10)
+            excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
+            response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
+            return Response(stream_with_context(resp.iter_content(chunk_size=8192)), status=resp.status_code, headers=response_headers)
+        response = redirect(real_url, code=302)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+    except Exception as e:
+        logger.error(f"  ➜ [虚拟播放] 失败：virtual_id={virtual_id}, sha1={sha1[:12]}..., err={e}", exc_info=True)
+        return f"Virtual play failed: {e}", 500
     
 @p115_bp.route('/replace_strm', methods=['POST'])
 @admin_required

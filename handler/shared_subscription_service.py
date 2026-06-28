@@ -33,6 +33,7 @@ _PENDING_TRANSFER_REPORT_MAX_ITEMS = 1000
 _PENDING_TRANSFER_REPORT_RETRY_BASE_SECONDS = 30
 _PENDING_TRANSFER_REPORT_RETRY_MAX_SECONDS = 3600
 _PENDING_TRANSFER_REPORT_DEFAULT_DRAIN_LIMIT = 20
+VIRTUAL_IMPORT_TEMP_DIR_NAME = 'ETK虚拟入库临时文件'
 
 
 
@@ -254,6 +255,51 @@ def _target_cid() -> str:
     cid = str(_cfg('CONFIG_OPTION_115_SAVE_PATH_CID', 'p115_save_path_cid', '') or '').strip()
     if not cid or cid == '0':
         raise RuntimeError('未配置 115 待整理目录 CID（p115_save_path_cid），无法秒传共享资源')
+    return cid
+
+
+def _root_cid() -> str:
+    return '0'
+
+
+def _virtual_temp_dir_cid() -> str:
+    p115 = P115Service.get_client()
+    if not p115:
+        raise RuntimeError('115 客户端未初始化')
+    name = VIRTUAL_IMPORT_TEMP_DIR_NAME
+    try:
+        items = p115.fs_files(_root_cid())
+        raw_items = []
+        if isinstance(items, dict):
+            raw_items = items.get('data') or items.get('items') or items.get('list') or []
+            if isinstance(raw_items, dict):
+                raw_items = raw_items.get('list') or raw_items.get('items') or []
+        elif isinstance(items, list):
+            raw_items = items
+        for item in raw_items or []:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get('n') or item.get('name') or item.get('file_name') or item.get('fn') or '').strip()
+            is_dir = bool(item.get('is_dir') or item.get('is_directory') or str(item.get('fc') or '') == '0')
+            cid = str(item.get('cid') or item.get('fid') or item.get('file_id') or item.get('id') or '').strip()
+            if item_name == name and cid and is_dir:
+                return cid
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 检查临时目录失败，准备重新创建：{e}")
+
+    resp = p115.fs_mkdir(name, _root_cid())
+    if not isinstance(resp, dict) or not resp.get('state'):
+        raise RuntimeError(f'创建虚拟入库临时目录失败：{resp}')
+    cid = str(
+        resp.get('cid')
+        or resp.get('file_id')
+        or resp.get('id')
+        or (resp.get('data') or {}).get('file_id')
+        or (resp.get('data') or {}).get('cid')
+        or ''
+    ).strip()
+    if not cid:
+        raise RuntimeError(f'创建虚拟入库临时目录成功但未返回 CID：{resp}')
     return cid
 
 
@@ -3991,6 +4037,152 @@ def _build_gap_query(item: Dict[str, Any], title: str = '', tmdb_id=None, item_t
         'title': title or item.get('title'),
         'release_year': year or item.get('release_year'),
     }
+
+
+def prepare_center_source_files_for_virtual(source: Dict[str, Any]) -> Dict[str, Any]:
+    """展开中心资源为虚拟入库文件清单，并预缓存 MediaInfo。"""
+    client = SharedCenterClient()
+    source = dict(source or {})
+    source_kind = _normalize_source_kind(source.get('source_kind') or source.get('kind') or '')
+    source_id = str(source.get('source_id') or source.get('source_ref_id') or source.get('episode_source_id') or '').strip()
+    if not source_kind:
+        source_kind = _normalize_source_kind(source.get('item_type') or source.get('display_type') or '')
+    if not source_id and source_kind == 'episode':
+        source_id = str(source.get('episode_source_id') or '').strip()
+    if not source_kind or not source_id:
+        return {'ok': False, 'message': '中心源缺少 source_kind/source_id，无法虚拟入库'}
+    event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
+    source_kind, source_id, files = _event_sources(event, client)
+    files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
+    if not files:
+        return {'ok': False, 'message': '中心返回的文件清单为空，无法虚拟入库'}
+    files, preflight = _prepare_files_before_rapid_transfer(
+        client,
+        source_kind=source_kind,
+        source_id=source_id,
+        payload=source,
+        files=files,
+    )
+    if not files:
+        return {'ok': False, 'message': (preflight.get('errors') or ['共享资源未通过虚拟入库预检'])[0], 'preflight': preflight}
+    return {'ok': True, 'source_kind': source_kind, 'source_id': source_id, 'files': files, 'preflight': preflight}
+
+
+def _safe_path_component(value: Any, fallback: str = '未命名') -> str:
+    text = str(value or '').strip() or fallback
+    text = re.sub(r'[\\/:*?"<>|\r\n\t]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip(' ._-')
+    return (text or fallback)[:180]
+
+
+def _virtual_category_path(source: Dict[str, Any], files: List[Dict[str, Any]]) -> str:
+    cfg = config_manager.APP_CONFIG or {}
+    first = next((f for f in files or [] if isinstance(f, dict)), {}) or {}
+    item_type = str(source.get('item_type') or first.get('item_type') or '').strip()
+    media_type = 'movie' if item_type == 'Movie' or _normalize_source_kind(source.get('source_kind')) == 'movie' else 'tv'
+    tmdb_id = str(
+        source.get('tmdb_id')
+        or source.get('parent_series_tmdb_id')
+        or first.get('parent_series_tmdb_id')
+        or first.get('tmdb_id')
+        or ''
+    ).strip()
+    try:
+        p115 = P115Service.get_client()
+        organizer = SmartOrganizer(
+            p115,
+            int(tmdb_id) if str(tmdb_id).isdigit() else 0,
+            media_type,
+            source.get('title') or first.get('title') or first.get('file_name') or '',
+            None,
+            False,
+        )
+        organizer.current_sorting_filename = first.get('file_name') or first.get('name') or ''
+        season_num, _ = _guess_se_from_source(first, source)
+        cid = organizer.get_target_cid(season_num=season_num if media_type == 'tv' else None)
+        for rule in organizer.rules:
+            if str(rule.get('cid')) == str(cid):
+                return str(rule.get('category_path') or rule.get('dir_name') or rule.get('name') or '').strip() or ('电影' if media_type == 'movie' else '剧集')
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 计算分类目录失败，使用兜底分类：{e}")
+    return '电影' if media_type == 'movie' else '剧集'
+
+
+def _virtual_standard_paths(source: Dict[str, Any], file_info: Dict[str, Any], category_path: str) -> tuple[str, str]:
+    item_type = str(source.get('item_type') or file_info.get('item_type') or '').strip()
+    title = _safe_path_component(
+        source.get('title')
+        or file_info.get('title')
+        or file_info.get('series_title')
+        or file_info.get('file_name')
+        or '共享资源'
+    )
+    year = source.get('release_year') or source.get('year') or file_info.get('release_year') or ''
+    tmdb_id = source.get('tmdb_id') or source.get('parent_series_tmdb_id') or file_info.get('parent_series_tmdb_id') or file_info.get('tmdb_id') or ''
+    root_name = title
+    if year:
+        root_name += f" ({year})"
+    if tmdb_id:
+        root_name += f" {{tmdb={tmdb_id}}}"
+    season_num, episode_num = _guess_se_from_source(file_info, source)
+    file_name = _safe_path_component(file_info.get('file_name') or file_info.get('name') or file_info.get('sha1') or 'video.mkv')
+    ext = os.path.splitext(file_name)[1] or '.mkv'
+    stem = os.path.splitext(file_name)[0]
+    if item_type == 'Episode' or season_num is not None or _normalize_source_kind(source.get('source_kind')) in ('logical_season', 'season_hub'):
+        season_dir = f"Season {int(season_num or 1):02d}"
+        if episode_num is not None:
+            safe_file = f"{title} - S{int(season_num or 1):02d}E{int(episode_num):02d}{ext}"
+        else:
+            safe_file = f"{stem}{ext}"
+        return os.path.join(category_path or '剧集', root_name, season_dir), _safe_path_component(safe_file)
+    return os.path.join(category_path or '电影', root_name), _safe_path_component(file_name)
+
+
+def create_virtual_strm_files(source: Dict[str, Any], files: List[Dict[str, Any]], virtual_id: int) -> List[str]:
+    cfg = config_manager.APP_CONFIG or {}
+    local_root = str(cfg.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT) or '').strip()
+    etk_url = str(cfg.get(constants.CONFIG_OPTION_ETK_SERVER_URL) or '').strip().rstrip('/')
+    if not local_root:
+        raise RuntimeError('请先配置本地 STRM 根目录')
+    if not etk_url.startswith(('http://', 'https://')):
+        raise RuntimeError('STRM 链接地址必须以 http:// 或 https:// 开头')
+    category_path = _virtual_category_path(source, files)
+    out = []
+    for file_info in files or []:
+        sha1 = _norm_sha1((file_info or {}).get('sha1'))
+        if not sha1:
+            continue
+        rel_dir, safe_file = _virtual_standard_paths(source, file_info, category_path)
+        local_dir = os.path.join(local_root, rel_dir)
+        os.makedirs(local_dir, exist_ok=True)
+        strm_path = os.path.join(local_dir, os.path.splitext(safe_file)[0] + '.strm')
+        content = f"{etk_url}/api/p115/virtual-play/{int(virtual_id)}/{sha1}/{safe_file}"
+        with open(strm_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        out.append(strm_path)
+        try:
+            mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
+            if mediainfo_text:
+                with open(os.path.splitext(strm_path)[0] + '-mediainfo.json', 'w', encoding='utf-8') as f:
+                    f.write(mediainfo_text)
+        except Exception as e:
+            logger.debug(f"  ➜ [虚拟入库] 生成媒体信息文件失败：{safe_file} -> {e}")
+        try:
+            from monitor_service import enqueue_file_actively
+            enqueue_file_actively(strm_path)
+        except Exception:
+            pass
+    return out
+
+
+def rapid_save_virtual_play_file(virtual_id: int, file_info: Dict[str, Any]) -> Dict[str, Any]:
+    target_cid = _virtual_temp_dir_cid()
+    info = dict(file_info or {})
+    info['_rapid_transfer_token'] = f"virtual:{virtual_id}:{int(time.time() * 1000)}"
+    result = rapid_save_file(info, target_cid=target_cid)
+    result['virtual_id'] = int(virtual_id)
+    result['virtual_target_cid'] = target_cid
+    return result
 
 
 def _probe_subscriptions_batch_no_gap(client: SharedCenterClient, queries: List[Dict[str, Any]], limit_per_item: int = 200) -> Dict[str, Any]:

@@ -3,6 +3,7 @@
 import json
 import logging
 import copy
+import os
 import re
 import socket
 import threading
@@ -16,10 +17,14 @@ from flask import Blueprint, jsonify, request
 import constants
 import config_manager
 from extensions import admin_required
-from database import shared_credit_db, shared_share_db, settings_db
+from database import shared_credit_db, shared_share_db, shared_virtual_db, settings_db
 from database.connection import get_db_connection
 from handler.shared_center_client import SharedCenterClient, _current_server_id_hash
-from handler.shared_subscription_service import consume_device_event
+from handler.shared_subscription_service import (
+    consume_device_event,
+    create_virtual_strm_files,
+    prepare_center_source_files_for_virtual,
+)
 from handler import tmdb as tmdb_handler
 import tasks.shared_resource_tasks as shared_tasks
 
@@ -106,6 +111,9 @@ def _shared_resource_config_payload() -> Dict[str, Any]:
     payload.setdefault('p115_shared_block_short_drama_transfer', False)
     payload.setdefault('p115_shared_intro_enabled', False)
     payload.setdefault('p115_shared_auto_share_requests_enabled', False)
+    payload.setdefault('p115_shared_virtual_import_enabled', False)
+    payload.setdefault('p115_shared_virtual_auto_promote_episodes', 0)
+    payload.setdefault('p115_shared_virtual_auto_promote_movie_percent', 0)
     payload.setdefault('p115_shared_center_home_sections', [])
     return payload
 
@@ -121,6 +129,9 @@ def _save_shared_config(data: Dict[str, Any]) -> Dict[str, Any]:
     data['p115_shared_block_short_drama_transfer'] = _boolish(data.get('p115_shared_block_short_drama_transfer'), False)
     data['p115_shared_intro_enabled'] = _boolish(data.get('p115_shared_intro_enabled'), False)
     data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
+    data['p115_shared_virtual_import_enabled'] = _boolish(data.get('p115_shared_virtual_import_enabled'), False)
+    data['p115_shared_virtual_auto_promote_episodes'] = max(0, _safe_int(data.get('p115_shared_virtual_auto_promote_episodes'), 0))
+    data['p115_shared_virtual_auto_promote_movie_percent'] = max(0, min(_safe_int(data.get('p115_shared_virtual_auto_promote_movie_percent'), 0), 100))
     sections = data.get('p115_shared_center_home_sections')
     data['p115_shared_center_home_sections'] = sections if isinstance(sections, list) else []
     return settings_db.save_shared_resource_config(data)
@@ -1478,6 +1489,48 @@ def _center_source_transfer_preflight(source: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': True}
 
 
+def _virtual_source_metadata(source: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    source = source if isinstance(source, dict) else {}
+    first = next((f for f in (files or []) if isinstance(f, dict)), {}) or {}
+    item_type = source.get('item_type') or first.get('item_type') or ''
+    tmdb_id = source.get('tmdb_id') or first.get('tmdb_id') or ''
+    parent_tmdb = source.get('parent_series_tmdb_id') or source.get('series_tmdb_id') or first.get('parent_series_tmdb_id') or first.get('series_tmdb_id') or ''
+    if item_type == 'Episode' or str(source.get('source_kind') or '').lower() in {'logical_season', 'season_hub'}:
+        tmdb_id = parent_tmdb or tmdb_id
+    total_size = 0
+    for f in files or []:
+        if isinstance(f, dict):
+            total_size += _safe_int(f.get('size') or f.get('file_size'), 0)
+    return {
+        'tmdb_id': tmdb_id,
+        'item_type': item_type or ('Movie' if str(source.get('source_kind') or '').lower() == 'movie' else 'Episode'),
+        'parent_series_tmdb_id': parent_tmdb,
+        'season_number': source.get('season_number') if source.get('season_number') not in (None, '') else first.get('season_number'),
+        'episode_number': source.get('episode_number') if source.get('episode_number') not in (None, '') else first.get('episode_number'),
+        'title': source.get('title') or first.get('title') or first.get('file_name') or '',
+        'release_year': source.get('release_year') or source.get('year') or first.get('release_year'),
+        'file_count': len(files or []),
+        'total_size': total_size,
+    }
+
+
+def _delete_virtual_files(row: Dict[str, Any]) -> int:
+    deleted = 0
+    paths = row.get('strm_paths_json') if isinstance(row.get('strm_paths_json'), list) else []
+    for path in paths:
+        text = str(path or '').strip()
+        if not text:
+            continue
+        for candidate in (text, re.sub(r'\.strm$', '-mediainfo.json', text, flags=re.I)):
+            try:
+                if candidate and os.path.exists(candidate):
+                    os.remove(candidate)
+                    deleted += 1
+            except Exception as e:
+                logger.debug(f"  ➜ [虚拟入库] 删除本地文件失败：{candidate} -> {e}")
+    return deleted
+
+
 def _track_list_value(value: Any) -> List[Any]:
     if value in (None, '', [], {}):
         return []
@@ -1917,6 +1970,32 @@ def api_center_import():
     if not preflight.get('ok'):
         return jsonify({'success': False, 'message': preflight.get('message') or '该资源已被配置拦截', 'data': preflight}), 400
 
+    cfg = _shared_resource_config_payload()
+    if _boolish(cfg.get('p115_shared_virtual_import_enabled'), False) and not _boolish(data.get('force_real'), False):
+        prepared = prepare_center_source_files_for_virtual(source)
+        if not prepared.get('ok'):
+            return jsonify({'success': False, 'message': prepared.get('message') or '虚拟入库失败', 'data': prepared}), 400
+        files = prepared.get('files') or []
+        meta = _virtual_source_metadata(
+            {
+                **source,
+                'source_kind': prepared.get('source_kind') or source_kind,
+                'source_id': prepared.get('source_id') or source_id,
+            },
+            files,
+        )
+        row = shared_virtual_db.create_virtual_import({
+            **meta,
+            'source_kind': prepared.get('source_kind') or source_kind,
+            'source_id': prepared.get('source_id') or source_id,
+            'source_payload_json': source,
+            'files_json': files,
+        })
+        strm_paths = create_virtual_strm_files(source, files, row['id'])
+        row = shared_virtual_db.update_virtual_import(row['id'], strm_paths_json=strm_paths)
+        message = f"虚拟入库完成：{len(strm_paths)}/{len(files)}"
+        return jsonify({'success': True, 'message': message, 'data': {'ok': True, 'virtual': True, 'item': row, 'preflight': prepared.get('preflight') or {}}})
+
     event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
     # 前端手动秒传不经过后台长轮询 poll_and_consume_once，不能直接调用
     # handler.shared_subscription_service.consume_device_event；否则会绕过秒传许可 lease。
@@ -1924,6 +2003,47 @@ def api_center_import():
     status = 200 if result.get('ok') else 400
     message = result.get('message') or f"秒传完成：{result.get('success_count', 0)}/{result.get('total', 0)}"
     return jsonify({'success': bool(result.get('ok')), 'message': message, 'data': result}), status
+
+
+@shared_resource_bp.route('/virtual-imports', methods=['GET'])
+@admin_required
+def api_virtual_imports():
+    data = shared_virtual_db.list_virtual_imports(
+        status=request.args.get('status') or 'virtual',
+        keyword=request.args.get('keyword') or request.args.get('q') or '',
+        page=int(request.args.get('page') or 1),
+        page_size=int(request.args.get('page_size') or 30),
+    )
+    return jsonify({'success': True, **data})
+
+
+@shared_resource_bp.route('/virtual-imports/<int:virtual_id>', methods=['DELETE'])
+@admin_required
+def api_delete_virtual_import(virtual_id: int):
+    row = shared_virtual_db.delete_virtual_import(virtual_id)
+    if not row:
+        return jsonify({'success': False, 'message': '虚拟入库记录不存在'}), 404
+    deleted = _delete_virtual_files(row)
+    return jsonify({'success': True, 'message': f'已删除虚拟入库记录，清理本地文件 {deleted} 个', 'data': {'item': row, 'deleted_files': deleted}})
+
+
+@shared_resource_bp.route('/virtual-imports/<int:virtual_id>/promote', methods=['POST'])
+@admin_required
+def api_promote_virtual_import(virtual_id: int):
+    row = shared_virtual_db.get_virtual_import(virtual_id)
+    if not row:
+        return jsonify({'success': False, 'message': '虚拟入库记录不存在'}), 404
+    source = row.get('source_payload_json') if isinstance(row.get('source_payload_json'), dict) else {}
+    if not source:
+        return jsonify({'success': False, 'message': '虚拟记录缺少中心源 payload，无法正式入库'}), 400
+    source_kind = source.get('source_kind') or row.get('source_kind') or ''
+    source_id = source.get('source_id') or source.get('source_ref_id') or row.get('source_id') or ''
+    event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
+    result = shared_tasks.consume_device_event_with_transfer_gate(event, ack=False)
+    if result.get('ok'):
+        shared_virtual_db.update_virtual_import(virtual_id, status='promoted', promoted_at='NOW()')
+    status = 200 if result.get('ok') else 400
+    return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '正式入库完成', 'data': result}), status
 
 
 @shared_resource_bp.route('/center/device/register', methods=['POST'])

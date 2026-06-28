@@ -112,11 +112,11 @@ def add_credit_ledger(event_type, delta=0, reason='', ref_id='', source_id='', v
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO shared_credit_ledger_local(event_type, delta, reason, ref_id, source_id, tmdb_id, item_type, title, raw_json)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                INSERT INTO shared_credit_ledger_local(event_type, delta, reason, ref_id, source_id, virtual_id, tmdb_id, item_type, title, raw_json)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                 RETURNING *
                 """,
-                (event_type, int(delta or 0), reason, ref_id, source_id, tmdb_id, item_type, title, _as_jsonb(payload)),
+                (event_type, int(delta or 0), reason, ref_id, source_id, virtual_id, tmdb_id, item_type, title, _as_jsonb(payload)),
             )
             row = _row(cur.fetchone())
             conn.commit()
