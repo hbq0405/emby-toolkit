@@ -332,7 +332,7 @@ def get_task_registry(context: str = 'all'):
         'manual-correct-organize-records': (task_manual_correct_organize_records, "手动重组整理记录", 'media', False),
         # 系统硬编码后台任务：False = 前端不可见/不可编排，执行周期由 scheduler_manager.py 固定控制。
         'shared-share-status-sync': (task_shared_share_status_sync_high_freq, "共享分享状态同步", 'media', False),
-        'play-pool-daily-speedtest': (task_play_pool_daily_speedtest, "Play Pool Daily Speedtest", 'media', False),
+        'play-pool-daily-speedtest': (task_play_pool_daily_speedtest, "小号池测速", 'media', False),
     }
 
     if context == 'chain':
