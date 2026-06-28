@@ -24,10 +24,6 @@
 
       <div class="play-pool-global-settings">
         <n-space align="center" :vertical="isMobile" :size="12">
-          <n-switch v-model:value="playPoolConfig.auto_speedtest_enabled" @update:value="savePlayPoolSettings">
-            <template #checked>自动测速</template>
-            <template #unchecked>关闭测速</template>
-          </n-switch>
           <n-input-number
             v-model:value="playPoolConfig.auto_speedtest_threshold_mbps"
             :min="0"
@@ -195,7 +191,6 @@ const playPoolConfig = ref({
   enabled: false,
   usable_count: 0,
   temp_dir_name: 'ETK小号播放临时目录',
-  auto_speedtest_enabled: true,
   auto_speedtest_threshold_mbps: null,
   daily_traffic_limit_gb: null,
   accounts: []
@@ -272,7 +267,6 @@ const applyConfig = (data) => {
     enabled: Boolean(data?.enabled),
     usable_count: Number(data?.usable_count || 0),
     temp_dir_name: data?.temp_dir_name || 'ETK小号播放临时目录',
-    auto_speedtest_enabled: data?.auto_speedtest_enabled !== false,
     auto_speedtest_threshold_mbps: Number(data?.auto_speedtest_threshold_mbps || 0) || null,
     daily_traffic_limit_gb: Number(data?.daily_traffic_limit_gb || 0) || null,
     accounts: Array.isArray(data?.accounts) ? data.accounts : []
@@ -328,7 +322,6 @@ const savePlayPoolSettings = async () => {
   try {
     const res = await axios.post('/api/p115/play_pool', {
       enabled: Boolean(playPoolConfig.value.enabled),
-      auto_speedtest_enabled: Boolean(playPoolConfig.value.auto_speedtest_enabled),
       auto_speedtest_threshold_mbps: Number(playPoolConfig.value.auto_speedtest_threshold_mbps || 0),
       daily_traffic_limit_gb: Number(playPoolConfig.value.daily_traffic_limit_gb || 0)
     });

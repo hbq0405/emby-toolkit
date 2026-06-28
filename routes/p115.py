@@ -26,7 +26,6 @@ import constants
 import config_manager
 from functools import lru_cache, wraps
 from database import user_db
-from handler.telegram import send_telegram_message
 
 # 115扫码登录相关变量 (OAuth 2.0 + PKCE 模式)
 _qrcode_data = {
@@ -40,33 +39,6 @@ _qrcode_data = {
 }
 p115_bp = Blueprint('115_bp', __name__, url_prefix='/api/p115')
 logger = logging.getLogger(__name__)
-PLAY_POOL_USER_REWARD_KEY = 'p115_play_pool_user_cookie_rewards'
-
-
-def _load_play_pool_user_rewards():
-    rewards = settings_db.get_setting(PLAY_POOL_USER_REWARD_KEY) or {}
-    return rewards if isinstance(rewards, dict) else {}
-
-
-def _user_reward_entry(rewards, user_id):
-    value = rewards.get(str(user_id))
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        return {'last_reward_date': value, 'total_days': 0.0}
-    return {'last_reward_date': '', 'total_days': 0.0}
-
-
-def _public_user_reward(entry):
-    total_days = float(entry.get('total_days') or 0)
-    return {
-        'total_days': round(total_days, 2),
-        'last_reward_days': float(entry.get('last_reward_days') or 0),
-        'last_reward_date': str(entry.get('last_reward_date') or ''),
-        'last_reward_mode': str(entry.get('last_reward_mode') or ''),
-    }
-
-
 def _resolve_play_request_user_id():
     for key in ('UserId', 'userId', 'user_id'):
         value = request.args.get(key)
@@ -1113,48 +1085,27 @@ def save_user_play_pool_account():
         payload['cookie'] = cookie
         payload['enabled'] = True
     item = p115_play_pool.upsert_account(payload, account_id=existing.get('id') if existing else None)
-    speedtest_error = ''
-    speedtest_ok = False
-    config = p115_play_pool.get_public_config()
-    if cookie and config.get('auto_speedtest_enabled') is not False:
+    reward_result = {}
+    if cookie:
         try:
             result = p115_play_pool.speedtest_account(item['id'])
             item['last_speed_bps'] = result.get('bps', 0)
-            speedtest_ok = True
+            item = p115_play_pool._find_account_by_id(item['id']) or item
+            reward_result = p115_play_pool._reward_user_cookie(
+                item,
+                notify_user=False,
+                speed_text=result.get('speed_text') or '',
+                error_text='' if item.get('enabled') else item.get('last_error') or '测速未达标',
+            )
         except Exception as e:
-            speedtest_error = str(e)
             p115_play_pool.upsert_account({'enabled': False, 'last_error': str(e)}, account_id=item['id'])
+            item = p115_play_pool._find_account_by_id(item['id']) or item
+            reward_result = p115_play_pool._reward_user_cookie(item, notify_user=False, error_text=str(e))
     item = p115_play_pool._find_account_by_id(item['id']) or item
-    if speedtest_ok and item.get('enabled') and item.get('cookie'):
-        today = datetime.now().strftime('%Y-%m-%d')
-        rewards = _load_play_pool_user_rewards()
-        reward_entry = _user_reward_entry(rewards, emby_user_id)
-        if reward_entry.get('last_reward_date') != today:
-            reward_days = 0.8 if shared else 0.5
-            try:
-                user_db.extend_user_expiration_days(emby_user_id, reward_days)
-                reward_entry.update({
-                    'last_reward_date': today,
-                    'last_reward_days': reward_days,
-                    'last_reward_mode': 'shared' if shared else 'private',
-                    'total_days': round(float(reward_entry.get('total_days') or 0) + reward_days, 2),
-                })
-                rewards[str(emby_user_id)] = reward_entry
-                settings_db.save_setting(PLAY_POOL_USER_REWARD_KEY, rewards)
-                item['reward_days'] = reward_days
-            except Exception as e:
-                logger.error("  ➜ [小号播放] 用户 Cookie 奖励发放失败: user_id=%s, err=%s", emby_user_id, e, exc_info=True)
-    else:
-        chat_id = user_db.get_user_telegram_chat_id(emby_user_id)
-        if speedtest_error and chat_id:
-            try:
-                send_telegram_message(chat_id, f"你的 115 Cookie 未通过可用性检测，本日会员时长奖励未发放。\n原因：{speedtest_error or item.get('last_error') or 'Cookie 不可用'}")
-            except Exception as e:
-                logger.warning("  ➜ [小号播放] 发送用户 Cookie 失效通知失败: user_id=%s, err=%s", emby_user_id, e)
     public_item = p115_play_pool.get_public_account(item.get('id')) or {}
-    if item.get('reward_days'):
-        public_item['reward_days'] = item.get('reward_days')
-    public_item['reward_summary'] = _public_user_reward(_user_reward_entry(_load_play_pool_user_rewards(), emby_user_id))
+    if reward_result.get('reward_days'):
+        public_item['reward_days'] = reward_result.get('reward_days')
+    public_item['reward_summary'] = p115_play_pool.public_user_reward(emby_user_id)
     return jsonify({'success': True, 'data': public_item})
 
 
@@ -1163,7 +1114,7 @@ def save_user_play_pool_account():
 def get_user_play_pool_account():
     emby_user_id = session.get('emby_user_id')
     item = p115_play_pool.get_public_account_by_owner('user', emby_user_id) or {}
-    item['reward_summary'] = _public_user_reward(_user_reward_entry(_load_play_pool_user_rewards(), emby_user_id))
+    item['reward_summary'] = p115_play_pool.public_user_reward(emby_user_id)
     return jsonify({'success': True, 'data': item})
 
 
@@ -1182,8 +1133,7 @@ def delete_user_play_pool_account():
 @emby_login_required
 def get_user_play_pool_rewards():
     emby_user_id = session.get('emby_user_id')
-    rewards = _load_play_pool_user_rewards()
-    return jsonify({'success': True, 'data': _public_user_reward(_user_reward_entry(rewards, emby_user_id))})
+    return jsonify({'success': True, 'data': p115_play_pool.public_user_reward(emby_user_id)})
 
 
 @p115_bp.route('/play_pool/accounts/<account_id>', methods=['PUT'])

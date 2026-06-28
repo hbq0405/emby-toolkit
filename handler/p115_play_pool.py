@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 PLAY_POOL_CONFIG_KEY = "p115_play_pool_config"
 PLAY_POOL_SESSIONS_KEY = "p115_play_pool_sessions"
+PLAY_POOL_USER_REWARD_KEY = "p115_play_pool_user_cookie_rewards"
 PLAY_POOL_TEMP_DIR_NAME = "ETK小号播放临时目录"
 PLAY_POOL_SESSION_TTL_SECONDS = 12 * 60 * 60
 _PREPARE_LOCKS = {}
@@ -122,6 +123,95 @@ def _speedtest_threshold_bps(config=None):
     return int(mbps * 1024 * 1024) if mbps > 0 else 0
 
 
+def _load_user_rewards():
+    rewards = settings_db.get_setting(PLAY_POOL_USER_REWARD_KEY) or {}
+    return rewards if isinstance(rewards, dict) else {}
+
+
+def _user_reward_entry(rewards, user_id):
+    value = rewards.get(str(user_id))
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return {"last_reward_date": value, "total_days": 0.0}
+    return {"last_reward_date": "", "total_days": 0.0}
+
+
+def public_user_reward(user_id):
+    entry = _user_reward_entry(_load_user_rewards(), user_id)
+    total_days = float(entry.get("total_days") or 0)
+    return {
+        "total_days": round(total_days, 2),
+        "last_reward_days": float(entry.get("last_reward_days") or 0),
+        "last_reward_date": str(entry.get("last_reward_date") or ""),
+        "last_reward_mode": str(entry.get("last_reward_mode") or ""),
+    }
+
+
+def _reward_user_cookie(account, *, notify_user=False, speed_text="", error_text=""):
+    account = account or {}
+    if _normalize_owner_type(account.get("owner_type")) != "user":
+        return {"rewarded": False, "reward_days": 0.0, "summary": {}}
+    user_id = str(account.get("owner_user_id") or "").strip()
+    if not user_id:
+        return {"rewarded": False, "reward_days": 0.0, "summary": {}}
+
+    chat_id = ""
+    if notify_user:
+        try:
+            chat_id = user_db.get_user_telegram_chat_id(user_id)
+        except Exception:
+            chat_id = ""
+
+    usable = bool(account.get("enabled") and account.get("cookie") and not error_text)
+    reward_days = 0.8 if _safe_bool(account.get("shared"), False) else 0.5
+    today = _today_key()
+    rewards = _load_user_rewards()
+    entry = _user_reward_entry(rewards, user_id)
+    rewarded = False
+    if usable and entry.get("last_reward_date") != today:
+        try:
+            user_db.extend_user_expiration_days(user_id, reward_days)
+            entry.update({
+                "last_reward_date": today,
+                "last_reward_days": reward_days,
+                "last_reward_mode": "shared" if _safe_bool(account.get("shared"), False) else "private",
+                "total_days": round(float(entry.get("total_days") or 0) + reward_days, 2),
+            })
+            rewards[str(user_id)] = entry
+            settings_db.save_setting(PLAY_POOL_USER_REWARD_KEY, rewards)
+            rewarded = True
+        except Exception as e:
+            logger.error("  ➜ [小号播放] 用户 Cookie 奖励发放失败: user_id=%s, err=%s", user_id, e, exc_info=True)
+            error_text = f"奖励发放失败: {e}"
+
+    summary = public_user_reward(user_id)
+    if notify_user and chat_id:
+        try:
+            if usable:
+                today_reward = reward_days if rewarded else 0.0
+                reward_note = f"今日奖励：+{today_reward:g} 天" if rewarded else "今日奖励：已发放过"
+                send_text = (
+                    f"115 Cookie 每日测速通过\n"
+                    f"账号：{account.get('alias') or '用户小号'}\n"
+                    f"测速：{speed_text or '通过'}\n"
+                    f"{reward_note}\n"
+                    f"累计奖励：{summary.get('total_days', 0):g} 天"
+                )
+            else:
+                send_text = (
+                    f"115 Cookie 每日测速未通过，本日会员时长奖励未发放。\n"
+                    f"账号：{account.get('alias') or '用户小号'}\n"
+                    f"原因：{error_text or account.get('last_error') or 'Cookie 不可用'}\n"
+                    f"累计奖励：{summary.get('total_days', 0):g} 天"
+                )
+            from handler.telegram import escape_markdown, send_telegram_message
+            send_telegram_message(chat_id, escape_markdown(send_text))
+        except Exception as e:
+            logger.warning("  ➜ [小号播放] 发送用户 Cookie 测速通知失败: user_id=%s, err=%s", user_id, e)
+    return {"rewarded": rewarded, "reward_days": reward_days if rewarded else 0.0, "summary": summary}
+
+
 def _find_account_by_id(account_id):
     account_id = str(account_id or "").strip()
     if not account_id:
@@ -159,20 +249,21 @@ def _apply_speedtest_gate(account_id, speed_bps, *, error_msg=""):
     if not account:
         return {}
     config = _load_config()
-    gate_enabled = _safe_bool(config.get("auto_speedtest_enabled"), True)
     threshold_bps = _speedtest_threshold_bps(config)
     patch = {
         "last_speed_bps": _safe_int(speed_bps, 0),
         "last_speed_at": _now_text(),
         "last_error": str(error_msg or "").strip(),
     }
-    if gate_enabled and threshold_bps > 0:
+    if threshold_bps > 0:
         enabled = _safe_int(speed_bps, 0) >= threshold_bps
         patch["enabled"] = enabled
         if not enabled:
             patch["last_error"] = f"测速 {_human_bytes(speed_bps)}/s 低于阈值 {_human_bytes(threshold_bps)}/s，已自动停用"
     elif error_msg:
         patch["enabled"] = False
+    else:
+        patch["enabled"] = True
     _mark_account(account_id, patch)
     return patch
 
@@ -284,7 +375,7 @@ def _load_config():
         clean_accounts.append(account)
     return {
         "enabled": bool(data.get("enabled", False)),
-        "auto_speedtest_enabled": _safe_bool(data.get("auto_speedtest_enabled"), True),
+        "auto_speedtest_enabled": True,
         "auto_speedtest_threshold_mbps": max(0.0, _safe_float(data.get("auto_speedtest_threshold_mbps"), 0.0)),
         "daily_traffic_limit_gb": max(0.0, _safe_float(data.get("daily_traffic_limit_gb"), 0.0)),
         "accounts": clean_accounts,
@@ -295,7 +386,7 @@ def _load_config():
 def _save_config(config):
     payload = {
         "enabled": bool(config.get("enabled", False)),
-        "auto_speedtest_enabled": _safe_bool(config.get("auto_speedtest_enabled"), True),
+        "auto_speedtest_enabled": True,
         "auto_speedtest_threshold_mbps": max(0.0, _safe_float(config.get("auto_speedtest_threshold_mbps"), 0.0)),
         "daily_traffic_limit_gb": max(0.0, _safe_float(config.get("daily_traffic_limit_gb"), 0.0)),
         "accounts": config.get("accounts") if isinstance(config.get("accounts"), list) else [],
@@ -335,7 +426,7 @@ def get_public_config():
         "accounts": [_public_account(x, config) for x in config["accounts"]],
         "usable_count": len([x for x in config["accounts"] if x.get("enabled") and x.get("cookie") and not _account_daily_limited(x, daily_limit_gb)]),
         "temp_dir_name": PLAY_POOL_TEMP_DIR_NAME,
-        "auto_speedtest_enabled": _safe_bool(config.get("auto_speedtest_enabled"), True),
+        "auto_speedtest_enabled": True,
         "auto_speedtest_threshold_mbps": threshold_mbps,
         "auto_speedtest_threshold_text": f"{threshold_mbps:.2f} MB/s" if threshold_mbps > 0 else "",
         "daily_traffic_limit_gb": daily_limit_gb,
@@ -366,8 +457,6 @@ def save_pool_settings(data):
     config = _load_config()
     if "enabled" in data:
         config["enabled"] = bool(data.get("enabled"))
-    if "auto_speedtest_enabled" in data:
-        config["auto_speedtest_enabled"] = _safe_bool(data.get("auto_speedtest_enabled"), True)
     if "auto_speedtest_threshold_mbps" in data:
         config["auto_speedtest_threshold_mbps"] = max(0.0, _safe_float(data.get("auto_speedtest_threshold_mbps"), 0.0))
     if "daily_traffic_limit_gb" in data:
@@ -447,7 +536,7 @@ def upsert_account(payload, account_id=None):
     target["updated_at"] = _now_text()
     target.setdefault("temp_cid", "")
     _save_config(config)
-    if str(target.get("cookie") or "").strip() and _safe_bool(config.get("auto_speedtest_enabled"), True) and not _safe_bool(payload.get("_skip_auto_speedtest"), False):
+    if str(target.get("cookie") or "").strip() and not _safe_bool(payload.get("_skip_auto_speedtest"), False):
         try:
             speedtest_account(target["id"])
             target = _find_account_by_id(target["id"]) or target
@@ -1294,3 +1383,84 @@ def speedtest_account(account_id, sample_pick_code="", user_agent=""):
                 client.fs_delete([clone["fid"]])
             except Exception:
                 pass
+
+
+def run_daily_speedtest_and_rewards(update_status=None):
+    config = _load_config()
+    if not config.get("enabled"):
+        logger.info("  ➜ [小号池每日测速] 小号池未启用，跳过")
+        return {"skipped": True, "reason": "小号池未启用", "results": []}
+
+    accounts = [x for x in config.get("accounts") or [] if str(x.get("cookie") or "").strip()]
+    total = len(accounts)
+    results = []
+    if update_status:
+        update_status(0, f"小号池每日测速启动，共 {total} 个账号")
+    logger.info("  ➜ [小号池每日测速] 开始执行，共 %s 个账号", total)
+
+    browser_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    for index, account in enumerate(accounts, start=1):
+        account_id = account.get("id")
+        alias = account.get("alias") or "小号"
+        owner_type = _normalize_owner_type(account.get("owner_type"))
+        owner_name = _display_user_name(account.get("owner_user_id")) if owner_type == "user" else "管理员"
+        progress = int(((index - 1) / max(total, 1)) * 95)
+        if update_status:
+            update_status(progress, f"正在测速：{alias} ({index}/{total})")
+        result = {
+            "account_id": account_id,
+            "alias": alias,
+            "owner_type": owner_type,
+            "owner_name": owner_name,
+            "success": False,
+            "speed_text": "",
+            "error": "",
+            "reward_days": 0.0,
+        }
+        try:
+            speed = speedtest_account(account_id, user_agent=browser_ua)
+            fresh = _find_account_by_id(account_id) or account
+            speed_text = speed.get("speed_text") or f"{_human_bytes(speed.get('bps'))}/s"
+            result.update({"success": bool(fresh.get("enabled")), "speed_text": speed_text})
+            if not fresh.get("enabled"):
+                result["error"] = fresh.get("last_error") or "测速未达标"
+            reward = _reward_user_cookie(
+                fresh,
+                notify_user=True,
+                speed_text=speed_text,
+                error_text=result["error"],
+            )
+            result["reward_days"] = reward.get("reward_days", 0.0)
+        except Exception as e:
+            error_text = str(e)
+            _mark_account(account_id, {
+                "enabled": False,
+                "last_error": error_text,
+                "last_speed_bps": 0,
+                "last_speed_at": _now_text(),
+            })
+            fresh = _find_account_by_id(account_id) or account
+            _reward_user_cookie(fresh, notify_user=True, error_text=error_text)
+            result["error"] = error_text
+            logger.warning("  ➜ [小号池每日测速] %s 测速失败: %s", alias, error_text)
+        results.append(result)
+
+    try:
+        lines = ["小号池每日测速结果"]
+        for item in results:
+            state = "通过" if item.get("success") else "失败"
+            detail = item.get("speed_text") or item.get("error") or "-"
+            reward = item.get("reward_days") or 0
+            reward_text = f"，奖励 +{reward:g} 天" if reward else ""
+            lines.append(f"{state} {item.get('alias')}（{item.get('owner_name')}）：{detail}{reward_text}")
+        from handler.telegram import escape_markdown, send_telegram_message
+        for chat_id in user_db.get_admin_telegram_chat_ids():
+            send_telegram_message(chat_id, escape_markdown("\n".join(lines)), disable_notification=True)
+    except Exception as e:
+        logger.warning("  ➜ [小号池每日测速] 发送管理员通知失败: %s", e)
+
+    if update_status:
+        ok_count = len([x for x in results if x.get("success")])
+        update_status(100, f"小号池每日测速完成，通过 {ok_count}/{total}")
+    logger.info("  ➜ [小号池每日测速] 完成，通过 %s/%s", len([x for x in results if x.get("success")]), total)
+    return {"skipped": False, "results": results}

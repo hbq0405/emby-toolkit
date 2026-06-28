@@ -25,7 +25,7 @@ from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
 from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
-from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events, task_recalculate_library_washing_priorities, task_manual_correct_organize_records
+from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events, task_recalculate_library_washing_priorities, task_manual_correct_organize_records, task_play_pool_daily_speedtest
 from .hdhive import task_hdhive_auto_checkin
 from .shared_resource_tasks import task_shared_resource_maintenance, share_all_library, task_shared_share_status_sync_high_freq
 
@@ -332,6 +332,7 @@ def get_task_registry(context: str = 'all'):
         'manual-correct-organize-records': (task_manual_correct_organize_records, "手动重组整理记录", 'media', False),
         # 系统硬编码后台任务：False = 前端不可见/不可编排，执行周期由 scheduler_manager.py 固定控制。
         'shared-share-status-sync': (task_shared_share_status_sync_high_freq, "共享分享状态同步", 'media', False),
+        'play-pool-daily-speedtest': (task_play_pool_daily_speedtest, "Play Pool Daily Speedtest", 'media', False),
     }
 
     if context == 'chain':

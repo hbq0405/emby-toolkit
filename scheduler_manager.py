@@ -30,6 +30,7 @@ HIGH_FREQ_CHAIN_JOB_ID = 'high_freq_task_chain_job'
 LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 DAILY_THEME_JOB_ID = 'daily_theme_job'
 SHARED_RESOURCE_MAINTENANCE_JOB_ID = 'shared_share_status_sync_job'
+PLAY_POOL_DAILY_SPEEDTEST_JOB_ID = 'play_pool_daily_speedtest_job'
 
 
 def _fix_apscheduler_cron_dow(cron_expression: str) -> str:
@@ -248,6 +249,7 @@ class SchedulerManager:
         self.update_daily_theme_job()
         self.update_pro_status_check_job()
         self.update_shared_share_status_sync_job()
+        self.update_play_pool_daily_speedtest_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
         """
@@ -448,6 +450,42 @@ class SchedulerManager:
     # 兼容旧调用名
     def update_shared_resource_maintenance_job(self):
         return self.update_shared_share_status_sync_job()
+
+    def update_play_pool_daily_speedtest_job(self):
+        if not self.scheduler.running:
+            return
+
+        try:
+            self.scheduler.remove_job(PLAY_POOL_DAILY_SPEEDTEST_JOB_ID)
+        except JobLookupError:
+            pass
+
+        registry = get_task_registry()
+        task_info = registry.get('play-pool-daily-speedtest')
+        if not task_info:
+            logger.error("  ➜ 设置小号池每日测速任务失败：任务注册表缺少 play-pool-daily-speedtest")
+            return
+        task_function, task_description, processor_type = task_info
+
+        def scheduled_play_pool_speedtest_wrapper():
+            logger.info("  ➜ 定时任务触发：小号池每日测速。")
+            task_manager.submit_task(
+                task_function=task_function,
+                task_name=task_description,
+                processor_type=processor_type
+            )
+
+        try:
+            self.scheduler.add_job(
+                func=scheduled_play_pool_speedtest_wrapper,
+                trigger=CronTrigger.from_crontab('0 12 * * *', timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=PLAY_POOL_DAILY_SPEEDTEST_JOB_ID,
+                name=task_description,
+                replace_existing=True
+            )
+            logger.trace("  ➜ 已设置小号池每日测速任务，执行计划：每天 12:00。")
+        except Exception as e:
+            logger.error(f"设置小号池每日测速任务失败: {e}", exc_info=True)
 
     def update_pro_status_check_job(self):
         """每天凌晨 3 点查岗，验证 Pro 状态是否过期"""
