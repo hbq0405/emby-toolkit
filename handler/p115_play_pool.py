@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 PLAY_POOL_CONFIG_KEY = "p115_play_pool_config"
 PLAY_POOL_SESSIONS_KEY = "p115_play_pool_sessions"
 PLAY_POOL_USER_REWARD_KEY = "p115_play_pool_user_cookie_rewards"
+PLAY_POOL_DEFAULT_SPEEDTEST_THRESHOLD_MBPS = 5.0
 PLAY_POOL_TEMP_DIR_NAME = "ETK小号播放临时目录"
 PLAY_POOL_SESSION_TTL_SECONDS = 12 * 60 * 60
 _PREPARE_LOCKS = {}
@@ -119,8 +120,13 @@ def _account_daily_limited(account, daily_limit_gb=None):
 
 
 def _speedtest_threshold_bps(config=None):
-    mbps = _safe_float((config or {}).get("auto_speedtest_threshold_mbps"), 0.0)
+    mbps = _speedtest_threshold_mbps((config or {}).get("auto_speedtest_threshold_mbps"))
     return int(mbps * 1024 * 1024) if mbps > 0 else 0
+
+
+def _speedtest_threshold_mbps(value):
+    mbps = _safe_float(value, PLAY_POOL_DEFAULT_SPEEDTEST_THRESHOLD_MBPS)
+    return mbps if mbps > 0 else PLAY_POOL_DEFAULT_SPEEDTEST_THRESHOLD_MBPS
 
 
 def _load_user_rewards():
@@ -376,7 +382,7 @@ def _load_config():
     return {
         "enabled": bool(data.get("enabled", False)),
         "auto_speedtest_enabled": True,
-        "auto_speedtest_threshold_mbps": max(0.0, _safe_float(data.get("auto_speedtest_threshold_mbps"), 0.0)),
+        "auto_speedtest_threshold_mbps": _speedtest_threshold_mbps(data.get("auto_speedtest_threshold_mbps")),
         "daily_traffic_limit_gb": max(0.0, _safe_float(data.get("daily_traffic_limit_gb"), 0.0)),
         "accounts": clean_accounts,
         "updated_at": data.get("updated_at") or "",
@@ -387,7 +393,7 @@ def _save_config(config):
     payload = {
         "enabled": bool(config.get("enabled", False)),
         "auto_speedtest_enabled": True,
-        "auto_speedtest_threshold_mbps": max(0.0, _safe_float(config.get("auto_speedtest_threshold_mbps"), 0.0)),
+        "auto_speedtest_threshold_mbps": _speedtest_threshold_mbps(config.get("auto_speedtest_threshold_mbps")),
         "daily_traffic_limit_gb": max(0.0, _safe_float(config.get("daily_traffic_limit_gb"), 0.0)),
         "accounts": config.get("accounts") if isinstance(config.get("accounts"), list) else [],
         "updated_at": _now_text(),
@@ -419,7 +425,7 @@ def _public_account(account, config=None):
 
 def get_public_config():
     config = _load_config()
-    threshold_mbps = _safe_float(config.get("auto_speedtest_threshold_mbps"), 0.0)
+    threshold_mbps = _speedtest_threshold_mbps(config.get("auto_speedtest_threshold_mbps"))
     daily_limit_gb = _safe_float(config.get("daily_traffic_limit_gb"), 0.0)
     return {
         "enabled": config["enabled"],
@@ -458,7 +464,7 @@ def save_pool_settings(data):
     if "enabled" in data:
         config["enabled"] = bool(data.get("enabled"))
     if "auto_speedtest_threshold_mbps" in data:
-        config["auto_speedtest_threshold_mbps"] = max(0.0, _safe_float(data.get("auto_speedtest_threshold_mbps"), 0.0))
+        config["auto_speedtest_threshold_mbps"] = _speedtest_threshold_mbps(data.get("auto_speedtest_threshold_mbps"))
     if "daily_traffic_limit_gb" in data:
         config["daily_traffic_limit_gb"] = max(0.0, _safe_float(data.get("daily_traffic_limit_gb"), 0.0))
     _save_config(config)
