@@ -68,6 +68,21 @@ def _extract_virtual_play_info(strm_url):
     }
 
 
+def _resolve_virtual_play_info_from_source_path(source_path):
+    info = _extract_virtual_play_info(source_path)
+    if info:
+        return info
+    text = str(source_path or '').strip()
+    if not text.lower().endswith('.strm') or not os.path.exists(text):
+        return {}
+    try:
+        with open(text, 'r', encoding='utf-8') as f:
+            return _extract_virtual_play_info(f.read().strip())
+    except Exception as e:
+        logger.debug("  ➜ [虚拟播放] 读取本地 STRM 失败：%s -> %s", text, e)
+    return {}
+
+
 def _load_virtual_play_sessions():
     data = settings_db.get_setting(_VIRTUAL_PLAY_SESSIONS_KEY) or []
     return data if isinstance(data, list) else []
@@ -1418,7 +1433,7 @@ def proxy_all(path):
                             display_name = os.path.basename(strm_url).replace('.strm', '')
 
                         if isinstance(strm_url, str):
-                            virtual_play_info = _extract_virtual_play_info(strm_url)
+                            virtual_play_info = _resolve_virtual_play_info_from_source_path(strm_url)
                             if virtual_play_info:
                                 break
                             pick_code = extract_pickcode_from_strm_url(strm_url)

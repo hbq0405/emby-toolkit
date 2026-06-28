@@ -2231,6 +2231,7 @@ LEDGER_EVENT_LABEL_MAP = {
     'intro_chapters_consumed': '使用共享片头',
     'center_daily_grant': 'Pro每日赠送额度',
     'center_rapid_quota_consumed': 'Pro额度抵扣',
+    'virtual_play': '虚拟播放',
     'center_tier_cap_adjust': 'Pro等级上限调整',
     'center_pro_expired_clear': 'Pro过期清空额度',
     'center_pro_inactive_clear': 'Pro认证失效清空额度',
@@ -2267,6 +2268,7 @@ LEDGER_REASON_LABEL_MAP = {
     'intro_chapters_consumed': '使用共享片头',
     'daily_grant': 'Pro每日赠送额度',
     'rapid_quota_consumed': 'Pro额度抵扣',
+    'virtual_play': '虚拟播放',
     'tier_cap_adjust': 'Pro等级上限调整',
     'pro_expired_clear': 'Pro过期清空额度',
     'pro_inactive_clear': 'Pro认证失效清空额度',
@@ -2649,6 +2651,8 @@ def _ledger_is_pro_quota_row(row: Dict[str, Any]) -> bool:
     row = row if isinstance(row, dict) else {}
     code = _ledger_event_code(row)
     reason = _ledger_reason_code(row)
+    if reason == 'virtual_play':
+        return False
     ledger_type = str(row.get('ledger_type') or '').strip().lower()
     return ledger_type == 'pro_quota' or reason in {
         'daily_grant', 'rapid_quota_consumed', 'tier_cap_adjust',
