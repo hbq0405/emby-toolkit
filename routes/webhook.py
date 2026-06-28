@@ -115,7 +115,21 @@ def _delete_promoted_virtual_import_record(shared_virtual_db, virtual_id: int) -
     except Exception:
         vid = 0
     if vid <= 0:
-        return {'deleted_cache': 0, 'deleted_row': {}}
+        return {'deleted_files': 0, 'deleted_cache': 0, 'deleted_row': {}}
+    row = shared_virtual_db.get_virtual_import(vid) or {}
+    deleted_files = 0
+    paths = row.get('strm_paths_json') if isinstance(row.get('strm_paths_json'), list) else []
+    for path in paths:
+        text = str(path or '').strip()
+        if not text:
+            continue
+        for candidate in (text, re.sub(r'\.strm$', '-mediainfo.json', text, flags=re.I)):
+            try:
+                if candidate and os.path.exists(candidate):
+                    os.remove(candidate)
+                    deleted_files += 1
+            except Exception as e:
+                logger.debug(f"  ➜ [虚拟入库] 自动转正后删除本地文件失败: {candidate} -> {e}")
     deleted_cache = 0
     try:
         with get_db_connection() as conn:
@@ -129,7 +143,7 @@ def _delete_promoted_virtual_import_record(shared_virtual_db, virtual_id: int) -
     except Exception as e:
         logger.debug(f"  ➜ [虚拟入库] 自动转正后清理 115 虚拟缓存失败: virtual_id={vid} -> {e}")
     deleted_row = shared_virtual_db.delete_virtual_import(vid)
-    return {'deleted_cache': deleted_cache, 'deleted_row': deleted_row}
+    return {'deleted_files': deleted_files, 'deleted_cache': deleted_cache, 'deleted_row': deleted_row}
 
 
 def _maybe_promote_virtual_import_from_playback(data):
@@ -185,8 +199,9 @@ def _maybe_promote_virtual_import_from_playback(data):
         if result.get('ok'):
             cleanup = _delete_promoted_virtual_import_record(shared_virtual_db, virtual_id)
             logger.info(
-                "  ➜ [虚拟入库] 播放阈值触发自动转正：virtual_id=%s, deleted_cache=%s, deleted_record=%s",
+                "  ➜ [虚拟入库] 播放阈值触发自动转正：virtual_id=%s, deleted_files=%s, deleted_cache=%s, deleted_record=%s",
                 virtual_id,
+                cleanup.get('deleted_files', 0),
                 cleanup.get('deleted_cache', 0),
                 bool(cleanup.get('deleted_row')),
             )
