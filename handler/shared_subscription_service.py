@@ -4099,6 +4099,58 @@ def _virtual_video_info(file_name: str, sha1: str = '') -> Dict[str, Any]:
     return info
 
 
+def _virtual_valid_year(*values) -> str:
+    for value in values:
+        text = str(value or '').strip()
+        if re.fullmatch(r'(19|20)\d{2}', text):
+            return text
+        if re.fullmatch(r'(19|20)\d{2}[-/].*', text):
+            return text[:4]
+    return ''
+
+
+def _virtual_series_release_year(tmdb_id: Any) -> str:
+    tmdb_id = str(tmdb_id or '').strip()
+    if not tmdb_id:
+        return ''
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT release_year
+                    FROM media_metadata
+                    WHERE item_type = 'Series' AND tmdb_id = %s
+                    LIMIT 1
+                    """,
+                    (tmdb_id,),
+                )
+                row = cursor.fetchone()
+                return _virtual_valid_year(row.get('release_year') if row else '')
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 查询父剧年份失败：tmdb={tmdb_id}, err={e}")
+    return ''
+
+
+def _virtual_rename_year(source: Dict[str, Any], file_info: Dict[str, Any], *, is_tv: bool, tmdb_id: Any) -> str:
+    if not is_tv:
+        return _virtual_valid_year(source.get('release_year'), source.get('year'), file_info.get('release_year'), file_info.get('year'))
+    return (
+        _virtual_valid_year(
+            source.get('series_release_year'),
+            source.get('parent_series_release_year'),
+            source.get('series_year'),
+            source.get('first_air_year'),
+            file_info.get('series_release_year'),
+            file_info.get('parent_series_release_year'),
+            file_info.get('series_year'),
+            file_info.get('first_air_year'),
+        )
+        or _virtual_series_release_year(tmdb_id)
+    )
+
+
 def _virtual_category_path(source: Dict[str, Any], files: List[Dict[str, Any]]) -> str:
     cfg = config_manager.APP_CONFIG or {}
     first = next((f for f in files or [] if isinstance(f, dict)), {}) or {}
@@ -4155,12 +4207,12 @@ def _virtual_standard_paths(source: Dict[str, Any], file_info: Dict[str, Any], c
         or file_info.get('file_name')
         or '共享资源'
     )
-    year = source.get('release_year') or source.get('year') or file_info.get('release_year') or ''
     tmdb_id = (
         source.get('parent_series_tmdb_id') or source.get('series_tmdb_id') or file_info.get('parent_series_tmdb_id') or file_info.get('series_tmdb_id') or source.get('tmdb_id') or file_info.get('tmdb_id')
         if is_tv else
         source.get('tmdb_id') or file_info.get('tmdb_id')
     ) or ''
+    year = _virtual_rename_year(source, file_info, is_tv=is_tv, tmdb_id=tmdb_id)
     ext = os.path.splitext(file_name)[1] or '.mkv'
     stem = os.path.splitext(file_name)[0]
 

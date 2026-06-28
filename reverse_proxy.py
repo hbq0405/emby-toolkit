@@ -7,7 +7,7 @@ import os
 import json
 import threading
 from flask import Flask, request, Response, redirect, send_file, session
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, unquote
 from datetime import datetime, timedelta
 import time
 import uuid 
@@ -15,12 +15,14 @@ from flask import send_file
 from handler.poster_generator import get_missing_poster
 from gevent import spawn, joinall
 from websocket import create_connection
-from database import custom_collection_db, queries_db, media_db
+from database import custom_collection_db, queries_db, media_db, settings_db, shared_credit_db, shared_virtual_db
 from database.connection import get_db_connection
 from handler.custom_collection import RecommendationEngine
 import config_manager
 import constants
-from handler.p115_service import P115Service
+from handler.p115_service import P115Service, get_115_api_priority
+from handler.shared_center_client import SharedCenterClient
+from handler.shared_subscription_service import rapid_save_virtual_play_file
 from handler.p115_copy_play import (
     discard_copy_play_clone,
     is_copy_play_missing_error,
@@ -40,6 +42,281 @@ MISSING_ID_PREFIX = "-800000_"
 _USER_CONTEXT_TTL_SECONDS = 2 * 60 * 60
 _USER_CONTEXT_LOCK = threading.Lock()
 _USER_CONTEXT_CACHE = {}
+_VIRTUAL_PLAY_SESSIONS_KEY = "p115_virtual_play_sessions"
+_VIRTUAL_PLAY_SESSION_TTL_SECONDS = 120
+_VIRTUAL_PLAY_LOCKS = {}
+_VIRTUAL_PLAY_LOCKS_GUARD = threading.Lock()
+
+
+def _norm_sha1(value):
+    text = str(value or '').strip().upper()
+    return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+
+def _extract_virtual_play_info(strm_url):
+    text = str(strm_url or '').strip()
+    if not text:
+        return {}
+    match = re.search(r'/api/p115/virtual-play/(\d+)/([A-Fa-f0-9]{40})(?:/([^?#]+))?', text)
+    if not match:
+        return {}
+    return {
+        'virtual_id': int(match.group(1)),
+        'sha1': match.group(2).upper(),
+        'filename': unquote(match.group(3) or ''),
+        'url': text,
+    }
+
+
+def _load_virtual_play_sessions():
+    data = settings_db.get_setting(_VIRTUAL_PLAY_SESSIONS_KEY) or []
+    return data if isinstance(data, list) else []
+
+
+def _save_virtual_play_sessions(sessions):
+    now = time.time()
+    kept = []
+    for item in sessions or []:
+        try:
+            created_at = float(item.get('created_at') or 0)
+        except Exception:
+            created_at = 0
+        if created_at and now - created_at > _VIRTUAL_PLAY_SESSION_TTL_SECONDS:
+            continue
+        kept.append(item)
+    settings_db.save_setting(_VIRTUAL_PLAY_SESSIONS_KEY, kept[-500:])
+
+
+def _virtual_play_lock_key(virtual_id, sha1, item_id='', play_session_id='', user_id='', client_key=''):
+    base = f"{int(virtual_id)}|{_norm_sha1(sha1)}"
+    play_session_id = str(play_session_id or '').strip()
+    if play_session_id:
+        return f"{base}|ps:{play_session_id}"
+    return "|".join([base, str(item_id or '').strip(), str(user_id or '').strip(), str(client_key or '').strip()])
+
+
+def _get_virtual_play_lock(key):
+    with _VIRTUAL_PLAY_LOCKS_GUARD:
+        lock = _VIRTUAL_PLAY_LOCKS.get(key)
+        if not lock:
+            lock = threading.Lock()
+            _VIRTUAL_PLAY_LOCKS[key] = lock
+        return lock
+
+
+def _find_reusable_virtual_session(virtual_id, sha1, *, item_id='', play_session_id='', user_id='', client_key='', user_agent=''):
+    sha1 = _norm_sha1(sha1)
+    item_id = str(item_id or '').strip()
+    play_session_id = str(play_session_id or '').strip()
+    user_id = str(user_id or '').strip()
+    client_key = str(client_key or '').strip()
+    user_agent = str(user_agent or '').strip()
+    now = time.time()
+    for item in reversed(_load_virtual_play_sessions()):
+        try:
+            created_at = float(item.get('created_at') or 0)
+        except Exception:
+            created_at = 0
+        if created_at and now - created_at > _VIRTUAL_PLAY_SESSION_TTL_SECONDS:
+            continue
+        if int(item.get('virtual_id') or 0) != int(virtual_id):
+            continue
+        if sha1 and sha1 != _norm_sha1(item.get('sha1')):
+            continue
+        direct_url = str(item.get('direct_url') or '').strip()
+        if not direct_url or str(item.get('direct_url_user_agent') or '').strip() != user_agent:
+            continue
+
+        session_play_session_id = str(item.get('play_session_id') or '').strip()
+        if play_session_id and session_play_session_id and play_session_id == session_play_session_id:
+            return dict(item)
+        if play_session_id and session_play_session_id:
+            continue
+
+        if item_id and str(item.get('item_id') or '').strip() not in ('', item_id):
+            continue
+        if user_id and str(item.get('user_id') or '').strip() not in ('', user_id):
+            continue
+        if client_key and str(item.get('client_key') or '').strip() not in ('', client_key):
+            continue
+        if item_id or user_id or client_key:
+            return dict(item)
+    return {}
+
+
+def _record_virtual_session(record):
+    sessions = _load_virtual_play_sessions()
+    sessions.append(record)
+    _save_virtual_play_sessions(sessions)
+
+
+def _extract_pick_code_from_rapid_response(value):
+    if isinstance(value, dict):
+        for key in ('pick_code', 'pickcode', 'pc'):
+            if value.get(key):
+                return str(value.get(key)).strip()
+        for key in ('data', 'file', 'item', 'response'):
+            found = _extract_pick_code_from_rapid_response(value.get(key))
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _extract_pick_code_from_rapid_response(item)
+            if found:
+                return found
+    return ''
+
+
+def _p115_item_id(item):
+    return str((item or {}).get('fid') or (item or {}).get('file_id') or (item or {}).get('id') or '').strip()
+
+
+def _find_virtual_temp_file(client, target_cid, sha1, file_name=''):
+    sha1 = _norm_sha1(sha1)
+    target_cid = str(target_cid or '').strip()
+    if not target_cid:
+        return {}
+    try:
+        resp = client.fs_files(target_cid)
+        items = []
+        if isinstance(resp, dict):
+            items = resp.get('data') or resp.get('items') or resp.get('list') or []
+            if isinstance(items, dict):
+                items = items.get('list') or items.get('items') or []
+        elif isinstance(resp, list):
+            items = resp
+        wanted_name = str(file_name or '').strip()
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            item_sha1 = _norm_sha1(item.get('sha1') or item.get('sha'))
+            item_name = str(item.get('n') or item.get('name') or item.get('file_name') or item.get('fn') or '').strip()
+            if (sha1 and item_sha1 == sha1) or (wanted_name and item_name == wanted_name):
+                return item
+    except Exception as e:
+        logger.debug("  ➜ [虚拟播放] 定位临时文件失败：cid=%s, sha1=%s..., err=%s", target_cid, sha1[:12], e)
+    return {}
+
+
+def _delete_virtual_temp_file(client, item):
+    fid = _p115_item_id(item)
+    if not fid:
+        return
+    try:
+        client.fs_delete([fid])
+        logger.debug("  ➜ [虚拟播放] 已删除临时文件：fid=%s", fid)
+    except Exception as e:
+        logger.debug("  ➜ [虚拟播放] 删除临时文件失败：fid=%s, err=%s", fid, e)
+
+
+def _resolve_virtual_play_url(virtual_info, *, item_id='', play_session_id='', user_id='', client_key='', user_agent='', display_name=''):
+    virtual_id = int((virtual_info or {}).get('virtual_id') or 0)
+    sha1 = _norm_sha1((virtual_info or {}).get('sha1'))
+    if not virtual_id or not sha1:
+        raise RuntimeError("Invalid virtual STRM")
+    lock_key = _virtual_play_lock_key(virtual_id, sha1, item_id, play_session_id, user_id, client_key)
+    lock = _get_virtual_play_lock(lock_key)
+    with lock:
+        reusable = _find_reusable_virtual_session(
+            virtual_id,
+            sha1,
+            item_id=item_id,
+            play_session_id=play_session_id,
+            user_id=user_id,
+            client_key=client_key,
+            user_agent=user_agent,
+        )
+        if reusable:
+            logger.debug("  ➜ [虚拟播放] 复用本次起播直链：virtual_id=%s, item=%s, session=%s", virtual_id, item_id or '-', play_session_id or '-')
+            return str(reusable.get('direct_url') or '').strip()
+
+        row = shared_virtual_db.get_virtual_import(virtual_id)
+        if not row:
+            raise RuntimeError("Virtual import not found")
+        files = row.get('files_json') if isinstance(row.get('files_json'), list) else []
+        file_info = next((dict(f) for f in files if isinstance(f, dict) and _norm_sha1(f.get('sha1')) == sha1), None)
+        if not file_info:
+            raise RuntimeError("Virtual file not found")
+
+        save_result = rapid_save_virtual_play_file(virtual_id, file_info)
+        if not save_result.get('ok'):
+            raise RuntimeError(save_result.get('message') or "Virtual rapid save failed")
+        client = P115Service.get_client()
+        if not client:
+            raise RuntimeError("115 Client not initialized")
+
+        temp_cid = save_result.get('virtual_target_cid') or save_result.get('target_cid')
+        file_name = save_result.get('file_name') or file_info.get('file_name') or file_info.get('name') or (virtual_info or {}).get('filename') or display_name or sha1
+        pick_code = _extract_pick_code_from_rapid_response(save_result.get('response')) or str(save_result.get('pick_code') or '').strip()
+        temp_item = {}
+        if not pick_code:
+            temp_item = _find_virtual_temp_file(client, temp_cid, sha1, file_name)
+            pick_code = str(temp_item.get('pick_code') or temp_item.get('pc') or '').strip()
+        if not pick_code:
+            raise RuntimeError("Virtual temp pick_code not found")
+
+        real_url = ''
+        api_priority = get_115_api_priority('openapi')
+        use_openapi = (api_priority != 'cookie')
+        for _ in range(4):
+            try:
+                real_url = client.openapi_downurl(pick_code, user_agent=user_agent) if use_openapi else client.download_url(pick_code, user_agent=user_agent)
+                if real_url:
+                    break
+            except Exception as e:
+                logger.warning("  ➜ [虚拟播放] %s 接口异常: %s", 'OpenAPI' if use_openapi else 'Cookie', e)
+            use_openapi = not use_openapi
+            time.sleep(0.5)
+        if not real_url:
+            raise RuntimeError("Failed to get virtual download URL")
+
+        if not temp_item:
+            temp_item = _find_virtual_temp_file(client, temp_cid, sha1, file_name)
+        _delete_virtual_temp_file(client, temp_item)
+
+        try:
+            shared_credit_db.add_credit_ledger(
+                'virtual_play',
+                delta=-10,
+                reason='虚拟播放',
+                ref_id=str(virtual_id),
+                source_id=str(row.get('source_id') or ''),
+                virtual_id=str(virtual_id),
+                tmdb_id=row.get('tmdb_id') or '',
+                item_type=row.get('item_type') or '',
+                title=row.get('title') or file_name or '',
+                raw_json={'virtual_import': row, 'file': file_info, 'sha1': sha1},
+            )
+        except Exception as e:
+            logger.debug("  ➜ [虚拟播放] 写入本地贡献点流水失败：%s", e)
+        try:
+            SharedCenterClient().report_transfer(
+                row.get('source_kind') or file_info.get('source_kind') or '',
+                row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or '',
+                'success',
+                success_count=10,
+                total_count=10,
+                message=f"虚拟播放：{file_name}",
+                transfer_mode='virtual',
+            )
+        except Exception as e:
+            logger.debug("  ➜ [虚拟播放] 上报中心虚拟播放失败：%s", e)
+        shared_virtual_db.record_virtual_play(virtual_id, percent=0)
+        _record_virtual_session({
+            'session_id': uuid.uuid4().hex,
+            'virtual_id': virtual_id,
+            'sha1': sha1,
+            'item_id': str(item_id or ''),
+            'play_session_id': str(play_session_id or ''),
+            'user_id': str(user_id or ''),
+            'client_key': str(client_key or ''),
+            'direct_url': real_url,
+            'direct_url_user_agent': str(user_agent or ''),
+            'direct_url_cached_at': time.time(),
+            'created_at': time.time(),
+            'created_at_text': datetime.utcnow().isoformat(),
+        })
+        return real_url
 
 
 def _patch_emby_web_player_js(text):
@@ -1105,6 +1382,7 @@ def proxy_all(path):
             play_session_id = request.args.get('PlaySessionId', '')
             
             pick_code = None
+            virtual_play_info = None
             real_115_url = None
             display_name = "未知文件" # ★ 新增：用于记录人看的文件名
             source_paths = []
@@ -1140,6 +1418,9 @@ def proxy_all(path):
                             display_name = os.path.basename(strm_url).replace('.strm', '')
 
                         if isinstance(strm_url, str):
+                            virtual_play_info = _extract_virtual_play_info(strm_url)
+                            if virtual_play_info:
+                                break
                             pick_code = extract_pickcode_from_strm_url(strm_url)
                             if not pick_code:
                                 pick_code = media_db.get_pickcode_by_emby_id(item_id)
@@ -1151,6 +1432,31 @@ def proxy_all(path):
             # ====================================================================
             # ★ 核心逻辑 1：如果是 115 文件，进入“115”模式，彻底干掉中转！
             # ====================================================================
+            if virtual_play_info:
+                player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+                play_client_key = "|".join([
+                    request.args.get('DeviceId') or request.args.get('X-Emby-Device-Id') or request.headers.get('X-Emby-Device-Id') or request.remote_addr or "",
+                    request.headers.get('X-Emby-Client') or "",
+                    request.headers.get('User-Agent') or "",
+                ])
+                try:
+                    real_115_url = _resolve_virtual_play_url(
+                        virtual_play_info,
+                        item_id=item_id,
+                        play_session_id=play_session_id,
+                        user_id=current_user_id,
+                        client_key=play_client_key,
+                        user_agent=player_ua,
+                        display_name=display_name,
+                    )
+                    if real_115_url:
+                        response = redirect(real_115_url, code=302)
+                        response.headers['Access-Control-Allow-Origin'] = '*'
+                        return response
+                except Exception as e:
+                    logger.warning("  ⚠️ [虚拟播放] 反代层播放失败: %s", e)
+                    return Response(f"Virtual play failed: {e}", status=503)
+
             if pick_code:
                 player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
                 play_client_key = "|".join([

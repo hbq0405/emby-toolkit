@@ -25,6 +25,7 @@ from handler.shared_subscription_service import (
     create_virtual_strm_files,
     prepare_center_source_files_for_virtual,
 )
+from handler import emby
 from handler import tmdb as tmdb_handler
 import tasks.shared_resource_tasks as shared_tasks
 
@@ -1531,6 +1532,83 @@ def _delete_virtual_files(row: Dict[str, Any]) -> int:
     return deleted
 
 
+def _virtual_strm_paths(row: Dict[str, Any]) -> List[str]:
+    paths = row.get('strm_paths_json') if isinstance(row.get('strm_paths_json'), list) else []
+    out, seen = [], set()
+    for path in paths:
+        text = str(path or '').strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _virtual_emby_delete_path(row: Dict[str, Any]) -> str:
+    paths = _virtual_strm_paths(row)
+    if not paths:
+        return ''
+    item_type = str(row.get('item_type') or '').strip().lower()
+    if item_type in {'tv', 'series', 'season', 'episode'}:
+        return os.path.dirname(paths[0])
+    return paths[0]
+
+
+def _find_emby_item_by_path(path: str) -> Dict[str, Any]:
+    path = str(path or '').strip()
+    base_url = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL) or '').rstrip('/')
+    api_key = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY) or '').strip()
+    if not path or not base_url or not api_key:
+        return {}
+    try:
+        resp = requests.get(
+            f"{base_url}/Items",
+            params={
+                "api_key": api_key,
+                "Recursive": "true",
+                "Path": path,
+                "Fields": "Id,Path,Name,Type",
+                "Limit": 5,
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return {}
+        wanted = os.path.normcase(os.path.normpath(path))
+        items = resp.json().get("Items") or []
+        for item in items:
+            item_path = str(item.get("Path") or "")
+            if item_path and os.path.normcase(os.path.normpath(item_path)) == wanted:
+                return item
+        return items[0] if items else {}
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 查询 Emby 虚拟项失败：{path} -> {e}")
+    return {}
+
+
+def _delete_virtual_emby_item(row: Dict[str, Any]) -> Dict[str, Any]:
+    delete_path = _virtual_emby_delete_path(row)
+    item = _find_emby_item_by_path(delete_path)
+    item_id = str(item.get('Id') or '').strip()
+    if not item_id:
+        return {'ok': True, 'found': False, 'path': delete_path}
+    base_url = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL) or '').rstrip('/')
+    api_key = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY) or '').strip()
+    user_id = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_USER_ID) or '').strip()
+    ok = emby.delete_item(item_id, base_url, api_key, user_id)
+    return {'ok': bool(ok), 'found': True, 'id': item_id, 'name': item.get('Name') or '', 'path': delete_path}
+
+
+def _remove_virtual_import_record(row: Dict[str, Any]) -> Dict[str, Any]:
+    deleted_files = _delete_virtual_files(row)
+    deleted_row = shared_virtual_db.delete_virtual_import(int(row.get('id')))
+    return {'item': deleted_row or row, 'deleted_files': deleted_files}
+
+
+def _delete_virtual_import_record_only(row: Dict[str, Any]) -> Dict[str, Any]:
+    deleted_row = shared_virtual_db.delete_virtual_import(int(row.get('id')))
+    return {'item': deleted_row or row, 'deleted_files': 0}
+
+
 def _track_list_value(value: Any) -> List[Any]:
     if value in (None, '', [], {}):
         return []
@@ -2020,11 +2098,18 @@ def api_virtual_imports():
 @shared_resource_bp.route('/virtual-imports/<int:virtual_id>', methods=['DELETE'])
 @admin_required
 def api_delete_virtual_import(virtual_id: int):
-    row = shared_virtual_db.delete_virtual_import(virtual_id)
+    row = shared_virtual_db.get_virtual_import(virtual_id)
     if not row:
         return jsonify({'success': False, 'message': '虚拟入库记录不存在'}), 404
-    deleted = _delete_virtual_files(row)
-    return jsonify({'success': True, 'message': f'已删除虚拟入库记录，清理本地文件 {deleted} 个', 'data': {'item': row, 'deleted_files': deleted}})
+    emby_result = _delete_virtual_emby_item(row)
+    if emby_result.get('found') and not emby_result.get('ok'):
+        return jsonify({'success': False, 'message': 'Emby 虚拟项删除失败，已停止辞退', 'data': {'emby_delete': emby_result}}), 500
+    removed = _remove_virtual_import_record(row)
+    return jsonify({
+        'success': True,
+        'message': f"已辞退虚拟入库，清理本地文件 {removed.get('deleted_files', 0)} 个",
+        'data': {**removed, 'emby_delete': emby_result},
+    })
 
 
 @shared_resource_bp.route('/virtual-imports/<int:virtual_id>/promote', methods=['POST'])
@@ -2036,14 +2121,22 @@ def api_promote_virtual_import(virtual_id: int):
     source = row.get('source_payload_json') if isinstance(row.get('source_payload_json'), dict) else {}
     if not source:
         return jsonify({'success': False, 'message': '虚拟记录缺少中心源 payload，无法正式入库'}), 400
+    emby_result = _delete_virtual_emby_item(row)
+    if emby_result.get('found') and not emby_result.get('ok'):
+        return jsonify({'success': False, 'message': 'Emby 虚拟项删除失败，已停止转正', 'data': {'emby_delete': emby_result}}), 500
     source_kind = source.get('source_kind') or row.get('source_kind') or ''
     source_id = source.get('source_id') or source.get('source_ref_id') or row.get('source_id') or ''
     event = {'event_id': '', 'source_kind': source_kind, 'source_ref_id': source_id, 'payload_json': source}
     result = shared_tasks.consume_device_event_with_transfer_gate(event, ack=False)
-    if result.get('ok'):
-        shared_virtual_db.update_virtual_import(virtual_id, status='promoted', promoted_at='NOW()')
     status = 200 if result.get('ok') else 400
-    return jsonify({'success': bool(result.get('ok')), 'message': result.get('message') or '正式入库完成', 'data': result}), status
+    if result.get('ok'):
+        removed = _delete_virtual_import_record_only(row)
+        return jsonify({
+            'success': True,
+            'message': result.get('message') or '正式入库完成',
+            'data': {'result': result, **removed, 'emby_delete': emby_result},
+        }), status
+    return jsonify({'success': False, 'message': result.get('message') or '正式入库失败', 'data': result}), status
 
 
 @shared_resource_bp.route('/center/device/register', methods=['POST'])
