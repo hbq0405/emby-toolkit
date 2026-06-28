@@ -109,6 +109,29 @@ def _extract_virtual_id_from_webhook(data):
     return 0
 
 
+def _delete_promoted_virtual_import_record(shared_virtual_db, virtual_id: int) -> dict:
+    try:
+        vid = int(virtual_id or 0)
+    except Exception:
+        vid = 0
+    if vid <= 0:
+        return {'deleted_cache': 0, 'deleted_row': {}}
+    deleted_cache = 0
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM p115_filesystem_cache WHERE parent_id = %s OR id LIKE %s",
+                    (f"virtual:{vid}", f"virtual:{vid}:%"),
+                )
+                deleted_cache = cursor.rowcount or 0
+            conn.commit()
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 自动转正后清理 115 虚拟缓存失败: virtual_id={vid} -> {e}")
+    deleted_row = shared_virtual_db.delete_virtual_import(vid)
+    return {'deleted_cache': deleted_cache, 'deleted_row': deleted_row}
+
+
 def _maybe_promote_virtual_import_from_playback(data):
     virtual_id = _extract_virtual_id_from_webhook(data or {})
     if not virtual_id:
@@ -140,6 +163,15 @@ def _maybe_promote_virtual_import_from_playback(data):
         elif item_type != 'movie' and episode_threshold > 0 and int(row.get('watched_count') or 0) >= episode_threshold:
             should_promote = True
         if not should_promote:
+            logger.debug(
+                "  ➜ [虚拟入库] 播放阈值未触发自动转正：virtual_id=%s, item_type=%s, watched=%s/%s, percent=%.2f/%s",
+                virtual_id,
+                row.get('item_type') or item_type,
+                int(row.get('watched_count') or 0),
+                episode_threshold,
+                float(row.get('played_percent') or 0),
+                movie_threshold,
+            )
             return
         from tasks.shared_resource_tasks import consume_device_event_with_transfer_gate
         source = row.get('source_payload_json') if isinstance(row.get('source_payload_json'), dict) else {}
@@ -147,12 +179,17 @@ def _maybe_promote_virtual_import_from_playback(data):
             'event_id': '',
             'source_kind': source.get('source_kind') or row.get('source_kind') or '',
             'source_ref_id': source.get('source_id') or source.get('source_ref_id') or row.get('source_id') or '',
-            'payload_json': source,
+            'payload_json': {**source, '_virtual_auto_promote': True, '_virtual_id': virtual_id},
         }
         result = consume_device_event_with_transfer_gate(event, ack=False)
         if result.get('ok'):
-            shared_virtual_db.update_virtual_import(virtual_id, status='promoted', promoted_at='NOW()')
-            logger.info(f"  ➜ [虚拟入库] 播放阈值触发自动转正：virtual_id={virtual_id}")
+            cleanup = _delete_promoted_virtual_import_record(shared_virtual_db, virtual_id)
+            logger.info(
+                "  ➜ [虚拟入库] 播放阈值触发自动转正：virtual_id=%s, deleted_cache=%s, deleted_record=%s",
+                virtual_id,
+                cleanup.get('deleted_cache', 0),
+                bool(cleanup.get('deleted_row')),
+            )
     except Exception as e:
         logger.warning(f"  ➜ [虚拟入库] 播放阈值自动转正失败：virtual_id={virtual_id}, err={e}")
 

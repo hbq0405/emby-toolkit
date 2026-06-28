@@ -261,6 +261,103 @@ def _cleanup_virtual_imports_for_deleted_assets(cursor, deleted_assets: List[Dic
     return stats
 
 
+def _washing_snapshot_for_remaining_versions(cursor, sha1s: List[Any], pcs: List[Any]) -> Dict[str, Any]:
+    norm_sha1s = []
+    for value in sha1s or []:
+        sha1 = _norm_sha1_for_shared_cleanup(value)
+        if sha1 and sha1 not in norm_sha1s:
+            norm_sha1s.append(sha1)
+
+    norm_pcs = []
+    for value in pcs or []:
+        text = str(value or '').strip()
+        if text and text not in norm_pcs:
+            norm_pcs.append(text)
+
+    if not norm_sha1s and not norm_pcs:
+        return {'level': None, 'snapshot': {}}
+
+    clauses = []
+    params = []
+    if norm_sha1s:
+        clauses.append("UPPER(sha1) = ANY(%s)")
+        params.append(norm_sha1s)
+    if norm_pcs:
+        clauses.append("pick_code = ANY(%s)")
+        params.append(norm_pcs)
+
+    cursor.execute(
+        f"""
+        SELECT id, name, sha1, pick_code, size, washing_level, washing_snapshot_json
+        FROM p115_filesystem_cache
+        WHERE ({' OR '.join(clauses)})
+          AND washing_level IS NOT NULL
+        ORDER BY updated_at DESC NULLS LAST
+        """,
+        tuple(params),
+    )
+
+    versions = []
+    seen = set()
+    for row in cursor.fetchall() or []:
+        sha1 = str(row.get('sha1') or '').strip().upper()
+        pc = str(row.get('pick_code') or '').strip()
+        key = sha1 or pc or str(row.get('id') or '')
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        try:
+            level = int(row.get('washing_level')) if row.get('washing_level') is not None else None
+        except Exception:
+            level = None
+
+        snapshot = row.get('washing_snapshot_json') or {}
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except Exception:
+                snapshot = {}
+
+        versions.append({
+            'sha1': sha1,
+            'pick_code': pc,
+            'fid': str(row.get('id') or ''),
+            'file_name': row.get('name') or '',
+            'size': row.get('size') or 0,
+            'level': level,
+            'reason': snapshot.get('reason') or '',
+            'target_cid': snapshot.get('target_cid') or '',
+            'media_type': snapshot.get('media_type') or '',
+            'identity': snapshot.get('identity') or {},
+            'evaluated_at': snapshot.get('evaluated_at'),
+        })
+
+    if not versions:
+        return {'level': None, 'snapshot': {}}
+
+    def _sort_key(item):
+        level = item.get('level')
+        if isinstance(level, int) and level > 0:
+            return (0, level)
+        if level is None:
+            return (2, 999999)
+        return (1, abs(int(level or 0)))
+
+    best = sorted(versions, key=_sort_key)[0]
+    return {
+        'level': best.get('level'),
+        'snapshot': {
+            'versions': versions,
+            'reason': best.get('reason'),
+            'sha1': best.get('sha1'),
+            'target_cid': best.get('target_cid'),
+            'media_type': best.get('media_type'),
+            'evaluated_at': best.get('evaluated_at'),
+        },
+    }
+
+
 def clear_table(table_name: str) -> int:
     """清空指定的数据库表，返回删除的行数。"""
     
@@ -829,6 +926,8 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                         file_sha1_json = '[]'::jsonb,      
                         file_pickcode_json = '[]'::jsonb,  
                         asset_details_json = NULL,         
+                        washing_level = NULL,
+                        washing_snapshot_json = '{}'::jsonb,
                         date_added = NULL,
                         
                         -- 2. 追剧状态重置
@@ -1324,13 +1423,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             row = cursor.fetchone()
 
             if not row:
-                return None, None, None, None, None, None, [], []
+                return None, None, None, None, None, None, [], [], []
 
             # 2. 解析 JSON 为 Python 列表
             emby_ids = row['emby_item_ids_json'] if isinstance(row['emby_item_ids_json'], list) else json.loads(row['emby_item_ids_json'] or '[]')
             
             if not isinstance(emby_ids, list) or target_emby_id not in emby_ids:
-                return None, None, None, None, None, None, [], []
+                return None, None, None, None, None, None, [], [], []
 
             assets = row['asset_details_json'] if isinstance(row['asset_details_json'], list) else json.loads(row['asset_details_json'] or '[]')
             sha1s = row['file_sha1_json'] if isinstance(row['file_sha1_json'], list) else json.loads(row['file_sha1_json'] or '[]')
@@ -1357,6 +1456,8 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             if isinstance(sha1s, list) and idx < len(sha1s): sha1s.pop(idx)
             if isinstance(pcs, list) and idx < len(pcs): pcs.pop(idx)
 
+            washing = _washing_snapshot_for_remaining_versions(cursor, sha1s, pcs)
+
             # 4. 更新回数据库
             cursor.execute("""
                 UPDATE media_metadata
@@ -1364,6 +1465,8 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     asset_details_json = %s::jsonb,
                     file_sha1_json = %s::jsonb,
                     file_pickcode_json = %s::jsonb,
+                    washing_level = %s,
+                    washing_snapshot_json = %s::jsonb,
                     last_updated_at = NOW()
                 WHERE tmdb_id = %s AND item_type = %s
             """, (
@@ -1371,6 +1474,8 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 json.dumps(assets, ensure_ascii=False) if assets else None, # asset_details_json 允许为 NULL
                 json.dumps(sha1s, ensure_ascii=False),
                 json.dumps(pcs, ensure_ascii=False),
+                washing.get('level'),
+                json.dumps(washing.get('snapshot') or {}, ensure_ascii=False),
                 row['tmdb_id'], row['item_type']
             ))
 
@@ -1502,7 +1607,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             emby_item_ids_json = '[]'::jsonb, 
                             asset_details_json = NULL,
                             file_sha1_json = '[]'::jsonb,
-                            file_pickcode_json = '[]'::jsonb
+                            file_pickcode_json = '[]'::jsonb,
+                            washing_level = NULL,
+                            washing_snapshot_json = '{}'::jsonb
                         WHERE parent_series_tmdb_id = %s AND season_number = %s AND item_type = 'Episode'
                         """,
                         (parent_tmdb_id, season_num)
@@ -1577,7 +1684,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             SET in_library = FALSE, 
                                 asset_details_json = NULL,
                                 file_sha1_json = '[]'::jsonb,
-                                file_pickcode_json = '[]'::jsonb
+                                file_pickcode_json = '[]'::jsonb,
+                                washing_level = NULL,
+                                washing_snapshot_json = '{}'::jsonb
                             WHERE parent_series_tmdb_id = %s 
                               AND season_number = %s 
                               AND item_type = 'Season'
@@ -1675,7 +1784,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             emby_item_ids_json = '[]'::jsonb, 
                             asset_details_json = NULL,
                             file_sha1_json = '[]'::jsonb,
-                            file_pickcode_json = '[]'::jsonb
+                            file_pickcode_json = '[]'::jsonb,
+                            washing_level = NULL,
+                            washing_snapshot_json = '{}'::jsonb
                         WHERE tmdb_id = %s AND item_type = %s
                         """,
                         (target_tmdb_id_for_full_cleanup, target_item_type_for_full_cleanup)
@@ -1696,7 +1807,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                                 emby_item_ids_json = '[]'::jsonb, 
                                 asset_details_json = NULL,
                                 file_sha1_json = '[]'::jsonb,
-                                file_pickcode_json = '[]'::jsonb
+                                file_pickcode_json = '[]'::jsonb,
+                                washing_level = NULL,
+                                washing_snapshot_json = '{}'::jsonb
                             WHERE parent_series_tmdb_id = %s AND item_type IN ('Season', 'Episode')
                             """,
                             (target_tmdb_id_for_full_cleanup,)

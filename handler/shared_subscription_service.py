@@ -1649,9 +1649,10 @@ def _prepare_files_before_rapid_transfer(
     source_label = f"{source_kind or '-'}:{source_id or '-'}"
     preflight_started_at = time.time()
     logger.debug(f"  ➜ [共享资源] 秒传前预检开始：source={source_label}, files={len(files)}")
+    skip_washing_gate = bool((payload or {}).get('_virtual_auto_promote'))
 
     conflict_mode = _current_organize_conflict_mode(default='skip')
-    if conflict_mode == 'replace':
+    if conflict_mode == 'replace' and not skip_washing_gate:
         files, inventory_gate = _replace_mode_short_circuit_best_inventory(
             source_kind=source_kind,
             source_id=source_id,
@@ -1723,6 +1724,20 @@ def _prepare_files_before_rapid_transfer(
             f"  ➜ [共享片头] 秒传前预检合并完成：成功 {intro_merged}，"
             f"失败 {len(intro_errors)}"
         )
+
+    if skip_washing_gate:
+        logger.info(
+            f"  ➜ [共享资源] 虚拟入库自动转正：跳过洗版预检拦截，保留 {len(files)} 个文件进入正式入库"
+        )
+        return files, {
+            'raw_cached_count': cached,
+            'raw_cache_errors': cache_errors[:20],
+            'intro_merged_count': intro_merged,
+            'intro_merge_errors': intro_errors[:20],
+            'washing_checked': False,
+            'washing_bypassed': True,
+            'message': '虚拟入库自动转正跳过洗版预检拦截',
+        }
 
     if conflict_mode != 'replace':
         logger.info(

@@ -1998,8 +1998,6 @@ def play_virtual_115_video(virtual_id, sha1, filename=None):
         except Exception as e:
             logger.debug(f"  ➜ [虚拟播放] 上报中心虚拟播放失败：{e}")
 
-        shared_virtual_db.record_virtual_play(virtual_id, percent=0)
-
         real_url = None
         api_priority = get_115_api_priority('openapi')
         use_openapi = (api_priority != 'cookie')
