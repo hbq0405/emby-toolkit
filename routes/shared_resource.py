@@ -1598,15 +1598,39 @@ def _delete_virtual_emby_item(row: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': bool(ok), 'found': True, 'id': item_id, 'name': item.get('Name') or '', 'path': delete_path}
 
 
+def _delete_virtual_p115_cache(row: Dict[str, Any]) -> int:
+    try:
+        virtual_id = int(row.get('id') or 0)
+    except Exception:
+        virtual_id = 0
+    if virtual_id <= 0:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM p115_filesystem_cache WHERE parent_id = %s OR id LIKE %s",
+                    (f"virtual:{virtual_id}", f"virtual:{virtual_id}:%"),
+                )
+                deleted = cursor.rowcount or 0
+            conn.commit()
+        return deleted
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 清理 115 虚拟缓存失败: virtual_id={virtual_id} -> {e}")
+        return 0
+
+
 def _remove_virtual_import_record(row: Dict[str, Any]) -> Dict[str, Any]:
     deleted_files = _delete_virtual_files(row)
+    deleted_cache = _delete_virtual_p115_cache(row)
     deleted_row = shared_virtual_db.delete_virtual_import(int(row.get('id')))
-    return {'item': deleted_row or row, 'deleted_files': deleted_files}
+    return {'item': deleted_row or row, 'deleted_files': deleted_files, 'deleted_cache': deleted_cache}
 
 
 def _delete_virtual_import_record_only(row: Dict[str, Any]) -> Dict[str, Any]:
+    deleted_cache = _delete_virtual_p115_cache(row)
     deleted_row = shared_virtual_db.delete_virtual_import(int(row.get('id')))
-    return {'item': deleted_row or row, 'deleted_files': 0}
+    return {'item': deleted_row or row, 'deleted_files': 0, 'deleted_cache': deleted_cache}
 
 
 def _track_list_value(value: Any) -> List[Any]:
@@ -2089,6 +2113,7 @@ def api_virtual_imports():
     data = shared_virtual_db.list_virtual_imports(
         status=request.args.get('status') or 'virtual',
         keyword=request.args.get('keyword') or request.args.get('q') or '',
+        item_type=request.args.get('item_type') or request.args.get('type') or 'all',
         page=int(request.args.get('page') or 1),
         page_size=int(request.args.get('page_size') or 30),
     )
@@ -2104,11 +2129,10 @@ def api_delete_virtual_import(virtual_id: int):
     emby_result = _delete_virtual_emby_item(row)
     if emby_result.get('found') and not emby_result.get('ok'):
         return jsonify({'success': False, 'message': 'Emby 虚拟项删除失败，已停止辞退', 'data': {'emby_delete': emby_result}}), 500
-    removed = _remove_virtual_import_record(row)
     return jsonify({
         'success': True,
-        'message': f"已辞退虚拟入库，清理本地文件 {removed.get('deleted_files', 0)} 个",
-        'data': {**removed, 'emby_delete': emby_result},
+        'message': '已提交辞退，等待 Emby 删除 webhook 善后清理虚拟入库记录',
+        'data': {'item': row, 'emby_delete': emby_result},
     })
 
 

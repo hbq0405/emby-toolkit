@@ -192,6 +192,75 @@ def _delete_cleanup_index_for_media_scope(cursor, tmdb_id: str, item_type: str) 
 
     return cursor.rowcount
 
+
+def _norm_virtual_path(value: Any) -> str:
+    text = str(value or '').strip().replace('\\', '/')
+    return re.sub(r'/+', '/', text).rstrip('/').lower()
+
+
+def _delete_virtual_file_artifacts(paths: List[str]) -> int:
+    deleted = 0
+    for path in paths or []:
+        text = str(path or '').strip()
+        if not text:
+            continue
+        for candidate in (text, re.sub(r'\.strm$', '-mediainfo.json', text, flags=re.I)):
+            try:
+                if candidate and os.path.exists(candidate):
+                    os.remove(candidate)
+                    deleted += 1
+            except Exception as e:
+                logger.debug(f"  ➜ [虚拟入库] 善后删除本地文件失败: {candidate} -> {e}")
+    return deleted
+
+
+def _cleanup_virtual_imports_for_deleted_assets(cursor, deleted_assets: List[Dict[str, Any]]) -> Dict[str, int]:
+    deleted_paths = {
+        _norm_virtual_path(asset.get('path') or asset.get('Path'))
+        for asset in (deleted_assets or [])
+        if isinstance(asset, dict)
+    }
+    deleted_paths = {x for x in deleted_paths if x}
+    if not deleted_paths:
+        return {'imports': 0, 'cache': 0, 'files': 0}
+
+    cursor.execute("SELECT id, strm_paths_json FROM shared_virtual_imports")
+    matched_rows = []
+    for row in cursor.fetchall() or []:
+        paths = row.get('strm_paths_json')
+        if isinstance(paths, str):
+            try:
+                paths = json.loads(paths)
+            except Exception:
+                paths = []
+        if not isinstance(paths, list):
+            paths = []
+        normalized = {_norm_virtual_path(path) for path in paths if path}
+        if normalized & deleted_paths:
+            matched_rows.append({'id': int(row['id']), 'paths': paths})
+
+    stats = {'imports': 0, 'cache': 0, 'files': 0}
+    for row in matched_rows:
+        virtual_id = row['id']
+        stats['files'] += _delete_virtual_file_artifacts(row.get('paths') or [])
+        cursor.execute(
+            "DELETE FROM p115_filesystem_cache WHERE parent_id = %s OR id LIKE %s",
+            (f"virtual:{virtual_id}", f"virtual:{virtual_id}:%"),
+        )
+        stats['cache'] += cursor.rowcount or 0
+        cursor.execute("DELETE FROM shared_virtual_imports WHERE id = %s", (virtual_id,))
+        stats['imports'] += cursor.rowcount or 0
+
+    if stats['imports'] or stats['cache'] or stats['files']:
+        logger.info(
+            "  ➜ [虚拟入库] 删除媒体善后已联动清理：记录=%s，缓存=%s，本地文件=%s",
+            stats['imports'],
+            stats['cache'],
+            stats['files'],
+        )
+    return stats
+
+
 def clear_table(table_name: str) -> int:
     """清空指定的数据库表，返回删除的行数。"""
     
@@ -1271,12 +1340,15 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             idx = emby_ids.index(target_emby_id)
             removed_sha1s = []
             removed_pcs = []
+            removed_assets = []
             if isinstance(sha1s, list) and idx < len(sha1s):
                 sha1 = _norm_sha1_for_shared_cleanup(sha1s[idx])
                 if sha1:
                     removed_sha1s.append(sha1)
             if isinstance(pcs, list) and idx < len(pcs) and pcs[idx]:
                 removed_pcs.append(str(pcs[idx]).strip())
+            if isinstance(assets, list) and idx < len(assets) and isinstance(assets[idx], dict):
+                removed_assets.append(dict(assets[idx]))
 
             emby_ids.pop(idx)
             
@@ -1330,6 +1402,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 row.get('episode_number'),
                 removed_sha1s,
                 removed_pcs,
+                removed_assets,
             )
 
         # ======================================================================
@@ -1345,11 +1418,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             with conn.cursor() as cursor:
                 
                 # --- 执行移除操作 ---
-                remaining_count, tmdb_id, db_item_type, parent_tmdb_id, season_num, episode_num, removed_sha1s, removed_pcs = remove_id_from_metadata(cursor, item_id)
+                remaining_count, tmdb_id, db_item_type, parent_tmdb_id, season_num, episode_num, removed_sha1s, removed_pcs, removed_assets = remove_id_from_metadata(cursor, item_id)
 
                 if remaining_count is None:
                     logger.warning(f"  ➜ 在数据库中未找到包含 Emby ID {item_id} 的记录，无需清理。")
                     return None
+
+                _cleanup_virtual_imports_for_deleted_assets(cursor, removed_assets)
 
                 if removed_sha1s:
                     _append_shared_cleanup_context(

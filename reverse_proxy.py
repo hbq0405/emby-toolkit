@@ -309,10 +309,14 @@ def _resolve_virtual_play_url(virtual_info, *, item_id='', play_session_id='', u
                 row.get('source_kind') or file_info.get('source_kind') or '',
                 row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or '',
                 'success',
-                success_count=10,
-                total_count=10,
+                success_count=1,
+                total_count=1,
                 message=f"虚拟播放：{file_name}",
                 transfer_mode='virtual',
+                sha1=sha1,
+                actual_sha1=sha1,
+                virtual_id=str(virtual_id),
+                ref_id=f"virtual_playback:{row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or virtual_id}:{sha1}:{uuid.uuid4().hex}",
             )
         except Exception as e:
             logger.debug("  ➜ [虚拟播放] 上报中心虚拟播放失败：%s", e)

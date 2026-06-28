@@ -170,7 +170,7 @@
               <n-input v-model:value="virtualFilters.keyword" placeholder="搜索标题 / TMDb ID / 源 ID" clearable @keyup.enter="loadVirtualImports">
                 <template #prefix><n-icon :component="SearchIcon" /></template>
               </n-input>
-              <n-select v-model:value="virtualFilters.status" :options="virtualStatusOptions" style="width: 140px" />
+              <n-select v-model:value="virtualFilters.item_type" :options="virtualTypeOptions" style="width: 140px" />
               <n-button type="primary" :loading="virtualLoading" @click="loadVirtualImports">查询</n-button>
             </n-space>
             <n-data-table
@@ -667,7 +667,7 @@ const groupedCenterSources = computed(() => (
 ));
 const shareFilters = reactive({ keyword: '', status: 'usable', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '' });
-const virtualFilters = reactive({ keyword: '', status: 'virtual' });
+const virtualFilters = reactive({ keyword: '', status: 'virtual', item_type: 'all' });
 const centerHomeMode = computed(() => !String(centerFilters.keyword || '').trim());
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
 const requestStatusOptions = [
@@ -780,10 +780,10 @@ const shareStatusOptions = [
   { label: 'RAW缺失', value: 'raw_missing' },
   { label: '已停用', value: 'disabled' },
 ];
-const virtualStatusOptions = [
-  { label: '虚拟中', value: 'virtual' },
-  { label: '已转正', value: 'promoted' },
-  { label: '全部', value: 'all' },
+const virtualTypeOptions = [
+  { label: '全部类型', value: 'all' },
+  { label: '电影', value: 'movie' },
+  { label: '剧集', value: 'tv' },
 ];
 
 const typeOptions = [
@@ -791,7 +791,7 @@ const typeOptions = [
   { label: '剧集', value: 'Series' }, { label: '季', value: 'Season' }, { label: '单集', value: 'Episode' },
 ];
 const manualItemTypeOptions = [
-  { label: '电影', value: 'Movie' }, { label: '分集', value: 'Episode' }, { label: '季入口', value: 'Season' },
+  { label: '电影', value: 'Movie' }, { label: '分集', value: 'Episode' }, { label: '剧集', value: 'Season' },
 ];
 const shareTypeOptions = [
   { label: '电影目录', value: 'movie_folder' },
@@ -873,9 +873,18 @@ const centerHomeGenreOptions = (displayType) => {
 };
 const resourceTypeLabel = (value) => ({
   movie_file: '电影', movie_folder: '电影', Movie: '电影', movie: '电影', movies: '电影',
-  season_pack: '剧集资源', series_pack: '全剧包', Season: '季入口', Series: '全剧包', season: '季入口', series: '全剧包', Pack: '季入口', pack: '季入口',
+  season_pack: '剧集资源', series_pack: '全剧包', Season: '剧集', Series: '全剧包', season: '剧集', series: '全剧包', Pack: '剧集', pack: '剧集',
   episode_file: '分集资源', Episode: '分集', episode: '分集', episodes: '分集',
 }[value] || value || '-');
+const virtualImportTitle = (row = {}) => {
+  const title = row.title || row.series_title || row.source_id || '-';
+  const type = String(row.item_type || '').toLowerCase();
+  const season = Number(row.season_number || 0);
+  if (season > 0 && ['series', 'season', 'episode', 'tv', 'pack'].includes(type)) {
+    return `${appendYear(title, row.release_year)} 第 ${season} 季`;
+  }
+  return appendYear(title, row.release_year);
+};
 const shareTypeLabel = (value) => resourceTypeLabel(value) || shareTypeOptions.find(opt => opt.value === value)?.label || value || '-';
 const isSuccessShareMessage = (value) => {
   const text = String(value || '').trim();
@@ -1282,16 +1291,13 @@ const shareColumns = [
 
 const virtualColumns = [
   { title: '标题', key: 'title', minWidth: 280, render: row => h('div', [
-    h('div', { class: 'main-title' }, appendYear(row.title || row.source_id || '-', row.release_year)),
+    h('div', { class: 'main-title' }, virtualImportTitle(row)),
     h('div', { class: 'sub-title' }, [
       resourceTypeLabel(row.item_type),
-      row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '',
-      row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '',
       row.tmdb_id ? ` · TMDb ${row.tmdb_id}` : '',
     ].filter(Boolean).join(''))
   ]) },
   { title: '文件', key: 'file_count', width: 90, render: row => `${row.file_count || 0} 个` },
-  { title: '状态', key: 'status', width: 100, render: row => h(NTag, { size: 'small', type: row.status === 'promoted' ? 'success' : 'info' }, { default: () => row.status === 'promoted' ? '已转正' : '虚拟中' }) },
   { title: '观看', key: 'watched_count', width: 120, render: row => `${row.watched_count || 0} 次 / ${Math.round(Number(row.played_percent || 0))}%` },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '操作', key: 'actions', width: 170, fixed: 'right', render: row => h(NSpace, { size: 8, align: 'center', wrap: false }, { default: () => [

@@ -4184,6 +4184,108 @@ def _virtual_category_path(source: Dict[str, Any], files: List[Dict[str, Any]]) 
     return '电影' if media_type == 'movie' else '剧集'
 
 
+def _virtual_washing_identity(source: Dict[str, Any], file_info: Dict[str, Any], media_type: str, season_num=None, episode_num=None) -> Dict[str, Any]:
+    tmdb_id = (
+        source.get('tmdb_id') or file_info.get('tmdb_id')
+        if media_type == 'movie'
+        else _source_parent_series_tmdb_id(file_info, source)
+    )
+    return {
+        'tmdb_id': str(tmdb_id or '').strip(),
+        'media_type': media_type,
+        'season_number': season_num if media_type != 'movie' else None,
+        'episode_number': episode_num if media_type != 'movie' else None,
+    }
+
+
+def _virtual_washing_target(source: Dict[str, Any], file_info: Dict[str, Any], media_type: str, season_num=None) -> Dict[str, Any]:
+    identity = _virtual_washing_identity(source, file_info, media_type, season_num=season_num)
+    tmdb_text = str(identity.get('tmdb_id') or '').strip()
+    if not tmdb_text:
+        return {'target_cid': '', 'original_lang': ''}
+    try:
+        p115 = P115Service.get_client()
+        organizer = SmartOrganizer(
+            p115,
+            int(tmdb_text) if tmdb_text.isdigit() else 0,
+            media_type,
+            source.get('title') or file_info.get('title') or file_info.get('file_name') or file_info.get('name') or '',
+            None,
+            False,
+        )
+        if media_type == 'tv' and season_num is not None:
+            organizer.forced_season = int(season_num)
+        organizer.current_sorting_filename = file_info.get('file_name') or file_info.get('name') or ''
+        target_cid = organizer.get_target_cid(season_num=season_num if media_type == 'tv' else None)
+        return {
+            'target_cid': str(target_cid or '').strip(),
+            'original_lang': str((organizer.raw_metadata or {}).get('lang_code') or '').strip(),
+        }
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 计算洗版目标目录失败: tmdb={tmdb_text}, media_type={media_type}, err={e}")
+        return {'target_cid': '', 'original_lang': ''}
+
+
+def _cache_virtual_import_file(
+    source: Dict[str, Any],
+    file_info: Dict[str, Any],
+    *,
+    virtual_id: int,
+    sha1: str,
+    safe_file: str,
+    local_file_path: str,
+) -> None:
+    source_kind = _normalize_source_kind(source.get('source_kind') or file_info.get('source_kind'))
+    season_num, episode_num = _guess_se_from_source(file_info, source)
+    item_type = str(source.get('item_type') or file_info.get('item_type') or '').strip()
+    media_type = 'movie' if item_type == 'Movie' or source_kind == 'movie' else 'tv'
+    identity = _virtual_washing_identity(source, file_info, media_type, season_num, episode_num)
+    target = _virtual_washing_target(source, file_info, media_type, season_num=season_num)
+    target_cid = target.get('target_cid') or ''
+    file_size = _rapid_size_to_int(file_info.get('size') or file_info.get('file_size') or file_info.get('fs'), 0)
+    level = None
+    reason = '未计算洗版优先级'
+    if target_cid:
+        level, reason = _washing_new_level(
+            sha1,
+            safe_file,
+            file_size,
+            target_cid,
+            media_type,
+            original_lang=target.get('original_lang') or '',
+            has_external_subtitle=False,
+            tmdb_id=identity.get('tmdb_id') or '',
+            season_num=season_num,
+            episode_num=episode_num,
+        )
+        try:
+            level = int(level) if level not in (None, '', [], {}) else None
+        except Exception:
+            level = None
+    else:
+        reason = '缺少洗版目标目录'
+
+    snapshot = {
+        'reason': reason,
+        'target_cid': target_cid or None,
+        'media_type': media_type,
+        'identity': identity,
+        'evaluated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'source': 'virtual_import',
+    }
+    P115CacheManager.save_file_cache(
+        fid=f"virtual:{int(virtual_id)}:{sha1}",
+        parent_id=f"virtual:{int(virtual_id)}",
+        name=safe_file,
+        sha1=sha1,
+        pick_code=None,
+        local_path=local_file_path.replace('\\', '/'),
+        size=file_size,
+        washing_level=level,
+        washing_snapshot_json=snapshot,
+    )
+
+
 def _virtual_standard_paths(source: Dict[str, Any], file_info: Dict[str, Any], category_path: str) -> tuple[str, str]:
     item_type = str(source.get('item_type') or file_info.get('item_type') or '').strip()
     source_kind = _normalize_source_kind(source.get('source_kind') or file_info.get('source_kind'))
@@ -4316,6 +4418,17 @@ def create_virtual_strm_files(source: Dict[str, Any], files: List[Dict[str, Any]
         with open(strm_path, 'w', encoding='utf-8') as f:
             f.write(content)
         out.append(strm_path)
+        try:
+            _cache_virtual_import_file(
+                source,
+                file_info,
+                virtual_id=virtual_id,
+                sha1=sha1,
+                safe_file=safe_file,
+                local_file_path=os.path.join(rel_dir, safe_file),
+            )
+        except Exception as e:
+            logger.warning(f"  ➜ [虚拟入库] 写入洗版缓存失败: {safe_file} -> {e}")
         try:
             mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
             if mediainfo_text:

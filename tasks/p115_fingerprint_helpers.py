@@ -69,6 +69,10 @@ def p115_fp_read_strm_target(path: str) -> Optional[str]:
         return None
 
 
+def p115_fp_is_virtual_strm_target(value: Optional[str]) -> bool:
+    return bool(value and re.search(r'/api/p115/virtual-play/\d+/[A-Fa-f0-9]{40}(?:/|$)', str(value)))
+
+
 def p115_fp_build_local_path_candidates(
     path: str,
     strm_target: Optional[str],
@@ -381,6 +385,9 @@ def repair_p115_fingerprints_for_rows(
                 stats['missing_assets'] += 1
 
             strm_target = p115_fp_read_strm_target(clean_path)
+            if p115_fp_is_virtual_strm_target(strm_target or clean_path):
+                logger.debug(f"  ➜ [{log_prefix}] 跳过虚拟入库 STRM 指纹补齐: {clean_path}")
+                continue
             local_candidates = p115_fp_build_local_path_candidates(
                 clean_path,
                 strm_target,

@@ -84,13 +84,19 @@ def get_virtual_import(virtual_id: int) -> Dict[str, Any]:
             return _row(cur.fetchone()) or {}
 
 
-def list_virtual_imports(status: str = '', keyword: str = '', page: int = 1, page_size: int = 30) -> Dict[str, Any]:
+def list_virtual_imports(status: str = '', keyword: str = '', item_type: str = '', page: int = 1, page_size: int = 30) -> Dict[str, Any]:
     page = max(1, _safe_int(page, 1))
     page_size = max(1, min(_safe_int(page_size, 30), 200))
     where, args = [], []
     if status and status != 'all':
         where.append("status=%s")
         args.append(status)
+    item_type = str(item_type or '').strip().lower()
+    if item_type and item_type != 'all':
+        if item_type in {'movie', 'film'}:
+            where.append("LOWER(item_type)='movie'")
+        elif item_type in {'tv', 'series', 'season', 'episode'}:
+            where.append("LOWER(item_type) IN ('series','season','episode','tv')")
     if keyword:
         kw = f"%{keyword}%"
         where.append("(title ILIKE %s OR source_id ILIKE %s OR tmdb_id ILIKE %s)")

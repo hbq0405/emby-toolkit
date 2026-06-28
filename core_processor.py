@@ -1195,14 +1195,20 @@ class MediaProcessor:
         try:
             if file_path.startswith('http'):
                 pc = utils.extract_pickcode_from_strm_url(file_path)
+                virtual_match = re.search(r'/api/p115/virtual-play/\d+/([A-Fa-f0-9]{40})(?:/|$)', file_path)
+                if virtual_match:
+                    sha1 = virtual_match.group(1).upper()
             elif file_path.lower().endswith('.strm') and os.path.exists(file_path):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
                     pc = utils.extract_pickcode_from_strm_url(content)
+                    virtual_match = re.search(r'/api/p115/virtual-play/\d+/([A-Fa-f0-9]{40})(?:/|$)', content)
+                    if virtual_match:
+                        sha1 = virtual_match.group(1).upper()
         except Exception as e:
             logger.warning(f"读取 STRM 文件失败: {e}")
 
-        if pc:
+        if pc and not sha1:
             sha1 = self._get_sha1_by_pickcode(pc)
 
         return pc, sha1
@@ -2394,7 +2400,8 @@ class MediaProcessor:
                                         emby_path = ''
                             
                         mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
-                        file_sha1 = self._get_sha1_by_pickcode(file_pc)
+                        if not file_sha1 and file_pc:
+                            file_sha1 = self._get_sha1_by_pickcode(file_pc)
                         
                         temp_version = version.copy()
                         temp_version['Path'] = emby_path
