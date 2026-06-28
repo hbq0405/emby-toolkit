@@ -14,7 +14,72 @@
           :label-align="formLabelAlign"
           :model="configModel"
         >
-          <n-tabs class="settings-tabs" type="line" animated :size="isMobile ? 'medium' : 'large'" :pane-style="tabPaneStyle">
+          <n-grid class="settings-top-cards" cols="1 l:2" :x-gap="24" :y-gap="16" responsive="screen">
+            <n-gi>
+              <n-card :bordered="false" class="dashboard-card pro-card">
+                <div class="top-card-content">
+                  <div>
+                    <div class="top-card-title" :style="{ color: proStatusInfo.color }">
+                      <span class="top-card-icon">{{ proStatusInfo.icon }}</span>
+                      Emby Toolkit {{ proStatusInfo.text }}
+                    </div>
+                    <div class="top-card-desc">
+                      <span v-html="proStatusInfo.desc"></span><br/>
+                      <span v-if="configModel?.is_pro_active" class="pro-expire-time">
+                        {{ configModel?.pro_expire_time?.startsWith('2099') ? '到期时间：永久有效' : '到期时间：' + configModel?.pro_expire_time?.split('T')[0] }}
+                      </span>
+                    </div>
+                  </div>
+                  <n-space align="center">
+                    <n-tag v-if="configModel?.is_pro_active" type="warning" size="large" round :bordered="false" class="pro-active-tag">
+                      已激活
+                    </n-tag>
+                    <n-button type="warning" size="large" strong @click="showProModal = true">
+                      <template #icon><n-icon><DiamondIcon /></n-icon></template>
+                      {{ configModel?.is_pro_active ? '续期 Pro' : '升级 Pro' }}
+                    </n-button>
+                  </n-space>
+                </div>
+              </n-card>
+            </n-gi>
+            <n-gi>
+              <n-card :bordered="false" class="dashboard-card quick-deploy-card">
+                <template #header><span class="card-title">115 网盘一键部署</span></template>
+                <template #header-extra>
+                  <n-button type="primary" ghost :loading="quickDeployLoading" @click="handleQuickDeploy115">
+                    <template #icon><n-icon :component="FlashIcon" /></template>
+                    开始部署
+                  </n-button>
+                </template>
+                <n-space vertical :size="10">
+                  <n-grid cols="1 m:2" :x-gap="12" :y-gap="8" responsive="screen">
+                    <n-gi v-for="item in quickDeployPrerequisites" :key="item.label">
+                      <div class="prerequisite-item" :class="{ pending: !item.done }">
+                        <n-icon :component="item.done ? CheckIcon : CloseIcon" />
+                        <button type="button" class="prerequisite-link" @click="jumpToSettingsTab(item.tab)">
+                          {{ item.label }}
+                        </button>
+                      </div>
+                    </n-gi>
+                  </n-grid>
+                  <div class="prerequisite-note">
+                    目录映射一致性会在部署时校验：ETK 与 Emby 必须看到同一个 STRM 根目录，否则会提示修改映射。
+                  </div>
+                  <div v-if="quickDeployLoading || quickDeployProgress > 0" class="quick-deploy-progress">
+                    <n-progress
+                      type="line"
+                      :percentage="quickDeployProgress"
+                      :processing="quickDeployLoading"
+                      indicator-placement="inside"
+                    />
+                    <n-text depth="3" style="font-size:0.8em;">{{ quickDeployStatus }}</n-text>
+                  </div>
+                </n-space>
+              </n-card>
+            </n-gi>
+          </n-grid>
+
+          <n-tabs v-model:value="activeSettingsTab" class="settings-tabs" type="line" animated :size="isMobile ? 'medium' : 'large'" :pane-style="tabPaneStyle">
             <!-- ================== 标签页 1: Emby 前置配置 ================== -->
             <n-tab-pane name="emby" tab="Emby 前置配置">
               <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
@@ -206,45 +271,6 @@
             <!-- ================== 标签页 1: 通用设置 ================== -->
             <n-tab-pane name="general" tab="通用设置">
               <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
-                <n-gi span="1 l:3">
-                  <n-card :bordered="false" class="dashboard-card" style="background: linear-gradient(135deg, #fffcf8 0%, #fff 100%); border: 1px solid #ffe5c4;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-                      <div>
-                        <!-- 动态图标和标题 -->
-                        <div style="font-size: 18px; font-weight: bold; display: flex; align-items: center; gap: 8px;" :style="{ color: proStatusInfo.color }">
-                          <span style="font-size: 22px;">{{ proStatusInfo.icon }}</span>
-                          Emby Toolkit {{ proStatusInfo.text }}
-                        </div>
-                        
-                        <!-- 动态描述和到期时间 -->
-                        <div style="font-size: 13px; color: #888; margin-top: 6px;">
-                          <!-- ⚠️ 这里改成了 v-html，这样才能渲染出超链接 -->
-                          <span v-html="proStatusInfo.desc"></span><br/>
-                          
-                          <span v-if="configModel?.is_pro_active" style="color: #d48806; font-weight: bold; margin-top: 4px; display: inline-block;">
-                            {{ configModel?.pro_expire_time?.startsWith('2099') ? '到期时间：永久有效' : '到期时间：' + configModel?.pro_expire_time?.split('T')[0] }}
-                          </span>
-                        </div>
-                      </div>
-                      
-                      <!-- 按钮状态 -->
-                      <n-space align="center">
-                        <n-tag v-if="configModel?.is_pro_active" type="warning" size="large" round :bordered="false" style="font-weight: bold; font-size: 14px; padding: 0 15px;">
-                          已激活
-                        </n-tag>
-                        <n-button
-                          type="warning"
-                          size="large"
-                          strong
-                          @click="showProModal = true"
-                        >
-                          <template #icon><n-icon><DiamondIcon /></n-icon></template>
-                          {{ configModel?.is_pro_active ? '续期 Pro' : '升级 Pro' }}
-                        </n-button>
-                      </n-space>
-                    </div>
-                  </n-card>
-                </n-gi>
                 <!-- 左侧列 -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
@@ -679,26 +705,6 @@
                         <template #feedback>
                             <n-text depth="3" style="font-size:0.8em;">支持普通字符串替换和正则表达式替换。</n-text>
                         </template>
-                    </n-form-item>
-                    <n-form-item label="基础部署">
-                      <n-space vertical :size="8" style="width: 100%;">
-                        <n-button type="primary" ghost :loading="quickDeployLoading" @click="handleQuickDeploy115">
-                          <template #icon><n-icon :component="FlashIcon" /></template>
-                          115 网盘一键部署
-                        </n-button>
-                        <div v-if="quickDeployLoading || quickDeployProgress > 0" class="quick-deploy-progress">
-                          <n-progress
-                            type="line"
-                            :percentage="quickDeployProgress"
-                            :processing="quickDeployLoading"
-                            indicator-placement="inside"
-                          />
-                          <n-text depth="3" style="font-size:0.8em;">{{ quickDeployStatus }}</n-text>
-                        </div>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          先完成 115 授权、STRM 链接地址，并在 Emby 前置配置中保存 Emby 与 STRM 根目录，再一键创建目录、媒体库、分类、重命名和洗版配置。
-                        </n-text>
-                      </n-space>
                     </n-form-item>
                   </n-card>
                 </n-gi>
@@ -2051,6 +2057,7 @@ const episodeRegexModalRef = ref(null);
 const defaultStreamModalRef = ref(null);
 const musicModalRef = ref(null);
 const ruleManagerRef = ref(null);
+const activeSettingsTab = ref('emby');
 
 const MOBILE_BREAKPOINT = 768;
 const isMobile = ref(false);
@@ -2761,6 +2768,22 @@ const showQuickDeployResult = ref(false);
 const quickDeployTree = ref(null);
 const quickDeployLocalDirs = ref([]);
 const quickDeployEmbyLibraries = ref([]);
+const quickDeployPrerequisites = computed(() => {
+  const model = configModel.value || {};
+  const p115Ready = !!(p115Info.value?.has_token || p115Info.value?.has_cookie);
+  const strmUrlReady = !!model.etk_server_url && /^https?:\/\//i.test(model.etk_server_url);
+  return [
+    { label: '115 授权', done: p115Ready, tab: '115_drive' },
+    { label: 'Emby URL', done: !!model.emby_server_url, tab: 'emby' },
+    { label: 'Emby API Key', done: !!model.emby_api_key, tab: 'emby' },
+    { label: 'STRM 根目录', done: !!model.local_strm_root, tab: 'emby' },
+    { label: 'STRM 链接地址', done: strmUrlReady, tab: '115_drive' }
+  ];
+});
+
+const jumpToSettingsTab = (tabName) => {
+  activeSettingsTab.value = tabName;
+};
 
 // ★★★ Cookie 扫码获取逻辑 ★★★
 const showCookieModal = ref(false);
@@ -3228,7 +3251,7 @@ const handleCreateFolder = async () => {
 
 const handleQuickDeploy115 = () => {
   const missing = [];
-  if (p115Info.value && !p115Info.value?.has_token && !p115Info.value?.has_cookie) missing.push('115 授权');
+  if (!(p115Info.value?.has_token || p115Info.value?.has_cookie)) missing.push('115 授权');
   if (!configModel.value?.emby_server_url) missing.push('Emby URL');
   if (!configModel.value?.emby_api_key) missing.push('Emby API Key');
   if (!configModel.value?.local_strm_root) missing.push('STRM 根目录');
@@ -3745,6 +3768,81 @@ onUnmounted(() => {
   font-size: 16px;
   vertical-align: middle;
 }
+.settings-top-cards {
+  margin-bottom: 18px;
+}
+.top-card-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.top-card-title {
+  font-size: 18px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.top-card-icon {
+  font-size: 22px;
+}
+.top-card-desc {
+  font-size: 13px;
+  color: #888;
+  margin-top: 6px;
+  line-height: 1.6;
+}
+.pro-card {
+  background: linear-gradient(135deg, #fffcf8 0%, #fff 100%);
+  border: 1px solid #ffe5c4;
+}
+.pro-expire-time {
+  color: #d48806;
+  font-weight: bold;
+  margin-top: 4px;
+  display: inline-block;
+}
+.pro-active-tag {
+  font-weight: bold;
+  font-size: 14px;
+  padding: 0 15px;
+}
+.quick-deploy-card {
+  height: 100%;
+}
+.prerequisite-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-success-color);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.prerequisite-item.pending {
+  color: var(--n-error-color);
+}
+.prerequisite-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prerequisite-link:hover {
+  color: var(--n-primary-color);
+}
+.prerequisite-note {
+  color: var(--n-text-color-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
 /* ★★★ 新增：文件夹浏览器样式 ★★★ */
 .folder-browser {
   display: flex;
@@ -3809,7 +3907,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-width: 420px;
+  width: 100%;
 }
 .browser-footer {
   padding: 12px 16px; border-top: 1px solid var(--n-divider-color);
@@ -3901,6 +3999,14 @@ onUnmounted(() => {
 
   .card-title {
     font-size: 15px;
+  }
+
+  .top-card-content {
+    align-items: flex-start;
+  }
+
+  .top-card-title {
+    font-size: 16px;
   }
 
   .description-text {
