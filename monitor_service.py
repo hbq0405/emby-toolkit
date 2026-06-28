@@ -288,7 +288,7 @@ def _is_etk_standard_strm(file_path: str) -> bool:
             return False
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read(2048).strip()
-        return '/api/p115/play/' in content
+        return '/api/p115/play/' in content or '/api/p115/virtual-play/' in content
     except Exception as e:
         logger.warning(f"  ➜ [实时监控] 读取 STRM 失败，已跳过：{os.path.basename(file_path)}，原因：{e}")
         return False

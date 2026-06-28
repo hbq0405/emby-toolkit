@@ -14,6 +14,7 @@ import config_manager
 import constants
 from database import settings_db
 from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
+from handler.p115_rename import P115RenameRenderer
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled
 
@@ -4075,6 +4076,29 @@ def _safe_path_component(value: Any, fallback: str = '未命名') -> str:
     return (text or fallback)[:180]
 
 
+def _safe_virtual_rel_path(value: Any, fallback: str = '未命名') -> str:
+    parts = [
+        _safe_path_component(part, fallback='')
+        for part in str(value or '').replace('\\', '/').split('/')
+    ]
+    parts = [part for part in parts if part]
+    return '/'.join(parts) or fallback
+
+
+def _virtual_video_info(file_name: str, sha1: str = '') -> Dict[str, Any]:
+    analyzer = _MediainfoBuilder()
+    info = analyzer._extract_video_info(file_name or '') or {}
+    sha1 = _norm_sha1(sha1)
+    if sha1:
+        try:
+            real_info = analyzer._fetch_and_parse_mediainfo(sha1, info, file_node=None, silent_log=True) or {}
+            if real_info:
+                info.update(real_info)
+        except Exception as e:
+            logger.debug(f"  ➜ [虚拟入库] 读取媒体信息命名参数失败：{sha1[:12]} -> {e}")
+    return info
+
+
 def _virtual_category_path(source: Dict[str, Any], files: List[Dict[str, Any]]) -> str:
     cfg = config_manager.APP_CONFIG or {}
     first = next((f for f in files or [] if isinstance(f, dict)), {}) or {}
@@ -4110,32 +4134,112 @@ def _virtual_category_path(source: Dict[str, Any], files: List[Dict[str, Any]]) 
 
 def _virtual_standard_paths(source: Dict[str, Any], file_info: Dict[str, Any], category_path: str) -> tuple[str, str]:
     item_type = str(source.get('item_type') or file_info.get('item_type') or '').strip()
+    source_kind = _normalize_source_kind(source.get('source_kind') or file_info.get('source_kind'))
+    season_num, episode_num = _guess_se_from_source(file_info, source)
+    sha1 = _norm_sha1(file_info.get('sha1'))
+    file_name = _safe_path_component(file_info.get('file_name') or file_info.get('name') or file_info.get('sha1') or 'video.mkv')
+    video_info = _virtual_video_info(file_name, sha1)
+    if season_num is None and video_info.get('season_number') is not None:
+        season_num = _safe_int(video_info.get('season_number'), 1)
+    if episode_num is None and video_info.get('episode_number') is not None:
+        episode_num = _safe_int(video_info.get('episode_number'), None)
+    is_tv = item_type == 'Episode' or season_num is not None or source_kind in ('logical_season', 'season_hub')
     title = _safe_path_component(
-        source.get('title')
-        or file_info.get('title')
+        (source.get('title') if is_tv else None)
         or file_info.get('series_title')
+        or file_info.get('series_name')
+        or source.get('series_title')
+        or source.get('series_name')
+        or source.get('title')
+        or file_info.get('title')
         or file_info.get('file_name')
         or '共享资源'
     )
     year = source.get('release_year') or source.get('year') or file_info.get('release_year') or ''
-    tmdb_id = source.get('tmdb_id') or source.get('parent_series_tmdb_id') or file_info.get('parent_series_tmdb_id') or file_info.get('tmdb_id') or ''
-    root_name = title
-    if year:
-        root_name += f" ({year})"
-    if tmdb_id:
-        root_name += f" {{tmdb={tmdb_id}}}"
-    season_num, episode_num = _guess_se_from_source(file_info, source)
-    file_name = _safe_path_component(file_info.get('file_name') or file_info.get('name') or file_info.get('sha1') or 'video.mkv')
+    tmdb_id = (
+        source.get('parent_series_tmdb_id') or source.get('series_tmdb_id') or file_info.get('parent_series_tmdb_id') or file_info.get('series_tmdb_id') or source.get('tmdb_id') or file_info.get('tmdb_id')
+        if is_tv else
+        source.get('tmdb_id') or file_info.get('tmdb_id')
+    ) or ''
     ext = os.path.splitext(file_name)[1] or '.mkv'
     stem = os.path.splitext(file_name)[0]
-    if item_type == 'Episode' or season_num is not None or _normalize_source_kind(source.get('source_kind')) in ('logical_season', 'season_hub'):
-        season_dir = f"Season {int(season_num or 1):02d}"
-        if episode_num is not None:
-            safe_file = f"{title} - S{int(season_num or 1):02d}E{int(episode_num):02d}{ext}"
+
+    rename_config = settings_db.get_setting('p115_rename_config') or {
+        "main_dir_template": "{{title}}{% if year %} ({{year}}){% endif %} {tmdb={{tmdbid}}}",
+        "season_fmt": "Season {02}",
+        "movie_file_template": "{{title}}{% if year %} ({{year}}){% endif %}{{fileExt}}",
+        "tv_file_template": "{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{{fileExt}}",
+    }
+    details = {
+        'title': title,
+        'original_title': source.get('original_title') or file_info.get('original_title') or title,
+        'date': f"{year}-01-01" if re.fullmatch(r'(19|20)\d{2}', str(year or '')) else '',
+    }
+    renderer = P115RenameRenderer(details, str(tmdb_id or ''), details.get('original_title') or title, rename_config)
+    main_format = P115RenameRenderer.get_format(rename_config, 'main_dir', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
+    root_name = renderer.build_name(main_format, is_tv=is_tv, original_title=details.get('original_title'), safe_title=title) or ''
+    if not root_name:
+        root_name = title
+        if year:
+            root_name += f" ({year})"
+        if tmdb_id:
+            root_name += f" {{tmdb={tmdb_id}}}"
+    root_name = _safe_virtual_rel_path(root_name, title)
+
+    if is_tv:
+        season_format = P115RenameRenderer.get_format(rename_config, 'season_dir', ['season_name_en'])
+        season_dir = renderer.build_name(
+            season_format,
+            is_tv=True,
+            season_num=int(season_num or 1),
+            original_title=details.get('original_title'),
+            original_name=file_name,
+            video_info=video_info,
+            safe_title=title,
+        ) or f"Season {int(season_num or 1):02d}"
+        season_dir = _safe_path_component(season_dir, f"Season {int(season_num or 1):02d}")
+        if rename_config.get('keep_original_name'):
+            safe_file = file_name
         else:
-            safe_file = f"{stem}{ext}"
+            file_format = P115RenameRenderer.get_format(rename_config, 'tv_file', None)
+            if not file_format:
+                file_format = P115RenameRenderer.get_format(rename_config, 'file', None)
+            safe_file = renderer.build_name(
+                file_format,
+                is_tv=True,
+                season_num=int(season_num or 1),
+                episode_num=int(episode_num) if episode_num is not None else None,
+                original_title=details.get('original_title'),
+                original_name=file_name,
+                video_info=video_info,
+                safe_title=title,
+                file_ext=ext,
+            ) if file_format else ''
+            if not safe_file:
+                if episode_num is not None:
+                    safe_file = f"{title} - S{int(season_num or 1):02d}E{int(episode_num):02d}{ext}"
+                else:
+                    safe_file = f"{stem}{ext}"
         return os.path.join(category_path or '剧集', root_name, season_dir), _safe_path_component(safe_file)
-    return os.path.join(category_path or '电影', root_name), _safe_path_component(file_name)
+
+    if rename_config.get('keep_original_name'):
+        safe_file = file_name
+    else:
+        file_format = P115RenameRenderer.get_format(rename_config, 'movie_file', None)
+        if not file_format:
+            file_format = P115RenameRenderer.get_format(rename_config, 'file', None)
+        safe_file = renderer.build_name(
+            file_format,
+            is_tv=False,
+            original_title=details.get('original_title'),
+            original_name=file_name,
+            video_info=video_info,
+            safe_title=title,
+            file_ext=ext,
+        ) if file_format else ''
+        if not safe_file:
+            safe_file = file_name
+    return os.path.join(category_path or '电影', root_name), _safe_path_component(safe_file)
 
 
 def create_virtual_strm_files(source: Dict[str, Any], files: List[Dict[str, Any]], virtual_id: int) -> List[str]:
