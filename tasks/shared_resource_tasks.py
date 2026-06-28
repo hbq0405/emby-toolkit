@@ -452,42 +452,45 @@ def _p115_range_bytes_by_pick_code(pick_code: str, start: int, end: int) -> byte
         return b''
 
 
-def _save_preid_to_p115_cache(file_info: Dict[str, Any], preid: str) -> None:
+def _save_preid_to_mediainfo_cache(file_info: Dict[str, Any], preid: str) -> None:
     preid = _norm_preid(preid)
-    if not preid:
-        return
     sha1 = _norm_sha1(file_info.get('sha1'))
-    fid = str(file_info.get('fid') or file_info.get('file_id') or '').strip()
-    pc = str(file_info.get('pick_code') or file_info.get('pc') or '').strip()
-    clauses, args = [], []
-    if fid:
-        clauses.append('id=%s')
-        args.append(fid)
-    if pc:
-        clauses.append('pick_code=%s')
-        args.append(pc)
-    if sha1:
-        clauses.append('UPPER(sha1)=%s')
-        args.append(sha1)
-    if not clauses:
+    if not preid or not sha1:
         return
     try:
+        from psycopg2.extras import Json
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1=%s", (sha1,))
+                row = cur.fetchone()
+                raw = (row or {}).get('raw_ffprobe_json') if row else None
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except Exception:
+                        raw = {}
+                if not isinstance(raw, dict):
+                    raw = {}
+                etk = raw.get('_etk') if isinstance(raw.get('_etk'), dict) else {}
+                etk = dict(etk or {})
+                etk.setdefault('sha1', sha1)
+                etk['preid'] = preid
+                raw['_etk'] = etk
                 cur.execute(
-                    f"""
-                    UPDATE p115_filesystem_cache
-                    SET preid=%s, updated_at=NOW()
-                    WHERE {' OR '.join(clauses)}
+                    """
+                    INSERT INTO p115_mediainfo_cache (sha1, raw_ffprobe_json, created_at, hit_count)
+                    VALUES (%s, %s, NOW(), 0)
+                    ON CONFLICT (sha1)
+                    DO UPDATE SET raw_ffprobe_json = EXCLUDED.raw_ffprobe_json
                     """,
-                    [preid, *args],
+                    (sha1, Json(raw, dumps=lambda obj: json.dumps(obj, ensure_ascii=False))),
                 )
             conn.commit()
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 回写 p115_filesystem_cache.preid 失败: {e}")
+        logger.debug(f"  ➜ [共享资源] 回写 p115_mediainfo_cache RAW preid 失败: {e}")
 
 
-def _lookup_preid_from_p115_cache(file_info: Dict[str, Any]) -> str:
+def _lookup_preid_from_raw_cache(file_info: Dict[str, Any]) -> str:
     meta = file_info.get('rapid_meta_json') if isinstance(file_info.get('rapid_meta_json'), dict) else {}
     preid = _norm_preid(file_info.get('preid') or meta.get('preid') or meta.get('pre_sha1') or meta.get('pre_sha1_128k'))
     if preid:
@@ -496,39 +499,29 @@ def _lookup_preid_from_p115_cache(file_info: Dict[str, Any]) -> str:
     etk = raw.get('_etk') if isinstance(raw, dict) and isinstance(raw.get('_etk'), dict) else {}
     preid = _norm_preid(etk.get('preid') or etk.get('pre_sha1') or etk.get('pre_sha1_128k'))
     if preid:
-        _save_preid_to_p115_cache(file_info, preid)
+        _save_preid_to_mediainfo_cache(file_info, preid)
         return preid
     sha1 = _norm_sha1(file_info.get('sha1'))
-    fid = str(file_info.get('fid') or file_info.get('file_id') or '').strip()
-    pc = str(file_info.get('pick_code') or file_info.get('pc') or meta.get('pick_code') or meta.get('pc') or '').strip()
-    clauses, args = [], []
-    if fid:
-        clauses.append('id=%s')
-        args.append(fid)
-    if pc:
-        clauses.append('pick_code=%s')
-        args.append(pc)
-    if sha1:
-        clauses.append('UPPER(sha1)=%s')
-        args.append(sha1)
-    if not clauses:
+    if not sha1:
         return ''
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""
-                    SELECT preid
-                    FROM p115_filesystem_cache
-                    WHERE {' OR '.join(clauses)}
-                      AND preid IS NOT NULL AND preid <> ''
-                    ORDER BY updated_at DESC NULLS LAST
+                    """
+                    SELECT raw_ffprobe_json
+                    FROM p115_mediainfo_cache
+                    WHERE sha1=%s
                     LIMIT 1
                     """,
-                    args,
+                    (sha1,),
                 )
                 row = cur.fetchone()
-                return _norm_preid((row or {}).get('preid')) if row else ''
+                raw = (row or {}).get('raw_ffprobe_json') if row else None
+                if isinstance(raw, str):
+                    raw = json.loads(raw)
+                etk = raw.get('_etk') if isinstance(raw, dict) and isinstance(raw.get('_etk'), dict) else {}
+                return _norm_preid(etk.get('preid') or etk.get('pre_sha1') or etk.get('pre_sha1_128k'))
     except Exception:
         return ''
 
@@ -537,17 +530,17 @@ def _ensure_file_preid(file_info: Dict[str, Any]) -> str:
     """确保单个 115 文件拥有 preid。
 
     preid = 文件前 128KB SHA1，是 115 upload/init 的基础秒传参数。
-    只读取 128KB，不读取完整文件；计算结果写回 p115_filesystem_cache，后续登记中心一同带上。
+    只读取 128KB，不读取完整文件；计算结果写回 p115_mediainfo_cache.raw_ffprobe_json._etk。
     """
     if not isinstance(file_info, dict):
         return ''
-    preid = _lookup_preid_from_p115_cache(file_info)
+    preid = _lookup_preid_from_raw_cache(file_info)
     if not preid:
         pc = str(file_info.get('pick_code') or file_info.get('pc') or '').strip()
         chunk = _p115_range_bytes_by_pick_code(pc, 0, 131071)
         if chunk:
             preid = hashlib.sha1(chunk).hexdigest().upper()
-            _save_preid_to_p115_cache(file_info, preid)
+            _save_preid_to_mediainfo_cache(file_info, preid)
             logger.info(f"  ➜ [共享资源] 已缓存秒传校验片段：{file_info.get('file_name') or file_info.get('name') or file_info.get('sha1')}")
     if preid:
         file_info['preid'] = preid

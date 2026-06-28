@@ -189,7 +189,7 @@ def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT id, parent_id, name, local_path, sha1, pick_code, preid, size, updated_at
+                    SELECT id, parent_id, name, local_path, sha1, pick_code, size, updated_at
                     FROM p115_filesystem_cache
                     WHERE {' OR '.join(clauses)}
                     ORDER BY CASE WHEN COALESCE(size,0) > 0 THEN 0 ELSE 1 END,
@@ -206,7 +206,7 @@ def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
                     return merged
                 return sql_row
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 直接查询 p115_filesystem_cache 补 size/preid 失败: {e}")
+        logger.debug(f"  ➜ [共享资源] 直接查询 p115_filesystem_cache 补 size 失败: {e}")
     return manager_row or {}
 
 
@@ -231,7 +231,7 @@ def _normalize_rapid_file_info(file_info: Dict[str, Any]) -> Dict[str, Any]:
         if size > 0:
             break
     cache_row = None
-    if size <= 0 or not preid:
+    if size <= 0:
         cache_row = _lookup_p115_cache_for_file(info)
         if cache_row:
             size = _rapid_size_to_int(cache_row.get('size'), 0)
@@ -240,12 +240,8 @@ def _normalize_rapid_file_info(file_info: Dict[str, Any]) -> Dict[str, Any]:
             meta = dict(meta)
             if cache_row.get('id') and not meta.get('fid'):
                 meta['fid'] = str(cache_row.get('id'))
-            cache_preid = _norm_sha1(cache_row.get('preid'))
             if cache_row.get('pick_code') and not meta.get('pick_code'):
                 meta['pick_code'] = str(cache_row.get('pick_code'))
-            if cache_preid and not info.get('preid'):
-                info['preid'] = cache_preid
-                meta.setdefault('preid', cache_preid)
             if meta:
                 info['rapid_meta_json'] = meta
     if size > 0:

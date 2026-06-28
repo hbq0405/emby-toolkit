@@ -820,16 +820,9 @@ def _force_refresh_preid(source_row, pick_code, sha1, file_name):
         return ""
     preid = hashlib.sha1(chunk).hexdigest().upper()
     try:
-        P115CacheManager._update_preid_for_existing_cache(
-            preid,
-            fid=(source_row or {}).get("id") or (source_row or {}).get("fid"),
-            parent_id=(source_row or {}).get("parent_id") or (source_row or {}).get("pid") or (source_row or {}).get("cid"),
-            name=file_name,
-            sha1=sha1,
-            pick_code=pick_code,
-        )
+        P115CacheManager._update_preid_for_existing_cache(preid, sha1=sha1)
     except Exception as e:
-        logger.debug(f"  ➜ [小号播放] 强制刷新 preid 后回写缓存失败: pc={pick_code[:8]}..., err={e}")
+        logger.debug(f"  ➜ [小号播放] 强制刷新 preid 后回写 RAW 失败: pc={pick_code[:8]}..., err={e}")
     return preid
 
 
@@ -860,7 +853,7 @@ def _prepare_play_pool_pick_code_locked(source_pick_code, *, file_name="", item_
     source_row = P115CacheManager.get_file_cache_by_pickcode(source_pick_code) or {}
     sha1 = str(source_row.get("sha1") or "").strip().upper()
     size = _safe_int(source_row.get("size"), 0)
-    preid = str(source_row.get("preid") or source_row.get("pre_sha1") or "").strip().upper()
+    preid = ""
     display_name = _pick_upload_file_name(file_name, source_row.get("name"), f"{sha1 or source_pick_code}.mkv")
     if not re.fullmatch(r"[A-F0-9]{40}", sha1 or "") or size <= 0:
         raise RuntimeError("小号播放需要源文件 SHA1 和 size，本地 115 缓存未命中完整信息")
@@ -1236,7 +1229,7 @@ def speedtest_account(account_id, sample_pick_code="", user_agent=""):
     source_row = P115CacheManager.get_file_cache_by_pickcode(sample_pick_code) or {}
     sha1 = str(source_row.get("sha1") or "").strip().upper()
     size = _safe_int(source_row.get("size"), 0)
-    preid = str(source_row.get("preid") or source_row.get("pre_sha1") or "").strip().upper()
+    preid = ""
     file_name = _pick_upload_file_name("", source_row.get("name"), "play-pool-speedtest.mkv")
     if not re.fullmatch(r"[A-F0-9]{40}", sha1 or "") or size <= 0:
         raise RuntimeError("测速样本缺少 SHA1 或 size")

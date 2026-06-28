@@ -456,7 +456,6 @@ def init_db():
                         local_path TEXT,               -- 本地映射路径 (如果已同步到本地)
                         sha1 TEXT,
                         pick_code TEXT,
-                        preid TEXT,               -- 文件前 128KB SHA1，用于 115 秒传 upload/init
                         size BIGINT DEFAULT 0,
                         washing_level INTEGER,
                         washing_snapshot_json JSONB DEFAULT '{}'::jsonb,
@@ -660,7 +659,6 @@ def init_db():
                             "local_path": "TEXT",
                             "sha1": "TEXT",
                             "pick_code": "TEXT",
-                            "preid": "TEXT",
                             "size": "BIGINT DEFAULT 0",
                             "washing_level": "INTEGER",
                             "washing_snapshot_json": "JSONB DEFAULT '{}'::jsonb"
@@ -800,10 +798,51 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_sha1_upper ON p115_filesystem_cache (UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
                     # 指纹修复任务会按 PC / local_path 从目录树缓存反查文件身份。
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_pick_code ON p115_filesystem_cache (pick_code) WHERE pick_code IS NOT NULL AND pick_code <> '';")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_preid ON p115_filesystem_cache (preid) WHERE preid IS NOT NULL AND preid <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_local_path ON p115_filesystem_cache (local_path) WHERE local_path IS NOT NULL AND local_path <> '';")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_washing_level ON p115_filesystem_cache (washing_level) WHERE washing_level IS NOT NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_washing_level ON media_metadata (washing_level) WHERE washing_level IS NOT NULL AND in_library = TRUE;")
+
+                    # p115_filesystem_cache 是网盘实时镜像，联动删除会同步清理，不再承载 preid 永久缓存。
+                    # preid 的长期来源是 p115_mediainfo_cache.raw_ffprobe_json._etk.preid。
+                    cursor.execute("""
+                        DO $$
+                        BEGIN
+                            IF EXISTS (
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_name = 'p115_filesystem_cache'
+                                  AND column_name = 'preid'
+                            ) THEN
+                                UPDATE p115_mediainfo_cache mc
+                                SET raw_ffprobe_json = jsonb_set(
+                                    COALESCE(mc.raw_ffprobe_json, '{}'::jsonb),
+                                    '{_etk}',
+                                    COALESCE(mc.raw_ffprobe_json->'_etk', '{}'::jsonb)
+                                        || jsonb_build_object(
+                                            'sha1', UPPER(mc.sha1),
+                                            'preid', UPPER(fc.preid)
+                                        ),
+                                    true
+                                )
+                                FROM (
+                                    SELECT DISTINCT ON (UPPER(sha1))
+                                        UPPER(sha1) AS sha1,
+                                        UPPER(preid) AS preid
+                                    FROM p115_filesystem_cache
+                                    WHERE sha1 IS NOT NULL
+                                      AND sha1 <> ''
+                                      AND preid IS NOT NULL
+                                      AND preid <> ''
+                                      AND UPPER(preid) ~ '^[A-F0-9]{40}$'
+                                    ORDER BY UPPER(sha1), updated_at DESC NULLS LAST
+                                ) fc
+                                WHERE UPPER(mc.sha1) = fc.sha1
+                                  AND COALESCE(mc.raw_ffprobe_json->'_etk'->>'preid', '') = '';
+                            END IF;
+                        END $$;
+                    """)
+                    cursor.execute("DROP INDEX IF EXISTS idx_p115_preid;")
+                    cursor.execute("ALTER TABLE p115_filesystem_cache DROP COLUMN IF EXISTS preid;")
 
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_shared_credit_ledger_created ON shared_credit_ledger_local (created_at DESC);")
 

@@ -974,8 +974,6 @@ class P115OpenAPIClient:
                     file_name = str(cache_row.get('name') or cache_row.get('file_name') or '').strip()
                 if size <= 0:
                     size = _safe_size(cache_row.get('size') or cache_row.get('file_size') or cache_row.get('size_bytes'))
-                if not preid:
-                    preid = str(cache_row.get('preid') or '').strip().upper()
             except Exception:
                 pass
 
@@ -3409,48 +3407,47 @@ class P115CacheManager:
 
     @staticmethod
     def _update_preid_for_existing_cache(preid, *, fid=None, parent_id=None, name=None, sha1=None, pick_code=None):
-        """把已知 preid 回填到已经存在的 p115_filesystem_cache 行，避免后续再 Range 直链。"""
+        """把已知 preid 回填到永久媒体信息缓存的 raw _etk 中。"""
         preid = P115CacheManager._norm_preid(preid)
-        if not preid:
-            return False
-        clauses, args = [], []
-        fid = str(fid or '').strip()
-        parent_id = str(parent_id or '').strip()
-        name = str(name or '').strip()
-        pick_code = str(pick_code or '').strip()
         sha1 = str(sha1 or '').strip().upper()
-        if fid:
-            clauses.append('id=%s')
-            args.append(fid)
-        if parent_id and name:
-            clauses.append('(parent_id=%s AND name=%s)')
-            args.extend([parent_id, name])
-        if pick_code:
-            clauses.append('pick_code=%s')
-            args.append(pick_code)
-        if sha1 and re.fullmatch(r'[A-F0-9]{40}', sha1):
-            clauses.append('UPPER(sha1)=%s')
-            args.append(sha1)
-        if not clauses:
+        if not preid or not re.fullmatch(r'[A-F0-9]{40}', sha1 or ''):
             return False
         try:
-            P115CacheManager._ensure_preid_column()
+            from psycopg2.extras import Json
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
-                        f"""
-                        UPDATE p115_filesystem_cache
-                        SET preid=%s, updated_at=NOW()
-                        WHERE ({' OR '.join(clauses)})
-                          AND (preid IS NULL OR preid='' OR preid=%s)
-                        """,
-                        [preid, *args, preid],
+                        "SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1 = %s",
+                        (sha1,)
                     )
-                    changed = cursor.rowcount or 0
+                    row = cursor.fetchone()
+                    raw_probe = (row or {}).get('raw_ffprobe_json') if row else None
+                    if isinstance(raw_probe, str):
+                        try:
+                            raw_probe = json.loads(raw_probe)
+                        except Exception:
+                            raw_probe = {}
+                    if not isinstance(raw_probe, dict):
+                        raw_probe = {}
+                    ctx = raw_probe.get('_etk') if isinstance(raw_probe.get('_etk'), dict) else {}
+                    ctx = dict(ctx or {})
+                    ctx.setdefault('sha1', sha1)
+                    ctx['preid'] = preid
+                    raw_probe['_etk'] = ctx
+                    raw_probe = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_probe)
+                    cursor.execute(
+                        """
+                        INSERT INTO p115_mediainfo_cache (sha1, raw_ffprobe_json, created_at, hit_count)
+                        VALUES (%s, %s, NOW(), 0)
+                        ON CONFLICT (sha1)
+                        DO UPDATE SET raw_ffprobe_json = EXCLUDED.raw_ffprobe_json
+                        """,
+                        (sha1, Json(raw_probe, dumps=lambda obj: json.dumps(obj, ensure_ascii=False))),
+                    )
                 conn.commit()
-            return changed > 0
+            return True
         except Exception as e:
-            logger.debug(f"  ➜ [115缓存] 回填共享秒传 preid 提示失败: {e}")
+            logger.debug(f"  ➜ [媒体信息缓存] 回填 RAW _etk.preid 失败: {e}")
             return False
 
     @staticmethod
@@ -3458,7 +3455,7 @@ class P115CacheManager:
         """登记已知 preid 提示。
 
         共享池 Rapid v2 秒传时，中心源已经携带 preid；秒传成功后 115 新文件会进入待整理扫描，
-        但 /files 列表不会返回 preid。这里先按 SHA1/目标目录/文件名保存提示，整理阶段写缓存或
+        但 /files 列表不会返回 preid。这里先按 SHA1/目标目录/文件名保存提示，
         ensure_file_preid 时直接复用，避免再获取直链并 Range 读取前 128KB。
         """
         item = dict(file_info or {}) if isinstance(file_info, dict) else {}
@@ -3510,14 +3507,7 @@ class P115CacheManager:
         except Exception:
             pass
 
-        P115CacheManager._update_preid_for_existing_cache(
-            preid,
-            fid=fid,
-            parent_id=parent_id,
-            name=file_name,
-            sha1=sha1,
-            pick_code=pick_code,
-        )
+        P115CacheManager._update_preid_for_existing_cache(preid, sha1=sha1)
         logger.debug(
             f"  ➜ [115缓存] 已登记共享秒传 preid 提示: "
             f"sha1={(sha1[:12] + '...') if sha1 else '-'}, parent={parent_id or '-'}, "
@@ -3569,68 +3559,38 @@ class P115CacheManager:
         fid, parent_id, name, sha1=None, pick_code=None, local_path=None, size=0, preid=None,
         washing_level=None, washing_snapshot_json=None,
     ):
-        """专门将文件(fc=1)的 SHA1、PC码、本地相对路径、大小、preid 和洗版快照存入本地数据库缓存"""
+        """专门将文件(fc=1)的 SHA1、PC码、本地相对路径、大小和洗版快照存入本地数据库缓存"""
         if not fid or not parent_id or not name: return
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    P115CacheManager._ensure_preid_column()
                     P115CacheManager._ensure_washing_snapshot_columns()
-                    preid = P115CacheManager._norm_preid(preid)
-                    if not preid:
-                        preid = P115CacheManager._lookup_preid_hint({
-                            'fid': fid,
-                            'parent_id': parent_id,
-                            'name': name,
-                            'sha1': sha1,
-                            'pick_code': pick_code,
-                            'size': size,
-                        })
                     try:
                         washing_level = int(washing_level) if washing_level not in (None, '', [], {}) else None
                     except Exception:
                         washing_level = None
                     washing_snapshot_json = washing_snapshot_json if isinstance(washing_snapshot_json, dict) else {}
-                    if not preid:
-                        cursor.execute(
-                            """
-                            SELECT preid
-                            FROM p115_filesystem_cache
-                            WHERE id = %s
-                               OR (parent_id = %s AND name = %s)
-                               OR (%s IS NOT NULL AND pick_code = %s)
-                               OR (%s IS NOT NULL AND UPPER(sha1) = UPPER(%s))
-                            ORDER BY CASE WHEN preid IS NOT NULL AND preid <> '' THEN 0 ELSE 1 END,
-                                     updated_at DESC NULLS LAST
-                            LIMIT 1
-                            """,
-                            (str(fid), str(parent_id), str(name), pick_code, pick_code, sha1, sha1),
-                        )
-                        old_row = cursor.fetchone()
-                        if old_row:
-                            preid = P115CacheManager._norm_preid(old_row.get('preid'))
                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (str(fid),))
 
                     from psycopg2.extras import Json
                     cursor.execute("""
                         INSERT INTO p115_filesystem_cache (
-                            id, parent_id, name, sha1, pick_code, local_path, size, preid,
+                            id, parent_id, name, sha1, pick_code, local_path, size,
                             washing_level, washing_snapshot_json
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (parent_id, name)
                         DO UPDATE SET
                             sha1 = CASE WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.sha1 ELSE COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1) END,
                             pick_code = CASE WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.pick_code ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code) END,
                             local_path = COALESCE(EXCLUDED.local_path, p115_filesystem_cache.local_path),
                             size = CASE WHEN EXCLUDED.size > 0 THEN EXCLUDED.size ELSE p115_filesystem_cache.size END,
-                            preid = CASE WHEN p115_filesystem_cache.id != EXCLUDED.id THEN COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid) ELSE COALESCE(EXCLUDED.preid, p115_filesystem_cache.preid) END,
                             washing_level = CASE WHEN EXCLUDED.washing_snapshot_json IS NOT NULL THEN EXCLUDED.washing_level ELSE p115_filesystem_cache.washing_level END,
                             washing_snapshot_json = COALESCE(EXCLUDED.washing_snapshot_json, p115_filesystem_cache.washing_snapshot_json),
                             id = EXCLUDED.id,
                             updated_at = NOW()
                     """, (
-                        str(fid), str(parent_id), str(name), sha1, pick_code, local_path, size, preid or None,
+                        str(fid), str(parent_id), str(name), sha1, pick_code, local_path, size,
                         washing_level, 
                         Json(washing_snapshot_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)) if washing_snapshot_json else None
                     ))
@@ -3658,7 +3618,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE id = %s
                         LIMIT 1
@@ -3677,7 +3637,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE pick_code = %s
                         LIMIT 1
@@ -3859,7 +3819,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE UPPER(sha1) = UPPER(%s)
                         ORDER BY updated_at DESC NULLS LAST
@@ -3885,7 +3845,7 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
+                        SELECT id, parent_id, name, sha1, pick_code, local_path, size, washing_level, washing_snapshot_json
                         FROM p115_filesystem_cache
                         WHERE local_path = %s
                         LIMIT 1
@@ -3897,7 +3857,7 @@ class P115CacheManager:
                     # 挂载/路径前缀不一致时的兜底：只允许“完整路径段后缀”匹配，避免单文件名误命中。
                     if '/' in normalized:
                         cursor.execute("""
-                            SELECT id, parent_id, name, sha1, pick_code, local_path, size, preid, washing_level, washing_snapshot_json
+                            SELECT id, parent_id, name, sha1, pick_code, local_path, size, washing_level, washing_snapshot_json
                             FROM p115_filesystem_cache
                             WHERE local_path IS NOT NULL
                               AND %s LIKE '%%/' || local_path
@@ -4112,14 +4072,8 @@ class P115CacheManager:
 
     @staticmethod
     def _ensure_preid_column():
-        """兼容旧库：确保 p115_filesystem_cache 有 preid 字段。"""
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("ALTER TABLE p115_filesystem_cache ADD COLUMN IF NOT EXISTS preid TEXT")
-                    conn.commit()
-        except Exception as e:
-            logger.debug(f"  ➜ [115缓存] 确认 preid 字段失败: {e}")
+        """兼容旧调用；p115_filesystem_cache.preid 已废弃。"""
+        return
 
     @staticmethod
     def _ensure_washing_snapshot_columns():
@@ -4235,10 +4189,10 @@ class P115CacheManager:
 
     @staticmethod
     def ensure_file_preid(file_info=None, *, sha1=None, fid=None, pick_code=None, file_name=None):
-        """确保 p115_filesystem_cache 中对应文件有 preid，并返回 preid。
+        """确保文件拥有 preid，并返回 preid。
 
         调用场景：整理/MP直出提取媒体信息后，已经拿到 SHA1/PC/FID，顺手读取前 128KB
-        计算 preid，避免后续共享登记/秒传时再单独补齐。
+        计算 preid。持久缓存只写 p115_mediainfo_cache.raw_ffprobe_json._etk.preid。
         """
         item = dict(file_info or {}) if isinstance(file_info, dict) else {}
         sha1 = str(sha1 or item.get('sha1') or item.get('sha') or item.get('file_sha1') or '').strip().upper()
@@ -4267,6 +4221,23 @@ class P115CacheManager:
             )
             return raw_preid
 
+        if sha1:
+            cached_raw_preid = ''
+            try:
+                cached_raw_preid = P115CacheManager._extract_preid_from_raw_etk(
+                    P115CacheManager.get_raw_ffprobe_cache(sha1)
+                )
+            except Exception as e:
+                logger.debug(f"  ➜ [115缓存] 查询 RAW _etk.preid 失败: {sha1[:12]}... -> {e}")
+            if cached_raw_preid:
+                if isinstance(file_info, dict):
+                    file_info['preid'] = cached_raw_preid
+                logger.debug(
+                    f"  ➜ [115缓存] 命中缓存 RAW _etk.preid，跳过直链 Range: "
+                    f"{file_name or sha1 or pick_code} -> {cached_raw_preid[:12]}..."
+                )
+                return cached_raw_preid
+
         hinted_preid = P115CacheManager._lookup_preid_hint(
             item,
             sha1=sha1,
@@ -4275,58 +4246,36 @@ class P115CacheManager:
             file_name=file_name,
         )
         if hinted_preid:
-            P115CacheManager._update_preid_for_existing_cache(
-                hinted_preid,
-                fid=fid,
-                parent_id=item.get('parent_id') or item.get('pid') or item.get('cid'),
-                name=file_name,
-                sha1=sha1,
-                pick_code=pick_code,
-            )
+            P115CacheManager._update_preid_for_existing_cache(hinted_preid, sha1=sha1)
             logger.debug(
                 f"  ➜ [115缓存] 命中共享秒传 preid 提示，跳过直链 Range: "
                 f"{file_name or sha1 or pick_code} -> {hinted_preid[:12]}..."
             )
             return hinted_preid
 
-        P115CacheManager._ensure_preid_column()
-        clauses, args = [], []
-        if fid:
-            clauses.append('id=%s')
-            args.append(fid)
-        if pick_code:
-            clauses.append('pick_code=%s')
-            args.append(pick_code)
-        if sha1 and re.fullmatch(r'[A-F0-9]{40}', sha1):
-            clauses.append('UPPER(sha1)=%s')
-            args.append(sha1)
-        if clauses:
+        if pick_code and (not file_name or not sha1):
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
                         cursor.execute(
-                            f"""
-                            SELECT id, name, sha1, pick_code, preid
+                            """
+                            SELECT id, name, sha1, pick_code
                             FROM p115_filesystem_cache
-                            WHERE {' OR '.join(clauses)}
-                            ORDER BY CASE WHEN preid IS NOT NULL AND preid <> '' THEN 0 ELSE 1 END,
-                                     updated_at DESC NULLS LAST
+                            WHERE pick_code = %s
+                            ORDER BY updated_at DESC NULLS LAST
                             LIMIT 1
                             """,
-                            args,
+                            (pick_code,),
                         )
                         row = cursor.fetchone()
                 if row:
                     row = dict(row)
-                    found_preid = P115CacheManager._norm_preid(row.get('preid'))
-                    if found_preid:
-                        return found_preid
                     fid = fid or str(row.get('id') or '').strip()
                     pick_code = pick_code or str(row.get('pick_code') or '').strip()
                     sha1 = sha1 or str(row.get('sha1') or '').strip().upper()
                     file_name = file_name or str(row.get('name') or '').strip()
             except Exception as e:
-                logger.debug(f"  ➜ [115缓存] 查询已有 preid 失败: {e}")
+                logger.debug(f"  ➜ [115缓存] 查询文件身份失败: {e}")
 
         if not pick_code:
             return ''
@@ -4334,32 +4283,10 @@ class P115CacheManager:
         if not chunk:
             return ''
         preid = hashlib.sha1(chunk).hexdigest().upper()
-        update_clauses, update_args = [], []
-        if fid:
-            update_clauses.append('id=%s')
-            update_args.append(fid)
-        if pick_code:
-            update_clauses.append('pick_code=%s')
-            update_args.append(pick_code)
-        if sha1 and re.fullmatch(r'[A-F0-9]{40}', sha1):
-            update_clauses.append('UPPER(sha1)=%s')
-            update_args.append(sha1)
-        if update_clauses:
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            f"""
-                            UPDATE p115_filesystem_cache
-                            SET preid=%s, updated_at=NOW()
-                            WHERE {' OR '.join(update_clauses)}
-                            """,
-                            [preid, *update_args],
-                        )
-                    conn.commit()
-                logger.info(f"  ➜ [115缓存] 已缓存秒传校验片段：{file_name or sha1 or pick_code}")
-            except Exception as e:
-                logger.debug(f"  ➜ [115缓存] 回写 p115_filesystem_cache.preid 失败: {e}")
+        P115CacheManager._update_preid_for_existing_cache(preid, sha1=sha1)
+        if isinstance(file_info, dict):
+            file_info['preid'] = preid
+        logger.info(f"  ➜ [媒体信息缓存] 已缓存秒传校验片段：{file_name or sha1 or pick_code}")
         return preid
 
     @staticmethod
@@ -4497,16 +4424,11 @@ class P115CacheManager:
                 m.parent_series_tmdb_id,
                 m.season_number,
                 m.episode_number,
-                COALESCE(NULLIF(m.original_language, ''), NULLIF(p.original_language, '')) AS original_language,
-                fc.preid
+                COALESCE(NULLIF(m.original_language, ''), NULLIF(p.original_language, '')) AS original_language
             FROM media_metadata m
             LEFT JOIN media_metadata p
               ON p.tmdb_id = m.parent_series_tmdb_id
              AND p.item_type = 'Series'
-            LEFT JOIN p115_filesystem_cache fc
-              ON UPPER(fc.sha1) = %s
-             AND fc.preid IS NOT NULL
-             AND fc.preid <> ''
             WHERE m.file_sha1_json ? %s
             ORDER BY
                 CASE m.item_type
@@ -4520,7 +4442,7 @@ class P115CacheManager:
                 m.last_updated_at DESC NULLS LAST
             LIMIT 1
             """,
-            (sha1, sha1)
+            (sha1,)
         )
         row = cursor.fetchone()
         if not row:
@@ -4553,7 +4475,6 @@ class P115CacheManager:
             'season_number': _ctx_int(row.get('season_number')),
             'episode_number': _ctx_int(row.get('episode_number')),
             'sha1': sha1,
-            'preid': P115CacheManager._norm_preid(row.get('preid')),
         }
         return {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
 
