@@ -530,13 +530,6 @@ def create_library(base_url: str, api_key: str, name: str, collection_type: str,
     if not all([base_url, api_key, name, collection_type, path]):
         raise ValueError("创建 Emby 媒体库缺少必要参数")
 
-    if not os.path.exists(path):
-        raise RuntimeError(f"Emby 目录不存在：{path}。请先检查 ETK 与 Emby 的目录映射是否完全一致。")
-    if not _has_path_mapping_for_library(base_url, api_key, path):
-        raise RuntimeError(
-            f"Emby 无法识别路径映射：{path}。请确保 ETK 的本地 STRM 根目录与 Emby 容器内的目录挂载路径完全一致。"
-        )
-
     norm_path = os.path.normpath(path)
     for folder in get_virtual_folders(base_url, api_key):
         locations = folder.get('Locations') or []
@@ -556,8 +549,13 @@ def create_library(base_url: str, api_key: str, name: str, collection_type: str,
         'LibraryOptions': _library_options_with_tmdb(collection_type),
     }
     url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
-    response = emby_client.post(url, params={'api_key': api_key}, json=payload)
-    response.raise_for_status()
+    try:
+        response = emby_client.post(url, params={'api_key': api_key}, json=payload)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(
+            f"Emby 创建媒体库失败：{name} -> {path}。请确认 ETK 的本地 STRM 根目录与 Emby 容器内的目录挂载路径完全一致。"
+        ) from e
 
     for folder in get_virtual_folders(base_url, api_key):
         locations = folder.get('Locations') or []
