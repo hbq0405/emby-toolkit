@@ -3242,74 +3242,80 @@ const handleQuickDeploy115 = () => {
     return;
   }
 
-  dialog.warning({
+  const startQuickDeploy = async () => {
+    quickDeployLoading.value = true;
+    quickDeployProgress.value = 1;
+    quickDeployStatus.value = '正在启动一键部署...';
+    quickDeployLocalDirs.value = [];
+    quickDeployEmbyLibraries.value = [];
+    try {
+      const response = await fetch('/api/p115/quick_deploy?stream=1', { method: 'POST' });
+      if (!response.ok || !response.body) {
+        throw new Error(`请求失败: HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let finalEvent = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          if (event.type === 'progress') {
+            quickDeployProgress.value = Number(event.percent || 0);
+            quickDeployStatus.value = event.message || '';
+          } else if (event.type === 'done') {
+            finalEvent = event;
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const event = JSON.parse(buffer);
+        if (event.type === 'done') finalEvent = event;
+      }
+
+      if (!finalEvent?.success) {
+        throw new Error(finalEvent?.message || '一键部署失败');
+      }
+
+      const data = finalEvent.data || {};
+      const cfg = data.config || {};
+      Object.assign(configModel.value, cfg);
+      quickDeployTree.value = data.tree || null;
+      quickDeployLocalDirs.value = data.local_dirs || [];
+      quickDeployEmbyLibraries.value = data.emby_libraries || [];
+      showQuickDeployResult.value = true;
+      quickDeployProgress.value = 100;
+      quickDeployStatus.value = finalEvent.message || '一键部署完成';
+      if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
+        await fetchEmbyLibrariesInternal();
+      }
+      message.success(finalEvent.message || '115 网盘基础配置已部署完成');
+    } catch (e) {
+      quickDeployStatus.value = '部署失败';
+      message.error('一键部署失败: ' + (e.response?.data?.message || e.message));
+    } finally {
+      quickDeployLoading.value = false;
+    }
+  };
+
+  const dialogInstance = dialog.warning({
     title: '一键部署 115 基础配置',
     content: '将自动创建 115 目录、本地 STRM 镜像目录，并按二级分类创建 Emby 媒体库；同时覆盖当前分类规则、重命名规则和洗版规则。确认继续？',
     positiveText: '开始部署',
     negativeText: '取消',
-    onPositiveClick: async () => {
-      quickDeployLoading.value = true;
-      quickDeployProgress.value = 1;
-      quickDeployStatus.value = '正在启动一键部署...';
-      quickDeployLocalDirs.value = [];
-      quickDeployEmbyLibraries.value = [];
-      try {
-        const response = await fetch('/api/p115/quick_deploy?stream=1', { method: 'POST' });
-        if (!response.ok || !response.body) {
-          throw new Error(`请求失败: HTTP ${response.status}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        let finalEvent = null;
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            const event = JSON.parse(line);
-            if (event.type === 'progress') {
-              quickDeployProgress.value = Number(event.percent || 0);
-              quickDeployStatus.value = event.message || '';
-            } else if (event.type === 'done') {
-              finalEvent = event;
-            }
-          }
-        }
-
-        if (buffer.trim()) {
-          const event = JSON.parse(buffer);
-          if (event.type === 'done') finalEvent = event;
-        }
-
-        if (!finalEvent?.success) {
-          throw new Error(finalEvent?.message || '一键部署失败');
-        }
-
-        const data = finalEvent.data || {};
-        const cfg = data.config || {};
-        Object.assign(configModel.value, cfg);
-        quickDeployTree.value = data.tree || null;
-        quickDeployLocalDirs.value = data.local_dirs || [];
-        quickDeployEmbyLibraries.value = data.emby_libraries || [];
-        showQuickDeployResult.value = true;
-        quickDeployProgress.value = 100;
-        quickDeployStatus.value = finalEvent.message || '一键部署完成';
-        if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
-          await fetchEmbyLibrariesInternal();
-        }
-        message.success(finalEvent.message || '115 网盘基础配置已部署完成');
-      } catch (e) {
-        quickDeployStatus.value = '部署失败';
-        message.error('一键部署失败: ' + (e.response?.data?.message || e.message));
-      } finally {
-        quickDeployLoading.value = false;
-      }
+    onPositiveClick: () => {
+      dialogInstance.destroy();
+      setTimeout(startQuickDeploy, 0);
+      return false;
     }
   });
 };

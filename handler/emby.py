@@ -488,7 +488,7 @@ def _library_options_with_tmdb(collection_type: str) -> Dict[str, Any]:
     tmdb_fetchers = ['TheMovieDb']
     item_types = ['Movie', 'BoxSet'] if collection_type == 'movies' else ['Series', 'Season', 'Episode']
     return {
-        'EnableRealtimeMonitor': True,
+        'EnableRealtimeMonitor': False,
         'SaveLocalMetadata': True,
         'MetadataSavers': ['Nfo'],
         'DisabledLocalMetadataReaders': [],
@@ -509,10 +509,33 @@ def _library_options_with_tmdb(collection_type: str) -> Dict[str, Any]:
     }
 
 
+def _has_path_mapping_for_library(base_url: str, api_key: str, path: str) -> bool:
+    """检查 Emby 是否能看到与目标路径一致的目录映射前缀。"""
+    folder_map = get_all_folder_mappings(base_url, api_key)
+    norm_path = os.path.normpath(path)
+    norm_lower = norm_path.lower()
+
+    for mapped_path in folder_map.keys():
+        mapped_norm = os.path.normpath(mapped_path)
+        mapped_lower = mapped_norm.lower().rstrip('\\/')
+        if norm_lower == mapped_lower:
+            return True
+        if norm_lower.startswith(mapped_lower + os.sep.lower()):
+            return True
+    return False
+
+
 def create_library(base_url: str, api_key: str, name: str, collection_type: str, path: str) -> Dict[str, Any]:
     """创建 Emby 媒体库；如果同名或同路径已存在则直接返回现有库。"""
     if not all([base_url, api_key, name, collection_type, path]):
         raise ValueError("创建 Emby 媒体库缺少必要参数")
+
+    if not os.path.exists(path):
+        raise RuntimeError(f"Emby 目录不存在：{path}。请先检查 ETK 与 Emby 的目录映射是否完全一致。")
+    if not _has_path_mapping_for_library(base_url, api_key, path):
+        raise RuntimeError(
+            f"Emby 无法识别路径映射：{path}。请确保 ETK 的本地 STRM 根目录与 Emby 容器内的目录挂载路径完全一致。"
+        )
 
     norm_path = os.path.normpath(path)
     for folder in get_virtual_folders(base_url, api_key):

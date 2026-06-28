@@ -1227,15 +1227,15 @@ def _p115_ensure_folder(client, parent_cid, name):
 
 def _p115_deploy_sorting_rules(category_dirs):
     base_rules = [
-        ('国漫', 'tv', {'countries': ['中国'], 'genres': [16]}),
-        ('日番', 'tv', {'countries': ['日本'], 'genres': [16]}),
-        ('美漫', 'tv', {'countries': ['美国'], 'genres': [16]}),
-        ('国产片', 'movie', {'countries': ['中国']}),
-        ('日韩片', 'movie', {'countries': ['日本', '韩国']}),
-        ('欧美片', 'movie', {'countries': ['美国', '英国', '法国', '德国', '加拿大']}),
-        ('国产剧', 'tv', {'countries': ['中国']}),
-        ('日韩剧', 'tv', {'countries': ['日本', '韩国']}),
-        ('欧美剧', 'tv', {'countries': ['美国', '英国', '法国', '德国', '加拿大']}),
+        ('国漫', 'tv', {'genres': [16], 'languages': ['国语', '粤语']}),
+        ('日番', 'tv', {'genres': [16], 'languages': ['日语']}),
+        ('美漫', 'tv', {'genres': [16]}),
+        ('国产片', 'movie', {'languages': ['国语', '粤语']}),
+        ('日韩片', 'movie', {'languages': ['日语', '韩语']}),
+        ('欧美片', 'movie', {}),
+        ('国产剧', 'tv', {'languages': ['国语', '粤语']}),
+        ('日韩剧', 'tv', {'languages': ['日语', '韩语']}),
+        ('欧美剧', 'tv', {}),
     ]
     rules = []
     for index, (name, media_type, extra) in enumerate(base_rules, start=1):
@@ -1250,8 +1250,8 @@ def _p115_deploy_sorting_rules(category_dirs):
             'match_mode': 'and',
             'media_type': media_type,
             'genres': extra.get('genres', []),
-            'countries': extra.get('countries', []),
-            'languages': [],
+            'countries': [],
+            'languages': extra.get('languages', []),
             'studios': [],
             'keywords': [],
             'ratings': [],
@@ -1403,6 +1403,14 @@ def _quick_deploy_payload(progress=None):
     local_dirs = _p115_create_local_mirror(local_root, category_dirs)
 
     emit(45, '正在写入 115 基础配置')
+    monitor_paths = config.get(constants.CONFIG_OPTION_MONITOR_PATHS, [])
+    if not isinstance(monitor_paths, list):
+        monitor_paths = []
+    norm_local_root = os.path.normpath(str(local_root))
+    existing_monitor_paths = [str(p) for p in monitor_paths if str(p or '').strip()]
+    if norm_local_root not in {os.path.normpath(p) for p in existing_monitor_paths}:
+        existing_monitor_paths.append(local_root)
+
     dynamic_config = {
         constants.CONFIG_OPTION_115_SAVE_PATH_CID: save_root['cid'],
         constants.CONFIG_OPTION_115_SAVE_PATH_NAME: save_root['name'],
@@ -1415,22 +1423,22 @@ def _quick_deploy_payload(progress=None):
         constants.CONFIG_OPTION_115_API_PRIORITY: config.get(constants.CONFIG_OPTION_115_API_PRIORITY, 'openapi'),
         constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE: config.get(constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE, 10),
         constants.CONFIG_OPTION_115_EXTENSIONS: config.get(constants.CONFIG_OPTION_115_EXTENSIONS, ['mkv', 'mp4', 'iso', 'ts', 'm2ts']),
+        constants.CONFIG_OPTION_MONITOR_ENABLED: True,
+        constants.CONFIG_OPTION_MONITOR_PATHS: existing_monitor_paths,
     }
     config_manager.save_config(dynamic_config)
 
     emit(55, '正在写入重命名配置')
     rename_config = {
         'keep_original_name': False,
-        'main_title_lang': 'zh',
-        'main_year_en': True,
-        'main_tmdb_fmt': '{tmdb=ID}',
-        'season_fmt': 'Season {02}',
-        'main_dir_template': '{{title}}{% if year %} ({{year}}){% endif %} {tmdb={{tmdbid}}}',
+        'main_dir_template': '{{title}}',
         'season_dir_template': 'Season {{season_no}}',
-        'movie_file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
-        'tv_file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
-        'file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} · {{season_episode}}{% endif %}{% if resolution %} · {{resolution}}{% endif %}{% if videoCodec %} · {{videoCodec | upper}}{% endif %}{% if audioCodec %} · {{audioCodec}}{% endif %}{% if releaseGroup %} · {{releaseGroup}}{% endif %}{{fileExt}}',
-        'file_format': ['s_e'],
+        'movie_file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if resolution %} {{resolution}}{% endif %}{% if videoCodec %} {{videoCodec | upper}}{% endif %}{% if audioCodec %} {{audioCodec}}{% endif %}{% if releaseGroup %} {{releaseGroup}}{% endif %}{{fileExt}}',
+        'tv_file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} {{season_episode}}{% endif %}{% if resolution %} {{resolution}}{% endif %}{% if videoCodec %} {{videoCodec | upper}}{% endif %}{% if audioCodec %} {{audioCodec}}{% endif %}{% if releaseGroup %} {{releaseGroup}}{% endif %}{{fileExt}}',
+        'file_template': '{{title}}{% if year %} ({{year}}){% endif %}{% if season_episode %} {{season_episode}}{% endif %}{% if resolution %} {{resolution}}{% endif %}{% if videoCodec %} {{videoCodec | upper}}{% endif %}{% if audioCodec %} {{audioCodec}}{% endif %}{% if releaseGroup %} {{releaseGroup}}{% endif %}{{fileExt}}',
+        'main_dir_format': ['title_zh', 'sep_space', 'year'],
+        'season_dir_format': ['season_name_en'],
+        'file_format': ['title_zh', 'sep_space', 'year', 'sep_space', 's_e', 'sep_space', 'resolution', 'sep_space', 'codec', 'sep_space', 'audio', 'sep_space', 'group'],
         'file_tmdb_fmt': 'none',
         'video_codec_style': 'hevc',
         'hide_audio_channels': False,
@@ -1494,7 +1502,10 @@ def quick_deploy_115():
                 if event.get('type') == 'done':
                     break
 
-        return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
+        response = Response(stream_with_context(generate()), mimetype='application/x-ndjson')
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['X-Accel-Buffering'] = 'no'
+        return response
 
     try:
         data = _quick_deploy_payload()
