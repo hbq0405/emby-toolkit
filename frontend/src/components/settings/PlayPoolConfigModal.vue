@@ -2,7 +2,8 @@
   <n-modal v-model:show="showModal" preset="card" title="小号 Cookie 池" style="width: 760px; max-width: calc(100vw - 24px);" :mask-closable="false" class="custom-modal glass-modal">
     <n-space vertical :size="16">
       <n-alert type="info" :show-icon="true">
-        有可用小号时，播放链路会优先使用小号秒传并获取直链；没有可用小号会回退主账号播放。
+        <li>有可用小号时，播放链路会优先使用小号秒传并获取直链；没有可用小号会回退主账号播放。</li>
+        <li>低于测速阈值或高于单日流量上限时会自动停用，反正自动启用。</li>
       </n-alert>
 
       <div class="play-pool-toolbar">
