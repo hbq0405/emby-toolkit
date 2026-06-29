@@ -1690,7 +1690,7 @@ class P115CookieClient:
             init_payload['sign_key'] = str(sign_key)
             init_payload['sign_val'] = str(sign_val).upper()
 
-        logger.info(
+        logger.debug(
             f"  ➜ [Cookie秒传] 初始化上传: {file_name} | "
         )
 
@@ -1726,7 +1726,7 @@ class P115CookieClient:
             out['success'] = True
             out.setdefault('message', '115 Cookie initupload 秒传成功')
             out.setdefault('rapid_upload', True)
-            logger.info(f"  ➜ [Cookie秒传] Cookie initupload 秒传成功: {file_name}")
+            logger.info(f"  ➜ [Cookie秒传] 秒传成功: {file_name}")
             return out
 
         if status == '1':
@@ -1738,7 +1738,7 @@ class P115CookieClient:
         if status == '7':
             sign_key_text = str(out.get('sign_key') or data.get('sign_key') or '')
             sign_check_text = str(out.get('sign_check') or data.get('sign_check') or '')
-            logger.warning(
+            logger.debug(
                 f"  ➜ [Cookie秒传] Cookie initupload 返回 status=7，需要 holder 二次校验；"
                 f"交给中心调度签名客户端："
                 f"sha1={sha1[:12]}..., pc={(pick_code or '-')[:8]}..., "
@@ -2340,7 +2340,7 @@ class P115Service:
                         # 或尝试“本机 Holder”只会浪费请求；直接把签名需求返回给共享资源消费层，
                         # 由中心端调度真正持有该 SHA1 的客户端友情签名。
                         if method_name == 'rapid_upload' and isinstance(resp, dict) and resp.get('_rapid_sign_required'):
-                            logger.warning(
+                            logger.debug(
                                 f"  ➜ [115] {label} 接口 rapid_upload 返回 status=7，"
                                 "交给中心调度签名。"
                             )

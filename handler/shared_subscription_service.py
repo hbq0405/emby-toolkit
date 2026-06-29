@@ -1007,7 +1007,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
         )
         return {'ok': False, 'response': first_resp, 'skipped': True, 'message': '缺少 source_kind/source_id'}
 
-    logger.warning(
+    logger.debug(
         f"  ➜ [负载均衡签名] 秒传返回 status=7，准备请求中心调度在线 holder："
         f"source={source_kind}:{source_id}, sha1={sha1[:12]}..., backend={sign_req.get('backend') or '-'}, "
         f"sign_check={sign_req.get('sign_check')}"
@@ -1033,7 +1033,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     holder_id = str(create_resp.get('holder_id') or (create_resp.get('job') or {}).get('holder_id') or '').strip()
     if not job_id:
         raise RuntimeError(f'中心未返回 sign_job id: {create_resp}')
-    logger.info(f"  ➜ [负载均衡签名] 签名任务已创建：等待源客户端签名...")
+    logger.debug(f"  ➜ [负载均衡签名] 签名任务已创建：等待源客户端签名...")
     wait_started_at = time.time()
     wait_resp = client.wait_rapid_sign_job(job_id, timeout=75)
     wait_elapsed = time.time() - wait_started_at
@@ -1068,7 +1068,7 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
     signed_meta = dict(rapid_meta or {})
     signed_meta['sign_key'] = sign_req.get('sign_key')
     signed_meta['sign_val'] = sign_val
-    logger.info(
+    logger.debug(
         f"  ➜ [负载均衡签名] 已收到签名，开始秒传："
         f"{file_name}"
     )
@@ -2040,7 +2040,7 @@ def rapid_save_file(file_info: Dict[str, Any], *, target_cid: str = '') -> Dict[
     preid = _norm_sha1(file_info.get('preid') or rapid_meta.get('preid') or rapid_meta.get('pre_sha1') or rapid_meta.get('pre_sha1_128k'))
     if preid:
         rapid_meta.setdefault('preid', preid)
-    logger.info(f"  ➜ [共享资源] 准备执行 115 秒传：{file_name}")
+    logger.debug(f"  ➜ [共享资源] 准备执行 115 秒传：{file_name}")
     resp = _call_rapid_method(
         p115,
         target_cid=target_cid,
