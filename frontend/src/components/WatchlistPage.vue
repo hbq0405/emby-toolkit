@@ -643,6 +643,57 @@
             </div>
 
             <n-divider style="margin: 0" />
+
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="MPSyncIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">增强订阅助手</div>
+                  <n-switch v-model:value="watchlistConfig.subscribe_assistant.enabled" size="small">
+                    <template #checked>开启</template>
+                    <template #unchecked>关闭</template>
+                  </n-switch>
+                </div>
+                <div class="setting-desc">
+                  接管 MoviePilot 订阅生命周期，统一处理完结守卫、待定、暂停、洗版和巡检。
+                </div>
+                <n-collapse-transition :show="watchlistConfig.subscribe_assistant.enabled">
+                  <div class="setting-sub-panel" style="margin-top: 8px; padding: 4px 12px; background-color: rgba(0,0,0,0.03);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                      <span style="font-size: 13px; font-weight: 500;">完结守卫模式</span>
+                      <n-select
+                        v-model:value="watchlistConfig.subscribe_assistant.guard_mode"
+                        :options="guardModeOptions"
+                        size="small"
+                        style="width: 130px"
+                      />
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                      <span style="font-size: 13px; font-weight: 500;">开播前暂停</span>
+                      <n-input-number v-model:value="watchlistConfig.subscribe_assistant.tv_air_pause_days" size="small" style="width: 120px" :min="0">
+                        <template #suffix>天</template>
+                      </n-input-number>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                      <span style="font-size: 13px; font-weight: 500;">下载监控</span>
+                      <n-switch v-model:value="watchlistConfig.subscribe_assistant.download_monitor_enabled" size="small">
+                        <template #checked>开启</template>
+                        <template #unchecked>关闭</template>
+                      </n-switch>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0;">
+                      <span style="font-size: 13px; font-weight: 500;">自动纠错</span>
+                      <n-switch v-model:value="watchlistConfig.subscribe_assistant.verify_enabled" size="small">
+                        <template #checked>开启</template>
+                        <template #unchecked>关闭</template>
+                      </n-switch>
+                    </div>
+                  </div>
+                </n-collapse-transition>
+              </div>
+            </div>
+
+            <n-divider style="margin: 0" />
             
           </div>
           <!-- 第三组：跟踪与维护 -->
@@ -739,6 +790,12 @@ const versionLockOptions = [
   { label: '最佳版本', value: 'best' },
   { label: '任意版本', value: 'any' }
 ];
+const guardModeOptions = [
+  { label: '平衡', value: 'balanced' },
+  { label: '严格', value: 'strict' },
+  { label: '宽松', value: 'loose' },
+  { label: '关闭', value: 'off' }
+];
 
 const watchlistConfig = ref({
   auto_pending: { 
@@ -759,7 +816,14 @@ const watchlistConfig = ref({
   series_subscription_best_version_full: false,
   series_version_lock_mode: 'off',
   revival_check_days: 365,
-  tg_channel_tracking: false
+  tg_channel_tracking: false,
+  subscribe_assistant: {
+    enabled: true,
+    guard_mode: 'balanced',
+    tv_air_pause_days: 14,
+    download_monitor_enabled: false,
+    verify_enabled: true
+  }
 });
 
 const openConfigModal = async () => {
@@ -787,7 +851,31 @@ const openConfigModal = async () => {
          series_subscription_best_version_full: data.series_subscription_best_version_full ?? data.sync_mp_subscription_full_wash ?? false,
          series_version_lock_mode: data.series_version_lock_mode ?? 'off',
          revival_check_days: data.revival_check_days ?? 365,
-         tg_channel_tracking: data.tg_channel_tracking ?? false
+         tg_channel_tracking: data.tg_channel_tracking ?? false,
+         subscribe_assistant: {
+           enabled: data.subscribe_assistant?.enabled ?? true,
+           guard_mode: data.subscribe_assistant?.guard_mode ?? 'balanced',
+           season_cooldown_days: data.subscribe_assistant?.season_cooldown_days ?? 14,
+           volatility_enabled: data.subscribe_assistant?.volatility_enabled ?? true,
+           volatility_window_days: data.subscribe_assistant?.volatility_window_days ?? 14,
+           pending_enhanced_enabled: data.subscribe_assistant?.pending_enhanced_enabled ?? true,
+           pending_use_volatility: data.subscribe_assistant?.pending_use_volatility ?? false,
+           pause_enhanced_enabled: data.subscribe_assistant?.pause_enhanced_enabled ?? true,
+           tv_air_pause_days: data.subscribe_assistant?.tv_air_pause_days ?? 14,
+           airing_pause_days: data.subscribe_assistant?.airing_pause_days ?? 30,
+           download_monitor_enabled: data.subscribe_assistant?.download_monitor_enabled ?? false,
+           download_timeout_minutes: data.subscribe_assistant?.download_timeout_minutes ?? 120,
+           download_progress_threshold: data.subscribe_assistant?.download_progress_threshold ?? 10,
+           download_retry_limit: data.subscribe_assistant?.download_retry_limit ?? 3,
+           auto_search_when_delete: data.subscribe_assistant?.auto_search_when_delete ?? true,
+           best_version_type: data.subscribe_assistant?.best_version_type ?? 'tv',
+           best_version_episode_to_full: data.subscribe_assistant?.best_version_episode_to_full ?? true,
+           verify_enabled: data.subscribe_assistant?.verify_enabled ?? true,
+           verify_interval_hours: data.subscribe_assistant?.verify_interval_hours ?? 12,
+           snapshot_retention_days: data.subscribe_assistant?.snapshot_retention_days ?? 180,
+           recognition_guard_enabled: data.subscribe_assistant?.recognition_guard_enabled ?? false,
+           recognition_guard_mode: data.subscribe_assistant?.recognition_guard_mode ?? 'audit'
+         }
        };
     }
   } catch (e) {

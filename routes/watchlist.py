@@ -288,7 +288,31 @@ def api_watchlist_settings():
         "series_subscription_best_version_full": False,
         "series_version_lock_mode": "off",
         "revival_check_days": 365,
-        "tg_channel_tracking": False      
+        "tg_channel_tracking": False,
+        "subscribe_assistant": {
+            "enabled": True,
+            "guard_mode": "balanced",
+            "season_cooldown_days": 14,
+            "volatility_enabled": True,
+            "volatility_window_days": 14,
+            "pending_enhanced_enabled": True,
+            "pending_use_volatility": False,
+            "pause_enhanced_enabled": True,
+            "tv_air_pause_days": 14,
+            "airing_pause_days": 30,
+            "download_monitor_enabled": False,
+            "download_timeout_minutes": 120,
+            "download_progress_threshold": 10,
+            "download_retry_limit": 3,
+            "auto_search_when_delete": True,
+            "best_version_type": "tv",
+            "best_version_episode_to_full": True,
+            "verify_enabled": True,
+            "verify_interval_hours": 12,
+            "snapshot_retention_days": 180,
+            "recognition_guard_enabled": False,
+            "recognition_guard_mode": "audit"
+        }
     }
 
     if request.method == 'GET':
@@ -300,6 +324,8 @@ def api_watchlist_settings():
             # 特殊处理嵌套字典 (auto_pending)
             if "auto_pending" in saved_config and isinstance(saved_config["auto_pending"], dict):
                 final_config["auto_pending"] = {**default_config["auto_pending"], **saved_config["auto_pending"]}
+            if "subscribe_assistant" in saved_config and isinstance(saved_config["subscribe_assistant"], dict):
+                final_config["subscribe_assistant"] = {**default_config["subscribe_assistant"], **saved_config["subscribe_assistant"]}
             
             return jsonify(final_config), 200
         except Exception as e:

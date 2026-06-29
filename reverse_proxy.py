@@ -439,20 +439,6 @@ def _request_context_keys(full_path="", play_session_id=""):
     add("token", token)
     add("device", request.args.get('DeviceId') or request.args.get('X-Emby-Device-Id') or request.headers.get('X-Emby-Device-Id'))
     add("play_session", play_session_id or request.args.get('PlaySessionId'))
-    add("remote", request.remote_addr)
-    add("client", "|".join([
-        request.remote_addr or "",
-        request.headers.get('X-Emby-Client') or "",
-        request.headers.get('User-Agent') or "",
-    ]))
-
-    item_match = re.search(r'/(?:videos|items)/(\d+)/', full_path or '', re.IGNORECASE)
-    if item_match:
-        add("item_client", "|".join([
-            item_match.group(1),
-            request.headers.get('X-Emby-Client') or "",
-            request.headers.get('User-Agent') or "",
-        ]))
 
     return list(dict.fromkeys(keys))
 
@@ -562,9 +548,13 @@ def _play_concurrency_session_key(user_id, item_id="", play_session_id="", devic
         except RuntimeError:
             device_id = ''
     device_id = str(device_id or '').strip()
+    if device_id:
+        return f"{user_id}|client:{device_id}"
+    if item_id:
+        return f"{user_id}|item:{item_id}"
     if play_session_id:
         return f"{user_id}|ps:{play_session_id}"
-    return "|".join([user_id, device_id, item_id])
+    return user_id
 
 
 def _cleanup_play_concurrency_sessions(now=None):
@@ -635,9 +625,10 @@ def _check_and_record_play_concurrency(user_id, item_id="", play_session_id=""):
             if str(v.get('user_id') or '') == user_id
         ]
         if key not in _PLAY_CONCURRENCY_SESSIONS and len(active_keys) >= max_streams:
+            user_name = user_db.get_username_by_id(user_id) or user_id
             logger.warning(
-                "  ➜ [并发控制] 用户播放并发超限: user_id=%s, active=%s, limit=%s, item_id=%s",
-                user_id, len(active_keys), max_streams, item_id or "-"
+                "  ➜ [并发控制] 用户播放并发超限: user=%s(%s), active=%s, limit=%s, item_id=%s, key=%s",
+                user_name, user_id, len(active_keys), max_streams, item_id or "-", key
             )
             return Response("Playback concurrency limit exceeded.", status=429)
         _PLAY_CONCURRENCY_SESSIONS[key] = {

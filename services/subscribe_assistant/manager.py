@@ -1,0 +1,467 @@
+import hashlib
+import logging
+import time
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from database import settings_db
+import handler.moviepilot as moviepilot
+
+from .config import AssistantConfig, from_watchlist_config
+from .engine import (
+    CompletionSignal,
+    build_scope,
+    check_airing_gap_pause,
+    check_pre_air_pause,
+    evaluate_completion,
+    parse_date,
+    should_enter_pending,
+)
+from . import store
+
+logger = logging.getLogger(__name__)
+
+
+STATE_SUBSCRIBES = "subscribes"
+STATE_TORRENTS = "torrents"
+SOURCE_PENDING_JUDGE = "pending_judge"
+SOURCE_GUARD_VETO = "guard_veto"
+SOURCE_DOWNLOAD_PENDING = "download_pending"
+SOURCE_PRE_AIR = "pre_air"
+SOURCE_AIRING_GAP = "airing_gap"
+SOURCE_NO_DOWNLOAD = "no_download"
+
+
+def get_config() -> AssistantConfig:
+    return from_watchlist_config(settings_db.get_setting("watchlist_config") or {})
+
+
+class SubscribeAssistantManager:
+    def __init__(self, app_config: Dict[str, Any] = None, assistant_config: AssistantConfig = None):
+        self.app_config = app_config or {}
+        self.cfg = assistant_config or get_config()
+
+    def sync_series(
+        self,
+        *,
+        tmdb_id: str,
+        series_name: str,
+        series_details: Dict[str, Any],
+        final_status: str,
+        old_status: str = None,
+        all_tmdb_episodes: List[Dict[str, Any]] = None,
+        real_next_episode: Dict[str, Any] = None,
+    ) -> None:
+        if not self.cfg.enabled:
+            logger.debug("  ➜ [订阅助手] 已关闭，跳过 MoviePilot 同步。")
+            return
+
+        all_tmdb_episodes = all_tmdb_episodes or []
+        valid_seasons = [
+            s for s in (series_details.get("seasons") or [])
+            if _safe_int(s.get("season_number")) > 0
+        ]
+        if not valid_seasons:
+            return
+        latest_season = max(valid_seasons, key=lambda s: _safe_int(s.get("season_number")))
+        latest_season_num = _safe_int(latest_season.get("season_number"))
+
+        existing = moviepilot.find_subscriptions(tmdb_id, config=self.app_config)
+        existing_by_season = {
+            _safe_int(sub.get("season")): sub
+            for sub in existing
+            if _safe_int(sub.get("season")) > 0
+        }
+
+        target_seasons = self._target_seasons_for_sync(
+            valid_seasons=valid_seasons,
+            existing_by_season=existing_by_season,
+            latest_season_num=latest_season_num,
+            final_status=final_status,
+        )
+        if not target_seasons:
+            return
+
+        for season_info in target_seasons:
+            season_num = _safe_int(season_info.get("season_number"))
+            season_episodes = [
+                ep for ep in all_tmdb_episodes
+                if _safe_int(ep.get("season_number")) == season_num
+            ]
+            signal = self._completion_signal(
+                tmdb_id=tmdb_id,
+                season=season_num,
+                series_details=series_details,
+                episodes=all_tmdb_episodes,
+                season_info=season_info,
+            )
+            decision = self._decide_subscription_state(
+                final_status=final_status,
+                series_details=series_details,
+                season=season_num,
+                season_episodes=season_episodes,
+                signal=signal,
+                real_next_episode=real_next_episode,
+            )
+            sub = existing_by_season.get(season_num)
+            if not sub and season_num == latest_season_num and final_status in ("Watching", "Paused", "Pending"):
+                sub = self._create_subscription(tmdb_id, series_name, season_num, decision)
+                if sub:
+                    existing_by_season[season_num] = sub
+            if not sub:
+                continue
+
+            subscribe_id = _safe_int(sub.get("id"))
+            self._update_source_state(subscribe_id, decision)
+            total = self._target_total(decision, season_info, signal)
+            if moviepilot.update_subscription_status(
+                int(tmdb_id),
+                season_num,
+                decision["mp_state"],
+                self.app_config,
+                total_episodes=total,
+            ):
+                logger.info(
+                    "  ➜ [订阅助手] 《%s》S%s 已同步 MP 状态=%s，总集数=%s，原因=%s",
+                    series_name,
+                    season_num,
+                    decision["mp_state"],
+                    total or "不改",
+                    decision.get("reason") or "状态同步",
+                )
+
+            if decision.get("snapshot"):
+                scope = build_scope(tmdb_id, season_num, all_tmdb_episodes)
+                store.upsert_snapshot(
+                    tmdb_id=str(tmdb_id),
+                    season_number=season_num,
+                    subscribe_id=subscribe_id or None,
+                    scope_total=scope.total,
+                    scope={
+                        "season": season_num,
+                        "total": scope.total,
+                        "high_risk": scope.high_risk,
+                        "signals": signal.signals,
+                    },
+                    subscribe=sub,
+                )
+
+    def run_periodic_checks(self, limit: int = 100) -> Dict[str, int]:
+        stats = {
+            "released_pending": 0,
+            "download_checked": 0,
+            "snapshots_checked": 0,
+            "snapshots_cleaned": 0,
+            "delete_records_cleaned": 0,
+        }
+        stats["delete_records_cleaned"] = store.cleanup_delete_records()
+        stats["snapshots_cleaned"] = store.cleanup_snapshots(self.cfg.snapshot_retention_days)
+        if self.cfg.download_monitor_enabled:
+            stats["download_checked"] = self.run_download_check()
+        if self.cfg.verify_enabled:
+            stats["snapshots_checked"] = self.run_snapshot_verify(limit=limit)
+        return stats
+
+    def run_download_check(self) -> int:
+        torrents = store.read_state(STATE_TORRENTS)
+        if not torrents:
+            return 0
+        live = moviepilot.get_downloading_tasks(self.app_config)
+        live_by_hash = {
+            str(task.get("hash") or task.get("hashString") or task.get("id") or "").lower(): task
+            for task in live or []
+        }
+        changed = 0
+        now = time.time()
+
+        def updater(data):
+            nonlocal changed
+            for torrent_hash, task in list(data.items()):
+                info = live_by_hash.get(str(torrent_hash).lower())
+                if not info:
+                    if self.cfg.manual_delete_listen:
+                        self._clear_download_pending(task.get("subscribe_id"), torrent_hash, "下载任务已不存在")
+                        data.pop(torrent_hash, None)
+                        changed += 1
+                    continue
+                progress = _progress_value(info)
+                baseline = float(task.get("baseline_progress") or 0)
+                baseline_at = float(task.get("baseline_at") or task.get("time") or now)
+                if progress >= 100 or info.get("state") in ("已完成", "completed", "COMPLETE"):
+                    self._clear_download_pending(task.get("subscribe_id"), torrent_hash, "下载已完成")
+                    data.pop(torrent_hash, None)
+                    changed += 1
+                    continue
+                if now - baseline_at < self.cfg.download_timeout_minutes * 60:
+                    continue
+                if progress - baseline >= self.cfg.download_progress_threshold:
+                    task["baseline_progress"] = progress
+                    task["baseline_at"] = now
+                    task["retry_count"] = 0
+                    data[torrent_hash] = task
+                    continue
+                retry_count = _safe_int(task.get("retry_count")) + 1
+                task["retry_count"] = retry_count
+                task["baseline_at"] = now
+                data[torrent_hash] = task
+                if retry_count >= self.cfg.download_retry_limit:
+                    logger.warning("  ➜ [订阅助手] 下载任务 %s 连续停滞，已达到人工保护阈值。", str(torrent_hash)[:8])
+                    continue
+                if moviepilot.delete_download_tasks("", self.app_config, hashes=[torrent_hash]):
+                    fingerprint = self._delete_fingerprint(task)
+                    store.record_deleted_resource(
+                        fingerprint,
+                        tmdb_id=str(task.get("tmdb_id") or ""),
+                        season_number=task.get("season"),
+                        episodes=task.get("episodes") or [],
+                        reason="timeout",
+                        retention_hours=self.cfg.delete_record_retention_hours,
+                    )
+                    if self.cfg.auto_search_when_delete and task.get("subscribe_id"):
+                        moviepilot.search_subscription(_safe_int(task.get("subscribe_id")), self.app_config)
+                    self._clear_download_pending(task.get("subscribe_id"), torrent_hash, "下载超时删种")
+                    data.pop(torrent_hash, None)
+                    changed += 1
+            return data
+
+        store.update_state(STATE_TORRENTS, updater)
+        return changed
+
+    def run_snapshot_verify(self, limit: int = 100) -> int:
+        checked = 0
+        for snapshot in store.get_snapshots_due(self.cfg.verify_interval_hours, limit=limit):
+            tmdb_id = str(snapshot.get("tmdb_id") or "")
+            season = _safe_int(snapshot.get("season_number"))
+            old_total = _safe_int(snapshot.get("scope_total"))
+            scope_json = snapshot.get("scope_json") or {}
+            current_total = _safe_int((scope_json or {}).get("total"), old_total)
+            # ETK 没有在这里直接访问 TMDB 的轻量客户端上下文；先用快照口径标记已检查。
+            # 新集检测由追剧刷新时的 sync_series 完成，避免周期任务重复打 TMDB。
+            if current_total > old_total:
+                logger.info("  ➜ [订阅助手] 快照检测到《%s》S%s 增集：%s -> %s", tmdb_id, season, old_total, current_total)
+            store.mark_snapshot_checked(_safe_int(snapshot.get("id")))
+            checked += 1
+        return checked
+
+    def mark_download_started(self, subscribe_id: int, torrent_hash: str, **metadata) -> None:
+        if not subscribe_id or not torrent_hash:
+            return
+        now = time.time()
+
+        def updater(data):
+            data[str(torrent_hash).lower()] = {
+                "hash": str(torrent_hash).lower(),
+                "subscribe_id": subscribe_id,
+                "baseline_progress": float(metadata.get("progress") or 0),
+                "baseline_at": now,
+                "retry_count": 0,
+                "time": now,
+                **metadata,
+            }
+            return data
+
+        store.update_state(STATE_TORRENTS, updater)
+        self._mark_active_source(subscribe_id, SOURCE_DOWNLOAD_PENDING, "下载已发起，等待整理入库")
+
+    def _completion_signal(self, *, tmdb_id, season, series_details, episodes, season_info) -> CompletionSignal:
+        return evaluate_completion(
+            tmdb_id=tmdb_id,
+            season=season,
+            series_details=series_details,
+            episodes=episodes,
+            season_cooldown_days=self.cfg.season_cooldown_days,
+            volatility_stable=True,
+        )
+
+    def _decide_subscription_state(
+        self,
+        *,
+        final_status: str,
+        series_details: Dict[str, Any],
+        season: int,
+        season_episodes: List[Dict[str, Any]],
+        signal: CompletionSignal,
+        real_next_episode: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        decision = {
+            "mp_state": "R",
+            "sources": {},
+            "reason": "",
+            "snapshot": False,
+            "best_version": None,
+            "best_version_full": None,
+        }
+        if final_status == "Completed":
+            guard_mode = str(self.cfg.guard_mode or "balanced").lower()
+            low_confidence_needs_observe = (
+                guard_mode == "strict"
+                or (guard_mode == "balanced" and signal.scope_total <= 3)
+            )
+            if guard_mode != "off" and signal.completed and signal.confidence == "low" and low_confidence_needs_observe:
+                decision["mp_state"] = "P"
+                decision["sources"][SOURCE_GUARD_VETO] = "低置信完结，进入完成前观察"
+                decision["reason"] = decision["sources"][SOURCE_GUARD_VETO]
+            else:
+                decision["snapshot"] = True
+                decision["reason"] = "订阅目标已完成，保存完成快照"
+            return decision
+
+        if self.cfg.pause_enabled:
+            paused, reason = check_pre_air_pause(
+                series_details=series_details,
+                season=season,
+                episodes=season_episodes,
+                tv_air_days=self.cfg.tv_air_pause_days,
+            )
+            if paused:
+                decision["mp_state"] = "S"
+                decision["sources"][SOURCE_PRE_AIR] = reason
+                decision["reason"] = reason
+                return decision
+
+            paused, reason = check_airing_gap_pause(
+                next_episode=real_next_episode,
+                pause_days=self.cfg.airing_pause_days,
+                signal=signal,
+            )
+            if paused:
+                decision["mp_state"] = "S"
+                decision["sources"][SOURCE_AIRING_GAP] = reason
+                decision["reason"] = reason
+                return decision
+
+        if final_status == "Pending" or self.cfg.auto_pending_enabled:
+            pending, reason = should_enter_pending(
+                series_details=series_details,
+                season=season,
+                episodes=season_episodes,
+                pending_days=self.cfg.auto_pending_days,
+                pending_episodes=self.cfg.auto_pending_episodes,
+                use_volatility=self.cfg.pending_use_volatility,
+                signal=signal,
+            )
+            if final_status == "Pending" or pending:
+                decision["mp_state"] = "P"
+                decision["sources"][SOURCE_PENDING_JUDGE] = reason or "ETK 追剧状态为待定"
+                decision["reason"] = decision["sources"][SOURCE_PENDING_JUDGE]
+                return decision
+
+        if final_status == "Paused":
+            decision["mp_state"] = "S"
+            decision["sources"][SOURCE_AIRING_GAP] = "ETK 追剧状态为暂停"
+            decision["reason"] = "ETK 追剧状态为暂停"
+            return decision
+
+        decision["mp_state"] = "R"
+        decision["reason"] = "订阅可运行"
+        return decision
+
+    def _target_seasons_for_sync(self, *, valid_seasons, existing_by_season, latest_season_num, final_status):
+        seasons = []
+        for season in valid_seasons:
+            s_num = _safe_int(season.get("season_number"))
+            if s_num in existing_by_season or s_num == latest_season_num:
+                seasons.append(season)
+        return seasons
+
+    def _create_subscription(self, tmdb_id: str, series_name: str, season: int, decision: Dict[str, Any]) -> Optional[dict]:
+        payload_kwargs = self._subscription_wash_kwargs(decision)
+        if not moviepilot.subscribe_series_to_moviepilot(
+            {"title": series_name, "tmdb_id": tmdb_id},
+            season,
+            self.app_config,
+            **payload_kwargs,
+        ):
+            logger.warning("  ➜ [订阅助手] 《%s》S%s 自动补订失败。", series_name, season)
+            return None
+        subscriptions = moviepilot.find_subscriptions(tmdb_id, season, self.app_config)
+        return subscriptions[0] if subscriptions else {"tmdbid": tmdb_id, "season": season}
+
+    def _subscription_wash_kwargs(self, decision: Dict[str, Any]) -> Dict[str, Optional[int]]:
+        if self.cfg.best_version_type in ("tv", "all"):
+            return {"best_version": 1, "best_version_full": 1}
+        if self.cfg.best_version_type == "tv_episode":
+            return {"best_version": 1, "best_version_full": None}
+        return {"best_version": None, "best_version_full": None}
+
+    def _target_total(self, decision: Dict[str, Any], season_info: Dict[str, Any], signal: CompletionSignal) -> Optional[int]:
+        if decision["mp_state"] == "P":
+            return self.cfg.pending_fake_total_episodes
+        total = _safe_int(season_info.get("episode_count"))
+        if total > 0:
+            return total
+        if signal.scope_total > 0:
+            return signal.scope_total
+        return None
+
+    def _update_source_state(self, subscribe_id: int, decision: Dict[str, Any]) -> None:
+        if not subscribe_id:
+            return
+        active_sources = decision.get("sources") or {}
+
+        def updater(data):
+            task = data.get(str(subscribe_id), {})
+            task["active_sources"] = active_sources
+            task["last_reason"] = decision.get("reason")
+            task["updated_at"] = time.time()
+            data[str(subscribe_id)] = task
+            return data
+
+        store.update_state(STATE_SUBSCRIBES, updater)
+
+    def _mark_active_source(self, subscribe_id: int, source: str, reason: str) -> None:
+        def updater(data):
+            task = data.get(str(subscribe_id), {})
+            sources = task.get("active_sources") or {}
+            sources[source] = reason
+            task["active_sources"] = sources
+            task["updated_at"] = time.time()
+            data[str(subscribe_id)] = task
+            return data
+
+        store.update_state(STATE_SUBSCRIBES, updater)
+
+    def _clear_download_pending(self, subscribe_id: int, torrent_hash: str, reason: str) -> None:
+        if not subscribe_id:
+            return
+
+        def updater(data):
+            task = data.get(str(subscribe_id), {})
+            sources = task.get("active_sources") or {}
+            sources.pop(SOURCE_DOWNLOAD_PENDING, None)
+            task["active_sources"] = sources
+            task["last_reason"] = reason
+            task["updated_at"] = time.time()
+            data[str(subscribe_id)] = task
+            return data
+
+        store.update_state(STATE_SUBSCRIBES, updater)
+
+    def _delete_fingerprint(self, task: Dict[str, Any]) -> str:
+        raw = "|".join([
+            str(task.get("tmdb_id") or ""),
+            str(task.get("season") or ""),
+            ",".join(str(x) for x in (task.get("episodes") or [])),
+            str(task.get("title") or ""),
+            str(task.get("enclosure") or ""),
+            str(task.get("page_url") or ""),
+        ])
+        return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _progress_value(info: Dict[str, Any]) -> float:
+    for key in ("progress", "percent", "completed"):
+        value = info.get(key)
+        try:
+            number = float(value)
+            return number * 100 if 0 <= number <= 1 else number
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

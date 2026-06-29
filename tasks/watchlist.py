@@ -12,6 +12,7 @@ import task_manager
 from database import watchlist_db, request_db
 from psycopg2.extras import execute_values
 from watchlist_processor import STATUS_WATCHING, STATUS_PAUSED, STATUS_COMPLETED
+from services.subscribe_assistant.manager import SubscribeAssistantManager
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,30 @@ def task_scan_old_seasons_backfill(processor):
         logger.info(f"  ➜ {final_msg}")
         progress_updater(100, final_msg)
 
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 时发生错误: {e}", exc_info=True)
+        progress_updater(-1, f"任务失败: {e}")
+
+
+def task_subscribe_assistant_maintenance(processor):
+    """运行增强订阅助手巡检：下载任务、完成快照和本地过期记录。"""
+    task_name = "增强订阅助手巡检"
+
+    def progress_updater(progress, message):
+        task_manager.update_status_from_thread(progress, message)
+
+    try:
+        progress_updater(10, "正在运行增强订阅助手巡检...")
+        stats = SubscribeAssistantManager(processor.config).run_periodic_checks()
+        message = (
+            "巡检完成："
+            f"下载处理 {stats.get('download_checked', 0)}，"
+            f"快照检查 {stats.get('snapshots_checked', 0)}，"
+            f"清理快照 {stats.get('snapshots_cleaned', 0)}，"
+            f"清理删除记录 {stats.get('delete_records_cleaned', 0)}"
+        )
+        logger.info(f"  ➜ [增强订阅助手] {message}")
+        progress_updater(100, message)
     except Exception as e:
         logger.error(f"执行 '{task_name}' 时发生错误: {e}", exc_info=True)
         progress_updater(-1, f"任务失败: {e}")

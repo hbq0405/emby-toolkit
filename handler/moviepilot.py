@@ -401,6 +401,49 @@ def check_subscription_exists(tmdb_id: str, item_type: str, config: Dict[str, An
         logger.warning(f"  ➜ 检查 MoviePilot 订阅状态时发生错误: {e}")
         return False
 
+
+def list_subscriptions(config: Dict[str, Any] = None) -> List[dict]:
+    """返回 MoviePilot 当前全部订阅。"""
+    try:
+        moviepilot_url, headers, error = _get_mp_base_and_headers(config)
+        if error:
+            logger.warning(f"  ➜ 获取 MP 订阅列表失败：{error}")
+            return []
+        res = requests.get(f"{moviepilot_url}/api/v1/subscribe/", headers=headers, timeout=20)
+        if res.status_code == 200:
+            data = res.json()
+            return data if isinstance(data, list) else []
+        logger.warning(f"  ➜ 获取 MP 订阅列表失败: {res.status_code} - {res.text[:200]}")
+        return []
+    except Exception as e:
+        logger.error(f"  ➜ 获取 MP 订阅列表异常: {e}")
+        return []
+
+
+def find_subscriptions(tmdb_id: str, season: Optional[int] = None, config: Dict[str, Any] = None) -> List[dict]:
+    tmdb_id = str(tmdb_id or "").strip()
+    result = []
+    for sub in list_subscriptions(config):
+        if str(sub.get("tmdbid")) != tmdb_id:
+            continue
+        if season is not None and str(sub.get("season")) != str(season):
+            continue
+        result.append(sub)
+    return result
+
+
+def delete_subscription_by_id(subscribe_id: int, config: Dict[str, Any] = None) -> bool:
+    try:
+        moviepilot_url, headers, error = _get_mp_base_and_headers(config)
+        if error:
+            logger.warning(f"  ➜ 删除 MP 订阅失败：{error}")
+            return False
+        res = requests.delete(f"{moviepilot_url}/api/v1/subscribe/{int(subscribe_id)}", headers=headers, timeout=15)
+        return res.status_code in (200, 204)
+    except Exception as e:
+        logger.error(f"  ➜ 删除 MP 订阅异常: {e}")
+        return False
+
 # ======================================================================
 # 业务封装函数
 # ======================================================================

@@ -19,6 +19,7 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.moviepilot as moviepilot
 import tasks.helpers as helpers
+from services.subscribe_assistant.manager import SubscribeAssistantManager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -1559,13 +1560,36 @@ class WatchlistProcessor:
             return False
 
     # ★★★ 辅助方法：同步状态给 MoviePilot ★★★
-    def _sync_status_to_moviepilot(self, tmdb_id: str, series_name: str, series_details: Dict[str, Any], final_status: str, old_status: str = None):
+    def _sync_status_to_moviepilot(
+        self,
+        tmdb_id: str,
+        series_name: str,
+        series_details: Dict[str, Any],
+        final_status: str,
+        old_status: str = None,
+        all_tmdb_episodes: Optional[List[Dict[str, Any]]] = None,
+        real_next_episode: Optional[Dict[str, Any]] = None,
+    ):
         """
         根据最终计算出的 watching_status，调用 MP 接口更新订阅状态及总集数。
         逻辑优化：
         1. 只要 MP 有订阅，就同步状态（覆盖所有季）。
         2. 如果 MP 无订阅，仅自动补订【最新季】（防止已完结的老季诈尸）。
         """
+        try:
+            SubscribeAssistantManager(self.config).sync_series(
+                tmdb_id=tmdb_id,
+                series_name=series_name,
+                series_details=series_details,
+                final_status=final_status,
+                old_status=old_status,
+                all_tmdb_episodes=all_tmdb_episodes or [],
+                real_next_episode=real_next_episode or {},
+            )
+            return
+        except Exception as assistant_error:
+            logger.warning(f"  ➜ [订阅助手] 增强同步失败，将回退到旧 MP 同步逻辑: {assistant_error}", exc_info=True)
+
         try:
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
             auto_pause_days = int(watchlist_cfg.get('auto_pause', 0))
@@ -3192,7 +3216,9 @@ class WatchlistProcessor:
             series_name=item_name, 
             series_details=latest_series_data, 
             final_status=final_status,
-            old_status=old_status
+            old_status=old_status,
+            all_tmdb_episodes=all_tmdb_episodes,
+            real_next_episode=real_next_episode_to_air,
         )
         version_lock_mode = str(watchlist_cfg.get('series_version_lock_mode', 'off') or 'off').strip().lower()
         if version_lock_mode in ('best', 'any') and airing_episode_emby_ids:
