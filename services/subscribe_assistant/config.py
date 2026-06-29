@@ -34,6 +34,7 @@ class AssistantConfig:
     best_version_type: str = "tv"
     best_version_backfill_enabled: bool = False
     best_version_episode_to_full: bool = True
+    best_version_full_consistency_check_enabled: bool = True
     subscription_cleanup_history_type: str = "none"
     subscription_cleanup_history_scenes: List[str] = None
     verify_enabled: bool = True
@@ -134,6 +135,10 @@ def from_watchlist_config(raw: Dict[str, Any] = None) -> AssistantConfig:
     cfg.best_version_type = str(assistant.get("best_version_type") or cfg.best_version_type)
     cfg.best_version_backfill_enabled = _as_bool(assistant.get("best_version_backfill_enabled"), cfg.best_version_backfill_enabled)
     cfg.best_version_episode_to_full = _as_bool(assistant.get("best_version_episode_to_full"), cfg.best_version_episode_to_full)
+    cfg.best_version_full_consistency_check_enabled = _as_bool(
+        assistant.get("best_version_full_consistency_check_enabled"),
+        cfg.best_version_full_consistency_check_enabled,
+    )
     cfg.subscription_cleanup_history_type = str(
         assistant.get("subscription_cleanup_history_type") or cfg.subscription_cleanup_history_type
     )

@@ -3103,7 +3103,10 @@ class WatchlistProcessor:
         )
         subscribe_assistant_cfg = watchlist_cfg.get('subscribe_assistant') if isinstance(watchlist_cfg.get('subscribe_assistant'), dict) else {}
         version_lock_mode = str(watchlist_cfg.get('series_version_lock_mode') or 'off').strip().lower()
-        if version_lock_mode in ('best', 'any') and airing_episode_emby_ids:
+        lockable_statuses = {STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING}
+        if final_status not in lockable_statuses and version_lock_mode in ('best', 'any') and airing_episode_emby_ids:
+            logger.info(f"  ➜ [版本锁定] 《{item_name}》当前状态为“{translate_internal_status(final_status)}”，已完结/非追剧中，跳过锁版。")
+        if final_status in lockable_statuses and version_lock_mode in ('best', 'any') and airing_episode_emby_ids:
             version_lock_seasons = self._get_version_lock_seasons_from_new_episode_ids(
                 tmdb_id,
                 airing_episode_emby_ids,

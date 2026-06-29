@@ -550,6 +550,10 @@
                       <div class="sub-label">分集转全集</div>
                       <n-switch v-model:value="watchlistConfig.subscribe_assistant.best_version_episode_to_full" size="small" />
                     </n-grid-item>
+                    <n-grid-item v-if="watchlistConfig.subscribe_assistant.best_version_episode_to_full">
+                      <div class="sub-label">一致性校验</div>
+                      <n-switch v-model:value="watchlistConfig.subscribe_assistant.best_version_full_consistency_check_enabled" size="small" />
+                    </n-grid-item>
                   </n-grid>
                 </div>
 
@@ -814,6 +818,7 @@ const defaultSubscribeAssistant = () => ({
   best_version_type: 'tv',
   best_version_backfill_enabled: false,
   best_version_episode_to_full: true,
+  best_version_full_consistency_check_enabled: true,
   subscription_cleanup_history_type: 'none',
   subscription_cleanup_history_scenes: ['completed'],
   verify_enabled: true,

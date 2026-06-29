@@ -321,6 +321,7 @@ def api_watchlist_settings():
             "best_version_type": "tv",
             "best_version_backfill_enabled": False,
             "best_version_episode_to_full": True,
+            "best_version_full_consistency_check_enabled": True,
             "subscription_cleanup_history_type": "none",
             "subscription_cleanup_history_scenes": ["completed"],
             "verify_enabled": True,

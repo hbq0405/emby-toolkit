@@ -5,8 +5,10 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from database import connection
 from database import settings_db, watchlist_db
 import handler.moviepilot as moviepilot
+import tasks.helpers as helpers
 
 from .config import AssistantConfig, from_watchlist_config
 from .engine import (
@@ -148,6 +150,14 @@ class SubscribeAssistantManager:
                 )
 
             if decision.get("snapshot"):
+                self._sync_completed_full_washing(
+                    tmdb_id=tmdb_id,
+                    series_name=series_name,
+                    season=season_num,
+                    subscribe=sub,
+                    season_info=season_info,
+                    signal=signal,
+                )
                 scope = build_scope(tmdb_id, season_num, all_tmdb_episodes)
                 store.upsert_snapshot(
                     tmdb_id=str(tmdb_id),
@@ -784,11 +794,97 @@ class SubscribeAssistantManager:
         return subscriptions[0] if subscriptions else {"tmdbid": tmdb_id, "season": season}
 
     def _subscription_wash_kwargs(self, decision: Dict[str, Any]) -> Dict[str, Optional[int]]:
+        if decision.get("completed_full_washing"):
+            return {"best_version": 1, "best_version_full": 1}
         if self.cfg.best_version_type in ("tv", "all"):
             return {"best_version": 1, "best_version_full": 1}
         if self.cfg.best_version_type == "tv_episode":
             return {"best_version": 1, "best_version_full": None}
         return {"best_version": None, "best_version_full": None}
+
+    def _sync_completed_full_washing(
+        self,
+        *,
+        tmdb_id: str,
+        series_name: str,
+        season: int,
+        subscribe: Dict[str, Any],
+        season_info: Dict[str, Any],
+        signal: CompletionSignal,
+    ) -> None:
+        if not self.cfg.best_version_episode_to_full:
+            return
+        if self.cfg.best_version_type != "tv_episode":
+            return
+
+        expected_count = _safe_int(season_info.get("episode_count")) or _safe_int(signal.scope_total)
+        if expected_count <= 0:
+            logger.info("  ➜ [订阅助手] 《%s》S%s 总集数未知，跳过全集洗版门禁。", series_name, season)
+            return
+
+        if self.cfg.best_version_full_consistency_check_enabled:
+            if self._season_consistency_ok(tmdb_id, season, expected_count, series_name):
+                self._set_season_active_washing(tmdb_id, season, False, "一致性通过，不提交全集洗版。")
+                logger.info(
+                    "  ➜ [订阅助手] 《%s》S%s 一致性已通过，跳过分集转全集洗版。",
+                    series_name,
+                    season,
+                )
+                return
+            self._set_season_active_washing(tmdb_id, season, True, "一致性不通过，提交全集洗版并等待收口。")
+
+        if _safe_int((subscribe or {}).get("best_version_full")) == 1:
+            logger.debug("  ➜ [订阅助手] 《%s》S%s 已是全集洗版订阅，跳过重复更新。", series_name, season)
+            return
+
+        payload = dict(subscribe or {})
+        if not payload.get("id"):
+            logger.debug("  ➜ [订阅助手] 《%s》S%s 未找到可更新的 MP 订阅，跳过全集洗版。", series_name, season)
+            return
+        payload["tmdbid"] = int(tmdb_id)
+        payload["season"] = int(season)
+        payload["name"] = payload.get("name") or series_name
+        payload["type"] = payload.get("type") or "电视剧"
+        payload["best_version"] = 1
+        payload["best_version_full"] = 1
+
+        if moviepilot.update_subscription(payload, self.app_config):
+            logger.info("  ➜ [订阅助手] 《%s》S%s 已提交分集转全集洗版订阅。", series_name, season)
+        else:
+            logger.warning("  ➜ [订阅助手] 《%s》S%s 分集转全集洗版订阅更新失败。", series_name, season)
+
+    def _season_consistency_ok(self, tmdb_id: str, season: int, expected_count: int, series_name: str) -> bool:
+        try:
+            result = helpers.check_season_consistency(
+                tmdb_id=str(tmdb_id),
+                season_number=int(season),
+                expected_episode_count=int(expected_count),
+                series_name=series_name,
+            )
+            return bool(result.get("ok"))
+        except Exception as e:
+            logger.warning("  ➜ [订阅助手] 《%s》S%s 一致性校验失败，按不通过处理：%s", series_name, season, e)
+            return False
+
+    def _set_season_active_washing(self, tmdb_id: str, season: int, enabled: bool, reason: str = "") -> None:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE media_metadata
+                        SET active_washing = %s
+                        WHERE parent_series_tmdb_id = %s
+                          AND season_number = %s
+                          AND item_type IN ('Season', 'Episode')
+                        """,
+                        (bool(enabled), str(tmdb_id), int(season)),
+                    )
+                    conn.commit()
+            action = "开启" if enabled else "清理"
+            logger.info("  ➜ [订阅助手] 已%s《%s》S%s active_washing：%s", action, tmdb_id, season, reason or "-")
+        except Exception as e:
+            logger.warning("  ➜ [订阅助手] 设置 active_washing 失败：《%s》S%s -> %s", tmdb_id, season, e)
 
     def _target_total(self, decision: Dict[str, Any], season_info: Dict[str, Any], signal: CompletionSignal) -> Optional[int]:
         if decision["mp_state"] == "P":
