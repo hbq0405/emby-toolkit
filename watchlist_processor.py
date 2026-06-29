@@ -6,7 +6,7 @@ import os
 import re
 import requests
 import concurrent.futures
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timezone
 import threading
 from collections import defaultdict
