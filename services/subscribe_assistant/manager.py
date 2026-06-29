@@ -4,7 +4,7 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from database import settings_db
+from database import settings_db, watchlist_db
 import handler.moviepilot as moviepilot
 
 from .config import AssistantConfig, from_watchlist_config
@@ -233,15 +233,87 @@ class SubscribeAssistantManager:
             tmdb_id = str(snapshot.get("tmdb_id") or "")
             season = _safe_int(snapshot.get("season_number"))
             old_total = _safe_int(snapshot.get("scope_total"))
-            scope_json = snapshot.get("scope_json") or {}
-            current_total = _safe_int((scope_json or {}).get("total"), old_total)
-            # ETK 没有在这里直接访问 TMDB 的轻量客户端上下文；先用快照口径标记已检查。
-            # 新集检测由追剧刷新时的 sync_series 完成，避免周期任务重复打 TMDB。
-            if current_total > old_total:
-                logger.info("  ➜ [订阅助手] 快照检测到《%s》S%s 增集：%s -> %s", tmdb_id, season, old_total, current_total)
+            if not tmdb_id or season <= 0:
+                store.mark_snapshot_checked(_safe_int(snapshot.get("id")))
+                checked += 1
+                continue
+
+            locked = self._season_total_locked(tmdb_id, season)
+            if locked:
+                logger.info(
+                    "  ➜ [订阅助手] 《%s》S%s 已由豆瓣/手动锁定为 %s 集，自动纠错跳过 MP 恢复动作。",
+                    tmdb_id,
+                    season,
+                    locked.get("count") or "未知",
+                )
+                store.mark_snapshot_checked(_safe_int(snapshot.get("id")))
+                checked += 1
+                continue
+
+            fixed = self._repair_snapshot_subscription(snapshot, tmdb_id, season, old_total)
+            if fixed:
+                logger.info("  ➜ [订阅助手] 已根据完成快照纠正《%s》S%s 的 MP 订阅。", tmdb_id, season)
             store.mark_snapshot_checked(_safe_int(snapshot.get("id")))
             checked += 1
         return checked
+
+    def _season_total_locked(self, tmdb_id: str, season: int) -> Optional[Dict[str, Any]]:
+        try:
+            lock_info = watchlist_db.get_series_seasons_lock_info(str(tmdb_id)).get(int(season)) or {}
+            if lock_info.get("locked"):
+                return lock_info
+        except Exception as e:
+            logger.warning("  ➜ [订阅助手] 读取《%s》S%s 集数锁定状态失败，按未锁定处理: %s", tmdb_id, season, e)
+        return None
+
+    def _repair_snapshot_subscription(self, snapshot: Dict[str, Any], tmdb_id: str, season: int, snapshot_total: int) -> bool:
+        if snapshot_total <= 0:
+            return False
+
+        subscriptions = moviepilot.find_subscriptions(tmdb_id, season, self.app_config)
+        sub = subscriptions[0] if subscriptions else None
+        if not sub:
+            snap_sub = snapshot.get("subscribe_json") or {}
+            title = snap_sub.get("name") or snap_sub.get("title") or snap_sub.get("keyword") or tmdb_id
+            logger.warning(
+                "  ➜ [订阅助手] 完成快照对应的 MP 订阅已消失：《%s》S%s，正在按快照恢复订阅。",
+                tmdb_id,
+                season,
+            )
+            created = self._create_subscription(
+                str(tmdb_id),
+                str(title),
+                season,
+                {"mp_state": "R", "sources": {}, "reason": "自动纠错恢复订阅"},
+            )
+            if not created:
+                return False
+            sub = created
+
+        current_total = _safe_int(sub.get("total_episode") or sub.get("total") or sub.get("total_episodes"))
+        changed = False
+        if current_total and current_total < snapshot_total:
+            if moviepilot.update_subscription_status(
+                int(tmdb_id),
+                season,
+                str(sub.get("state") or "R"),
+                self.app_config,
+                total_episodes=snapshot_total,
+            ):
+                logger.info(
+                    "  ➜ [订阅助手] MP 订阅总集数低于快照，已修正：《%s》S%s %s -> %s。",
+                    tmdb_id,
+                    season,
+                    current_total,
+                    snapshot_total,
+                )
+                changed = True
+
+        subscribe_id = _safe_int(sub.get("id") or snapshot.get("subscribe_id"))
+        if subscribe_id and self.cfg.auto_search_when_delete:
+            if moviepilot.search_subscription(subscribe_id, self.app_config):
+                changed = True
+        return changed
 
     def mark_download_started(self, subscribe_id: int, torrent_hash: str, **metadata) -> None:
         if not subscribe_id or not torrent_hash:

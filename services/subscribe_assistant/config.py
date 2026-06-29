@@ -34,6 +34,8 @@ class AssistantConfig:
     best_version_type: str = "tv"
     best_version_backfill_enabled: bool = False
     best_version_episode_to_full: bool = True
+    subscription_cleanup_history_type: str = "none"
+    subscription_cleanup_history_scenes: List[str] = None
     verify_enabled: bool = True
     verify_interval_hours: int = 12
     snapshot_retention_days: int = 180
@@ -50,6 +52,8 @@ class AssistantConfig:
                 "torrent not registered with this tracker",
                 "torrent banned",
             ]
+        if self.subscription_cleanup_history_scenes is None:
+            self.subscription_cleanup_history_scenes = ["completed"]
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -85,7 +89,7 @@ def from_watchlist_config(raw: Dict[str, Any] = None) -> AssistantConfig:
     auto_pending = raw.get("auto_pending") if isinstance(raw.get("auto_pending"), dict) else {}
 
     cfg = AssistantConfig()
-    cfg.enabled = _as_bool(assistant.get("enabled", raw.get("sync_mp_subscription", True)), True)
+    cfg.enabled = _as_bool(assistant.get("enabled"), True)
     cfg.guard_mode = str(assistant.get("guard_mode", "balanced") or "balanced")
     cfg.season_cooldown_days = _as_int(assistant.get("season_cooldown_days"), cfg.season_cooldown_days)
     cfg.volatility_enabled = _as_bool(assistant.get("volatility_enabled"), cfg.volatility_enabled)
@@ -127,13 +131,19 @@ def from_watchlist_config(raw: Dict[str, Any] = None) -> AssistantConfig:
     cfg.delete_exclude_tags = _as_list(assistant.get("delete_exclude_tags")) or cfg.delete_exclude_tags
     cfg.tracker_keywords = _as_list(assistant.get("tracker_keywords")) or cfg.tracker_keywords
 
-    cfg.best_version_type = str(assistant.get("best_version_type") or ("tv" if raw.get("auto_resub_ended") else "no"))
+    cfg.best_version_type = str(assistant.get("best_version_type") or cfg.best_version_type)
     cfg.best_version_backfill_enabled = _as_bool(assistant.get("best_version_backfill_enabled"), cfg.best_version_backfill_enabled)
     cfg.best_version_episode_to_full = _as_bool(assistant.get("best_version_episode_to_full"), cfg.best_version_episode_to_full)
+    cfg.subscription_cleanup_history_type = str(
+        assistant.get("subscription_cleanup_history_type") or cfg.subscription_cleanup_history_type
+    )
+    cfg.subscription_cleanup_history_scenes = (
+        _as_list(assistant.get("subscription_cleanup_history_scenes"))
+        or cfg.subscription_cleanup_history_scenes
+    )
     cfg.verify_enabled = _as_bool(assistant.get("verify_enabled"), cfg.verify_enabled)
     cfg.verify_interval_hours = _as_int(assistant.get("verify_interval_hours"), cfg.verify_interval_hours)
     cfg.snapshot_retention_days = _as_int(assistant.get("snapshot_retention_days"), cfg.snapshot_retention_days)
     cfg.recognition_guard_enabled = _as_bool(assistant.get("recognition_guard_enabled"), cfg.recognition_guard_enabled)
     cfg.recognition_guard_mode = str(assistant.get("recognition_guard_mode") or cfg.recognition_guard_mode)
     return cfg
-
