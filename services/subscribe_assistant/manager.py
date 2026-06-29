@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import time
 from datetime import date, datetime, timedelta
@@ -30,6 +31,8 @@ SOURCE_DOWNLOAD_PENDING = "download_pending"
 SOURCE_PRE_AIR = "pre_air"
 SOURCE_AIRING_GAP = "airing_gap"
 SOURCE_NO_DOWNLOAD = "no_download"
+SOURCE_MANUAL_MP = "manual_mp"
+MANUAL_CHANGE_GRACE_SECONDS = 3600
 
 
 def get_config() -> AssistantConfig:
@@ -112,8 +115,22 @@ class SubscribeAssistantManager:
                 continue
 
             subscribe_id = _safe_int(sub.get("id"))
+            if self._has_recent_manual_mp_change(subscribe_id, "state"):
+                logger.info(
+                    "  ➜ [订阅助手] 《%s》S%s 检测到 MP 近期人工改状态，本轮暂不覆盖。",
+                    series_name,
+                    season_num,
+                )
+                continue
+
             self._update_source_state(subscribe_id, decision)
             total = self._target_total(decision, season_info, signal)
+            self._remember_expected_mp_update(
+                subscribe_id,
+                fields=["state", "total_episode"] if total else ["state"],
+                expected_state=decision["mp_state"],
+                expected_total=total,
+            )
             if moviepilot.update_subscription_status(
                 int(tmdb_id),
                 season_num,
@@ -257,6 +274,185 @@ class SubscribeAssistantManager:
             checked += 1
         return checked
 
+    def handle_moviepilot_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+        if not self.cfg.enabled:
+            return False
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        try:
+            if event_type == "download.added":
+                return self._handle_download_added(data)
+            if event_type == "subscribe.added":
+                return self._handle_subscribe_added(data)
+            if event_type == "subscribe.modified":
+                return self._handle_subscribe_modified(data)
+            if event_type == "subscribe.deleted":
+                return self._handle_subscribe_deleted(data)
+            if event_type == "subscribe.complete":
+                return self._handle_subscribe_complete(data)
+        except Exception as e:
+            logger.warning("  ➜ [订阅助手] 处理 MP Webhook 事件失败：%s -> %s", event_type, e, exc_info=True)
+            return False
+        return False
+
+    def _handle_download_added(self, data: Dict[str, Any]) -> bool:
+        torrent_hash = str(data.get("hash") or "").lower().strip()
+        if not torrent_hash:
+            return False
+        source_info = self._parse_subscribe_source(data.get("source"))
+        context = data.get("context") if isinstance(data.get("context"), dict) else {}
+        meta = context.get("meta_info") if isinstance(context.get("meta_info"), dict) else {}
+        torrent = context.get("torrent_info") if isinstance(context.get("torrent_info"), dict) else {}
+        media = context.get("media_info") if isinstance(context.get("media_info"), dict) else {}
+        subscribe_id = _safe_int(source_info.get("id") or data.get("subscribe_id"))
+        if subscribe_id <= 0:
+            logger.debug("  ➜ [订阅助手] download.added 未携带订阅 ID，跳过下载状态登记：%s", torrent_hash[:8])
+            return False
+        season = _safe_int(source_info.get("season") or meta.get("begin_season") or media.get("season"))
+        episodes = data.get("episodes") or meta.get("episode_list") or []
+        if not isinstance(episodes, list):
+            episodes = [episodes]
+        metadata = {
+            "tmdb_id": str(source_info.get("tmdbid") or media.get("tmdb_id") or ""),
+            "season": season or None,
+            "episodes": [_safe_int(x) for x in episodes if _safe_int(x) > 0],
+            "title": torrent.get("title") or meta.get("title") or media.get("title") or source_info.get("name") or "",
+            "page_url": torrent.get("page_url") or "",
+            "enclosure": torrent.get("enclosure") or "",
+            "site_name": torrent.get("site_name") or "",
+            "size": torrent.get("size"),
+            "username": data.get("username") or "",
+            "source": "moviepilot_webhook",
+        }
+        self.mark_download_started(subscribe_id, torrent_hash, **metadata)
+        self._remember_subscription(subscribe_id, source_info or {
+            "id": subscribe_id,
+            "tmdbid": metadata["tmdb_id"],
+            "season": season,
+            "name": metadata["title"],
+        }, reason="download.added")
+        logger.info(
+            "  ➜ [订阅助手] 已接收 MP 下载事件：订阅 %s，%s S%s，hash=%s。",
+            subscribe_id,
+            metadata["tmdb_id"] or metadata["title"] or "-",
+            season or "-",
+            torrent_hash[:8],
+        )
+        return True
+
+    def _handle_subscribe_added(self, data: Dict[str, Any]) -> bool:
+        subscribe_id = _safe_int(data.get("subscribe_id"))
+        info = data.get("subscribe_info") if isinstance(data.get("subscribe_info"), dict) else {}
+        media = data.get("mediainfo") if isinstance(data.get("mediainfo"), dict) else {}
+        if not info:
+            info = {
+                "id": subscribe_id,
+                "name": media.get("title"),
+                "type": media.get("type"),
+                "tmdbid": media.get("tmdb_id"),
+                "imdbid": media.get("imdb_id"),
+                "season": media.get("season"),
+                "year": media.get("year"),
+            }
+        if subscribe_id <= 0:
+            subscribe_id = _safe_int(info.get("id"))
+        if subscribe_id <= 0:
+            return False
+        info = self._enrich_subscribe_info(info, media, subscribe_id)
+        self._remember_subscription(subscribe_id, info, reason="subscribe.added")
+        logger.info("  ➜ [订阅助手] 已接管 MP 新增订阅：%s。", self._format_subscribe_info(info))
+        return True
+
+    def _handle_subscribe_modified(self, data: Dict[str, Any]) -> bool:
+        info = data.get("subscribe_info") if isinstance(data.get("subscribe_info"), dict) else {}
+        subscribe_id = _safe_int(data.get("subscribe_id") or info.get("id"))
+        if subscribe_id <= 0:
+            return False
+        old_info = data.get("old_subscribe_info") if isinstance(data.get("old_subscribe_info"), dict) else {}
+        fields = data.get("fields") if isinstance(data.get("fields"), list) else []
+        scene = str(data.get("scene") or "")
+        if self._consume_expected_mp_update(subscribe_id, info, fields):
+            self._remember_subscription(subscribe_id, info, reason="subscribe.modified.expected")
+            logger.debug("  ➜ [订阅助手] 已确认 ETK 预期内的 MP 订阅修改：%s。", self._format_subscribe_info(info))
+            return True
+
+        self._remember_subscription(
+            subscribe_id,
+            info,
+            reason="subscribe.modified",
+            extra={
+                "last_manual_change": {
+                    "scene": scene,
+                    "fields": fields,
+                    "old_state": old_info.get("state"),
+                    "new_state": info.get("state"),
+                    "updated_at": time.time(),
+                }
+            },
+        )
+        if fields:
+            self._mark_active_source(subscribe_id, SOURCE_MANUAL_MP, f"MP 手动修改：{','.join(str(x) for x in fields)}")
+        logger.info(
+            "  ➜ [订阅助手] 已记录 MP 订阅修改：%s，scene=%s，fields=%s。",
+            self._format_subscribe_info(info),
+            scene or "-",
+            ",".join(str(x) for x in fields) or "-",
+        )
+        return True
+
+    def _handle_subscribe_deleted(self, data: Dict[str, Any]) -> bool:
+        info = data.get("subscribe_info") if isinstance(data.get("subscribe_info"), dict) else {}
+        subscribe_id = _safe_int(data.get("subscribe_id") or info.get("id"))
+        if subscribe_id <= 0:
+            return False
+        self._remove_subscription_state(subscribe_id, info, reason="subscribe.deleted")
+        self._clear_torrents_for_subscription(subscribe_id, "订阅已删除")
+        tmdb_id = str(info.get("tmdbid") or info.get("tmdb_id") or "").strip()
+        season = _safe_int(info.get("season"))
+        if self.cfg.verify_enabled and tmdb_id and season > 0:
+            snapshot = store.get_latest_snapshot(
+                tmdb_id=tmdb_id,
+                season_number=season or None,
+                subscribe_id=subscribe_id,
+            ) or store.get_latest_snapshot(
+                tmdb_id=tmdb_id,
+                season_number=season or None,
+            )
+            if snapshot:
+                fixed = self._repair_snapshot_subscription(snapshot, tmdb_id, season, _safe_int(snapshot.get("scope_total")))
+                if fixed:
+                    logger.info("  ➜ [订阅助手] MP 订阅删除已由完成快照实时纠正：%s。", self._format_subscribe_info(info))
+        logger.info("  ➜ [订阅助手] 已记录 MP 订阅删除：%s。", self._format_subscribe_info(info))
+        return True
+
+    def _handle_subscribe_complete(self, data: Dict[str, Any]) -> bool:
+        info = data.get("subscribe_info") if isinstance(data.get("subscribe_info"), dict) else {}
+        media = data.get("mediainfo") if isinstance(data.get("mediainfo"), dict) else {}
+        subscribe_id = _safe_int(data.get("subscribe_id") or info.get("id"))
+        tmdb_id = str(info.get("tmdbid") or media.get("tmdb_id") or "").strip()
+        season = _safe_int(info.get("season") or media.get("season"))
+        if subscribe_id <= 0 or not tmdb_id:
+            return False
+        total = _safe_int(info.get("total_episode") or media.get("number_of_episodes"))
+        self._remember_subscription(subscribe_id, info, reason="subscribe.complete")
+        store.upsert_snapshot(
+            tmdb_id=tmdb_id,
+            item_type="Series" if str(info.get("type") or media.get("type") or "") == "电视剧" else "Movie",
+            season_number=season or None,
+            subscribe_id=subscribe_id,
+            scope_total=total,
+            scope={
+                "season": season,
+                "total": total,
+                "source": "subscribe.complete",
+                "completed_at": time.time(),
+            },
+            subscribe=info,
+        )
+        self._clear_download_pending(subscribe_id, "", "订阅已完成")
+        self._clear_torrents_for_subscription(subscribe_id, "订阅已完成")
+        logger.info("  ➜ [订阅助手] 已根据 MP 完成事件写入快照：%s，总集数=%s。", self._format_subscribe_info(info), total or "-")
+        return True
+
     def _season_total_locked(self, tmdb_id: str, season: int) -> Optional[Dict[str, Any]]:
         try:
             lock_info = watchlist_db.get_series_seasons_lock_info(str(tmdb_id)).get(int(season)) or {}
@@ -334,6 +530,144 @@ class SubscribeAssistantManager:
 
         store.update_state(STATE_TORRENTS, updater)
         self._mark_active_source(subscribe_id, SOURCE_DOWNLOAD_PENDING, "下载已发起，等待整理入库")
+
+    def _remember_subscription(self, subscribe_id: int, info: Dict[str, Any], reason: str = "", extra: Dict[str, Any] = None) -> None:
+        if not subscribe_id:
+            return
+
+        def updater(data):
+            task = data.get(str(subscribe_id), {})
+            task["subscribe_id"] = subscribe_id
+            task["subscribe_info"] = info or {}
+            task["tmdb_id"] = str((info or {}).get("tmdbid") or (info or {}).get("tmdb_id") or task.get("tmdb_id") or "")
+            task["season"] = _safe_int((info or {}).get("season") or task.get("season")) or None
+            task["mp_state"] = (info or {}).get("state", task.get("mp_state"))
+            task["last_event"] = reason
+            task["updated_at"] = time.time()
+            if extra:
+                task.update(extra)
+            data[str(subscribe_id)] = task
+            return data
+
+        store.update_state(STATE_SUBSCRIBES, updater)
+
+    def _remove_subscription_state(self, subscribe_id: int, info: Dict[str, Any], reason: str = "") -> None:
+        def updater(data):
+            task = data.get(str(subscribe_id), {})
+            task["subscribe_id"] = subscribe_id
+            task["subscribe_info"] = info or task.get("subscribe_info") or {}
+            task["deleted"] = True
+            task["last_event"] = reason
+            task["active_sources"] = {}
+            task["updated_at"] = time.time()
+            data[str(subscribe_id)] = task
+            return data
+
+        store.update_state(STATE_SUBSCRIBES, updater)
+
+    def _has_recent_manual_mp_change(self, subscribe_id: int, field: str) -> bool:
+        if not subscribe_id:
+            return False
+        data = store.read_state(STATE_SUBSCRIBES)
+        task = data.get(str(subscribe_id)) if isinstance(data, dict) else {}
+        change = task.get("last_manual_change") if isinstance(task, dict) else {}
+        if not isinstance(change, dict):
+            return False
+        fields = change.get("fields") if isinstance(change.get("fields"), list) else []
+        updated_at = float(change.get("updated_at") or 0)
+        if field not in fields or updated_at <= 0:
+            return False
+        return time.time() - updated_at <= MANUAL_CHANGE_GRACE_SECONDS
+
+    def _remember_expected_mp_update(
+        self,
+        subscribe_id: int,
+        *,
+        fields: List[str],
+        expected_state: str = None,
+        expected_total: int = None,
+    ) -> None:
+        if not subscribe_id:
+            return
+
+        def updater(data):
+            task = data.get(str(subscribe_id), {})
+            task["expected_mp_update"] = {
+                "fields": fields or [],
+                "state": expected_state,
+                "total_episode": expected_total,
+                "updated_at": time.time(),
+            }
+            data[str(subscribe_id)] = task
+            return data
+
+        store.update_state(STATE_SUBSCRIBES, updater)
+
+    def _consume_expected_mp_update(self, subscribe_id: int, info: Dict[str, Any], fields: List[str]) -> bool:
+        data = store.read_state(STATE_SUBSCRIBES)
+        task = data.get(str(subscribe_id)) if isinstance(data, dict) else {}
+        expected = task.get("expected_mp_update") if isinstance(task, dict) else {}
+        if not isinstance(expected, dict):
+            return False
+        updated_at = float(expected.get("updated_at") or 0)
+        if updated_at <= 0 or time.time() - updated_at > 300:
+            return False
+        expected_fields = set(str(x) for x in (expected.get("fields") or []))
+        changed_fields = set(str(x) for x in (fields or []))
+        if changed_fields and expected_fields and not changed_fields.issubset(expected_fields):
+            return False
+        expected_state = expected.get("state")
+        if expected_state and info.get("state") != expected_state:
+            return False
+        expected_total = _safe_int(expected.get("total_episode"))
+        if expected_total and _safe_int(info.get("total_episode")) not in (0, expected_total):
+            return False
+
+        def updater(current):
+            item = current.get(str(subscribe_id), {})
+            item.pop("expected_mp_update", None)
+            current[str(subscribe_id)] = item
+            return current
+
+        store.update_state(STATE_SUBSCRIBES, updater)
+        return True
+
+    def _clear_torrents_for_subscription(self, subscribe_id: int, reason: str) -> int:
+        if not subscribe_id:
+            return 0
+        removed = 0
+
+        def updater(data):
+            nonlocal removed
+            for torrent_hash, task in list(data.items()):
+                if _safe_int((task or {}).get("subscribe_id")) == subscribe_id:
+                    data.pop(torrent_hash, None)
+                    removed += 1
+            return data
+
+        store.update_state(STATE_TORRENTS, updater)
+        if removed:
+            logger.info("  ➜ [订阅助手] 已清理订阅 %s 的下载监控：%s，数量=%s。", subscribe_id, reason, removed)
+        return removed
+
+    def _enrich_subscribe_info(self, info: Dict[str, Any], media: Dict[str, Any], subscribe_id: int) -> Dict[str, Any]:
+        enriched = dict(info or {})
+        tmdb_id = str(enriched.get("tmdbid") or media.get("tmdb_id") or "").strip()
+        if not tmdb_id:
+            return enriched
+        if _safe_int(enriched.get("season")) > 0 and enriched.get("state"):
+            return enriched
+        try:
+            for sub in moviepilot.find_subscriptions(tmdb_id, config=self.app_config) or []:
+                if _safe_int(sub.get("id")) != subscribe_id:
+                    continue
+                for key, value in sub.items():
+                    if enriched.get(key) in (None, "", 0):
+                        enriched[key] = value
+                break
+        except Exception as e:
+            logger.debug("  ➜ [订阅助手] 反查 MP 订阅详情失败：%s -> %s", subscribe_id, e)
+        return enriched
 
     def _completion_signal(self, *, tmdb_id, season, series_details, episodes, season_info) -> CompletionSignal:
         return evaluate_completion(
@@ -508,6 +842,30 @@ class SubscribeAssistantManager:
             return data
 
         store.update_state(STATE_SUBSCRIBES, updater)
+
+    def _parse_subscribe_source(self, source: Any) -> Dict[str, Any]:
+        text = str(source or "")
+        if "|" not in text:
+            return {}
+        prefix, raw = text.split("|", 1)
+        if prefix != "Subscribe":
+            return {}
+        try:
+            value = json.loads(raw)
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+
+    def _format_subscribe_info(self, info: Dict[str, Any]) -> str:
+        if not isinstance(info, dict):
+            return "-"
+        title = info.get("name") or info.get("title") or "-"
+        tmdb_id = info.get("tmdbid") or info.get("tmdb_id") or "-"
+        season = info.get("season")
+        state = info.get("state")
+        season_text = f"S{season}" if season not in (None, "", 0) else "全局"
+        state_text = f"，状态={state}" if state else ""
+        return f"{title}({tmdb_id}) {season_text}{state_text}"
 
     def _delete_fingerprint(self, task: Dict[str, Any]) -> str:
         raw = "|".join([

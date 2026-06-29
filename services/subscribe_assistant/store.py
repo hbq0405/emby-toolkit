@@ -102,6 +102,37 @@ def mark_snapshot_checked(snapshot_id: int) -> None:
         conn.commit()
 
 
+def get_latest_snapshot(
+    *,
+    tmdb_id: str,
+    season_number: Optional[int] = None,
+    subscribe_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    conditions = ["tmdb_id = %s"]
+    params = [str(tmdb_id)]
+    if season_number is not None:
+        conditions.append("season_number = %s")
+        params.append(int(season_number))
+    if subscribe_id is not None:
+        conditions.append("subscribe_id = %s")
+        params.append(int(subscribe_id))
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM subscribe_assistant_snapshots
+                WHERE {' AND '.join(conditions)}
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+
 def cleanup_snapshots(retention_days: int) -> int:
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -159,4 +190,3 @@ def cleanup_delete_records() -> int:
             count = cursor.rowcount
         conn.commit()
     return count
-
