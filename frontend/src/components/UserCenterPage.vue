@@ -64,6 +64,7 @@
                         {{ accountInfo.allow_unrestricted_subscriptions ? '免审核订阅' : '需管理员审核' }}
                       </n-tag>
                     </n-descriptions-item>
+                    <n-descriptions-item label="播放并发">{{ maxConcurrentStreamsText }}</n-descriptions-item>
                     <n-descriptions-item label="Telegram Chat ID">
                       <n-input-group>
                         <n-input v-model:value="telegramChatId" placeholder="用于接收通知" size="small" />
@@ -257,6 +258,7 @@
         <div class="mobile-info-list">
           <div class="mobile-info-row"><span>等级</span><span>{{ authStore.isAdmin ? '管理员' : (accountInfo?.template_name || '未分配') }}</span></div>
           <div class="mobile-info-row"><span>到期</span><span>{{ accountInfo?.expiration_date ? new Date(accountInfo.expiration_date).toLocaleString() : '永久' }}</span></div>
+          <div class="mobile-info-row"><span>并发</span><span>{{ maxConcurrentStreamsText }}</span></div>
           <div class="mobile-info-row" style="align-items: center;">
             <span>通知 ID</span>
             <div style="flex: 1; margin-left: 12px; display: flex; gap: 4px;">
@@ -470,6 +472,10 @@ const statusMap = {
 
 const statusText = computed(() => statusMap[accountInfo.value?.status]?.text || '未知');
 const statusType = computed(() => statusMap[accountInfo.value?.status]?.type || 'default');
+const maxConcurrentStreamsText = computed(() => {
+  const limit = Number(accountInfo.value?.max_concurrent_streams || 0);
+  return limit > 0 ? `${limit} 路` : '不限';
+});
 
 const globalChannelLink = computed(() => {
   if (!accountInfo.value || !accountInfo.value.telegram_channel_id) return '#';

@@ -408,7 +408,8 @@ def init_db():
                         -- 模板默认的有效期（天数），0 表示永久
                         default_expiration_days INTEGER DEFAULT 30,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        allow_unrestricted_subscriptions BOOLEAN DEFAULT FALSE NOT NULL
+                        allow_unrestricted_subscriptions BOOLEAN DEFAULT FALSE NOT NULL,
+                        max_concurrent_streams INTEGER DEFAULT 0 NOT NULL
                     )
                 """)
 
@@ -725,7 +726,8 @@ def init_db():
                         'user_templates': {
                             "source_emby_user_id": "TEXT",
                             "emby_configuration_json": "JSONB",
-                            "allow_unrestricted_subscriptions": "BOOLEAN DEFAULT FALSE NOT NULL"
+                            "allow_unrestricted_subscriptions": "BOOLEAN DEFAULT FALSE NOT NULL",
+                            "max_concurrent_streams": "INTEGER DEFAULT 0 NOT NULL"
                         },
                         'emby_users_extended': {
                             "template_id": "INTEGER",

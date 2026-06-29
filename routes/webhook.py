@@ -1940,6 +1940,11 @@ def emby_webhook():
                         spawn(cleanup_for_playback_stop, cleanup_data)
                         spawn(p115_play_pool.cleanup_for_playback_stop, cleanup_data)
                         spawn(_maybe_promote_virtual_import_from_playback, cleanup_data)
+                        try:
+                            from reverse_proxy import clear_play_concurrency_for_playback_stop
+                            spawn(clear_play_concurrency_for_playback_stop, cleanup_data)
+                        except Exception as e:
+                            logger.debug(f"  ➜ [并发控制] 播放停止清理任务分配失败: {e}")
                     except Exception as e:
                         logger.error(f"  ➜ [复制播放] 停止播放清理任务分配失败: {e}")
 

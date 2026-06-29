@@ -59,6 +59,16 @@
           <n-switch v-model:value="formModel.allow_unrestricted_subscriptions" />
           <template #feedback>开启后，使用此模板的用户提交订阅请求时，将无需管理员审核，直接提交订阅。</template>
         </n-form-item>
+
+        <n-form-item label="播放并发" path="max_concurrent_streams">
+          <n-input-number
+            v-model:value="formModel.max_concurrent_streams"
+            :min="0"
+            :precision="0"
+            style="width: 100%"
+          />
+          <template #feedback>设置为 0 表示不限制；大于 0 时反代层会限制该模板用户的同时播放数量。</template>
+        </n-form-item>
       </n-form>
       <template #footer>
         <n-button @click="isModalVisible = false">取消</n-button>
@@ -110,11 +120,13 @@ const formModel = ref({
   source_emby_user_id: null,
   include_configuration: true,
   allow_unrestricted_subscriptions: false,
+  max_concurrent_streams: 0,
 });
 
 const rules = {
   name: { required: true, message: '请输入模板名称', trigger: 'blur' },
   default_expiration_days: { type: 'number', required: true, message: '请输入默认有效期' },
+  max_concurrent_streams: { type: 'number', required: true, message: '请输入播放并发数' },
   source_emby_user_id: { required: true, message: '请选择一个源用户', trigger: 'change' },
 };
 
@@ -162,6 +174,7 @@ const handleCreate = () => {
     source_emby_user_id: null,
     include_configuration: true,
     allow_unrestricted_subscriptions: false, 
+    max_concurrent_streams: 0,
   };
   isEditMode.value = false;
   isModalVisible.value = true;
@@ -225,6 +238,11 @@ const columns = [
     title: '免审订阅', 
     key: 'allow_unrestricted_subscriptions',
     render: (row) => row.allow_unrestricted_subscriptions ? '是' : '否'
+  },
+  {
+    title: '播放并发',
+    key: 'max_concurrent_streams',
+    render: (row) => Number(row.max_concurrent_streams || 0) > 0 ? row.max_concurrent_streams : '不限'
   },
   { 
     title: '默认有效期(天)', 

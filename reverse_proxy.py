@@ -15,7 +15,7 @@ from flask import send_file
 from handler.poster_generator import get_missing_poster
 from gevent import spawn, joinall
 from websocket import create_connection
-from database import custom_collection_db, queries_db, media_db, settings_db, shared_credit_db, shared_virtual_db
+from database import custom_collection_db, queries_db, media_db, settings_db, shared_credit_db, shared_virtual_db, user_db
 from database.connection import get_db_connection
 from handler.custom_collection import RecommendationEngine
 import config_manager
@@ -42,6 +42,9 @@ MISSING_ID_PREFIX = "-800000_"
 _USER_CONTEXT_TTL_SECONDS = 2 * 60 * 60
 _USER_CONTEXT_LOCK = threading.Lock()
 _USER_CONTEXT_CACHE = {}
+_PLAY_CONCURRENCY_TTL_SECONDS = 8 * 60 * 60
+_PLAY_CONCURRENCY_LOCK = threading.Lock()
+_PLAY_CONCURRENCY_SESSIONS = {}
 _VIRTUAL_PLAY_SESSIONS_KEY = "p115_virtual_play_sessions"
 _VIRTUAL_PLAY_SESSION_TTL_SECONDS = 120
 _VIRTUAL_PLAY_LOCKS = {}
@@ -541,6 +544,110 @@ def _resolve_request_user_id(base_url, api_key, full_path="", play_session_id=""
     if user_id:
         _cache_request_user_context(user_id, full_path, play_session_id)
     return user_id
+
+
+def _play_concurrency_session_key(user_id, item_id="", play_session_id="", device_id=""):
+    user_id = str(user_id or "").strip()
+    item_id = str(item_id or "").strip()
+    play_session_id = str(play_session_id or "").strip()
+    if not device_id:
+        try:
+            device_id = (
+                request.args.get('DeviceId')
+                or request.args.get('X-Emby-Device-Id')
+                or request.headers.get('X-Emby-Device-Id')
+                or request.remote_addr
+                or ''
+            )
+        except RuntimeError:
+            device_id = ''
+    device_id = str(device_id or '').strip()
+    if play_session_id:
+        return f"{user_id}|ps:{play_session_id}"
+    return "|".join([user_id, device_id, item_id])
+
+
+def _cleanup_play_concurrency_sessions(now=None):
+    now = now or time.time()
+    for key, session_info in list(_PLAY_CONCURRENCY_SESSIONS.items()):
+        if float(session_info.get('expires_at') or 0) < now:
+            _PLAY_CONCURRENCY_SESSIONS.pop(key, None)
+
+
+def _clear_play_concurrency_session(user_id="", item_id="", play_session_id="", device_id=""):
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return
+    key = _play_concurrency_session_key(user_id, item_id=item_id, play_session_id=play_session_id, device_id=device_id)
+    with _PLAY_CONCURRENCY_LOCK:
+        _PLAY_CONCURRENCY_SESSIONS.pop(key, None)
+
+
+def clear_play_concurrency_for_playback_stop(data):
+    data = data or {}
+    user = data.get("User") or {}
+    item = data.get("Item") or {}
+    session_data = data.get("Session") or {}
+    playback_info = data.get("PlaybackInfo") or {}
+
+    user_id = str(user.get("Id") or data.get("UserId") or "").strip()
+    item_id = str(item.get("Id") or data.get("ItemId") or "").strip()
+    play_session_id = str(playback_info.get("PlaySessionId") or data.get("PlaySessionId") or "").strip()
+    device_id = str(session_data.get("DeviceId") or data.get("DeviceId") or "").strip()
+
+    if not user_id:
+        return
+
+    removed = 0
+    with _PLAY_CONCURRENCY_LOCK:
+        _cleanup_play_concurrency_sessions()
+        for key, session_info in list(_PLAY_CONCURRENCY_SESSIONS.items()):
+            if str(session_info.get("user_id") or "") != user_id:
+                continue
+            if play_session_id and str(session_info.get("play_session_id") or "") == play_session_id:
+                _PLAY_CONCURRENCY_SESSIONS.pop(key, None)
+                removed += 1
+                continue
+            if item_id and str(session_info.get("item_id") or "") == item_id:
+                _PLAY_CONCURRENCY_SESSIONS.pop(key, None)
+                removed += 1
+                continue
+            if device_id and key.startswith(f"{user_id}|{device_id}|"):
+                _PLAY_CONCURRENCY_SESSIONS.pop(key, None)
+                removed += 1
+    if removed:
+        logger.debug("  ➜ [并发控制] 已通过播放停止清理会话: user_id=%s, item_id=%s, session=%s, count=%s", user_id, item_id or "-", play_session_id or "-", removed)
+
+
+def _check_and_record_play_concurrency(user_id, item_id="", play_session_id=""):
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return None
+    max_streams = user_db.get_user_max_concurrent_streams(user_id)
+    if max_streams <= 0:
+        return None
+    now = time.time()
+    key = _play_concurrency_session_key(user_id, item_id=item_id, play_session_id=play_session_id)
+    with _PLAY_CONCURRENCY_LOCK:
+        _cleanup_play_concurrency_sessions(now)
+        active_keys = [
+            k for k, v in _PLAY_CONCURRENCY_SESSIONS.items()
+            if str(v.get('user_id') or '') == user_id
+        ]
+        if key not in _PLAY_CONCURRENCY_SESSIONS and len(active_keys) >= max_streams:
+            logger.warning(
+                "  ➜ [并发控制] 用户播放并发超限: user_id=%s, active=%s, limit=%s, item_id=%s",
+                user_id, len(active_keys), max_streams, item_id or "-"
+            )
+            return Response("Playback concurrency limit exceeded.", status=429)
+        _PLAY_CONCURRENCY_SESSIONS[key] = {
+            "user_id": user_id,
+            "item_id": str(item_id or ""),
+            "play_session_id": str(play_session_id or ""),
+            "updated_at": now,
+            "expires_at": now + _PLAY_CONCURRENCY_TTL_SECONDS,
+        }
+    return None
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     """
@@ -1376,13 +1483,20 @@ def proxy_all(path):
         observed_user_id = _extract_user_id_from_request_path_or_args(full_path)
         if observed_user_id:
             _cache_request_user_context(observed_user_id, full_path, request.args.get('PlaySessionId', ''))
+        full_path_lower = full_path.lower()
+        if request.method in ('POST', 'DELETE') and '/sessions/playing/stopped' in full_path_lower:
+            base_url, api_key = _get_real_emby_url_and_key()
+            payload = request.get_json(silent=True) or {}
+            play_session_id = request.args.get('PlaySessionId', '') or payload.get('PlaySessionId', '')
+            item_id = request.args.get('ItemId', '') or payload.get('ItemId', '')
+            current_user_id = _resolve_request_user_id(base_url, api_key, full_path, play_session_id)
+            _clear_play_concurrency_session(current_user_id, item_id=item_id, play_session_id=play_session_id)
         # ===== 调试日志：打印所有请求路径 =====
         # logger.info(f"[PROXY] 请求路径: {full_path}")
         
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
         # ====================================================================
-        full_path_lower = full_path.lower()
         if _is_emby_transcode_playback_request(full_path_lower):
             return _block_emby_transcode_playback(full_path)
         
@@ -1407,6 +1521,9 @@ def proxy_all(path):
             source_paths = []
             base_url, api_key = _get_real_emby_url_and_key()
             current_user_id = _resolve_request_user_id(base_url, api_key, full_path, play_session_id)
+            concurrency_block = _check_and_record_play_concurrency(current_user_id, item_id=item_id, play_session_id=play_session_id)
+            if concurrency_block:
+                return concurrency_block
 
             try:
                 playback_info_url = f"{base_url}/emby/Items/{item_id}/PlaybackInfo"

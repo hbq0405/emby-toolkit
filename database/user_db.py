@@ -488,7 +488,8 @@ def get_user_account_details(emby_user_id: str) -> Optional[Dict[str, Any]]:
             e.telegram_chat_id, -- 顺便确认下这个有没有
             t.name as template_name,
             t.description as template_description,
-            t.allow_unrestricted_subscriptions
+            t.allow_unrestricted_subscriptions,
+            COALESCE(t.max_concurrent_streams, 0) AS max_concurrent_streams
         FROM emby_users u
         LEFT JOIN emby_users_extended e ON u.id = e.emby_user_id
         LEFT JOIN user_templates t ON e.template_id = t.id
@@ -502,6 +503,34 @@ def get_user_account_details(emby_user_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"获取用户 {emby_user_id} 详情失败: {e}")
         return None
+
+def get_user_max_concurrent_streams(user_id: str) -> int:
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return 0
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        CASE
+                            WHEN u.is_administrator THEN 0
+                            ELSE COALESCE(t.max_concurrent_streams, 0)
+                        END AS max_concurrent_streams
+                    FROM emby_users u
+                    LEFT JOIN emby_users_extended e ON e.emby_user_id = u.id
+                    LEFT JOIN user_templates t ON e.template_id = t.id
+                    WHERE u.id = %s
+                    """,
+                    (user_id,)
+                )
+                row = cursor.fetchone()
+                return int((row or {}).get('max_concurrent_streams') or 0)
+    except Exception as e:
+        logger.warning("获取用户 %s 并发上限失败: %s", user_id, e)
+        return 0
+
 
 def upsert_emby_users_extended_batch_sync(users_data: List[Dict[str, Any]]):
     """
@@ -606,7 +635,8 @@ def get_all_user_templates() -> List[Dict]:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, name, description, default_expiration_days, source_emby_user_id, allow_unrestricted_subscriptions
+                    SELECT id, name, description, default_expiration_days, source_emby_user_id,
+                           allow_unrestricted_subscriptions, COALESCE(max_concurrent_streams, 0) AS max_concurrent_streams
                     FROM user_templates ORDER BY name
                     """
                 )
@@ -615,17 +645,17 @@ def get_all_user_templates() -> List[Dict]:
         logger.error(f"获取所有用户模板时出错: {e}", exc_info=True)
         raise
 
-def create_user_template(name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions) -> int:
+def create_user_template(name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions, max_concurrent_streams=0) -> int:
     """创建一个新的用户模板。"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json, allow_unrestricted_subscriptions)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                    INSERT INTO user_templates (name, description, emby_policy_json, default_expiration_days, source_emby_user_id, emby_configuration_json, allow_unrestricted_subscriptions, max_concurrent_streams)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                     """,
-                    (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions)
+                    (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions, int(max_concurrent_streams or 0))
                 )
                 new_row = cursor.fetchone()
                 conn.commit()
@@ -688,7 +718,7 @@ def delete_user_template(template_id: int) -> int:
         logger.error(f"删除模板 {template_id} 时出错: {e}", exc_info=True)
         raise
 
-def update_user_template_details(template_id, name, description, default_expiration_days, allow_unrestricted_subscriptions) -> int:
+def update_user_template_details(template_id, name, description, default_expiration_days, allow_unrestricted_subscriptions, max_concurrent_streams=0) -> int:
     """更新用户模板的详细信息，返回受影响行数。"""
     try:
         with get_db_connection() as conn:
@@ -696,10 +726,10 @@ def update_user_template_details(template_id, name, description, default_expirat
                 cursor.execute(
                     """
                     UPDATE user_templates
-                    SET name = %s, description = %s, default_expiration_days = %s, allow_unrestricted_subscriptions = %s
+                    SET name = %s, description = %s, default_expiration_days = %s, allow_unrestricted_subscriptions = %s, max_concurrent_streams = %s
                     WHERE id = %s
                     """,
-                    (name, description, default_expiration_days, allow_unrestricted_subscriptions, template_id)
+                    (name, description, default_expiration_days, allow_unrestricted_subscriptions, int(max_concurrent_streams or 0), template_id)
                 )
                 conn.commit()
                 return cursor.rowcount
@@ -793,7 +823,7 @@ def get_all_extended_user_info() -> Dict[str, Dict]:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT eue.*, ut.name as template_name 
+                    SELECT eue.*, ut.name as template_name, COALESCE(ut.max_concurrent_streams, 0) AS max_concurrent_streams
                     FROM emby_users_extended eue
                     LEFT JOIN user_templates ut ON eue.template_id = ut.id
                 """)
