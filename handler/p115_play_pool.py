@@ -151,6 +151,7 @@ def public_user_reward(user_id):
         "last_reward_days": float(entry.get("last_reward_days") or 0),
         "last_reward_date": str(entry.get("last_reward_date") or ""),
         "last_reward_mode": str(entry.get("last_reward_mode") or ""),
+        "last_expiration_date": str(entry.get("last_expiration_date") or ""),
     }
 
 
@@ -177,12 +178,13 @@ def _reward_user_cookie(account, *, notify_user=False, speed_text="", error_text
     rewarded = False
     if usable and entry.get("last_reward_date") != today:
         try:
-            user_db.extend_user_expiration_days(user_id, reward_days)
+            new_expiration = user_db.extend_user_expiration_days(user_id, reward_days)
             entry.update({
                 "last_reward_date": today,
                 "last_reward_days": reward_days,
                 "last_reward_mode": "shared" if _safe_bool(account.get("shared"), False) else "private",
                 "total_days": round(float(entry.get("total_days") or 0) + reward_days, 2),
+                "last_expiration_date": new_expiration or "",
             })
             rewards[str(user_id)] = entry
             settings_db.save_setting(PLAY_POOL_USER_REWARD_KEY, rewards)
@@ -202,7 +204,8 @@ def _reward_user_cookie(account, *, notify_user=False, speed_text="", error_text
                     f"账号：{account.get('alias') or '用户小号'}\n"
                     f"测速：{speed_text or '通过'}\n"
                     f"{reward_note}\n"
-                    f"累计奖励：{summary.get('total_days', 0):g} 天"
+                    f"累计奖励：{summary.get('total_days', 0):g} 天\n"
+                    f"到期时间：{summary.get('last_expiration_date') or '永久'}"
                 )
             else:
                 send_text = (

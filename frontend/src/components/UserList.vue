@@ -424,7 +424,7 @@ const createColumns = () => [
     sorter: true,
     render: (row) =>
       row.expiration_date
-        ? dayjs(row.expiration_date).format('YYYY-MM-DD')
+        ? dayjs(row.expiration_date).format('YYYY-MM-DD HH:mm')
         : h(NTag, { size: 'small' }, () => '永久')
   },
 

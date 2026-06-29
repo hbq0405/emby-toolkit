@@ -256,7 +256,7 @@
         
         <div class="mobile-info-list">
           <div class="mobile-info-row"><span>等级</span><span>{{ authStore.isAdmin ? '管理员' : (accountInfo?.template_name || '未分配') }}</span></div>
-          <div class="mobile-info-row"><span>到期</span><span>{{ accountInfo?.expiration_date ? new Date(accountInfo.expiration_date).toLocaleDateString() : '永久' }}</span></div>
+          <div class="mobile-info-row"><span>到期</span><span>{{ accountInfo?.expiration_date ? new Date(accountInfo.expiration_date).toLocaleString() : '永久' }}</span></div>
           <div class="mobile-info-row" style="align-items: center;">
             <span>通知 ID</span>
             <div style="flex: 1; margin-left: 12px; display: flex; gap: 4px;">
