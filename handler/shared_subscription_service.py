@@ -1649,10 +1649,10 @@ def _prepare_files_before_rapid_transfer(
     source_label = f"{source_kind or '-'}:{source_id or '-'}"
     preflight_started_at = time.time()
     logger.debug(f"  ➜ [共享资源] 秒传前预检开始：source={source_label}, files={len(files)}")
-    skip_washing_gate = bool((payload or {}).get('_virtual_auto_promote'))
+    virtual_auto_promote = bool((payload or {}).get('_virtual_auto_promote'))
 
     conflict_mode = _current_organize_conflict_mode(default='skip')
-    if conflict_mode == 'replace' and not skip_washing_gate:
+    if conflict_mode == 'replace' and not virtual_auto_promote:
         files, inventory_gate = _replace_mode_short_circuit_best_inventory(
             source_kind=source_kind,
             source_id=source_id,
@@ -1725,21 +1725,12 @@ def _prepare_files_before_rapid_transfer(
             f"失败 {len(intro_errors)}"
         )
 
-    if skip_washing_gate:
+    if virtual_auto_promote:
         logger.info(
-            f"  ➜ [共享资源] 虚拟入库自动转正：跳过洗版预检拦截，保留 {len(files)} 个文件进入正式入库"
+            f"  ➜ [共享资源] 虚拟入库自动转正：强制进入洗版预检，命中 active_washing 的媒体允许替换"
         )
-        return files, {
-            'raw_cached_count': cached,
-            'raw_cache_errors': cache_errors[:20],
-            'intro_merged_count': intro_merged,
-            'intro_merge_errors': intro_errors[:20],
-            'washing_checked': False,
-            'washing_bypassed': True,
-            'message': '虚拟入库自动转正跳过洗版预检拦截',
-        }
 
-    if conflict_mode != 'replace':
+    if conflict_mode != 'replace' and not virtual_auto_promote:
         logger.info(
             f"  ➜ [共享资源] 秒传前预检结束：当前覆盖模式为 {conflict_mode or '未配置'}，"
             f"跳过洗版预检，耗时 {time.time() - preflight_started_at:.1f}s"
@@ -1750,6 +1741,7 @@ def _prepare_files_before_rapid_transfer(
             'intro_merged_count': intro_merged,
             'intro_merge_errors': intro_errors[:20],
             'washing_checked': False,
+            'virtual_auto_promote': virtual_auto_promote,
             'message': f'当前覆盖模式为 {conflict_mode or "未配置"}，跳过洗版预检',
         }
 
@@ -1761,6 +1753,7 @@ def _prepare_files_before_rapid_transfer(
             'raw_cache_errors': cache_errors[:20],
             'washing_checked': True,
             'washing_rejected': True,
+            'virtual_auto_promote': virtual_auto_promote,
             'errors': ['115 客户端未初始化，无法执行洗版预检'],
         }
 
@@ -1773,6 +1766,7 @@ def _prepare_files_before_rapid_transfer(
             'raw_cache_errors': cache_errors[:20],
             'washing_checked': True,
             'washing_rejected': True,
+            'virtual_auto_promote': virtual_auto_promote,
             'errors': [f'导入 WashingService 失败，拒绝秒传: {e}'],
         }
 
@@ -1912,7 +1906,12 @@ def _prepare_files_before_rapid_transfer(
             season_num=s_num,
             episode_num=e_num,
             original_lang=original_lang,
-            is_active_washing=False,
+            is_active_washing=_local_active_washing_for_media(
+                media_type,
+                tmdb_for_washing,
+                season_num=s_num,
+                episode_num=e_num,
+            ),
             has_external_subtitle=False,
         )
         logger.debug(
@@ -1966,6 +1965,7 @@ def _prepare_files_before_rapid_transfer(
             'raw_cache_errors': cache_errors[:20],
             'washing_checked': True,
             'washing_rejected': True,
+            'virtual_auto_promote': virtual_auto_promote,
             'errors': errors[:50],
         }
 
@@ -1979,6 +1979,7 @@ def _prepare_files_before_rapid_transfer(
             'raw_cache_errors': cache_errors[:20],
             'washing_checked': True,
             'washing_rejected': True,
+            'virtual_auto_promote': virtual_auto_promote,
             'errors': errors[:50] or ['所有中心源均未通过洗版预检'],
         }
 
@@ -1998,6 +1999,7 @@ def _prepare_files_before_rapid_transfer(
             'raw_cache_errors': cache_errors[:20],
             'washing_checked': True,
             'washing_rejected': False,
+            'virtual_auto_promote': virtual_auto_promote,
             'selected_count': len(selected),
             'errors': errors[:50],
         }
@@ -2012,6 +2014,7 @@ def _prepare_files_before_rapid_transfer(
         'raw_cache_errors': cache_errors[:20],
         'washing_checked': True,
         'washing_rejected': False,
+        'virtual_auto_promote': virtual_auto_promote,
         'selected_count': len(candidates),
         'errors': errors[:50],
     }
@@ -2547,6 +2550,53 @@ def _local_episode_in_library(parent_series_tmdb_id: Any, season_number: Any, ep
         logger.debug(
             f"  ➜ [共享资源] 查询本地分集入库状态失败: tmdb={parent}, "
             f"S{season}E{episode}, err={e}"
+        )
+        return False
+
+
+def _local_active_washing_for_media(media_type: str, tmdb_id: Any, season_num: Any = None, episode_num: Any = None) -> bool:
+    tmdb = str(tmdb_id or '').strip()
+    if not tmdb:
+        return False
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if str(media_type or '').lower() == 'movie':
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM media_metadata
+                        WHERE item_type='Movie'
+                          AND tmdb_id=%s
+                          AND active_washing=TRUE
+                        LIMIT 1
+                        """,
+                        (tmdb,),
+                    )
+                else:
+                    season = _safe_int_or_none(season_num)
+                    episode = _safe_int_or_none(episode_num)
+                    if season is None or episode is None:
+                        return False
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM media_metadata
+                        WHERE item_type='Episode'
+                          AND parent_series_tmdb_id=%s
+                          AND season_number=%s
+                          AND episode_number=%s
+                          AND active_washing=TRUE
+                        LIMIT 1
+                        """,
+                        (tmdb, season, episode),
+                    )
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.debug(
+            f"  ➜ [共享资源] 查询 active_washing 失败: media_type={media_type}, "
+            f"tmdb={tmdb}, S{season_num if season_num is not None else '-'}E{episode_num if episode_num is not None else '-'}, err={e}"
         )
         return False
 

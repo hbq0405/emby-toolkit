@@ -819,15 +819,20 @@ class WashingService:
                         JOIN p115_mediainfo_cache pmc
                           ON pmc.sha1 = sha.sha1
                         WHERE {where_sql}
+                          AND COALESCE(mm.in_library, FALSE) = TRUE
                         {library_target_filter}
                     """
 
                     cursor.execute(sql, tuple(params) + tuple(library_target_params))
                     library_rows = cursor.fetchall() or []
+                    if not library_rows and target_cid:
+                        cursor.execute(
+                            sql.replace(library_target_filter, ""),
+                            tuple(params),
+                        )
+                        library_rows = cursor.fetchall() or []
                     for row in library_rows:
                         row_sha1 = str(row.get("sha1") or "").strip().upper()
-                        if current_sha1 and row_sha1 == current_sha1:
-                            continue
                         if row_sha1:
                             seen_sha1s.add(row_sha1)
                         rows.append(row)

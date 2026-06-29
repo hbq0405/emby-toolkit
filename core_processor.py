@@ -1920,6 +1920,7 @@ class MediaProcessor:
                     movie_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                     movie_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                     movie_record['in_library'] = True
+                    movie_record['active_washing'] = False
                     _apply_washing_snapshot(movie_record, all_sha1s, all_pcs)
 
                 # media_metadata.runtime_minutes 只保存 TMDb 官方片长。
@@ -2446,7 +2447,7 @@ class MediaProcessor:
                 "networks_json", "countries_json", "keywords_json", "ignore_reason", "asset_details_json",
                 "runtime_minutes", "overview_embedding", "total_episodes", "watchlist_tmdb_status",
                 "imdb_id", "tagline",
-                "washing_level", "washing_snapshot_json"
+                "washing_level", "washing_snapshot_json", "active_washing"
             ]
             data_for_batch = []
             for record in records_to_upsert:
@@ -2477,6 +2478,7 @@ class MediaProcessor:
                 if db_row_complete['file_sha1_json'] is None: db_row_complete['file_sha1_json'] = '[]'
                 if db_row_complete['file_pickcode_json'] is None: db_row_complete['file_pickcode_json'] = '[]'
                 if db_row_complete.get('washing_version_json') is None: db_row_complete['washing_version_json'] = '[]'
+                if db_row_complete.get('active_washing') is None: db_row_complete['active_washing'] = False
 
                 r_date = db_row_complete.get('release_date')
                 if not r_date: db_row_complete['release_date'] = None
@@ -2511,6 +2513,10 @@ class MediaProcessor:
                 if col == 'total_episodes':
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
+                    )
+                elif col == 'active_washing':
+                    update_clauses.append(
+                        "active_washing = CASE WHEN EXCLUDED.item_type = 'Movie' AND EXCLUDED.in_library IS TRUE THEN FALSE ELSE media_metadata.active_washing END"
                     )
                 else:
                     # 其他字段正常更新

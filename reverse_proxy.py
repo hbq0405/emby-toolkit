@@ -1484,7 +1484,10 @@ def proxy_all(path):
                     request.headers.get('User-Agent') or "",
                 ])
 
-                if p115_play_pool.has_usable_pool_for_user(current_user_id):
+                play_pool_available = p115_play_pool.has_usable_pool_for_user(current_user_id)
+                play_pool_configured = p115_play_pool.has_usable_pool()
+                disable_copy_play_for_play_pool = False
+                if play_pool_available:
                     try:
                         play_result = p115_play_pool.prepare_play_pool_pick_code(
                             pick_code,
@@ -1507,8 +1510,9 @@ def proxy_all(path):
                     except Exception as e:
                         logger.warning(f"  ⚠️ [小号播放] 小号池播放失败，已按小号池优先规则中止本次播放: {e}")
                         return Response(f"Play pool failed: {e}", status=503)
-                elif p115_play_pool.has_usable_pool():
-                    logger.debug("  ➜ [小号播放] 当前用户无可用小号，回退复制播放：user_id=%s", current_user_id or "-")
+                elif play_pool_configured:
+                    disable_copy_play_for_play_pool = True
+                    logger.debug("  ➜ [小号播放] 当前用户无可用小号，本次不触发复制播放：user_id=%s", current_user_id or "-")
 
                 client = P115Service.get_client()
                 if not client:
@@ -1523,7 +1527,7 @@ def proxy_all(path):
                     "client_key": play_client_key,
                     "client_name": request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
                 }
-                use_copy_play = should_use_copy_play_for_source(pick_code, **copy_play_kwargs)
+                use_copy_play = False if disable_copy_play_for_play_pool else should_use_copy_play_for_source(pick_code, **copy_play_kwargs)
                 play_pick_code = pick_code
                 if use_copy_play:
                     play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)

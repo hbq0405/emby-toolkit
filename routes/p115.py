@@ -1759,7 +1759,10 @@ def play_115_video(pick_code, filename=None):
             "client_key": _play_request_client_key(current_user_id),
             "client_name": request.headers.get("X-Emby-Client") or request.headers.get("User-Agent") or "",
         }
-        if p115_play_pool.has_usable_pool_for_user(current_user_id):
+        play_pool_available = p115_play_pool.has_usable_pool_for_user(current_user_id)
+        play_pool_configured = p115_play_pool.has_usable_pool()
+        disable_copy_play_for_play_pool = False
+        if play_pool_available:
             try:
                 play_result = p115_play_pool.prepare_play_pool_pick_code(
                     pick_code,
@@ -1789,10 +1792,11 @@ def play_115_video(pick_code, filename=None):
             except Exception as e:
                 logger.warning(f"  ⚠️ [小号播放] 路由层小号池播放失败，已按小号池优先规则中止本次播放: {e}")
                 return f"Play pool failed: {e}", 503
-        elif p115_play_pool.has_usable_pool():
-            logger.debug("  ➜ [小号播放] 路由层当前用户无可用小号，回退复制播放：user_id=%s", current_user_id or "-")
+        elif play_pool_configured:
+            disable_copy_play_for_play_pool = True
+            logger.debug("  ➜ [小号播放] 路由层当前用户无可用小号，本次不触发复制播放：user_id=%s", current_user_id or "-")
 
-        play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
+        play_pick_code = pick_code if disable_copy_play_for_play_pool else prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
         if not play_pick_code:
             return "Copy play failed", 503
 
