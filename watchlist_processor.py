@@ -76,6 +76,13 @@ def _watchlist_mp_wash_kwargs(watchlist_cfg: Dict[str, Any], *, force_full: bool
     return {'best_version': None, 'best_version_full': None}
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def _shared_resource_auto_share_enabled() -> bool:
     try:
         cfg = settings_db.get_shared_resource_config() or {}
@@ -1710,13 +1717,174 @@ class WatchlistProcessor:
             logger.warning(f"  ➜ [版本锁定] 反查新增分集所在季失败：{log_title}: {e}")
             return []
 
+    def _get_version_lock_threshold(self, watchlist_cfg: Dict[str, Any]) -> Tuple[List[int], int]:
+        levels = watchlist_cfg.get('series_version_lock_priority_levels')
+        if not isinstance(levels, list):
+            assistant_cfg = watchlist_cfg.get('subscribe_assistant') if isinstance(watchlist_cfg.get('subscribe_assistant'), dict) else {}
+            levels = assistant_cfg.get('series_version_lock_priority_levels')
+        if not isinstance(levels, list):
+            levels = [1, 2, 3]
+        parsed = []
+        for value in levels:
+            level = _safe_int(value, 0)
+            if level > 0 and level not in parsed:
+                parsed.append(level)
+        if not parsed:
+            parsed = [1, 2, 3]
+        parsed = sorted(parsed)
+        decay_hours = _safe_int(watchlist_cfg.get('series_version_lock_decay_hours'), 48)
+        return parsed, max(decay_hours, 0)
+
+    def _get_version_lock_wait_state(self, tmdb_id: str, season_number: int) -> Dict[str, Any]:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT watchlist_version_lock_json
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND item_type = 'Season'
+                          AND season_number = %s
+                        LIMIT 1
+                        """,
+                        (str(tmdb_id), season_number),
+                    )
+                    row = cursor.fetchone() or {}
+                    state = row.get('watchlist_version_lock_json') if row else {}
+                    if isinstance(state, str):
+                        try:
+                            state = json.loads(state)
+                        except Exception:
+                            state = {}
+                    return state if isinstance(state, dict) else {}
+        except Exception:
+            return {}
+
+    def _get_version_lock_library_start_at(self, tmdb_id: str, season_number: int) -> Optional[str]:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        WITH episode_assets AS (
+                            SELECT asset ->> 'date_added_to_library' AS added_text
+                            FROM media_metadata mm
+                            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(mm.asset_details_json, '[]'::jsonb)) AS asset
+                            WHERE mm.parent_series_tmdb_id = %s
+                              AND mm.item_type = 'Episode'
+                              AND mm.season_number = %s
+                              AND mm.in_library = TRUE
+                              AND mm.asset_details_json IS NOT NULL
+                              AND jsonb_typeof(mm.asset_details_json) = 'array'
+                              AND jsonb_array_length(mm.asset_details_json) > 0
+                              AND asset ? 'date_added_to_library'
+                              AND NULLIF(asset ->> 'date_added_to_library', '') IS NOT NULL
+                              AND asset ->> 'date_added_to_library' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                        )
+                        SELECT MIN(
+                            CASE
+                                WHEN added_text ~ '(Z|[+-][0-9]{2}:?[0-9]{2})$' THEN added_text::timestamptz
+                                ELSE added_text::timestamp AT TIME ZONE 'UTC'
+                            END
+                        ) AS start_at
+                        FROM episode_assets
+                        """,
+                        (str(tmdb_id), season_number),
+                    )
+                    row = cursor.fetchone() or {}
+                    start_at = row.get('start_at')
+                    if start_at:
+                        return start_at.isoformat() if hasattr(start_at, 'isoformat') else str(start_at)
+        except Exception:
+            return None
+        return None
+
+    def _save_version_lock_wait_state(self, tmdb_id: str, season_number: int, state: Dict[str, Any], series_name: str = '') -> None:
+        base = self._get_version_lock_wait_state(tmdb_id, season_number)
+        base.update(state or {})
+        self._save_version_lock_state(tmdb_id, season_number, base, series_name)
+
+    def _evaluate_version_lock_level(
+        self,
+        tmdb_id: str,
+        season_number: int,
+        episode_number: int,
+        washing_level: int,
+        watchlist_cfg: Dict[str, Any],
+    ) -> Tuple[bool, Dict[str, Any]]:
+        levels, decay_hours = self._get_version_lock_threshold(watchlist_cfg)
+        if washing_level not in levels:
+            return False, {}
+        now = datetime.now(timezone.utc)
+        state = self._get_version_lock_wait_state(tmdb_id, season_number)
+        library_start_at = self._get_version_lock_library_start_at(tmdb_id, season_number)
+        if not library_start_at:
+            library_start_at = str(state.get('library_start_at') or state.get('first_seen_at') or '').strip()
+        if not library_start_at:
+            library_start_at = now.isoformat()
+        start_at = now
+        if library_start_at:
+            try:
+                start_at = datetime.fromisoformat(str(library_start_at).replace('Z', '+00:00'))
+            except Exception:
+                start_at = now
+        elapsed_hours = max(int((now - start_at).total_seconds() // 3600), 0)
+        target_index = min((elapsed_hours // max(decay_hours or 1, 1)), len(levels) - 1)
+        target_level = levels[target_index]
+        locked = washing_level <= target_level
+        return locked, {
+            'library_start_at': library_start_at,
+            'target_level': target_level,
+            'candidate_level': washing_level,
+            'episode': episode_number,
+            'season': season_number,
+        }
+
     def _apply_watchlist_version_lock(self, tmdb_id: str, series_name: str, seasons: List[int], mode: str) -> None:
         mode = str(mode or 'off').strip().lower()
         if mode not in ('best', 'any'):
             return
+        assistant_cfg = {}
+        try:
+            watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+        except Exception:
+            watchlist_cfg = {}
         for season_number in sorted({int(s) for s in seasons if s}):
             row = self._get_version_lock_candidate(tmdb_id, season_number, mode, series_name)
             if not row:
+                continue
+            episode_number = row.get('episode_number')
+            washing_level = row.get('washing_level')
+            try:
+                episode_number = int(episode_number) if episode_number is not None else None
+            except Exception:
+                episode_number = None
+            try:
+                washing_level = int(washing_level) if washing_level is not None else None
+            except Exception:
+                washing_level = None
+            should_lock, wait_state = self._evaluate_version_lock_level(
+                tmdb_id,
+                season_number,
+                episode_number or 0,
+                washing_level or 0,
+                watchlist_cfg,
+            )
+            if not should_lock:
+                self._save_version_lock_wait_state(tmdb_id, season_number, {
+                    'locked': False,
+                    'mode': mode,
+                    'season': season_number,
+                    'episode': episode_number,
+                    'washing_level': washing_level,
+                    'source_name': row.get('source_name'),
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                    **wait_state,
+                }, series_name)
+                logger.info(
+                    f"  ➜ [版本锁定] 《{series_name}》S{season_number} 当前候选优先级 {washing_level} 未达到阈值 {wait_state.get('target_level')}，继续等待。"
+                )
                 continue
             include_regex = self._build_version_lock_include_regex(row.get('source_name'))
             if not include_regex:
@@ -1729,17 +1897,7 @@ class WatchlistProcessor:
                 self.config,
                 best_version=(mode == 'best'),
             )
-            episode_number = row.get('episode_number')
-            washing_level = row.get('washing_level')
-            try:
-                episode_number = int(episode_number) if episode_number is not None else None
-            except Exception:
-                episode_number = None
-            try:
-                washing_level = int(washing_level) if washing_level is not None else None
-            except Exception:
-                washing_level = None
-            self._save_version_lock_state(tmdb_id, season_number, {
+            self._save_version_lock_wait_state(tmdb_id, season_number, {
                 'locked': bool(ok),
                 'mode': mode,
                 'season': season_number,
@@ -1748,6 +1906,7 @@ class WatchlistProcessor:
                 'source_name': row.get('source_name'),
                 'include': include_regex,
                 'updated_at': datetime.now(timezone.utc).isoformat(),
+                **wait_state,
             }, series_name)
 
     def _check_season_consistency(self, tmdb_id: str, season_number: int, expected_episode_count: int) -> bool:
@@ -2944,8 +3103,7 @@ class WatchlistProcessor:
             real_next_episode=real_next_episode_to_air,
         )
         subscribe_assistant_cfg = watchlist_cfg.get('subscribe_assistant') if isinstance(watchlist_cfg.get('subscribe_assistant'), dict) else {}
-        best_version_type = str(subscribe_assistant_cfg.get('best_version_type') or 'no').strip().lower()
-        version_lock_mode = 'best' if best_version_type in ('tv', 'tv_episode', 'all') else 'off'
+        version_lock_mode = str(watchlist_cfg.get('series_version_lock_mode') or 'off').strip().lower()
         if version_lock_mode in ('best', 'any') and airing_episode_emby_ids:
             version_lock_seasons = self._get_version_lock_seasons_from_new_episode_ids(
                 tmdb_id,
