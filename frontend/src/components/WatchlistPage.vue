@@ -369,7 +369,15 @@
             <div class="setting-header">
               <div>
                 <div class="setting-label">增强订阅助手接管 MoviePilot</div>
-                <div class="setting-desc">移植自爱神的 MP 订阅助手增强版插件，全流程接管 MP 订阅。</div>
+                <div class="setting-desc">
+                  移植自爱神的 MP 订阅助手增强版插件，全流程接管 MP 订阅。
+                  <a
+                    class="assistant-wiki-link"
+                    href="https://hbq0405.github.io/emby-toolkit/zh/guide/subscribe-assistant"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >查看使用详解</a>
+                </div>
               </div>
               <n-switch v-model:value="watchlistConfig.subscribe_assistant.enabled" size="small">
                 <template #checked>接管中</template>
@@ -1954,6 +1962,17 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
   font-size: 12px;
   color: var(--n-text-color-3);
   line-height: 1.5;
+}
+
+.assistant-wiki-link {
+  margin-left: 8px;
+  color: var(--accent-color);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.assistant-wiki-link:hover {
+  text-decoration: underline;
 }
 
 /* 子面板 (自动待定展开区域) */

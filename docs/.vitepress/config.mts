@@ -55,6 +55,7 @@ export default defineConfig({
             { text: '实时监控', link: '/zh/guide/monitor' },
             { text: 'Webhook 接入', link: '/zh/guide/webhook' },
             { text: '智能追剧', link: '/zh/guide/watchlist' },
+            { text: '订阅助手增强版', link: '/zh/guide/subscribe-assistant' },
             { text: '演员订阅', link: '/zh/guide/actor-subscriptions' },
             { text: '自建合集', link: '/zh/guide/custom-collections' },
             { text: '封面生成', link: '/zh/guide/cover-generator' },
