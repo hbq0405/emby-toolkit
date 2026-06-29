@@ -557,20 +557,16 @@
 
                 <div class="assistant-section">
                   <div class="assistant-section-title">锁版策略</div>
-                  <n-grid :x-gap="12" :y-gap="12" :cols="3" responsive="screen">
+                  <n-grid :x-gap="12" :y-gap="12" :cols="2" responsive="screen">
                     <n-grid-item>
                       <div class="sub-label">锁版模式</div>
                       <n-select v-model:value="watchlistConfig.series_version_lock_mode" :options="versionLockModeOptions" size="small" />
                     </n-grid-item>
-                    <n-grid-item>
+                    <n-grid-item v-if="watchlistConfig.series_version_lock_mode === 'best'">
                       <div class="sub-label">降级间隔</div>
                       <n-input-number v-model:value="watchlistConfig.series_version_lock_decay_hours" size="small" :min="0">
                         <template #suffix>小时</template>
                       </n-input-number>
-                    </n-grid-item>
-                    <n-grid-item>
-                      <div class="sub-label">优先级序列</div>
-                      <n-dynamic-tags v-model:value="watchlistConfig.series_version_lock_priority_levels" />
                     </n-grid-item>
                   </n-grid>
                 </div>
@@ -765,8 +761,8 @@ const bestVersionTypeOptions = [
 ];
 const versionLockModeOptions = [
   { label: '关闭', value: 'off' },
-  { label: '最佳优先', value: 'best' },
-  { label: '任意优先', value: 'any' }
+  { label: '最佳版本', value: 'best' },
+  { label: '任意版本', value: 'any' }
 ];
 const recognitionModeOptions = [
   { label: '仅记录', value: 'audit' },
@@ -818,9 +814,6 @@ const defaultSubscribeAssistant = () => ({
   best_version_type: 'tv',
   best_version_backfill_enabled: false,
   best_version_episode_to_full: true,
-  series_version_lock_mode: 'off',
-  series_version_lock_decay_hours: 48,
-  series_version_lock_priority_levels: [1, 2, 3],
   subscription_cleanup_history_type: 'none',
   subscription_cleanup_history_scenes: ['completed'],
   verify_enabled: true,
@@ -852,7 +845,6 @@ const buildWatchlistConfig = (data = {}) => {
     series_subscription_best_version_full: false,
     series_version_lock_mode: data.series_version_lock_mode ?? 'off',
     series_version_lock_decay_hours: data.series_version_lock_decay_hours ?? 48,
-    series_version_lock_priority_levels: data.series_version_lock_priority_levels ?? [1, 2, 3],
     revival_check_days: data.revival_check_days ?? 365,
     tg_channel_tracking: data.tg_channel_tracking ?? false,
     subscribe_assistant: assistant
@@ -891,8 +883,7 @@ const saveConfig = async () => {
       series_subscription_best_version: false,
       series_subscription_best_version_full: false,
       series_version_lock_mode: watchlistConfig.value.series_version_lock_mode,
-      series_version_lock_decay_hours: watchlistConfig.value.series_version_lock_decay_hours,
-      series_version_lock_priority_levels: watchlistConfig.value.series_version_lock_priority_levels
+      series_version_lock_decay_hours: watchlistConfig.value.series_version_lock_decay_hours
     };
     await axios.post('/api/watchlist/settings', payload);
     watchlistConfig.value = buildWatchlistConfig(payload);

@@ -288,7 +288,6 @@ def api_watchlist_settings():
         "series_subscription_best_version_full": False,
         "series_version_lock_mode": "off",
         "series_version_lock_decay_hours": 48,
-        "series_version_lock_priority_levels": [1, 2, 3],
         "revival_check_days": 365,
         "tg_channel_tracking": False,
         "subscribe_assistant": {

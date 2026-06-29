@@ -1628,7 +1628,11 @@ class WatchlistProcessor:
                     ):
                         return None
 
-                    level_sql = "AND e.washing_level = 1" if mode == 'best' else ""
+                    order_sql = (
+                        "e.washing_level ASC NULLS LAST, e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
+                        if mode == 'best'
+                        else "e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
+                    )
                     cursor.execute(
                         f"""
                         SELECT e.episode_number, e.washing_level,
@@ -1658,8 +1662,7 @@ class WatchlistProcessor:
                           AND e.parent_series_tmdb_id = %s
                           AND e.season_number = %s
                           AND e.in_library = TRUE
-                          {level_sql}
-                        ORDER BY e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST
+                        ORDER BY {order_sql}
                         LIMIT 1
                         """,
                         (str(tmdb_id), season_number, str(tmdb_id), season_number),
@@ -1718,22 +1721,8 @@ class WatchlistProcessor:
             return []
 
     def _get_version_lock_threshold(self, watchlist_cfg: Dict[str, Any]) -> Tuple[List[int], int]:
-        levels = watchlist_cfg.get('series_version_lock_priority_levels')
-        if not isinstance(levels, list):
-            assistant_cfg = watchlist_cfg.get('subscribe_assistant') if isinstance(watchlist_cfg.get('subscribe_assistant'), dict) else {}
-            levels = assistant_cfg.get('series_version_lock_priority_levels')
-        if not isinstance(levels, list):
-            levels = [1, 2, 3]
-        parsed = []
-        for value in levels:
-            level = _safe_int(value, 0)
-            if level > 0 and level not in parsed:
-                parsed.append(level)
-        if not parsed:
-            parsed = [1, 2, 3]
-        parsed = sorted(parsed)
         decay_hours = _safe_int(watchlist_cfg.get('series_version_lock_decay_hours'), 48)
-        return parsed, max(decay_hours, 0)
+        return [1, 2, 3], max(decay_hours, 0)
 
     def _get_version_lock_wait_state(self, tmdb_id: str, season_number: int) -> Dict[str, Any]:
         try:
@@ -1812,7 +1801,16 @@ class WatchlistProcessor:
         episode_number: int,
         washing_level: int,
         watchlist_cfg: Dict[str, Any],
+        mode: str,
     ) -> Tuple[bool, Dict[str, Any]]:
+        if mode == 'any':
+            return True, {
+                'library_start_at': '',
+                'target_level': 'any',
+                'candidate_level': washing_level,
+                'episode': episode_number,
+                'season': season_number,
+            }
         levels, decay_hours = self._get_version_lock_threshold(watchlist_cfg)
         if washing_level not in levels:
             return False, {}
@@ -1870,6 +1868,7 @@ class WatchlistProcessor:
                 episode_number or 0,
                 washing_level or 0,
                 watchlist_cfg,
+                mode,
             )
             if not should_lock:
                 self._save_version_lock_wait_state(tmdb_id, season_number, {
