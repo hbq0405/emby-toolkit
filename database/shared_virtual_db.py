@@ -41,6 +41,33 @@ def _safe_float(value, default=0.0):
         return default
 
 
+def _virtual_episode_pairs(row: Dict[str, Any]) -> List[tuple]:
+    files = row.get('files_json') or []
+    if isinstance(files, str):
+        try:
+            files = json.loads(files or '[]')
+        except Exception:
+            files = []
+    if not isinstance(files, list):
+        return []
+
+    fallback_season = _safe_int(row.get('season_number'), 0)
+    pairs, seen = [], set()
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        season = _safe_int(item.get('season_number'), fallback_season)
+        episode = _safe_int(item.get('episode_number'), 0)
+        if season <= 0 or episode <= 0:
+            continue
+        key = (season, episode)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append(key)
+    return pairs
+
+
 def create_virtual_import(data: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(data or {})
     with get_db_connection() as conn:
@@ -184,6 +211,26 @@ def mark_active_washing_for_virtual_import(virtual_id: int, enabled: bool = True
                 parent_tmdb_id = str(row.get('parent_series_tmdb_id') or row.get('tmdb_id') or '').strip()
                 if not parent_tmdb_id:
                     return 0
+                episode_pairs = _virtual_episode_pairs(row)
+                if episode_pairs:
+                    pair_where = []
+                    args = [bool(enabled), parent_tmdb_id]
+                    for s_num, e_num in episode_pairs:
+                        pair_where.append("(season_number = %s AND episode_number = %s)")
+                        args.extend([s_num, e_num])
+                    cur.execute(
+                        f"""
+                        UPDATE media_metadata
+                        SET active_washing = %s
+                        WHERE parent_series_tmdb_id = %s
+                          AND item_type = 'Episode'
+                          AND ({' OR '.join(pair_where)})
+                        """,
+                        args,
+                    )
+                    count = cur.rowcount or 0
+                    conn.commit()
+                    return count
                 args = [bool(enabled), parent_tmdb_id]
                 where = "parent_series_tmdb_id = %s AND item_type = 'Episode'"
                 if season_number is not None:

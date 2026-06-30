@@ -17,7 +17,12 @@ from services.subscribe_assistant.manager import SubscribeAssistantManager
 logger = logging.getLogger(__name__)
 
 # --- 追剧 ---    
-def task_process_watchlist(processor, tmdb_id: Optional[str] = None, new_episode_ids: Optional[List[str]] = None):
+def task_process_watchlist(
+    processor,
+    tmdb_id: Optional[str] = None,
+    new_episode_ids: Optional[List[str]] = None,
+    subscription_triggering_episode_ids: Optional[List[str]] = None,
+):
     """
     只负责刷新“活跃”剧集（追剧中、待定中、暂停到期）。
     """
@@ -29,6 +34,7 @@ def task_process_watchlist(processor, tmdb_id: Optional[str] = None, new_episode
             progress_callback=progress_updater, 
             tmdb_id=tmdb_id,
             new_episode_ids=new_episode_ids,
+            subscription_triggering_episode_ids=subscription_triggering_episode_ids,
             skip_logical_share_dispatch=not bool(tmdb_id),
         )
 

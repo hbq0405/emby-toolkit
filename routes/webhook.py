@@ -35,6 +35,7 @@ from database.connection import get_db_connection
 from database.log_db import LogDBManager
 from handler.p115_service import P115Service, SmartOrganizer, get_config
 from services.subscribe_assistant.manager import SubscribeAssistantManager
+from tasks.p115_fingerprint_helpers import p115_fp_is_virtual_strm_target, p115_fp_read_strm_target
 try:
     from p115client import P115Client
 except ImportError:
@@ -108,6 +109,60 @@ def _extract_virtual_id_from_webhook(data):
         if match:
             return int(match.group(1))
     return 0
+
+
+def _is_virtual_import_emby_id(emby_id: str) -> bool:
+    emby_id = str(emby_id or '').strip()
+    if not emby_id:
+        return False
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT asset_details_json
+                    FROM media_metadata
+                    WHERE emby_item_ids_json ? %s
+                    LIMIT 1
+                    """,
+                    (emby_id,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return False
+        assets = row.get('asset_details_json') or []
+        if isinstance(assets, str):
+            assets = json.loads(assets or '[]')
+        if isinstance(assets, dict):
+            assets = [assets]
+        for asset in assets or []:
+            if not isinstance(asset, dict):
+                continue
+            path = asset.get('path') or asset.get('Path')
+            if p115_fp_is_virtual_strm_target(path):
+                return True
+            target = p115_fp_read_strm_target(path)
+            if p115_fp_is_virtual_strm_target(target):
+                return True
+    except Exception as e:
+        logger.debug(f"  ➜ [虚拟入库] 判断 EmbyID={emby_id} 是否虚拟入库失败: {e}")
+    return False
+
+
+def _filter_real_episode_ids(episode_ids: Optional[List[str]]) -> List[str]:
+    real_ids = []
+    skipped = 0
+    for eid in episode_ids or []:
+        eid = str(eid or '').strip()
+        if not eid:
+            continue
+        if _is_virtual_import_emby_id(eid):
+            skipped += 1
+            continue
+        real_ids.append(eid)
+    if skipped:
+        logger.info(f"  ➜ [虚拟入库] 已跳过 {skipped} 个虚拟分集触发的 MP/追剧新集联动，等待正式入库。")
+    return real_ids
 
 
 def _maybe_promote_virtual_import_from_playback(data):
@@ -211,6 +266,12 @@ def _cleanup_promoting_virtual_imports_after_library_ready(item_details: dict, i
                     conn.commit()
             except Exception as e:
                 logger.debug(f"  ➜ [虚拟入库] 正式入库后清理虚拟缓存失败: virtual_id={virtual_id} -> {e}")
+            try:
+                cleared = shared_virtual_db.mark_active_washing_for_virtual_import(virtual_id, False)
+                if cleared:
+                    logger.info(f"  ➜ [虚拟入库] 正式入库完成后收回 active_washing 临时特权：virtual_id={virtual_id}, rows={cleared}")
+            except Exception as e:
+                logger.debug(f"  ➜ [虚拟入库] 正式入库后收回 active_washing 失败: virtual_id={virtual_id} -> {e}")
             if shared_virtual_db.delete_virtual_import(virtual_id):
                 stats['records'] += 1
         if stats['records']:
@@ -970,7 +1031,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     # 2. 媒体入库后先做 115 指纹体检，再登记 Rapid 共享源。
     # Rapid 登记依赖 PC/SHA1/FID/缓存字段，体检要放在登记前。
-    precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
+    precise_new_episode_ids = _filter_real_episode_ids(new_episode_ids)
     if item_type == "Movie":
         _repair_webhook_p115_fingerprints_for_emby_ids(
             processor,
@@ -999,9 +1060,9 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         new_episode_ids=precise_new_episode_ids,
     )
 
-    # 3. 智能追剧判断 - 初始入库
+    # 新剧仍要先登记纳管；实际状态判定和 MP 订阅统一交给后面的 watchlist 任务。
     if is_new_item and item_type == "Series":
-        processor.check_and_add_to_watchlist(item_details)
+        processor.check_and_add_to_watchlist(item_details, process_immediately=False)
 
     # 3. 后续处理
     if is_new_item:
@@ -1102,12 +1163,12 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     try:
         # 如果提供了 new_episode_ids，说明是追更通知
         # 如果 is_new_item 为 True，说明是新入库通知
-        notif_type = 'update' if (new_episode_ids and not is_new_item) else 'new'
+        notif_type = 'update' if (precise_new_episode_ids and not is_new_item) else 'new'
         
         telegram.send_media_notification(
             item_details=item_details, 
             notification_type=notif_type, 
-            new_episode_ids=new_episode_ids
+            new_episode_ids=precise_new_episode_ids or None
         )
     except Exception as e:
         logger.error(f"触发通知失败: {e}")
@@ -1157,10 +1218,17 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 
                 # ★★★ 核心破局点：打破“不见兔子不撒鹰”的死锁 ★★★
                 is_watching = str(tmdb_id) in watching_ids
-                has_new_episodes = bool(new_episode_ids) # 明确有新集物理文件入库
+                has_new_episodes = bool(precise_new_episode_ids) # 明确有新集物理文件入库
+                has_virtual_episodes = bool(new_episode_ids and not precise_new_episode_ids)
                 
                 # 如果既不在追剧列表中，又没有新集入库，才真正跳过
-                if not is_watching and not has_new_episodes:
+                if has_virtual_episodes:
+                    logger.info(
+                        f"  ➜ [虚拟入库] 《{item_name_for_log}》本次仅包含虚拟分集，"
+                        "不作为新集范围触发联动，但仍刷新整剧追剧状态。"
+                    )
+
+                if not is_watching and not has_new_episodes and not has_virtual_episodes:
                     logger.debug(f"  ➜ [智能追剧] 剧集 《{item_name_for_log}》 当前不在追剧列表中，且无新集触发，跳过刷新。")
                     return
                 
@@ -1169,8 +1237,6 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                     logger.info(f"  ➜ [智能追剧]  《{item_name_for_log}》 检测到有新集入库，重新开始追剧！")
 
                 # =======================================================
-
-                precise_new_episode_ids = [str(x).strip() for x in (new_episode_ids or []) if str(x or '').strip()]
 
                 # 新集指纹体检与共享源登记均已在 Webhook 中完成；watchlist_processor 只负责追剧状态刷新。
                 refresh_scope_text = (
@@ -1186,7 +1252,8 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                     task_name=f"刷新智能追剧: 《{item_name_for_log}》",
                     processor_type='watchlist', 
                     tmdb_id=str(tmdb_id),
-                    new_episode_ids=precise_new_episode_ids or None
+                    new_episode_ids=precise_new_episode_ids or None,
+                    subscription_triggering_episode_ids=new_episode_ids or None,
                 )
             except Exception as e:
                 logger.error(f"  ➜ 触发智能追剧任务失败: {e}")

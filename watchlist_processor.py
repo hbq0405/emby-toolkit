@@ -216,7 +216,7 @@ class WatchlistProcessor:
             logger.error(f"  更新 '{item_name}' 追剧信息时出错: {e}")
 
     # ★★★ 核心修改 2: 重构自动添加追剧列表的函数 ★★★
-    def add_series_to_watchlist(self, item_details: Dict[str, Any]):
+    def add_series_to_watchlist(self, item_details: Dict[str, Any], process_immediately: bool = True):
         """ 【V14 - 统一判定版】"""
         if item_details.get("Type") != "Series": return
         tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
@@ -237,6 +237,10 @@ class WatchlistProcessor:
                     'force_ended': db_row['force_ended'],
                     'emby_item_ids_json': db_row['emby_item_ids_json']
                 }
+                if not process_immediately:
+                    logger.info(f"  ➜ 已登记《{item_name}》到追剧纳管，等待智能追剧刷新统一判定。")
+                    return
+
                 # 3. 立即触发一次判定流
                 self._process_one_series(series_data, allow_airing_episode_share=False)
                 
@@ -249,6 +253,7 @@ class WatchlistProcessor:
         progress_callback: callable,
         tmdb_id: Optional[str] = None,
         new_episode_ids: Optional[List[str]] = None,
+        subscription_triggering_episode_ids: Optional[List[str]] = None,
         skip_logical_share_dispatch: bool = False,
     ):
         """核心任务启动器，只处理活跃剧集。"""
@@ -266,6 +271,12 @@ class WatchlistProcessor:
                 "  ➜ [智能追剧] 本次单项刷新携带新增分集 ID: %s 个，仅这些分集用于本轮追剧状态刷新。",
                 len(precise_new_episode_ids),
             )
+
+        mp_trigger_episode_ids = []
+        for eid in subscription_triggering_episode_ids or precise_new_episode_ids:
+            eid = str(eid or '').strip()
+            if eid and eid not in mp_trigger_episode_ids:
+                mp_trigger_episode_ids.append(eid)
         
         self.progress_callback(0, "准备检查待更新剧集...")
         try:
@@ -296,6 +307,7 @@ class WatchlistProcessor:
                             series,
                             allow_airing_episode_share=bool(tmdb_id and precise_new_episode_ids),
                             airing_episode_emby_ids=precise_new_episode_ids,
+                            subscription_triggering_episode_ids=mp_trigger_episode_ids,
                             skip_logical_share_dispatch=skip_logical_share_dispatch,
                         )
                         return "处理成功"
@@ -1534,6 +1546,7 @@ class WatchlistProcessor:
         old_status: str = None,
         all_tmdb_episodes: Optional[List[Dict[str, Any]]] = None,
         real_next_episode: Optional[Dict[str, Any]] = None,
+        triggering_episode_ids: Optional[List[str]] = None,
     ):
         """由订阅助手增强版统一同步 MoviePilot 订阅状态。"""
         try:
@@ -1545,6 +1558,7 @@ class WatchlistProcessor:
                 old_status=old_status,
                 all_tmdb_episodes=all_tmdb_episodes or [],
                 real_next_episode=real_next_episode or {},
+                triggering_episode_ids=triggering_episode_ids or [],
             )
             return
         except Exception as assistant_error:
@@ -3053,6 +3067,7 @@ class WatchlistProcessor:
         series_data: Dict[str, Any],
         allow_airing_episode_share: bool = False,
         airing_episode_emby_ids: Optional[List[str]] = None,
+        subscription_triggering_episode_ids: Optional[List[str]] = None,
         skip_logical_share_dispatch: bool = False,
     ):
         tmdb_id = series_data.get('tmdb_id')
@@ -3779,6 +3794,7 @@ class WatchlistProcessor:
             old_status=old_status,
             all_tmdb_episodes=all_tmdb_episodes,
             real_next_episode=real_next_episode_to_air,
+            triggering_episode_ids=subscription_triggering_episode_ids or airing_episode_emby_ids or [],
         )
         subscribe_assistant_cfg = watchlist_cfg.get('subscribe_assistant') if isinstance(watchlist_cfg.get('subscribe_assistant'), dict) else {}
         version_lock_mode = str(watchlist_cfg.get('series_version_lock_mode') or 'off').strip().lower()

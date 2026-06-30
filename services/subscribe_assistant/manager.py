@@ -10,6 +10,7 @@ from database import connection
 from database import settings_db, watchlist_db
 import handler.moviepilot as moviepilot
 import tasks.helpers as helpers
+from tasks.p115_fingerprint_helpers import p115_fp_is_virtual_strm_target, p115_fp_read_strm_target
 
 from .config import AssistantConfig, from_watchlist_config
 from .engine import (
@@ -58,6 +59,7 @@ class SubscribeAssistantManager:
         old_status: str = None,
         all_tmdb_episodes: List[Dict[str, Any]] = None,
         real_next_episode: Dict[str, Any] = None,
+        triggering_episode_ids: List[str] = None,
     ) -> None:
         if not self.cfg.enabled:
             logger.debug("  ➜ [订阅助手] 已关闭，跳过 MoviePilot 同步。")
@@ -112,6 +114,13 @@ class SubscribeAssistantManager:
             )
             sub = existing_by_season.get(season_num)
             if not sub and season_num == latest_season_num and final_status in ("Watching", "Paused", "Pending"):
+                if self._triggering_episodes_are_virtual(triggering_episode_ids):
+                    logger.info(
+                        "  ➜ [订阅助手] 《%s》S%s 本轮由虚拟入库触发，跳过自动创建 MP 订阅，等待正式入库。",
+                        series_name,
+                        season_num,
+                    )
+                    continue
                 sub = self._create_subscription(tmdb_id, series_name, season_num, decision)
                 if sub:
                     existing_by_season[season_num] = sub
@@ -836,6 +845,46 @@ class SubscribeAssistantManager:
             if s_num in existing_by_season or s_num == latest_season_num:
                 seasons.append(season)
         return seasons
+
+    def _triggering_episodes_are_virtual(self, episode_ids: List[str] = None) -> bool:
+        ids = [str(x or '').strip() for x in (episode_ids or []) if str(x or '').strip()]
+        if not ids:
+            return False
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT asset_details_json
+                        FROM media_metadata
+                        WHERE emby_item_ids_json ?| %s
+                        """,
+                        (ids,),
+                    )
+                    rows = cursor.fetchall() or []
+            if not rows:
+                return False
+            virtual_count = 0
+            for row in rows:
+                assets = row.get("asset_details_json") or []
+                if isinstance(assets, str):
+                    assets = json.loads(assets or "[]")
+                if isinstance(assets, dict):
+                    assets = [assets]
+                is_virtual = False
+                for asset in assets or []:
+                    if not isinstance(asset, dict):
+                        continue
+                    path = asset.get("path") or asset.get("Path")
+                    if p115_fp_is_virtual_strm_target(path) or p115_fp_is_virtual_strm_target(p115_fp_read_strm_target(path)):
+                        is_virtual = True
+                        break
+                if is_virtual:
+                    virtual_count += 1
+            return virtual_count > 0 and virtual_count == len(rows)
+        except Exception as e:
+            logger.debug("  ➜ [订阅助手] 判断触发分集是否虚拟入库失败: %s", e)
+            return False
 
     def _create_subscription(self, tmdb_id: str, series_name: str, season: int, decision: Dict[str, Any]) -> Optional[dict]:
         payload_kwargs = self._subscription_wash_kwargs(decision)

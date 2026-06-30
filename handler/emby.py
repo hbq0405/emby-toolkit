@@ -907,6 +907,20 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
     action_zh = action_map.get(update_type, update_type)
     
     try:
+        if str(update_type or "").lower() == "deleted":
+            api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
+            payload = {
+                "Updates": [
+                    {"Path": str(p), "UpdateType": "Deleted"}
+                    for p in file_paths
+                    if p
+                ]
+            }
+            if payload["Updates"]:
+                resp = emby_client.post(api_url, params={"api_key": api_key}, json=payload, timeout=10)
+                if resp.status_code not in (200, 204):
+                    logger.debug(f"  ➜ [极速通知] 删除事件通知返回 HTTP {resp.status_code}: {resp.text[:200]}")
+
         # 直接提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
         dirs_to_refresh = set(os.path.dirname(p) for p in file_paths if p)
 

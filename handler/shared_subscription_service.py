@@ -2789,6 +2789,24 @@ def _filter_files_before_transfer(
     context = _preflight_context(source_kind, source_id, payload, files)
     source_label = f"{source_kind or '-'}:{source_id or '-'}"
 
+    if _boolish_local(payload.get('_virtual_auto_promote'), False):
+        logger.info(
+            f"  ➜ [共享资源] 虚拟入库转正：跳过缺集/已入库匹配过滤，保留 {len(files)}/{len(files)} 个文件进入洗版预检。"
+        )
+        return files, {
+            'checked': True,
+            'source_kind': source_kind,
+            'source_id': source_id,
+            'input_count': len(files),
+            'kept_count': len(files),
+            'skipped_count': 0,
+            'requested_missing_episode_numbers': sorted(missing_set),
+            'conflict_mode': conflict_mode,
+            'virtual_auto_promote': True,
+            'reason': 'virtual_auto_promote',
+            'message': '虚拟入库转正：已跳过缺集/已入库匹配过滤，交给洗版预检处理。',
+        }
+
     # keep_both 是显式多版本模式：订阅命中后只兜底排除本机源，其他一律交给秒传。
     if conflict_mode == 'keep_both':
         for f in files:
@@ -4212,6 +4230,49 @@ def _virtual_category_path(source: Dict[str, Any], files: List[Dict[str, Any]]) 
     return '电影' if media_type == 'movie' else '剧集'
 
 
+def _virtual_standard_paths_from_organizer(source: Dict[str, Any], file_info: Dict[str, Any]) -> tuple[str, str]:
+    source = source or {}
+    file_info = file_info or {}
+    item_type = str(source.get('item_type') or file_info.get('item_type') or '').strip()
+    source_kind = _normalize_source_kind(source.get('source_kind') or file_info.get('source_kind'))
+    season_num, _ = _guess_se_from_source(file_info, source)
+    media_type = 'movie' if item_type == 'Movie' or source_kind == 'movie' else 'tv'
+    tmdb_id = (
+        source.get('tmdb_id') or file_info.get('tmdb_id')
+        if media_type == 'movie'
+        else _source_parent_series_tmdb_id(file_info, source)
+    )
+    tmdb_text = str(tmdb_id or '').strip()
+    if not tmdb_text:
+        return '', ''
+
+    file_name = file_info.get('file_name') or file_info.get('name') or file_info.get('sha1') or 'video.mkv'
+    node = dict(file_info)
+    node.setdefault('fn', file_name)
+    node.setdefault('file_name', file_name)
+    if node.get('size') in (None, '') and node.get('file_size') not in (None, ''):
+        node['size'] = node.get('file_size')
+
+    p115 = P115Service.get_client()
+    organizer = SmartOrganizer(
+        p115,
+        int(tmdb_text) if tmdb_text.isdigit() else 0,
+        media_type,
+        source.get('title') or file_info.get('title') or file_name,
+        None,
+        False,
+    )
+    if media_type == 'tv' and season_num is not None:
+        organizer.forced_season = int(season_num)
+    organizer.current_sorting_filename = file_name
+    preview = organizer.build_standard_local_preview(node, season_num=season_num if media_type == 'tv' else None)
+    rel_dir = str((preview or {}).get('relative_dir') or '').strip()
+    safe_file = str((preview or {}).get('file_name') or '').strip()
+    if not rel_dir or not safe_file:
+        return '', ''
+    return rel_dir, _safe_path_component(safe_file)
+
+
 def _virtual_washing_identity(source: Dict[str, Any], file_info: Dict[str, Any], media_type: str, season_num=None, episode_num=None) -> Dict[str, Any]:
     tmdb_id = (
         source.get('tmdb_id') or file_info.get('tmdb_id')
@@ -4438,7 +4499,13 @@ def create_virtual_strm_files(source: Dict[str, Any], files: List[Dict[str, Any]
         sha1 = _norm_sha1((file_info or {}).get('sha1'))
         if not sha1:
             continue
-        rel_dir, safe_file = _virtual_standard_paths(source, file_info, category_path)
+        try:
+            rel_dir, safe_file = _virtual_standard_paths_from_organizer(source, file_info)
+        except Exception as e:
+            logger.debug(f"  ➜ [虚拟入库] 正式规则预览失败，使用旧兜底路径：{(file_info or {}).get('file_name') or (file_info or {}).get('name')} -> {e}")
+            rel_dir, safe_file = '', ''
+        if not rel_dir or not safe_file:
+            rel_dir, safe_file = _virtual_standard_paths(source, file_info, category_path)
         local_dir = os.path.join(local_root, rel_dir)
         os.makedirs(local_dir, exist_ok=True)
         strm_path = os.path.join(local_dir, os.path.splitext(safe_file)[0] + '.strm')

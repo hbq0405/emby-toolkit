@@ -2578,7 +2578,7 @@ class MediaProcessor:
             raise
     
     # --- 公开的、独立的追剧判断方法 ---
-    def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
+    def check_and_add_to_watchlist(self, item_details: Dict[str, Any], process_immediately: bool = True):
         """
         检查一个媒体项目是否为剧集，如果是，则执行智能追剧判断并添加到待看列表。
         此方法被设计为由外部事件（如Webhook）显式调用。
@@ -2593,7 +2593,7 @@ class MediaProcessor:
         try:
             # 实例化 WatchlistProcessor 并执行添加操作
             watchlist_proc = WatchlistProcessor(self.config, ai_translator=self.ai_translator)
-            watchlist_proc.add_series_to_watchlist(item_details)
+            watchlist_proc.add_series_to_watchlist(item_details, process_immediately=process_immediately)
         except Exception as e_watchlist:
             logger.error(f"  ➜ 在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
     

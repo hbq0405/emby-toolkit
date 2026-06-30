@@ -1,6 +1,7 @@
 # database/maintenance_db.py
 import psycopg2
 import re
+import os
 import json
 from psycopg2 import sql
 from psycopg2.extras import Json, execute_values
@@ -31,6 +32,14 @@ def _coerce_json_list(value: Any) -> List[Any]:
         except Exception:
             return []
     return []
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value in (None, ''):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 def _is_chinese_media(original_language: Optional[str], countries_json: Any) -> bool:
     orig_lang = str(original_language or '').lower()
@@ -254,6 +263,85 @@ def _cleanup_virtual_imports_for_deleted_assets(cursor, deleted_assets: List[Dic
     if stats['imports'] or stats['cache'] or stats['files']:
         logger.info(
             "  ➜ [虚拟入库] 删除媒体善后已联动清理：记录=%s，缓存=%s，本地文件=%s",
+            stats['imports'],
+            stats['cache'],
+            stats['files'],
+        )
+    return stats
+
+
+def _cleanup_virtual_imports_for_media_scope(
+    cursor,
+    *,
+    item_type: str,
+    tmdb_id: Any = None,
+    parent_tmdb_id: Any = None,
+    season_number: Any = None,
+) -> Dict[str, int]:
+    item_type_text = str(item_type or '').strip()
+    tmdb_text = str(tmdb_id or '').strip()
+    parent_tmdb_text = str(parent_tmdb_id or tmdb_id or '').strip()
+    season_int = _safe_int(season_number, 0)
+
+    where = []
+    args = []
+    if item_type_text == 'Movie':
+        if not tmdb_text:
+            return {'imports': 0, 'cache': 0, 'files': 0}
+        where.append("LOWER(item_type) = 'movie'")
+        where.append("tmdb_id = %s")
+        args.append(tmdb_text)
+    elif item_type_text == 'Series':
+        if not tmdb_text:
+            return {'imports': 0, 'cache': 0, 'files': 0}
+        where.append("LOWER(item_type) IN ('series','season','episode','tv')")
+        where.append("(tmdb_id = %s OR parent_series_tmdb_id = %s)")
+        args.extend([tmdb_text, tmdb_text])
+    elif item_type_text == 'Season':
+        if not parent_tmdb_text or season_int <= 0:
+            return {'imports': 0, 'cache': 0, 'files': 0}
+        where.append("LOWER(item_type) IN ('season','episode','series','tv')")
+        where.append("(parent_series_tmdb_id = %s OR tmdb_id = %s)")
+        where.append("(season_number = %s OR season_number IS NULL)")
+        args.extend([parent_tmdb_text, parent_tmdb_text, season_int])
+    else:
+        return {'imports': 0, 'cache': 0, 'files': 0}
+
+    cursor.execute(
+        f"""
+        SELECT id, strm_paths_json
+        FROM shared_virtual_imports
+        WHERE {' AND '.join(where)}
+        """,
+        args,
+    )
+    rows = [dict(row) for row in (cursor.fetchall() or [])]
+    stats = {'imports': 0, 'cache': 0, 'files': 0}
+    for row in rows:
+        virtual_id = int(row.get('id') or 0)
+        paths = row.get('strm_paths_json')
+        if isinstance(paths, str):
+            try:
+                paths = json.loads(paths)
+            except Exception:
+                paths = []
+        if not isinstance(paths, list):
+            paths = []
+        stats['files'] += _delete_virtual_file_artifacts(paths)
+        cursor.execute(
+            "DELETE FROM p115_filesystem_cache WHERE parent_id = %s OR id LIKE %s",
+            (f"virtual:{virtual_id}", f"virtual:{virtual_id}:%"),
+        )
+        stats['cache'] += cursor.rowcount or 0
+        cursor.execute("DELETE FROM shared_virtual_imports WHERE id = %s", (virtual_id,))
+        stats['imports'] += cursor.rowcount or 0
+
+    if stats['imports'] or stats['cache'] or stats['files']:
+        logger.info(
+            "  ➜ [虚拟入库] 删除媒体范围善后已联动清理：范围=%s/%s/S%s，记录=%s，缓存=%s，本地文件=%s",
+            item_type_text,
+            parent_tmdb_text or tmdb_text or '-',
+            season_int or '-',
             stats['imports'],
             stats['cache'],
             stats['files'],
@@ -1574,6 +1662,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if db_item_type in ['Movie', 'Series']:
                     target_tmdb_id_for_full_cleanup = tmdb_id
                     target_item_type_for_full_cleanup = db_item_type
+                    _cleanup_virtual_imports_for_media_scope(
+                        cursor,
+                        item_type=db_item_type,
+                        tmdb_id=tmdb_id,
+                    )
                     if db_item_type == 'Movie':
                         _append_shared_cleanup_context(
                             shared_cleanup_contexts,
@@ -1591,6 +1684,12 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                 elif db_item_type == 'Season':
                     logger.info(f"  ➜ 第 {season_num} 季已完全删除，正在检查父剧集 (TMDB: {parent_tmdb_id})...")
+                    _cleanup_virtual_imports_for_media_scope(
+                        cursor,
+                        item_type='Season',
+                        parent_tmdb_id=parent_tmdb_id,
+                        season_number=season_num,
+                    )
                     _append_shared_cleanup_context(
                         shared_cleanup_contexts,
                         scope='season',
