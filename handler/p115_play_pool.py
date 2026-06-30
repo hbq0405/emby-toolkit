@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import requests
+import pytz
 
+import constants
 from database import settings_db, user_db
 from handler.p115_temp_dir import cleanup_old_temp_videos_for_client, find_temp_video, get_temp_dir_name
 from handler.p115_play_pool_client import P115PlayPoolClient
@@ -36,6 +38,19 @@ def _now_ts():
 
 def _now_text():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _format_local_date_text(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(pytz.timezone(constants.TIMEZONE)).strftime("%Y-%m-%d")
+    except Exception:
+        return text[:10]
 
 
 def _today_key():
@@ -205,7 +220,7 @@ def _reward_user_cookie(account, *, notify_user=False, speed_text="", error_text
                     f"测速：{speed_text or '通过'}\n"
                     f"{reward_note}\n"
                     f"累计奖励：{summary.get('total_days', 0):g} 天\n"
-                    f"到期时间：{summary.get('last_expiration_date') or '永久'}"
+                    f"到期时间：{_format_local_date_text(summary.get('last_expiration_date')) or '永久'}"
                 )
             else:
                 send_text = (
