@@ -255,16 +255,14 @@ def extract_release_group_token_from_filename(filename: str) -> str:
     text = str(filename or '').strip()
     if not text:
         return ''
-    patterns = [
-        r'@([A-Za-z0-9][A-Za-z0-9._-]{1,24})(?:\.[A-Za-z0-9]{2,5})?$',
-        r'(?:-|·|\s)\s*([A-Za-z0-9][A-Za-z0-9._-]{1,24})\.[A-Za-z0-9]{2,5}$',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            token = match.group(1).strip(' ._-')
-            token = re.sub(r'\.(?:mkv|mp4|ts|avi|mov|wmv|strm|nfo|json)$', '', token, flags=re.IGNORECASE)
-            return token.strip(' ._-')
+    name_part = os.path.splitext(text)[0].strip(' ._-')
+    if '@' in name_part:
+        token = name_part.rsplit('@', 1)[-1]
+    else:
+        token = re.split(r'\s*[·-]\s*', name_part)[-1]
+    token = str(token or '').strip(' ._-')
+    if re.search(r'[A-Za-z]', token):
+        return token
     return ''
 
 def normalize_release_group_name(value: str) -> str:
