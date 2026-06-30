@@ -767,7 +767,7 @@
                             <template #unchecked>直接播放源文件</template>
                         </n-switch>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">同一个视频第二个用户播放前自动复制到临时目录播放，临时文件由定时清理处理。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">播放前自动复制到临时目录播放，临时文件由定时清理处理。</n-text>
                         </template>
                     </n-form-item>
 
