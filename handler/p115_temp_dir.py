@@ -3,7 +3,11 @@ import re
 import time
 from datetime import datetime
 
+from database import settings_db
+
 logger = logging.getLogger(__name__)
+TEMP_DIR_CONFIG_KEY = "p115_temp_dir_config"
+DEFAULT_TEMP_CLEANUP_CRON = "0 * * * *"
 
 DEFAULT_TEMP_DIR_NAME = "ETK临时目录"
 TEMP_VIDEO_EXTENSIONS = {
@@ -22,6 +26,35 @@ def _safe_int(value, default=0):
 
 def get_temp_dir_name():
     return DEFAULT_TEMP_DIR_NAME
+
+
+def get_temp_dir_config():
+    data = settings_db.get_setting(TEMP_DIR_CONFIG_KEY) or {}
+    if not isinstance(data, dict):
+        data = {}
+    cid = str(data.get("cid") or "").strip()
+    if "cleanup_cron" in data:
+        cleanup_cron = str(data.get("cleanup_cron") or "").strip()
+    else:
+        cleanup_cron = DEFAULT_TEMP_CLEANUP_CRON if cid else ""
+    return {
+        "name": get_temp_dir_name(),
+        "cid": cid,
+        "cleanup_cron": cleanup_cron,
+        "updated_at": str(data.get("updated_at") or "").strip(),
+    }
+
+
+def save_temp_dir_config(client, cleanup_cron=None):
+    cid = ensure_temp_dir(client, create_if_missing=True)
+    config = {
+        "name": get_temp_dir_name(),
+        "cid": cid,
+        "cleanup_cron": DEFAULT_TEMP_CLEANUP_CRON if cleanup_cron is None else str(cleanup_cron or "").strip(),
+        "updated_at": datetime.now().isoformat(),
+    }
+    settings_db.save_setting(TEMP_DIR_CONFIG_KEY, config)
+    return config
 
 
 def _item_id(item):
@@ -176,8 +209,14 @@ def find_temp_video(client, cid, *, sha1="", size=0, file_name=""):
     }
 
 
-def ensure_temp_dir(client):
+def ensure_temp_dir(client, create_if_missing=False):
     name = get_temp_dir_name()
+    if not create_if_missing:
+        cid = get_temp_dir_config().get("cid")
+        if cid:
+            return cid
+        raise RuntimeError("115 临时目录未保存，请在临时目录设置中保存配置后再使用。若目录被误删，请重新保存该配置。")
+
     cid = _find_temp_dir_cid(client, name)
     if cid:
         logger.debug("  ➜ [115临时目录] 已确认临时目录：%s (%s)", name, cid)
@@ -237,8 +276,8 @@ def _find_temp_dir_cid(client, name):
     return ""
 
 
-def cleanup_old_temp_videos_for_client(client, older_than_hours=3, label=""):
-    cid = ensure_temp_dir(client)
+def cleanup_old_temp_videos_for_client(client, older_than_hours=3, label="", cid=""):
+    cid = str(cid or "").strip() or ensure_temp_dir(client)
     cutoff = time.time() - max(float(older_than_hours or 3), 0.1) * 3600
     delete_ids = []
     for item in _list_items(client, cid, show_dir=0):

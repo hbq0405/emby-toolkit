@@ -624,6 +624,13 @@ def _find_temp_cid(client):
 
 
 def _ensure_temp_cid(account, client):
+    configured = str((account or {}).get("temp_cid") or "").strip()
+    if configured:
+        return configured
+    raise RuntimeError("小号临时目录 CID 未保存，请在临时目录设置中重新保存配置")
+
+
+def _confirm_temp_cid(account, client):
     found = _find_temp_cid(client)
 
     if not found:
@@ -639,6 +646,42 @@ def _ensure_temp_cid(account, client):
 
     account["temp_cid"] = found
     return found
+
+
+def ensure_all_account_temp_dirs():
+    config = _load_config()
+    results = []
+    changed = False
+    for account in config.get("accounts") or []:
+        if not account.get("cookie"):
+            results.append({
+                "id": account.get("id"),
+                "alias": account.get("alias") or account.get("id") or "",
+                "success": False,
+                "message": "未配置 Cookie",
+            })
+            continue
+        try:
+            client = _account_client(account)
+            previous = str(account.get("temp_cid") or "").strip()
+            cid = _confirm_temp_cid(account, client)
+            changed = changed or cid != previous
+            results.append({
+                "id": account.get("id"),
+                "alias": account.get("alias") or account.get("id") or "",
+                "success": True,
+                "cid": cid,
+            })
+        except Exception as e:
+            results.append({
+                "id": account.get("id"),
+                "alias": account.get("alias") or account.get("id") or "",
+                "success": False,
+                "message": str(e),
+            })
+    if changed:
+        _save_config(config)
+    return results
 
 
 def _extract_clone_from_rapid_response(resp, client, temp_cid, file_name, sha1, size):
@@ -1211,10 +1254,14 @@ def cleanup_temp_dir_old_videos(older_than_hours=3):
             continue
         try:
             client = _account_client(account)
+            temp_cid = str(account.get("temp_cid") or "").strip()
+            if not temp_cid:
+                raise RuntimeError("小号临时目录 CID 未保存，请重新保存临时目录配置")
             results.append(cleanup_old_temp_videos_for_client(
                 client,
                 older_than_hours,
                 account.get("alias") or account.get("id") or "小号",
+                cid=temp_cid,
             ))
         except Exception as e:
             logger.warning("  ➜ [115临时目录] 清理小号临时目录失败: %s, err=%s", account.get("alias") or account.get("id"), e)

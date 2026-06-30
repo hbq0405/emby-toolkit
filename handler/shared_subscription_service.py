@@ -4486,6 +4486,7 @@ def rapid_save_virtual_play_file(virtual_id: int, file_info: Dict[str, Any]) -> 
             logger.debug(f"  ➜ [虚拟播放] 复用临时目录文件：{existing.get('name') or file_name}")
             return {
                 'ok': True,
+                'from_temp_reuse': True,
                 'response': {'state': True, 'data': existing, '_from_temp_reuse': True},
                 'sha1': sha1,
                 'file_name': existing.get('name') or file_name,

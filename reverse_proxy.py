@@ -259,6 +259,7 @@ def _resolve_virtual_play_url(virtual_info, *, item_id='', play_session_id='', u
         save_result = rapid_save_virtual_play_file(virtual_id, file_info)
         if not save_result.get('ok'):
             raise RuntimeError(save_result.get('message') or "Virtual rapid save failed")
+        from_temp_reuse = bool(save_result.get('from_temp_reuse') or ((save_result.get('response') or {}).get('_from_temp_reuse')))
         client = P115Service.get_client()
         if not client:
             raise RuntimeError("115 Client not initialized")
@@ -288,37 +289,38 @@ def _resolve_virtual_play_url(virtual_info, *, item_id='', play_session_id='', u
         if not real_url:
             raise RuntimeError("Failed to get virtual download URL")
 
-        try:
-            shared_credit_db.add_credit_ledger(
-                'virtual_play',
-                delta=-10,
-                reason='虚拟播放',
-                ref_id=str(virtual_id),
-                source_id=str(row.get('source_id') or ''),
-                virtual_id=str(virtual_id),
-                tmdb_id=row.get('tmdb_id') or '',
-                item_type=row.get('item_type') or '',
-                title=row.get('title') or file_name or '',
-                raw_json={'virtual_import': row, 'file': file_info, 'sha1': sha1},
-            )
-        except Exception as e:
-            logger.debug("  ➜ [虚拟播放] 写入本地贡献点流水失败：%s", e)
-        try:
-            SharedCenterClient().report_transfer(
-                row.get('source_kind') or file_info.get('source_kind') or '',
-                row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or '',
-                'success',
-                success_count=1,
-                total_count=1,
-                message=f"虚拟播放：{file_name}",
-                transfer_mode='virtual',
-                sha1=sha1,
-                actual_sha1=sha1,
-                virtual_id=str(virtual_id),
-                ref_id=f"virtual_playback:{row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or virtual_id}:{sha1}:{uuid.uuid4().hex}",
-            )
-        except Exception as e:
-            logger.debug("  ➜ [虚拟播放] 上报中心虚拟播放失败：%s", e)
+        if not from_temp_reuse:
+            try:
+                shared_credit_db.add_credit_ledger(
+                    'virtual_play',
+                    delta=-10,
+                    reason='虚拟播放',
+                    ref_id=str(virtual_id),
+                    source_id=str(row.get('source_id') or ''),
+                    virtual_id=str(virtual_id),
+                    tmdb_id=row.get('tmdb_id') or '',
+                    item_type=row.get('item_type') or '',
+                    title=row.get('title') or file_name or '',
+                    raw_json={'virtual_import': row, 'file': file_info, 'sha1': sha1},
+                )
+            except Exception as e:
+                logger.debug("  ➜ [虚拟播放] 写入本地贡献点流水失败：%s", e)
+            try:
+                SharedCenterClient().report_transfer(
+                    row.get('source_kind') or file_info.get('source_kind') or '',
+                    row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or '',
+                    'success',
+                    success_count=1,
+                    total_count=1,
+                    message=f"虚拟播放：{file_name}",
+                    transfer_mode='virtual',
+                    sha1=sha1,
+                    actual_sha1=sha1,
+                    virtual_id=str(virtual_id),
+                    ref_id=f"virtual_playback:{row.get('source_id') or file_info.get('source_id') or file_info.get('source_ref_id') or virtual_id}:{sha1}:{uuid.uuid4().hex}",
+                )
+            except Exception as e:
+                logger.debug("  ➜ [虚拟播放] 上报中心虚拟播放失败：%s", e)
         shared_virtual_db.record_virtual_play(virtual_id, percent=0)
         _record_virtual_session({
             'session_id': uuid.uuid4().hex,

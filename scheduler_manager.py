@@ -498,7 +498,8 @@ class SchedulerManager:
         except JobLookupError:
             pass
 
-        cron_str = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_TEMP_CLEANUP_CRON, '') or '').strip()
+        from handler.p115_temp_dir import get_temp_dir_config
+        cron_str = str(get_temp_dir_config().get('cleanup_cron') or '').strip()
         if not cron_str:
             logger.info("  ➜ 115播放临时目录清理 CRON 未配置，本次不设置定时任务。")
             return
