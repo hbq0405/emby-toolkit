@@ -481,6 +481,13 @@ class SubscribeAssistantManager:
                 season or "-",
             )
             return
+        if _safe_int(info.get("best_version_full")) != 1:
+            logger.debug(
+                "  ➜ [订阅清理] 《%s》S%s 不是分集转全集洗版订阅完成，跳过。",
+                self._series_title(tmdb_id, info),
+                season or "-",
+            )
+            return
 
         seasons = []
         if cleanup_type == "current":
