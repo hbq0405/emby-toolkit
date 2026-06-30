@@ -1565,11 +1565,9 @@ class WatchlistProcessor:
                 term = str(match if isinstance(match, str) else match[0]).strip(' ._-')
                 if term and term.lower() not in {t.lower() for t in terms}:
                     terms.append(term)
-        group_match = re.search(r'[-\s]\s*([A-Za-z0-9][A-Za-z0-9._-]{1,24})\.[A-Za-z0-9]{2,5}$', text)
-        if group_match:
-            group = group_match.group(1).strip(' ._-')
-            if group and group.lower() not in {t.lower() for t in terms}:
-                terms.append(group)
+        group = self._version_lock_release_group_from_name(text)
+        if group and group.lower() not in {t.lower() for t in terms}:
+            terms.append(group)
         return terms
 
     def _build_version_lock_include_regex(self, filename: str) -> str:
@@ -1598,6 +1596,182 @@ class WatchlistProcessor:
             flexible = re.sub(r'\\[\s._-]+', r'[\\s._-]*', escaped)
             lookaheads.append(f"(?=.*({aliases.get(compact, flexible)}))")
         return "(?i)" + "".join(lookaheads[:8]) if lookaheads else ""
+
+    def _version_lock_release_group_from_name(self, filename: str) -> str:
+        text = str(filename or '').strip()
+        if not text:
+            return ''
+        patterns = [
+            r'@([A-Za-z0-9][A-Za-z0-9._-]{1,24})(?:\.[A-Za-z0-9]{2,5})?$',
+            r'(?:-|·|\s)\s*([A-Za-z0-9][A-Za-z0-9._-]{1,24})\.[A-Za-z0-9]{2,5}$',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                group = match.group(1).strip(' ._-')
+                group = re.sub(r'\.(?:mkv|mp4|ts|avi|mov|wmv|strm|nfo|json)$', '', group, flags=re.IGNORECASE)
+                return group.strip(' ._-')
+        return ''
+
+    def _asset_release_groups(self, asset_details_json: Any) -> set:
+        try:
+            assets = asset_details_json
+            if isinstance(assets, str):
+                assets = json.loads(assets or '[]')
+            if isinstance(assets, dict):
+                assets = [assets]
+            if not isinstance(assets, list):
+                return set()
+        except Exception:
+            return set()
+
+        groups = set()
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            raw_values = asset.get('release_group_raw')
+            if raw_values in (None, '', [], {}):
+                raw_values = asset.get('release_group') or asset.get('group')
+            if isinstance(raw_values, list):
+                values = raw_values
+            else:
+                values = [raw_values]
+            for value in values:
+                group = str(value or '').strip(' ._-')
+                if group:
+                    groups.add(group.lower())
+            path_group = self._version_lock_release_group_from_name(asset.get('path') or asset.get('filename') or asset.get('name') or '')
+            if path_group:
+                groups.add(path_group.lower())
+        return groups
+
+    def _get_mp_episode_priority_baseline(self, tmdb_id: str, season_number: int) -> Optional[int]:
+        try:
+            sub = moviepilot.get_subscription_by_tmdbid(tmdb_id, season_number, self.config) or {}
+            priority = sub.get('episode_priority')
+            if isinstance(priority, str):
+                priority = json.loads(priority or '{}')
+            if not isinstance(priority, dict):
+                return None
+            values = []
+            for value in priority.values():
+                try:
+                    values.append(int(value))
+                except Exception:
+                    pass
+            return max(values) if values else None
+        except Exception:
+            return None
+
+    def _sync_version_lock_release_group_washing(
+        self,
+        tmdb_id: str,
+        season_number: int,
+        locked_release_group: str,
+        series_name: str = '',
+        baseline_priority: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        locked_group = str(locked_release_group or '').strip(' ._-')
+        if not locked_group:
+            return {}
+        locked_key = locked_group.lower()
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT tmdb_id, episode_number, asset_details_json, active_washing
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND season_number = %s
+                          AND item_type = 'Episode'
+                          AND in_library = TRUE
+                        """,
+                        (str(tmdb_id), int(season_number)),
+                    )
+                    rows = cursor.fetchall() or []
+
+                    enable_ids = []
+                    clear_ids = []
+                    enable_episodes = []
+                    clear_episodes = []
+                    skipped_unknown = 0
+                    for row in rows:
+                        episode_tmdb_id = str(row.get('tmdb_id') or '').strip()
+                        if not episode_tmdb_id:
+                            continue
+                        episode_number = _safe_int(row.get('episode_number'))
+                        if not episode_number:
+                            continue
+                        groups = self._asset_release_groups(row.get('asset_details_json'))
+                        if not groups:
+                            skipped_unknown += 1
+                            continue
+                        if locked_key in groups:
+                            clear_ids.append(episode_tmdb_id)
+                            clear_episodes.append(episode_number)
+                        else:
+                            enable_ids.append(episode_tmdb_id)
+                            enable_episodes.append(episode_number)
+
+                    if enable_ids:
+                        cursor.execute(
+                            """
+                            UPDATE media_metadata
+                            SET active_washing = TRUE
+                            WHERE item_type = 'Episode' AND tmdb_id = ANY(%s)
+                            """,
+                            (enable_ids,),
+                        )
+                    if clear_ids:
+                        cursor.execute(
+                            """
+                            UPDATE media_metadata
+                            SET active_washing = FALSE
+                            WHERE item_type = 'Episode' AND tmdb_id = ANY(%s)
+                            """,
+                            (clear_ids,),
+                        )
+                    conn.commit()
+
+            mp_priority_ok = True
+            if enable_episodes or clear_episodes:
+                if baseline_priority is None:
+                    baseline_priority = self._get_mp_episode_priority_baseline(tmdb_id, season_number)
+                mp_priority_ok = moviepilot.update_subscription_episode_priority(
+                    tmdb_id,
+                    season_number,
+                    enable_episodes,
+                    clear_episodes,
+                    self.config,
+                    baseline_priority=baseline_priority,
+                )
+
+            if enable_ids or clear_ids:
+                logger.info(
+                    "  ➜ [版本锁定] 《%s》S%s 发布组纠偏：锁定=%s，标记洗版=%s，清理标记=%s，未知跳过=%s。",
+                    series_name or tmdb_id,
+                    season_number,
+                    locked_group,
+                    len(enable_ids),
+                    len(clear_ids),
+                    skipped_unknown,
+                )
+            return {
+                'washing_episodes': sorted(set(enable_episodes)),
+                'completed_episodes': sorted(set(clear_episodes)),
+                'baseline_priority': baseline_priority,
+                'mp_priority_ok': bool(mp_priority_ok),
+            }
+        except Exception as e:
+            logger.warning(
+                "  ➜ [版本锁定] 发布组纠偏失败：《%s》S%s group=%s -> %s",
+                series_name or tmdb_id,
+                season_number,
+                locked_group,
+                e,
+            )
+            return {}
 
     def _get_version_lock_candidate(self, tmdb_id: str, season_number: int, mode: str, series_name: str = '') -> Optional[Dict[str, Any]]:
         log_title = f"《{series_name}》第 {season_number} 季" if series_name else f"第 {season_number} 季"
@@ -1724,6 +1898,15 @@ class WatchlistProcessor:
         decay_hours = _safe_int(watchlist_cfg.get('series_version_lock_decay_hours'), 48)
         return [1, 2, 3], max(decay_hours, 0)
 
+    def _version_lock_consistency_check_enabled(self, watchlist_cfg: Dict[str, Any]) -> bool:
+        assistant = watchlist_cfg.get('subscribe_assistant') if isinstance(watchlist_cfg, dict) else {}
+        if not isinstance(assistant, dict):
+            return True
+        value = assistant.get('best_version_full_consistency_check_enabled', True)
+        if isinstance(value, str):
+            return value.strip().lower() in ('1', 'true', 'yes', 'on', '启用', '开启')
+        return bool(value)
+
     def _get_version_lock_wait_state(self, tmdb_id: str, season_number: int) -> Dict[str, Any]:
         try:
             with connection.get_db_connection() as conn:
@@ -1848,7 +2031,59 @@ class WatchlistProcessor:
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
         except Exception:
             watchlist_cfg = {}
+        consistency_check_enabled = self._version_lock_consistency_check_enabled(watchlist_cfg)
         for season_number in sorted({int(s) for s in seasons if s}):
+            state = self._get_version_lock_wait_state(tmdb_id, season_number)
+            if (
+                isinstance(state, dict)
+                and state.get('locked')
+                and state.get('include')
+                and str(state.get('mode') or '') == mode
+            ):
+                release_group = str(state.get('release_group') or '').strip()
+                include_regex = str(state.get('include') or '').strip()
+                derived_group = self._version_lock_release_group_from_name(state.get('source_name') or '')
+                if derived_group and derived_group.lower() not in include_regex.lower():
+                    rebuilt_include = self._build_version_lock_include_regex(state.get('source_name') or '')
+                    if rebuilt_include:
+                        ok = moviepilot.lock_series_subscription_version(
+                            tmdb_id,
+                            season_number,
+                            series_name,
+                            rebuilt_include,
+                            self.config,
+                            best_version=True,
+                        )
+                        if ok:
+                            include_regex = rebuilt_include
+                            release_group = derived_group
+                            self._save_version_lock_wait_state(tmdb_id, season_number, {
+                                'release_group': release_group,
+                                'include': include_regex,
+                                'updated_at': datetime.now(timezone.utc).isoformat(),
+                            }, series_name)
+                elif derived_group and not release_group:
+                    release_group = derived_group
+                    self._save_version_lock_wait_state(tmdb_id, season_number, {
+                        'release_group': release_group,
+                        'updated_at': datetime.now(timezone.utc).isoformat(),
+                    }, series_name)
+
+                if consistency_check_enabled:
+                    sync_state = self._sync_version_lock_release_group_washing(
+                        tmdb_id,
+                        season_number,
+                        release_group,
+                        series_name,
+                        _safe_int(state.get('mp_episode_priority_baseline')) or None,
+                    )
+                    baseline_priority = sync_state.get('baseline_priority') if isinstance(sync_state, dict) else None
+                    if baseline_priority and baseline_priority != state.get('mp_episode_priority_baseline'):
+                        self._save_version_lock_wait_state(tmdb_id, season_number, {
+                            'mp_episode_priority_baseline': baseline_priority,
+                            'updated_at': datetime.now(timezone.utc).isoformat(),
+                        }, series_name)
+                continue
             row = self._get_version_lock_candidate(tmdb_id, season_number, mode, series_name)
             if not row:
                 continue
@@ -1888,13 +2123,15 @@ class WatchlistProcessor:
             include_regex = self._build_version_lock_include_regex(row.get('source_name'))
             if not include_regex:
                 continue
+            release_group = self._version_lock_release_group_from_name(row.get('source_name'))
+            baseline_priority = self._get_mp_episode_priority_baseline(tmdb_id, season_number) if consistency_check_enabled else None
             ok = moviepilot.lock_series_subscription_version(
                 tmdb_id,
                 season_number,
                 series_name,
                 include_regex,
                 self.config,
-                best_version=(mode == 'best'),
+                best_version=True,
             )
             self._save_version_lock_wait_state(tmdb_id, season_number, {
                 'locked': bool(ok),
@@ -1903,10 +2140,25 @@ class WatchlistProcessor:
                 'episode': episode_number,
                 'washing_level': washing_level,
                 'source_name': row.get('source_name'),
+                'release_group': release_group,
                 'include': include_regex,
+                'mp_episode_priority_baseline': baseline_priority,
                 'updated_at': datetime.now(timezone.utc).isoformat(),
                 **wait_state,
             }, series_name)
+            if ok and release_group and consistency_check_enabled:
+                sync_state = self._sync_version_lock_release_group_washing(
+                    tmdb_id,
+                    season_number,
+                    release_group,
+                    series_name,
+                    baseline_priority,
+                )
+                if isinstance(sync_state, dict) and sync_state.get('baseline_priority') and sync_state.get('baseline_priority') != baseline_priority:
+                    self._save_version_lock_wait_state(tmdb_id, season_number, {
+                        'mp_episode_priority_baseline': sync_state.get('baseline_priority'),
+                        'updated_at': datetime.now(timezone.utc).isoformat(),
+                    }, series_name)
 
     def _check_season_consistency(self, tmdb_id: str, season_number: int, expected_episode_count: int) -> bool:
         """统一调用 tasks.helpers.check_season_consistency，保留旧方法名兼容现有调用。"""

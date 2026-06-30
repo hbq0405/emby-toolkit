@@ -1317,6 +1317,71 @@ def update_subscription(payload: dict, config: Dict[str, Any] = None) -> bool:
         logger.error(f"  ➜ 更新 MP 订阅失败: {e}")
         return False
 
+def update_subscription_episode_priority(
+    tmdb_id: str,
+    season: int,
+    washing_episodes: List[int],
+    completed_episodes: List[int],
+    config: Dict[str, Any] = None,
+    *,
+    baseline_priority: Optional[int] = None,
+) -> bool:
+    """Synchronize MP per-episode priority after ETK locks a release group."""
+    tmdb_id = str(tmdb_id or '').strip()
+    washing = sorted({int(ep) for ep in (washing_episodes or []) if ep})
+    completed = sorted({int(ep) for ep in (completed_episodes or []) if ep})
+    if not tmdb_id or not season or (not washing and not completed):
+        return False
+
+    existing = get_subscription_by_tmdbid(tmdb_id, season, config) or {}
+    if not existing.get("id"):
+        return False
+
+    priority = existing.get("episode_priority")
+    if isinstance(priority, str):
+        try:
+            priority = json.loads(priority or "{}")
+        except Exception:
+            priority = {}
+    if not isinstance(priority, dict):
+        priority = {}
+
+    if baseline_priority is None:
+        values = []
+        for value in priority.values():
+            try:
+                values.append(int(value))
+            except Exception:
+                pass
+        baseline_priority = max(values) if values else None
+    if baseline_priority is None:
+        return False
+
+    baseline_priority = int(baseline_priority)
+    washing_priority = max(baseline_priority - 1, 0)
+
+    changed = False
+    for ep in washing:
+        key = str(ep)
+        if priority.get(key) != washing_priority:
+            priority[key] = washing_priority
+            changed = True
+    for ep in completed:
+        key = str(ep)
+        if priority.get(key) != baseline_priority:
+            priority[key] = baseline_priority
+            changed = True
+    if not changed:
+        return True
+
+    payload = dict(existing)
+    payload["episode_priority"] = priority
+    payload["best_version"] = 1
+    payload.pop("best_version_full", None)
+    payload["season"] = int(season)
+    payload["tmdbid"] = int(tmdb_id)
+    return update_subscription(payload, config)
+
 def lock_series_subscription_version(
     tmdb_id: str,
     season: int,
