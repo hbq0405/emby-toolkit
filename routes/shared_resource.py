@@ -2179,7 +2179,27 @@ def api_register_center_device():
         except Exception:
             pass
         return jsonify({'success': True, 'message': '共享资源中心已按 ServerID 重新连接，监听已刷新', 'data': saved, 'device': resp})
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"  ➜ [共享资源] 连接中心设备注册请求失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'连接共享资源中心失败: {e}'}), 502
+    except RuntimeError as e:
+        message = str(e)
+        status = 500
+        if (
+            '无法读取 Emby ServerID' in message
+            or '共享中心地址未配置' in message
+            or '共享中心地址或 Emby ServerID 未配置' in message
+        ):
+            status = 400
+        else:
+            match = re.search(r'共享中心请求失败:\s*(\d{3})', message)
+            if match:
+                code = int(match.group(1))
+                status = code if 400 <= code < 500 else 502
+        logger.warning(f"  ➜ [共享资源] 连接中心设备注册失败: {message}")
+        return jsonify({'success': False, 'message': message}), status
     except Exception as e:
+        logger.exception('  ➜ [共享资源] 连接中心设备注册发生未预期异常')
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
