@@ -1565,9 +1565,6 @@ class WatchlistProcessor:
                 term = str(match if isinstance(match, str) else match[0]).strip(' ._-')
                 if term and term.lower() not in {t.lower() for t in terms}:
                     terms.append(term)
-        group = self._version_lock_release_group_from_name(text)
-        if group and group.lower() not in {t.lower() for t in terms}:
-            terms.append(group)
         return terms
 
     def _build_version_lock_include_regex(self, filename: str) -> str:
@@ -1595,23 +1592,28 @@ class WatchlistProcessor:
             escaped = re.escape(term)
             flexible = re.sub(r'\\[\s._-]+', r'[\\s._-]*', escaped)
             lookaheads.append(f"(?=.*({aliases.get(compact, flexible)}))")
+        group_info = self._version_lock_release_group_info(filename)
+        group_regex = helpers.build_exclusion_regex_from_groups([group_info.get('group')]) if group_info.get('group') else ''
+        if not group_regex and group_info.get('alias'):
+            group_regex = re.escape(group_info.get('alias'))
+        if group_regex:
+            lookaheads.append(f"(?=.*({group_regex}))")
+        if group_regex and len(lookaheads) > 8:
+            lookaheads = lookaheads[:7] + [lookaheads[-1]]
         return "(?i)" + "".join(lookaheads[:8]) if lookaheads else ""
 
+    def _version_lock_release_group_info(self, filename: str) -> Dict[str, str]:
+        info = helpers.describe_release_group_match(filename)
+        group = str(info.get('group') or '').strip(' ._-')
+        alias = str(info.get('alias') or '').strip(' ._-')
+        return {
+            'group': group,
+            'alias': alias,
+            'label': helpers.format_release_group_label(group, alias),
+        }
+
     def _version_lock_release_group_from_name(self, filename: str) -> str:
-        text = str(filename or '').strip()
-        if not text:
-            return ''
-        patterns = [
-            r'@([A-Za-z0-9][A-Za-z0-9._-]{1,24})(?:\.[A-Za-z0-9]{2,5})?$',
-            r'(?:-|·|\s)\s*([A-Za-z0-9][A-Za-z0-9._-]{1,24})\.[A-Za-z0-9]{2,5}$',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                group = match.group(1).strip(' ._-')
-                group = re.sub(r'\.(?:mkv|mp4|ts|avi|mov|wmv|strm|nfo|json)$', '', group, flags=re.IGNORECASE)
-                return group.strip(' ._-')
-        return ''
+        return self._version_lock_release_group_info(filename).get('group') or ''
 
     def _asset_release_groups(self, asset_details_json: Any) -> set:
         try:
@@ -1637,7 +1639,7 @@ class WatchlistProcessor:
             else:
                 values = [raw_values]
             for value in values:
-                group = str(value or '').strip(' ._-')
+                group = helpers.normalize_release_group_name(value)
                 if group:
                     groups.add(group.lower())
             path_group = self._version_lock_release_group_from_name(asset.get('path') or asset.get('filename') or asset.get('name') or '')
@@ -1670,11 +1672,13 @@ class WatchlistProcessor:
         locked_release_group: str,
         series_name: str = '',
         baseline_priority: Optional[int] = None,
+        locked_release_group_alias: str = '',
     ) -> Dict[str, Any]:
-        locked_group = str(locked_release_group or '').strip(' ._-')
+        locked_group = helpers.normalize_release_group_name(locked_release_group)
         if not locked_group:
             return {}
         locked_key = locked_group.lower()
+        locked_label = helpers.format_release_group_label(locked_group, locked_release_group_alias)
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -1752,7 +1756,7 @@ class WatchlistProcessor:
                     "  ➜ [版本锁定] 《%s》S%s 发布组纠偏：锁定=%s，标记洗版=%s，清理标记=%s，未知跳过=%s。",
                     series_name or tmdb_id,
                     season_number,
-                    locked_group,
+                    locked_label,
                     len(enable_ids),
                     len(clear_ids),
                     skipped_unknown,
@@ -1768,7 +1772,7 @@ class WatchlistProcessor:
                 "  ➜ [版本锁定] 发布组纠偏失败：《%s》S%s group=%s -> %s",
                 series_name or tmdb_id,
                 season_number,
-                locked_group,
+                locked_label,
                 e,
             )
             return {}
@@ -2041,9 +2045,19 @@ class WatchlistProcessor:
                 and str(state.get('mode') or '') == mode
             ):
                 release_group = str(state.get('release_group') or '').strip()
+                release_group_alias = str(state.get('release_group_alias') or '').strip()
                 include_regex = str(state.get('include') or '').strip()
-                derived_group = self._version_lock_release_group_from_name(state.get('source_name') or '')
-                if derived_group and derived_group.lower() not in include_regex.lower():
+                derived_info = self._version_lock_release_group_info(state.get('source_name') or '')
+                derived_group = derived_info.get('group') or ''
+                derived_alias = derived_info.get('alias') or ''
+                expected_group_regex = helpers.build_exclusion_regex_from_groups([derived_group]) if derived_group else ''
+                include_needs_rebuild = False
+                if derived_group:
+                    if expected_group_regex:
+                        include_needs_rebuild = expected_group_regex.lower() not in include_regex.lower()
+                    elif derived_alias:
+                        include_needs_rebuild = derived_alias.lower() not in include_regex.lower()
+                if derived_group and include_needs_rebuild:
                     rebuilt_include = self._build_version_lock_include_regex(state.get('source_name') or '')
                     if rebuilt_include:
                         ok = moviepilot.lock_series_subscription_version(
@@ -2057,15 +2071,19 @@ class WatchlistProcessor:
                         if ok:
                             include_regex = rebuilt_include
                             release_group = derived_group
+                            release_group_alias = derived_alias
                             self._save_version_lock_wait_state(tmdb_id, season_number, {
                                 'release_group': release_group,
+                                'release_group_alias': release_group_alias,
                                 'include': include_regex,
                                 'updated_at': datetime.now(timezone.utc).isoformat(),
                             }, series_name)
                 elif derived_group and not release_group:
                     release_group = derived_group
+                    release_group_alias = derived_alias
                     self._save_version_lock_wait_state(tmdb_id, season_number, {
                         'release_group': release_group,
+                        'release_group_alias': release_group_alias,
                         'updated_at': datetime.now(timezone.utc).isoformat(),
                     }, series_name)
 
@@ -2076,6 +2094,7 @@ class WatchlistProcessor:
                         release_group,
                         series_name,
                         _safe_int(state.get('mp_episode_priority_baseline')) or None,
+                        release_group_alias,
                     )
                     baseline_priority = sync_state.get('baseline_priority') if isinstance(sync_state, dict) else None
                     if baseline_priority and baseline_priority != state.get('mp_episode_priority_baseline'):
@@ -2123,7 +2142,9 @@ class WatchlistProcessor:
             include_regex = self._build_version_lock_include_regex(row.get('source_name'))
             if not include_regex:
                 continue
-            release_group = self._version_lock_release_group_from_name(row.get('source_name'))
+            release_group_info = self._version_lock_release_group_info(row.get('source_name'))
+            release_group = release_group_info.get('group') or ''
+            release_group_alias = release_group_info.get('alias') or ''
             baseline_priority = self._get_mp_episode_priority_baseline(tmdb_id, season_number) if consistency_check_enabled else None
             ok = moviepilot.lock_series_subscription_version(
                 tmdb_id,
@@ -2133,6 +2154,14 @@ class WatchlistProcessor:
                 self.config,
                 best_version=True,
             )
+            if ok:
+                logger.info(
+                    "  ➜ [版本锁定] 《%s》S%s 已锁定版本：优先级=%s，发布组=%s。",
+                    series_name or tmdb_id,
+                    season_number,
+                    washing_level,
+                    release_group_info.get('label') or '-',
+                )
             self._save_version_lock_wait_state(tmdb_id, season_number, {
                 'locked': bool(ok),
                 'mode': mode,
@@ -2141,6 +2170,7 @@ class WatchlistProcessor:
                 'washing_level': washing_level,
                 'source_name': row.get('source_name'),
                 'release_group': release_group,
+                'release_group_alias': release_group_alias,
                 'include': include_regex,
                 'mp_episode_priority_baseline': baseline_priority,
                 'updated_at': datetime.now(timezone.utc).isoformat(),
@@ -2153,6 +2183,7 @@ class WatchlistProcessor:
                     release_group,
                     series_name,
                     baseline_priority,
+                    release_group_alias,
                 )
                 if isinstance(sync_state, dict) and sync_state.get('baseline_priority') and sync_state.get('baseline_priority') != baseline_priority:
                     self._save_version_lock_wait_state(tmdb_id, season_number, {

@@ -246,6 +246,65 @@ def _extract_exclusion_keywords_from_filename(filename: str) -> List[str]:
 
     return []
 
+def extract_release_groups_from_filename(filename: str) -> List[str]:
+    """Return standardized release group names matched by RELEASE_GROUPS."""
+    return _extract_exclusion_keywords_from_filename(filename)
+
+def extract_release_group_token_from_filename(filename: str) -> str:
+    """从常见命名尾部提取原始发布组别名，例如 HDSWEB、ADWeb。"""
+    text = str(filename or '').strip()
+    if not text:
+        return ''
+    patterns = [
+        r'@([A-Za-z0-9][A-Za-z0-9._-]{1,24})(?:\.[A-Za-z0-9]{2,5})?$',
+        r'(?:-|·|\s)\s*([A-Za-z0-9][A-Za-z0-9._-]{1,24})\.[A-Za-z0-9]{2,5}$',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            token = match.group(1).strip(' ._-')
+            token = re.sub(r'\.(?:mkv|mp4|ts|avi|mov|wmv|strm|nfo|json)$', '', token, flags=re.IGNORECASE)
+            return token.strip(' ._-')
+    return ''
+
+def normalize_release_group_name(value: str) -> str:
+    """将发布组别名归一为 RELEASE_GROUPS 的标准组名；未命中时返回清洗后的原值。"""
+    text = str(value or '').strip(' ._-')
+    if not text:
+        return ''
+    text = re.sub(r'\.(?:mkv|mp4|ts|avi|mov|wmv|strm|nfo|json)$', '', text, flags=re.IGNORECASE).strip(' ._-')
+    if not text:
+        return ''
+
+    for group_name, alias_list in RELEASE_GROUPS.items():
+        if text.lower() == str(group_name).lower():
+            return group_name
+        for alias in alias_list:
+            try:
+                if re.fullmatch(alias, text, re.IGNORECASE):
+                    return group_name
+            except re.error as e:
+                logger.warning(f"RELEASE_GROUPS 中存在无效的正则表达式: '{alias}' for group '{group_name}'. Error: {e}")
+                continue
+    return text
+
+def describe_release_group_match(filename: str) -> Dict[str, str]:
+    """返回发布组标准名和命中的尾部别名，用于锁版判断和日志展示。"""
+    token = extract_release_group_token_from_filename(filename)
+    groups = extract_release_groups_from_filename(filename)
+    standard = groups[0] if groups else normalize_release_group_name(token)
+    return {
+        'group': standard,
+        'alias': token,
+    }
+
+def format_release_group_label(group_name: str, alias: str = '') -> str:
+    group = str(group_name or '').strip(' ._-')
+    alias = str(alias or '').strip(' ._-')
+    if group and alias and group.lower() != alias.lower():
+        return f"{group}({alias})"
+    return group or alias
+
 def get_keywords_by_group_name(group_name: str) -> List[str]:
     """
     根据发布组的中文名（或其他键名），反查其在 RELEASE_GROUPS 中对应的所有关键词/别名。
