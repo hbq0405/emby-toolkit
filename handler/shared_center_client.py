@@ -66,16 +66,11 @@ def _sha256_or_empty(value: str = '') -> str:
 
 def _current_server_id_hash() -> str:
     """返回当前 Emby ServerID 的 hash；共享中心设备身份只认 ServerID。"""
-    server_id = ''
     try:
         import extensions
         server_id = str(getattr(extensions, 'EMBY_SERVER_ID', '') or '').strip()
     except Exception:
         server_id = ''
-    if not server_id:
-        server_id = str((config_manager.APP_CONFIG or {}).get('emby_server_id') or '').strip()
-    if not server_id:
-        server_id = _setting_text('emby_server_id_cache')
     return _sha256_or_empty(server_id)
 
 
