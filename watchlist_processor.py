@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timezone
 import threading
 from collections import defaultdict
+from decimal import Decimal
 # 导入我们需要的辅助模块
 from database import connection, media_db, request_db, watchlist_db, user_db, settings_db
 import constants
@@ -1558,7 +1559,8 @@ class WatchlistProcessor:
             r'\b(?:nf|netflix|amzn|amazon|dsnp|disney|hulu|max|atvp|apple|hbo|iqiyi|wetv|viu)\b',
             r'\b(?:dovi|dolby[ ._-]?vision|dv|hdr10\+?|hdr10plus|hdr|hlg)\b',
             r'\b(?:hevc|h\.?265|x265|avc|h\.?264|x264|av1)\b',
-            r'\b(?:ddp|dd\+|eac3|aac|truehd|atmos|dts[ ._-]?hd|dts)\b',
+            r'(?i)(?:ddp|dd\+|eac3|aac|truehd|atmos|dts[ ._-]?hd|dts)(?=[\s._-]?\d|[\s._-]|$)',
+            r'(?i)(?:10[\s._-]?bit|8[\s._-]?bit|main10)',
         ]
         for pattern in patterns:
             for match in re.findall(pattern, text, flags=re.IGNORECASE):
@@ -1567,7 +1569,36 @@ class WatchlistProcessor:
                     terms.append(term)
         return terms
 
+    def _version_lock_has_hdr_effect(self, filename: str) -> bool:
+        return bool(re.search(
+            r'(?i)(?:dovi|dolby[\s._-]?vision|\bdv\b|hdr10\+|hdr10plus|\bhdr10\b|\bhdr\b|\bhlg\b)',
+            str(filename or ''),
+        ))
+
+    def _version_lock_replacement_candidate(self, state: Dict[str, Any], row: Optional[Dict[str, Any]]) -> bool:
+        if not row:
+            return False
+        current_source = str((state or {}).get('source_name') or '').strip()
+        candidate_source = str(row.get('source_name') or '').strip()
+        if not candidate_source or candidate_source == current_source:
+            return False
+        if self._version_lock_has_hdr_effect(current_source) or not self._version_lock_has_hdr_effect(candidate_source):
+            return False
+
+        current_mp = _safe_int((state or {}).get('mp_episode_priority'), None)
+        candidate_mp = _safe_int(row.get('mp_episode_priority'), None)
+        if current_mp is not None and candidate_mp is not None and candidate_mp < current_mp:
+            return False
+
+        current_level = _safe_int((state or {}).get('washing_level'), None)
+        candidate_level = _safe_int(row.get('washing_level'), None)
+        if current_level is not None and candidate_level is not None and candidate_level > current_level:
+            return False
+        return True
+
     def _build_version_lock_include_regex(self, filename: str) -> str:
+        source_text = str(filename or '')
+        source_lower = source_text.lower()
         aliases = {
             'webdl': r'web[\s._-]?dl',
             'web-dl': r'web[\s._-]?dl',
@@ -1581,26 +1612,55 @@ class WatchlistProcessor:
             'dovi': r'dovi|dolby[\s._-]?vision|dv',
             'dolbyvision': r'dovi|dolby[\s._-]?vision|dv',
             'ddp': r'ddp|dd\+|eac3',
+            'eac3': r'eac3|ddp|dd\+',
+            '10bit': r'10[\s._-]?bit|main10',
+            'main10': r'10[\s._-]?bit|main10',
+            '8bit': r'8[\s._-]?bit',
         }
         lookaheads = []
         seen = set()
+
+        def add_positive(key: str, pattern: str) -> None:
+            compact_key = re.sub(r'[\s._-]+', '', str(key or '')).lower()
+            if not compact_key or compact_key in seen:
+                return
+            seen.add(compact_key)
+            lookaheads.append(f"(?=.*({pattern}))")
+
         for term in self._version_lock_terms_from_filename(filename):
             compact = re.sub(r'[\s._-]+', '', term).lower()
             if compact in seen or compact in {'sdr'}:
                 continue
-            seen.add(compact)
             escaped = re.escape(term)
             flexible = re.sub(r'\\[\s._-]+', r'[\\s._-]*', escaped)
-            lookaheads.append(f"(?=.*({aliases.get(compact, flexible)}))")
+            add_positive(compact, aliases.get(compact, flexible))
+
+        if re.search(r'(?i)(?:10[\s._-]?bit|main10)', source_text):
+            add_positive('10bit', r'10[\s._-]?bit|main10')
+        elif re.search(r'(?i)8[\s._-]?bit', source_text):
+            add_positive('8bit', r'8[\s._-]?bit')
+
+        if re.search(r'(?i)(?:ddp|dd\+|eac3)(?=[\s._-]?\d|[\s._-]|$)', source_text):
+            add_positive('ddp', r'ddp|dd\+|eac3')
+        elif re.search(r'(?i)aac(?=[\s._-]?\d|[\s._-]|$)', source_text):
+            add_positive('aac', r'aac')
+
+        if re.search(r'(?i)(?:dovi|dolby[\s._-]?vision|\bdv\b)', source_text):
+            add_positive('dovi', r'dovi|dolby[\s._-]?vision|\bdv\b')
+        elif re.search(r'(?i)(?:hdr10\+|hdr10plus)', source_text):
+            add_positive('hdr10plus', r'hdr10\+|hdr10plus')
+        elif re.search(r'(?i)\bhdr10\b', source_text):
+            add_positive('hdr10', r'hdr10')
+        elif re.search(r'(?i)\bhdr\b|\bhlg\b', source_text):
+            add_positive('hdr', r'hdr|hlg')
+
         group_info = self._version_lock_release_group_info(filename)
         group_regex = helpers.build_exclusion_regex_from_groups([group_info.get('group')]) if group_info.get('group') else ''
         if not group_regex and group_info.get('alias'):
             group_regex = re.escape(group_info.get('alias'))
         if group_regex:
-            lookaheads.append(f"(?=.*({group_regex}))")
-        if group_regex and len(lookaheads) > 8:
-            lookaheads = lookaheads[:7] + [lookaheads[-1]]
-        return "(?i)" + "".join(lookaheads[:8]) if lookaheads else ""
+            add_positive('release_group', group_regex)
+        return "(?i)" + "".join(lookaheads) if lookaheads else ""
 
     def _version_lock_release_group_info(self, filename: str) -> Dict[str, str]:
         info = helpers.describe_release_group_match(filename)
@@ -1700,6 +1760,42 @@ class WatchlistProcessor:
             return ''
         return next(iter(counts.keys()))
 
+    def _asset_source_names(self, asset_details_json: Any) -> List[str]:
+        try:
+            assets = asset_details_json
+            if isinstance(assets, str):
+                assets = json.loads(assets or '[]')
+            if isinstance(assets, dict):
+                assets = [assets]
+            if not isinstance(assets, list):
+                return []
+        except Exception:
+            return []
+
+        names = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            for key in ('source_name', 'original_name', 'filename', 'name', 'path'):
+                value = str(asset.get(key) or '').strip()
+                if not value:
+                    continue
+                name = os.path.basename(value.replace('\\', '/')).strip()
+                if name and name not in names:
+                    names.append(name)
+        return names
+
+    def _version_lock_include_matches(self, include_regex: str, filename: str) -> bool:
+        include = str(include_regex or '').strip()
+        name = str(filename or '').strip()
+        if not include or not name:
+            return False
+        try:
+            return re.search(include, name) is not None
+        except re.error as e:
+            logger.warning("  ➜ [版本锁定] 锁版正则无效，跳过纠偏：%s -> %s", include, e)
+            return False
+
     def _get_mp_episode_priority_baseline(self, tmdb_id: str, season_number: int) -> Optional[int]:
         try:
             sub = moviepilot.get_subscription_by_tmdbid(tmdb_id, season_number, self.config) or {}
@@ -1744,19 +1840,70 @@ class WatchlistProcessor:
         series_name: str = '',
         baseline_priority: Optional[int] = None,
         locked_release_group_alias: str = '',
+        include_regex: str = '',
     ) -> Dict[str, Any]:
         locked_group = helpers.normalize_release_group_name(locked_release_group)
-        if not locked_group:
+        include_regex = str(include_regex or '').strip()
+        if not include_regex:
             return {}
-        locked_key = locked_group.lower()
         locked_label = helpers.format_release_group_label(locked_group, locked_release_group_alias)
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        SELECT tmdb_id, episode_number, asset_details_json, active_washing
+                        SELECT e.tmdb_id,
+                               e.episode_number,
+                               e.asset_details_json,
+                               e.active_washing,
+                               COALESCE(r.original_name, c_pc.name, c_sha.name) AS source_name
                         FROM media_metadata
+                        e
+                        LEFT JOIN LATERAL (
+                            SELECT r.original_name
+                            FROM jsonb_array_elements_text(
+                                CASE
+                                    WHEN e.file_pickcode_json IS NOT NULL
+                                         AND jsonb_typeof(e.file_pickcode_json) = 'array'
+                                    THEN e.file_pickcode_json
+                                    ELSE '[]'::jsonb
+                                END
+                            ) AS pc(pick_code)
+                            JOIN p115_organize_records r ON r.pick_code = pc.pick_code
+                            WHERE NULLIF(r.original_name, '') IS NOT NULL
+                            ORDER BY r.processed_at DESC NULLS LAST, r.id DESC
+                            LIMIT 1
+                        ) r ON TRUE
+                        LEFT JOIN LATERAL (
+                            SELECT c.name
+                            FROM jsonb_array_elements_text(
+                                CASE
+                                    WHEN e.file_pickcode_json IS NOT NULL
+                                         AND jsonb_typeof(e.file_pickcode_json) = 'array'
+                                    THEN e.file_pickcode_json
+                                    ELSE '[]'::jsonb
+                                END
+                            ) AS pc(pick_code)
+                            JOIN p115_filesystem_cache c ON c.pick_code = pc.pick_code
+                            WHERE NULLIF(c.name, '') IS NOT NULL
+                            ORDER BY c.updated_at DESC NULLS LAST
+                            LIMIT 1
+                        ) c_pc ON TRUE
+                        LEFT JOIN LATERAL (
+                            SELECT c.name
+                            FROM jsonb_array_elements_text(
+                                CASE
+                                    WHEN e.file_sha1_json IS NOT NULL
+                                         AND jsonb_typeof(e.file_sha1_json) = 'array'
+                                    THEN e.file_sha1_json
+                                    ELSE '[]'::jsonb
+                                END
+                            ) AS sha(sha1)
+                            JOIN p115_filesystem_cache c ON UPPER(c.sha1) = UPPER(sha.sha1)
+                            WHERE NULLIF(c.name, '') IS NOT NULL
+                            ORDER BY c.updated_at DESC NULLS LAST
+                            LIMIT 1
+                        ) c_sha ON TRUE
                         WHERE parent_series_tmdb_id = %s
                           AND season_number = %s
                           AND item_type = 'Episode'
@@ -1778,11 +1925,17 @@ class WatchlistProcessor:
                         episode_number = _safe_int(row.get('episode_number'))
                         if not episode_number:
                             continue
-                        groups = self._asset_release_groups(row.get('asset_details_json'))
-                        if not groups:
+                        source_names = []
+                        source_name = str(row.get('source_name') or '').strip()
+                        if source_name:
+                            source_names.append(source_name)
+                        for name in self._asset_source_names(row.get('asset_details_json')):
+                            if name not in source_names:
+                                source_names.append(name)
+                        if not source_names:
                             skipped_unknown += 1
                             continue
-                        if locked_key in groups:
+                        if any(self._version_lock_include_matches(include_regex, name) for name in source_names):
                             clear_ids.append(episode_tmdb_id)
                             clear_episodes.append(episode_number)
                         else:
@@ -1824,10 +1977,10 @@ class WatchlistProcessor:
 
             if enable_ids or clear_ids:
                 logger.info(
-                    "  ➜ [版本锁定] 《%s》S%s 发布组纠偏：锁定=%s，标记洗版=%s，清理标记=%s，未知跳过=%s。",
+                    "  ➜ [版本锁定] 《%s》S%s 锁版正则纠偏：锁定=%s，标记洗版=%s，清理标记=%s，未知跳过=%s。",
                     series_name or tmdb_id,
                     season_number,
-                    locked_label,
+                    locked_label or '正则',
                     len(enable_ids),
                     len(clear_ids),
                     skipped_unknown,
@@ -1840,7 +1993,7 @@ class WatchlistProcessor:
             }
         except Exception as e:
             logger.warning(
-                "  ➜ [版本锁定] 发布组纠偏失败：《%s》S%s group=%s -> %s",
+                "  ➜ [版本锁定] 锁版正则纠偏失败：《%s》S%s group=%s -> %s",
                 series_name or tmdb_id,
                 season_number,
                 locked_label,
@@ -1855,6 +2008,7 @@ class WatchlistProcessor:
         mode: str,
         series_name: str = '',
         episode_emby_ids: Optional[List[str]] = None,
+        allow_locked: bool = False,
     ) -> Optional[Dict[str, Any]]:
         log_title = f"《{series_name}》第 {season_number} 季" if series_name else f"第 {season_number} 季"
         try:
@@ -1881,6 +2035,7 @@ class WatchlistProcessor:
                         and lock_state.get('locked')
                         and lock_state.get('include')
                         and str(lock_state.get('mode') or '') == mode
+                        and not allow_locked
                     ):
                         return None
 
@@ -1892,7 +2047,7 @@ class WatchlistProcessor:
                             parts.append(f"WHEN {int(ep)} THEN {int(priority)}")
                         mp_priority_case = f"CASE e.episode_number {' '.join(parts)} ELSE NULL END"
                     order_sql = (
-                        f"mp_episode_priority DESC NULLS LAST, e.washing_level ASC NULLS LAST, e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
+                        f"mp_episode_priority DESC NULLS LAST, e.washing_level ASC NULLS LAST, source_has_hdr DESC, e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
                         if mode == 'best'
                         else "e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
                     )
@@ -1905,7 +2060,11 @@ class WatchlistProcessor:
                         f"""
                         SELECT e.episode_number, e.washing_level,
                                {mp_priority_case} AS mp_episode_priority,
-                               COALESCE(r.original_name, c.name) AS source_name
+                               COALESCE(r.original_name, c.name) AS source_name,
+                               CASE
+                                   WHEN COALESCE(r.original_name, c.name, '') ~* '(dovi|dolby[[:space:]._-]?vision|\\mdv\\M|hdr10\\+|hdr10plus|\\mhdr10\\M|\\mhdr\\M|\\mhlg\\M)'
+                                   THEN 1 ELSE 0
+                               END AS source_has_hdr
                         FROM media_metadata e
                         LEFT JOIN LATERAL (
                             SELECT original_name
@@ -1943,6 +2102,17 @@ class WatchlistProcessor:
             logger.warning(f"  ➜ [版本锁定] 查询候选入库版本失败：{log_title}: {e}")
             return None
 
+    def _version_lock_json_safe(self, value: Any) -> Any:
+        if isinstance(value, Decimal):
+            return int(value) if value == value.to_integral_value() else float(value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(k): self._version_lock_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._version_lock_json_safe(v) for v in value]
+        return value
+
     def _save_version_lock_state(self, tmdb_id: str, season_number: int, state: Dict[str, Any], series_name: str = '') -> None:
         log_title = f"《{series_name}》第 {season_number} 季" if series_name else f"第 {season_number} 季"
         try:
@@ -1954,7 +2124,7 @@ class WatchlistProcessor:
                         SET watchlist_version_lock_json = %s
                         WHERE parent_series_tmdb_id = %s AND item_type = 'Season' AND season_number = %s
                         """,
-                        (json.dumps(state, ensure_ascii=False), str(tmdb_id), season_number),
+                        (json.dumps(self._version_lock_json_safe(state), ensure_ascii=False), str(tmdb_id), season_number),
                     )
                     conn.commit()
         except Exception as e:
@@ -2196,6 +2366,48 @@ class WatchlistProcessor:
                     release_group = ''
                 release_group_alias = str(state.get('release_group_alias') or '').strip()
                 include_regex = str(state.get('include') or '').strip()
+                if mode == 'best':
+                    replacement_row = self._get_version_lock_candidate(
+                        tmdb_id,
+                        season_number,
+                        mode,
+                        series_name,
+                        (episode_ids_by_season or {}).get(season_number) or [],
+                        allow_locked=True,
+                    )
+                    if self._version_lock_replacement_candidate(state, replacement_row):
+                        replacement_include = self._build_version_lock_include_regex(replacement_row.get('source_name'))
+                        if replacement_include:
+                            ok = moviepilot.lock_series_subscription_version(
+                                tmdb_id,
+                                season_number,
+                                series_name,
+                                replacement_include,
+                                self.config,
+                                best_version=True,
+                            )
+                            if ok:
+                                replacement_group_info = self._version_lock_release_group_info(replacement_row.get('source_name'))
+                                release_group = replacement_group_info.get('group') or release_group
+                                release_group_alias = replacement_group_info.get('alias') or release_group_alias
+                                include_regex = replacement_include
+                                state.update({
+                                    'episode': replacement_row.get('episode_number'),
+                                    'washing_level': replacement_row.get('washing_level'),
+                                    'mp_episode_priority': replacement_row.get('mp_episode_priority'),
+                                    'source_name': replacement_row.get('source_name'),
+                                    'release_group': release_group,
+                                    'release_group_alias': release_group_alias,
+                                    'include': include_regex,
+                                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                                })
+                                self._save_version_lock_wait_state(tmdb_id, season_number, state, series_name)
+                                logger.info(
+                                    "  ➜ [版本锁定] 《%s》S%s 检测到同档 HDR 版本，已切换锁版正则：发布组=%s。",
+                                    series_name or tmdb_id,
+                                    season_number,
+                                    replacement_group_info.get('label') or release_group_alias or release_group or '-',
+                                )
                 derived_info = self._version_lock_release_group_info(state.get('source_name') or '')
                 derived_group = derived_info.get('group') or ''
                 derived_alias = derived_info.get('alias') or ''
@@ -2208,13 +2420,15 @@ class WatchlistProcessor:
                         derived_alias = release_group_alias
                 expected_group_regex = helpers.build_exclusion_regex_from_groups([derived_group]) if derived_group else ''
                 include_needs_rebuild = False
+                rebuilt_include = self._build_version_lock_include_regex(state.get('source_name') or '')
+                if rebuilt_include and rebuilt_include != include_regex:
+                    include_needs_rebuild = True
                 if derived_group:
                     if expected_group_regex:
-                        include_needs_rebuild = expected_group_regex.lower() not in include_regex.lower()
+                        include_needs_rebuild = include_needs_rebuild or expected_group_regex.lower() not in include_regex.lower()
                     elif derived_alias:
-                        include_needs_rebuild = derived_alias.lower() not in include_regex.lower()
-                if derived_group and include_needs_rebuild:
-                    rebuilt_include = self._build_version_lock_include_regex(state.get('source_name') or '')
+                        include_needs_rebuild = include_needs_rebuild or derived_alias.lower() not in include_regex.lower()
+                if rebuilt_include and include_needs_rebuild:
                     if rebuilt_include:
                         ok = moviepilot.lock_series_subscription_version(
                             tmdb_id,
@@ -2226,8 +2440,9 @@ class WatchlistProcessor:
                         )
                         if ok:
                             include_regex = rebuilt_include
-                            release_group = derived_group
-                            release_group_alias = derived_alias
+                            if derived_group:
+                                release_group = derived_group
+                                release_group_alias = derived_alias
                             self._save_version_lock_wait_state(tmdb_id, season_number, {
                                 'release_group': release_group,
                                 'release_group_alias': release_group_alias,
@@ -2261,6 +2476,7 @@ class WatchlistProcessor:
                         series_name,
                         _safe_int(state.get('mp_episode_priority_baseline')) or None,
                         release_group_alias,
+                        include_regex,
                     )
                     baseline_priority = sync_state.get('baseline_priority') if isinstance(sync_state, dict) else None
                     if baseline_priority and baseline_priority != state.get('mp_episode_priority_baseline'):
@@ -2363,6 +2579,7 @@ class WatchlistProcessor:
                     series_name,
                     baseline_priority,
                     release_group_alias,
+                    include_regex,
                 )
                 if isinstance(sync_state, dict) and sync_state.get('baseline_priority') and sync_state.get('baseline_priority') != baseline_priority:
                     self._save_version_lock_wait_state(tmdb_id, season_number, {
