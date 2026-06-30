@@ -927,6 +927,67 @@ class TGUserBotManager:
 # =================================================================
 # ★★★ ETK 侧的消费者协程 (处理队列中的任务) (保持不变)
 # =================================================================
+_TG_OFFLINE_LINK_RE = re.compile(
+    r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_tg_offline_links(*values):
+    text_parts = []
+    for value in values:
+        if isinstance(value, list):
+            text_parts.extend(str(item or '') for item in value)
+        else:
+            text_parts.append(str(value or ''))
+
+    links = []
+    seen = set()
+    for link in _TG_OFFLINE_LINK_RE.findall("\n".join(text_parts)):
+        link = str(link or '').strip()
+        key = link.lower()
+        if link and key not in seen:
+            seen.add(key)
+            links.append(link)
+    return links
+
+
+def _submit_tg_offline_links(client, links, target_cid, task, log_prefix):
+    links = [str(link or '').strip() for link in (links or []) if str(link or '').strip()]
+    if not links:
+        return False
+
+    payload = {"wp_path_id": target_cid}
+    for index, link in enumerate(links):
+        payload[f"url[{index}]"] = link
+
+    res = client.offline_add_urls(payload)
+    if res and res.get('state'):
+        logger.info(f"  ➜ {log_prefix} 离线下载任务提交成功！共 {len(links)} 个链接，正在触发整理...")
+
+        notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+        if 'transfer_success' in notify_types:
+            try:
+                from handler.telegram import send_transfer_success_notification
+                task['is_offline'] = True
+                task['magnet_url'] = links[0]
+                send_transfer_success_notification(task)
+            except Exception as e:
+                logger.error(f"  ➜ {log_prefix} 发送离线通知失败: {e}")
+
+        try:
+            import task_manager
+            import threading
+            threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+        except Exception:
+            pass
+        return True
+
+    err = (res or {}).get('error_msg') or (res or {}).get('message') or str(res) or '未知错误'
+    logger.error(f"  ➜ {log_prefix} 离线提交失败: {err}")
+    return False
+
+
 def _process_tg_queue():
     import requests 
 
@@ -1099,6 +1160,12 @@ def _process_tg_queue():
                             if resource_data and resource_data.get('url'):
                                 real_url = resource_data.get('url')
                                 full_url = resource_data.get('full_url', '')
+
+                                offline_links = _extract_tg_offline_links(real_url, full_url)
+                                if offline_links:
+                                    logger.debug(f"  ➜ [频道监听] 影巢 API 返回 {len(offline_links)} 个磁力/ED2K 链接，准备提交离线下载...")
+                                    _submit_tg_offline_links(client, offline_links, target_cid, task, "[频道监听]")
+                                    continue
                                 
                                 match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
                                 if match:
@@ -1196,29 +1263,10 @@ def _process_tg_queue():
                 # --- 分支 B: 处理磁力/ED2K 离线下载 ---
                 elif magnet_url:
                     logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备提交离线下载...")
-                    payload = {"url[0]": magnet_url, "wp_path_id": target_cid}
-                    
-                    res = client.offline_add_urls(payload)
-                    if res and res.get('state'):
-                        logger.info(f"  ➜ [频道监听] 离线下载任务提交成功！正在触发整理...")
-                        
-                        notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
-                        if 'transfer_success' in notify_types:
-                            try:
-                                from handler.telegram import send_transfer_success_notification
-                                task['is_offline'] = True # 标记为离线任务，供通知文案区分
-                                send_transfer_success_notification(task)
-                            except Exception as e:
-                                logger.error(f"  ➜ [频道监听] 发送离线通知失败: {e}")
-
-                        try:
-                            import task_manager
-                            import threading
-                            threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
-                        except: pass
-                    else:
-                        err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                        logger.error(f"  ➜ [频道监听] 离线提交失败: {err}")
+                    offline_links = _extract_tg_offline_links(magnet_url)
+                    if not offline_links:
+                        offline_links = [magnet_url]
+                    _submit_tg_offline_links(client, offline_links, target_cid, task, "[频道监听]")
 
             elif task_type == "offline_download":
                 target_url = task['url']
