@@ -767,8 +767,15 @@
                             <template #unchecked>直接播放源文件</template>
                         </n-switch>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">同一个视频第二个用户播放前自动复制到临时目录播放，停止播放后自动删除临时克隆文件。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">同一个视频第二个用户播放前自动复制到临时目录播放，临时文件由定时清理处理。</n-text>
                         </template>
+                    </n-form-item>
+
+                    <n-form-item label="临时目录清理 CRON" path="p115_temp_cleanup_cron">
+                      <n-input v-model:value="configModel.p115_temp_cleanup_cron" placeholder="0 * * * *" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">按计划清理 ETK临时目录 内 3 小时以前的视频文件；留空则不启用定时清理。</n-text>
+                      </template>
                     </n-form-item>
 
                     <n-form-item label="智能整理" path="p115_enable_organize">
@@ -2808,7 +2815,7 @@ const cookieQrcodePolling = ref(null);
 const playPoolConfig = ref({
   enabled: false,
   usable_count: 0,
-  temp_dir_name: 'ETK小号播放临时目录',
+  temp_dir_name: 'ETK临时目录',
   accounts: []
 });
 
@@ -2825,7 +2832,7 @@ const handlePlayPoolUpdated = (data) => {
   playPoolConfig.value = {
     enabled: Boolean(data?.enabled),
     usable_count: Number(data?.usable_count || 0),
-    temp_dir_name: data?.temp_dir_name || 'ETK小号播放临时目录',
+    temp_dir_name: data?.temp_dir_name || 'ETK临时目录',
     accounts: Array.isArray(data?.accounts) ? data.accounts : []
   };
 };
@@ -3683,6 +3690,7 @@ onMounted(async () => {
       check115Status();
       loadPlayPoolConfig();
       if (!configModel.value.p115_auth_method) configModel.value.p115_auth_method = 'web';
+      if (configModel.value.p115_temp_cleanup_cron === undefined || configModel.value.p115_temp_cleanup_cron === null) configModel.value.p115_temp_cleanup_cron = '0 * * * *';
       if (!['permanent', 'virtual'].includes(configModel.value.p115_shared_resource_mode)) configModel.value.p115_shared_resource_mode = 'permanent';
       if (!configModel.value.p115_shared_cache_retention_days || Number(configModel.value.p115_shared_cache_retention_days) < 1) configModel.value.p115_shared_cache_retention_days = 7;
       if (configModel.value.p115_shared_max_active_shares === undefined || configModel.value.p115_shared_max_active_shares === null || Number(configModel.value.p115_shared_max_active_shares) < 0) configModel.value.p115_shared_max_active_shares = 0;

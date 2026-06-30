@@ -15,7 +15,7 @@
           <n-tag :type="playPoolConfig.usable_count > 0 ? 'success' : 'default'" size="small">
             可用 {{ playPoolConfig.usable_count || 0 }} / {{ playPoolConfig.accounts.length }}
           </n-tag>
-          <n-tag size="small" :bordered="false">{{ playPoolConfig.temp_dir_name || 'ETK小号播放临时目录' }}</n-tag>
+          <n-tag size="small" :bordered="false">{{ playPoolConfig.temp_dir_name || 'ETK临时目录' }}</n-tag>
         </n-space>
         <n-button size="small" tertiary @click="loadPlayPoolConfig" :loading="playPoolLoading">
           <template #icon><n-icon :component="RefreshIcon" /></template>
@@ -195,7 +195,7 @@ const embyUserOptions = ref([]);
 const playPoolConfig = ref({
   enabled: false,
   usable_count: 0,
-  temp_dir_name: 'ETK小号播放临时目录',
+  temp_dir_name: 'ETK临时目录',
   auto_speedtest_threshold_mbps: 5,
   daily_traffic_limit_gb: null,
   accounts: []
@@ -271,7 +271,7 @@ const applyConfig = (data) => {
   playPoolConfig.value = {
     enabled: Boolean(data?.enabled),
     usable_count: Number(data?.usable_count || 0),
-    temp_dir_name: data?.temp_dir_name || 'ETK小号播放临时目录',
+    temp_dir_name: data?.temp_dir_name || 'ETK临时目录',
     auto_speedtest_threshold_mbps: Number(data?.auto_speedtest_threshold_mbps || 0) || 5,
     daily_traffic_limit_gb: Number(data?.daily_traffic_limit_gb || 0) || null,
     accounts: Array.isArray(data?.accounts) ? data.accounts : []

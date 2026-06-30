@@ -25,11 +25,11 @@ from handler.shared_center_client import SharedCenterClient
 from handler.shared_subscription_service import rapid_save_virtual_play_file
 from handler.p115_copy_play import (
     discard_copy_play_clone,
+    is_copy_play_enabled,
     is_copy_play_missing_error,
     prepare_copy_play_pick_code,
     record_source_play,
     recycle_clone_after_direct_url,
-    should_use_copy_play_for_source,
 )
 from handler import p115_play_pool
 from utils import extract_pickcode_from_strm_url
@@ -287,10 +287,6 @@ def _resolve_virtual_play_url(virtual_info, *, item_id='', play_session_id='', u
             time.sleep(0.5)
         if not real_url:
             raise RuntimeError("Failed to get virtual download URL")
-
-        if not temp_item:
-            temp_item = _find_virtual_temp_file(client, temp_cid, sha1, file_name)
-        _delete_virtual_temp_file(client, temp_item)
 
         try:
             shared_credit_db.add_credit_ledger(
@@ -1592,9 +1588,19 @@ def proxy_all(path):
                     request.headers.get('User-Agent') or "",
                 ])
 
+                play_pool_enabled = p115_play_pool.is_pool_enabled()
                 play_pool_available = p115_play_pool.has_usable_pool_for_user(current_user_id)
-                play_pool_configured = p115_play_pool.has_usable_pool()
-                disable_copy_play_for_play_pool = False
+                copy_play_kwargs = {
+                    "file_name": display_name,
+                    "item_id": item_id,
+                    "play_session_id": play_session_id,
+                    "user_id": current_user_id,
+                    "source": 'reverse_proxy',
+                    "client_key": play_client_key,
+                    "client_name": request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
+                }
+                use_copy_play = False if play_pool_enabled else is_copy_play_enabled()
+
                 if play_pool_available:
                     try:
                         play_result = p115_play_pool.prepare_play_pool_pick_code(
@@ -1609,7 +1615,6 @@ def proxy_all(path):
                         )
                         real_115_url = p115_play_pool.get_direct_url(play_result, user_agent=player_ua)
                         if real_115_url:
-                            p115_play_pool.recycle_session_after_direct_url(play_result, "起播后清理")
                             response = redirect(real_115_url, code=302)
                             response.headers['Access-Control-Allow-Origin'] = '*'
                             return response
@@ -1618,24 +1623,13 @@ def proxy_all(path):
                     except Exception as e:
                         logger.warning(f"  ⚠️ [小号播放] 小号池播放失败，已按小号池优先规则中止本次播放: {e}")
                         return Response(f"Play pool failed: {e}", status=503)
-                elif play_pool_configured:
-                    disable_copy_play_for_play_pool = True
-                    logger.debug("  ➜ [小号播放] 当前用户无可用小号，本次不触发复制播放：user_id=%s", current_user_id or "-")
+                elif play_pool_enabled:
+                    logger.debug("  ➜ [小号播放] 小号池已开启但当前用户无可用小号，本次不触发复制播放：user_id=%s", current_user_id or "-")
 
                 client = P115Service.get_client()
                 if not client:
                     return "115 Client not initialized", 500
 
-                copy_play_kwargs = {
-                    "file_name": display_name,
-                    "item_id": item_id,
-                    "play_session_id": play_session_id,
-                    "user_id": current_user_id,
-                    "source": 'reverse_proxy',
-                    "client_key": play_client_key,
-                    "client_name": request.headers.get('X-Emby-Client') or request.headers.get('User-Agent') or "",
-                }
-                use_copy_play = False if disable_copy_play_for_play_pool else should_use_copy_play_for_source(pick_code, **copy_play_kwargs)
                 play_pick_code = pick_code
                 if use_copy_play:
                     play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)

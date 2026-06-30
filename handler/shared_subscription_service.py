@@ -14,6 +14,7 @@ import config_manager
 import constants
 from database import settings_db
 from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
+from handler.p115_temp_dir import ensure_temp_dir, find_temp_video
 from handler.p115_rename import P115RenameRenderer
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled
@@ -34,10 +35,6 @@ _PENDING_TRANSFER_REPORT_MAX_ITEMS = 1000
 _PENDING_TRANSFER_REPORT_RETRY_BASE_SECONDS = 30
 _PENDING_TRANSFER_REPORT_RETRY_MAX_SECONDS = 3600
 _PENDING_TRANSFER_REPORT_DEFAULT_DRAIN_LIMIT = 20
-VIRTUAL_IMPORT_TEMP_DIR_NAME = 'ETK虚拟入库临时文件'
-
-
-
 class _MediainfoBuilder(P115MediaAnalyzerMixin):
     pass
 
@@ -267,41 +264,7 @@ def _virtual_temp_dir_cid() -> str:
     p115 = P115Service.get_client()
     if not p115:
         raise RuntimeError('115 客户端未初始化')
-    name = VIRTUAL_IMPORT_TEMP_DIR_NAME
-    try:
-        items = p115.fs_files(_root_cid())
-        raw_items = []
-        if isinstance(items, dict):
-            raw_items = items.get('data') or items.get('items') or items.get('list') or []
-            if isinstance(raw_items, dict):
-                raw_items = raw_items.get('list') or raw_items.get('items') or []
-        elif isinstance(items, list):
-            raw_items = items
-        for item in raw_items or []:
-            if not isinstance(item, dict):
-                continue
-            item_name = str(item.get('n') or item.get('name') or item.get('file_name') or item.get('fn') or '').strip()
-            is_dir = bool(item.get('is_dir') or item.get('is_directory') or str(item.get('fc') or '') == '0')
-            cid = str(item.get('cid') or item.get('fid') or item.get('file_id') or item.get('id') or '').strip()
-            if item_name == name and cid and is_dir:
-                return cid
-    except Exception as e:
-        logger.debug(f"  ➜ [虚拟入库] 检查临时目录失败，准备重新创建：{e}")
-
-    resp = p115.fs_mkdir(name, _root_cid())
-    if not isinstance(resp, dict) or not resp.get('state'):
-        raise RuntimeError(f'创建虚拟入库临时目录失败：{resp}')
-    cid = str(
-        resp.get('cid')
-        or resp.get('file_id')
-        or resp.get('id')
-        or (resp.get('data') or {}).get('file_id')
-        or (resp.get('data') or {}).get('cid')
-        or ''
-    ).strip()
-    if not cid:
-        raise RuntimeError(f'创建虚拟入库临时目录成功但未返回 CID：{resp}')
-    return cid
+    return ensure_temp_dir(p115)
 
 
 def _safe_115_folder_name(value: Any, fallback: str = '共享季包') -> str:
@@ -4512,6 +4475,25 @@ def create_virtual_strm_files(source: Dict[str, Any], files: List[Dict[str, Any]
 def rapid_save_virtual_play_file(virtual_id: int, file_info: Dict[str, Any]) -> Dict[str, Any]:
     target_cid = _virtual_temp_dir_cid()
     info = dict(file_info or {})
+    normalized = _normalize_rapid_file_info(info)
+    sha1 = _norm_sha1(normalized.get('sha1'))
+    size = _rapid_size_to_int(normalized.get('size') or normalized.get('file_size'), 0)
+    file_name = str(normalized.get('file_name') or normalized.get('name') or sha1).strip() or sha1
+    p115 = P115Service.get_client()
+    if p115:
+        existing = find_temp_video(p115, target_cid, sha1=sha1, size=size, file_name=file_name)
+        if existing:
+            logger.debug(f"  ➜ [虚拟播放] 复用临时目录文件：{existing.get('name') or file_name}")
+            return {
+                'ok': True,
+                'response': {'state': True, 'data': existing, '_from_temp_reuse': True},
+                'sha1': sha1,
+                'file_name': existing.get('name') or file_name,
+                'target_cid': target_cid,
+                'pick_code': existing.get('pick_code') or '',
+                'virtual_id': int(virtual_id),
+                'virtual_target_cid': target_cid,
+            }
     info['_rapid_transfer_token'] = f"virtual:{virtual_id}:{int(time.time() * 1000)}"
     result = rapid_save_file(info, target_cid=target_cid)
     result['virtual_id'] = int(virtual_id)

@@ -20,8 +20,10 @@ from handler.shared_center_client import SharedCenterClient
 from handler.shared_subscription_service import rapid_save_virtual_play_file
 from handler.p115_copy_play import (
     discard_copy_play_clone,
+    is_copy_play_enabled,
     is_copy_play_missing_error,
     prepare_copy_play_pick_code,
+    record_source_play,
     recycle_clone_after_direct_url,
 )
 from handler import p115_play_pool
@@ -1773,7 +1775,6 @@ def play_115_video(pick_code, filename=None):
                 if not real_url:
                     logger.warning("  ⚠️ [小号播放] 路由层未拿到小号直链，已按小号池优先规则中止本次播放。")
                     return "Play pool failed", 503
-                p115_play_pool.recycle_session_after_direct_url(play_result, "起播后清理")
                 if is_emby_server:
                     headers_to_115 = {
                         "User-Agent": request_ua,
@@ -1796,7 +1797,13 @@ def play_115_video(pick_code, filename=None):
             disable_copy_play_for_play_pool = True
             logger.debug("  ➜ [小号播放] 路由层当前用户无可用小号，本次不触发复制播放：user_id=%s", current_user_id or "-")
 
-        play_pick_code = pick_code if disable_copy_play_for_play_pool else prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
+        use_copy_play = bool(
+            not disable_copy_play_for_play_pool
+            and is_copy_play_enabled()
+        )
+        play_pick_code = pick_code
+        if use_copy_play:
+            play_pick_code = prepare_copy_play_pick_code(pick_code, **copy_play_kwargs)
         if not play_pick_code:
             return "Copy play failed", 503
 
@@ -1814,6 +1821,10 @@ def play_115_video(pick_code, filename=None):
                     real_url = client.download_url(play_pick_code, user_agent=request_ua)
                     
                 if real_url:
+                    if str(play_pick_code) == str(pick_code):
+                        record_source_play(pick_code, **copy_play_kwargs)
+                    else:
+                        recycle_clone_after_direct_url(play_pick_code, "起播后清理")
                     break
             except Exception as e:
                 if str(play_pick_code) != str(pick_code) and is_copy_play_missing_error(e):
@@ -1833,8 +1844,6 @@ def play_115_video(pick_code, filename=None):
         
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
-
-        recycle_clone_after_direct_url(play_pick_code, "起播后清理")
 
         # =================================================================
         # ★★★ 核心分流逻辑 ★★★
@@ -2016,10 +2025,6 @@ def play_virtual_115_video(virtual_id, sha1, filename=None):
             time.sleep(0.5)
         if not real_url:
             return "Failed to get virtual download URL", 404
-
-        if not temp_item:
-            temp_item = _find_virtual_temp_file(client, save_result.get('virtual_target_cid') or save_result.get('target_cid'), sha1, save_result.get('file_name') or file_info.get('file_name') or '')
-        _delete_virtual_temp_file(client, temp_item)
 
         if is_emby_server:
             headers_to_115 = {"User-Agent": request_ua, "Accept": "*/*", "Connection": "keep-alive"}

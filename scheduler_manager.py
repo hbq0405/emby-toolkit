@@ -31,6 +31,7 @@ LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 DAILY_THEME_JOB_ID = 'daily_theme_job'
 SHARED_RESOURCE_MAINTENANCE_JOB_ID = 'shared_share_status_sync_job'
 PLAY_POOL_DAILY_SPEEDTEST_JOB_ID = 'play_pool_daily_speedtest_job'
+P115_TEMP_DIR_CLEANUP_JOB_ID = 'p115_temp_dir_cleanup_job'
 
 
 def _fix_apscheduler_cron_dow(cron_expression: str) -> str:
@@ -250,6 +251,7 @@ class SchedulerManager:
         self.update_pro_status_check_job()
         self.update_shared_share_status_sync_job()
         self.update_play_pool_daily_speedtest_job()
+        self.update_p115_temp_dir_cleanup_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
         """
@@ -486,6 +488,49 @@ class SchedulerManager:
             logger.trace("  ➜ 已设置小号池每日测速任务，执行计划：每天 12:00。")
         except Exception as e:
             logger.error(f"设置小号池每日测速任务失败: {e}", exc_info=True)
+
+    def update_p115_temp_dir_cleanup_job(self):
+        if not self.scheduler.running:
+            return
+
+        try:
+            self.scheduler.remove_job(P115_TEMP_DIR_CLEANUP_JOB_ID)
+        except JobLookupError:
+            pass
+
+        cron_str = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_TEMP_CLEANUP_CRON, '') or '').strip()
+        if not cron_str:
+            logger.info("  ➜ 115播放临时目录清理 CRON 未配置，本次不设置定时任务。")
+            return
+
+        fixed_cron_str = _fix_apscheduler_cron_dow(cron_str)
+
+        def scheduled_p115_temp_cleanup_wrapper():
+            import threading
+
+            def _run():
+                try:
+                    from handler.p115_temp_dir import cleanup_all_temp_videos
+                    result = cleanup_all_temp_videos(older_than_hours=3)
+                    logger.info("  ➜ [115临时目录] 定时清理完成，删除过期视频 %s 个。", result.get("deleted", 0))
+                except Exception as e:
+                    logger.error("  ➜ [115临时目录] 定时清理失败: %s", e, exc_info=True)
+
+            threading.Thread(target=_run, name="P115TempDirCleanup", daemon=True).start()
+
+        try:
+            self.scheduler.add_job(
+                func=scheduled_p115_temp_cleanup_wrapper,
+                trigger=CronTrigger.from_crontab(fixed_cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=P115_TEMP_DIR_CLEANUP_JOB_ID,
+                name="115播放临时目录清理",
+                replace_existing=True
+            )
+            logger.trace(f"  ➜ 已设置 115播放临时目录清理任务，执行计划：{_get_next_run_time_str(fixed_cron_str)}。")
+        except ValueError as e:
+            logger.error(f"设置 115播放临时目录清理任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
+        except Exception as e:
+            logger.error(f"设置 115播放临时目录清理任务失败: {e}", exc_info=True)
 
     def update_pro_status_check_job(self):
         """每天凌晨 3 点查岗，验证 Pro 状态是否过期"""

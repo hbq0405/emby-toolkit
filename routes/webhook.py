@@ -1950,7 +1950,6 @@ def emby_webhook():
                         cleanup_data = dict(data)
                         cleanup_data['_etk_webhook_remote_addr'] = request.remote_addr or ''
                         spawn(cleanup_for_playback_stop, cleanup_data)
-                        spawn(p115_play_pool.cleanup_for_playback_stop, cleanup_data)
                         spawn(_maybe_promote_virtual_import_from_playback, cleanup_data)
                         try:
                             from reverse_proxy import clear_play_concurrency_for_playback_stop
