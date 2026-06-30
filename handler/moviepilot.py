@@ -1133,6 +1133,192 @@ def analyze_mp_records_for_deletion(tmdb_id: str, item_type: str, season: Option
         logger.error(f"  ➜ [MP智能分析] 失败: {e}")
         return [], []
 
+def analyze_mp_episode_residue_for_deletion(tmdb_id: str, seasons: Optional[List[int]], title: str, config: Dict[str, Any]) -> tuple:
+    """分析订阅完成后可清理的追更分集残留；只清明确单集记录，避免误删全集包。"""
+    records_to_delete = []
+    hashes_to_delete = set()
+    target_seasons = {int(s) for s in (seasons or []) if s}
+
+    try:
+        mp_config = settings_db.get_setting('mp_config') or {}
+        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token:
+            return [], []
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        search_url = f"{moviepilot_url}/api/v1/history/transfer"
+        target_tmdb = int(tmdb_id)
+        page = 1
+
+        while True:
+            try:
+                res = requests.get(search_url, headers=headers, params={"title": title, "page": page, "count": 500}, timeout=30)
+                if res.status_code != 200:
+                    break
+                data = res.json()
+            except Exception:
+                break
+
+            records_list = []
+            if isinstance(data, dict):
+                inner_data = data.get('data')
+                if isinstance(inner_data, list):
+                    records_list = inner_data
+                elif isinstance(inner_data, dict) and isinstance(inner_data.get('list'), list):
+                    records_list = inner_data['list']
+            elif isinstance(data, list):
+                records_list = data
+            if not records_list:
+                break
+
+            for rec in records_list:
+                if not isinstance(rec, dict):
+                    continue
+                if _safe_int_value(rec.get('tmdbid'), -1) != target_tmdb:
+                    continue
+                rec_season_str = str(rec.get('seasons', '')).strip().upper()
+                match = re.search(r'(\d+)', rec_season_str)
+                if not match:
+                    continue
+                rec_season = int(match.group(1))
+                if target_seasons and rec_season not in target_seasons:
+                    continue
+
+                rec_eps = _parse_episodes_string(str(rec.get('episodes', '')))
+                if not rec_eps:
+                    continue
+                records_to_delete.append(rec)
+                rec_hash = rec.get('download_hash')
+                if rec_hash:
+                    hashes_to_delete.add(rec_hash)
+
+            if len(records_list) < 500:
+                break
+            page += 1
+
+        return records_to_delete, list(hashes_to_delete)
+    except Exception as e:
+        logger.error(f"  ➜ [MP智能分析] 分集残留分析失败: {e}")
+        return [], []
+
+def analyze_mp_episode_residue_download_history(tmdb_id: str, seasons: Optional[List[int]], config: Dict[str, Any]) -> list:
+    """从下载历史补充分集残留 Hash；只清明确单集，避免误删全集包。"""
+    hashes_to_delete = set()
+    target_seasons = {int(s) for s in (seasons or []) if s}
+
+    try:
+        mp_config = settings_db.get_setting('mp_config') or {}
+        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token or not moviepilot_url:
+            return []
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        target_tmdb = int(tmdb_id)
+        page = 1
+        while True:
+            data, _ = _request_json(
+                "GET",
+                f"{moviepilot_url}/api/v1/history/download",
+                headers=headers,
+                params={"page": page, "count": 500},
+                timeout=30
+            )
+            if not data:
+                break
+            records = _extract_download_task_list(data)
+            if not records:
+                break
+
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                if _safe_int_value(rec.get("tmdbid"), -1) != target_tmdb:
+                    continue
+                h = rec.get("download_hash") or rec.get("hash")
+                if not h:
+                    continue
+                rec_season_str = str(rec.get('seasons', '')).strip().upper()
+                match = re.search(r'(\d+)', rec_season_str)
+                if not match:
+                    continue
+                rec_season = int(match.group(1))
+                if target_seasons and rec_season not in target_seasons:
+                    continue
+                rec_eps = _parse_episodes_string(str(rec.get('episodes', '')))
+                if rec_eps:
+                    hashes_to_delete.add(h)
+
+            if len(records) < 500:
+                break
+            page += 1
+
+        return list(hashes_to_delete)
+    except Exception as e:
+        logger.warning(f"  ➜ [MP智能清理] 分析分集残留下载历史失败: {e}")
+        return []
+
+def smart_cleanup_mp_episode_residue(tmdb_id: str, seasons: Optional[List[int]], title: str, config: Dict[str, Any], delete_history: bool = True, delete_files: bool = True) -> bool:
+    """订阅完成后清理分集转全集留下的单集整理记录、种子和源文件。"""
+    try:
+        mp_config = settings_db.get_setting('mp_config') or {}
+        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token:
+            return False
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        seasons_text = "全部季" if not seasons else ",".join(f"S{int(s)}" for s in seasons if s)
+        logger.info(f"  ➜ [订阅清理] 开始清理《{title}》{seasons_text} 的分集残留。")
+
+        records_to_delete, hashes_to_delete = analyze_mp_episode_residue_for_deletion(
+            tmdb_id, seasons, title, config
+        )
+        hist_hashes_to_delete = analyze_mp_episode_residue_download_history(tmdb_id, seasons, config)
+        hashes_to_delete = _unique_keep_order(list(hashes_to_delete or []) + list(hist_hashes_to_delete or []))
+
+        if delete_history and records_to_delete:
+            logger.info(f"  ➜ [订阅清理] 准备删除 {len(records_to_delete)} 条分集整理记录。")
+            del_url = f"{moviepilot_url}/api/v1/history/transfer"
+            del_params = {"deletesrc": "false", "deletedest": "false"}
+            for rec in records_to_delete:
+                try:
+                    requests.delete(del_url, headers=headers, params=del_params, json=rec, timeout=10)
+                except Exception:
+                    pass
+            logger.info("  ➜ [订阅清理] 分集整理记录删除完成。")
+
+        if delete_files and hashes_to_delete:
+            logger.info(f"  ➜ [订阅清理] 准备删除 {len(hashes_to_delete)} 个分集种子及源文件。")
+            all_tasks = get_downloading_tasks(config)
+            all_tasks.extend(get_all_torrents_from_downloaders(config, moviepilot_url, headers))
+            tasks_to_delete = _expand_hashes_with_same_data(hashes_to_delete, all_tasks, action_name="删除")
+            for h in tasks_to_delete:
+                try:
+                    res = requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=20)
+                    ok = res.status_code in [200, 204]
+                    try:
+                        body = res.json()
+                        if isinstance(body, dict) and body.get("success") is False:
+                            ok = False
+                    except Exception:
+                        pass
+                    if ok:
+                        logger.info(f"    ├─ 已删除分集种子及源文件 (Hash: {h[:8]}...)")
+                    else:
+                        logger.warning(f"    ├─ 删除分集种子失败 (Hash: {h[:8]}...): {res.status_code} - {res.text[:200]}")
+                except Exception as e:
+                    logger.warning(f"    ├─ 删除分集种子异常 (Hash: {h[:8]}...): {e}")
+            logger.info("  ➜ [订阅清理] 分集种子及源文件处理完成。")
+
+        if not records_to_delete and not hashes_to_delete:
+            logger.info(f"  ➜ [订阅清理] 《{title}》{seasons_text} 未发现可清理的分集残留。")
+        return True
+    except Exception as e:
+        logger.error(f"  ➜ [订阅清理] 分集残留清理异常: {e}", exc_info=True)
+        return False
+
 def smart_cleanup_mp_media(tmdb_id: str, item_type: str, season: Optional[int], episode: Optional[int], title: str, config: Dict[str, Any], delete_history: bool = True, delete_files: bool = True) -> bool:
     """
     【全新入口】智能清理 MP 媒体 (支持独立控制记录和文件，支持辅种清理)

@@ -4,6 +4,7 @@ import logging
 import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+from gevent import spawn
 
 from database import connection
 from database import settings_db, watchlist_db
@@ -45,6 +46,7 @@ class SubscribeAssistantManager:
     def __init__(self, app_config: Dict[str, Any] = None, assistant_config: AssistantConfig = None):
         self.app_config = app_config or {}
         self.cfg = assistant_config or get_config()
+        self._title_cache: Dict[str, str] = {}
 
     def sync_series(
         self,
@@ -267,9 +269,10 @@ class SubscribeAssistantManager:
 
             locked = self._season_total_locked(tmdb_id, season)
             if locked:
+                title = self._series_title(tmdb_id, snapshot.get("subscribe_json"))
                 logger.info(
                     "  ➜ [订阅助手] 《%s》S%s 已由豆瓣/手动锁定为 %s 集，自动纠错跳过 MP 恢复动作。",
-                    tmdb_id,
+                    title,
                     season,
                     locked.get("count") or "未知",
                 )
@@ -279,7 +282,11 @@ class SubscribeAssistantManager:
 
             fixed = self._repair_snapshot_subscription(snapshot, tmdb_id, season, old_total)
             if fixed:
-                logger.info("  ➜ [订阅助手] 已根据完成快照纠正《%s》S%s 的 MP 订阅。", tmdb_id, season)
+                logger.info(
+                    "  ➜ [订阅助手] 已根据完成快照纠正《%s》S%s 的 MP 订阅。",
+                    self._series_title(tmdb_id, snapshot.get("subscribe_json")),
+                    season,
+                )
             store.mark_snapshot_checked(_safe_int(snapshot.get("id")))
             checked += 1
         return checked
@@ -343,7 +350,7 @@ class SubscribeAssistantManager:
         logger.info(
             "  ➜ [订阅助手] 已接收 MP 下载事件：订阅 %s，%s S%s，hash=%s。",
             subscribe_id,
-            metadata["tmdb_id"] or metadata["title"] or "-",
+            self._series_title(metadata["tmdb_id"], source_info or metadata),
             season or "-",
             torrent_hash[:8],
         )
@@ -461,7 +468,50 @@ class SubscribeAssistantManager:
         self._clear_download_pending(subscribe_id, "", "订阅已完成")
         self._clear_torrents_for_subscription(subscribe_id, "订阅已完成")
         logger.info("  ➜ [订阅助手] 已根据 MP 完成事件写入快照：%s，总集数=%s。", self._format_subscribe_info(info), total or "-")
+        self._trigger_subscription_cleanup_on_complete(tmdb_id, season, info)
         return True
+
+    def _trigger_subscription_cleanup_on_complete(self, tmdb_id: str, season: int, info: Dict[str, Any]) -> None:
+        cleanup_type = str(self.cfg.subscription_cleanup_history_type or "none").strip().lower()
+        scenes = {str(x).strip().lower() for x in (self.cfg.subscription_cleanup_history_scenes or []) if str(x).strip()}
+        if cleanup_type in ("", "none") or "completed" not in scenes:
+            logger.debug(
+                "  ➜ [订阅清理] 《%s》S%s 配置为保留历史或未启用订阅完成场景，跳过。",
+                self._series_title(tmdb_id, info),
+                season or "-",
+            )
+            return
+
+        seasons = []
+        if cleanup_type == "current":
+            if season <= 0:
+                logger.info("  ➜ [订阅清理] 《%s》订阅完成事件缺少季号，无法清理当前季。", self._series_title(tmdb_id, info))
+                return
+            seasons = [int(season)]
+        elif cleanup_type == "tmdb":
+            seasons = self._local_seasons_for_tmdb(tmdb_id)
+            if not seasons and season > 0:
+                seasons = [int(season)]
+        else:
+            logger.warning("  ➜ [订阅清理] 未识别的清理范围 %s，跳过。", cleanup_type)
+            return
+
+        title = self._series_title(tmdb_id, info)
+        logger.info(
+            "  ➜ [订阅清理] 《%s》订阅完成，按配置触发分集残留清理：范围=%s，季=%s。",
+            title,
+            cleanup_type,
+            ",".join(f"S{s}" for s in seasons) if seasons else "全部",
+        )
+        spawn(
+            moviepilot.smart_cleanup_mp_episode_residue,
+            str(tmdb_id),
+            seasons,
+            title,
+            self.app_config,
+            True,
+            True,
+        )
 
     def _season_total_locked(self, tmdb_id: str, season: int) -> Optional[Dict[str, Any]]:
         try:
@@ -469,7 +519,7 @@ class SubscribeAssistantManager:
             if lock_info.get("locked"):
                 return lock_info
         except Exception as e:
-            logger.warning("  ➜ [订阅助手] 读取《%s》S%s 集数锁定状态失败，按未锁定处理: %s", tmdb_id, season, e)
+            logger.warning("  ➜ [订阅助手] 读取《%s》S%s 集数锁定状态失败，按未锁定处理: %s", self._series_title(tmdb_id), season, e)
         return None
 
     def _repair_snapshot_subscription(self, snapshot: Dict[str, Any], tmdb_id: str, season: int, snapshot_total: int) -> bool:
@@ -483,7 +533,7 @@ class SubscribeAssistantManager:
             title = snap_sub.get("name") or snap_sub.get("title") or snap_sub.get("keyword") or tmdb_id
             logger.warning(
                 "  ➜ [订阅助手] 完成快照对应的 MP 订阅已消失：《%s》S%s，正在按快照恢复订阅。",
-                tmdb_id,
+                self._series_title(tmdb_id, snap_sub),
                 season,
             )
             created = self._create_subscription(
@@ -508,7 +558,7 @@ class SubscribeAssistantManager:
             ):
                 logger.info(
                     "  ➜ [订阅助手] MP 订阅总集数低于快照，已修正：《%s》S%s %s -> %s。",
-                    tmdb_id,
+                    self._series_title(tmdb_id, sub),
                     season,
                     current_total,
                     snapshot_total,
@@ -867,6 +917,7 @@ class SubscribeAssistantManager:
             return False
 
     def _set_season_active_washing(self, tmdb_id: str, season: int, enabled: bool, reason: str = "") -> None:
+        title = self._series_title(tmdb_id)
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -882,9 +933,31 @@ class SubscribeAssistantManager:
                     )
                     conn.commit()
             action = "开启" if enabled else "清理"
-            logger.info("  ➜ [订阅助手] 已%s《%s》S%s active_washing：%s", action, tmdb_id, season, reason or "-")
+            logger.info("  ➜ [订阅助手] 已%s《%s》S%s active_washing：%s", action, title, season, reason or "-")
         except Exception as e:
-            logger.warning("  ➜ [订阅助手] 设置 active_washing 失败：《%s》S%s -> %s", tmdb_id, season, e)
+            logger.warning("  ➜ [订阅助手] 设置 active_washing 失败：《%s》S%s -> %s", title, season, e)
+
+    def _local_seasons_for_tmdb(self, tmdb_id: str) -> List[int]:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT season_number
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND season_number IS NOT NULL
+                          AND season_number > 0
+                          AND item_type IN ('Season', 'Episode')
+                        ORDER BY season_number ASC
+                        """,
+                        (str(tmdb_id),),
+                    )
+                    rows = cursor.fetchall() or []
+            return [int(row.get("season_number")) for row in rows if _safe_int(row.get("season_number")) > 0]
+        except Exception as e:
+            logger.warning("  ➜ [订阅清理] 查询《%s》本地季号失败：%s", self._series_title(tmdb_id), e)
+            return []
 
     def _target_total(self, decision: Dict[str, Any], season_info: Dict[str, Any], signal: CompletionSignal) -> Optional[int]:
         if decision["mp_state"] == "P":
@@ -955,13 +1028,53 @@ class SubscribeAssistantManager:
     def _format_subscribe_info(self, info: Dict[str, Any]) -> str:
         if not isinstance(info, dict):
             return "-"
-        title = info.get("name") or info.get("title") or "-"
         tmdb_id = info.get("tmdbid") or info.get("tmdb_id") or "-"
+        title = self._series_title(str(tmdb_id), info)
         season = info.get("season")
         state = info.get("state")
         season_text = f"S{season}" if season not in (None, "", 0) else "全局"
         state_text = f"，状态={state}" if state else ""
         return f"{title}({tmdb_id}) {season_text}{state_text}"
+
+    def _series_title(self, tmdb_id: Any, info: Dict[str, Any] = None) -> str:
+        info = info if isinstance(info, dict) else {}
+        tmdb_id = str(tmdb_id or info.get("tmdbid") or info.get("tmdb_id") or "").strip()
+        for key in ("name", "title", "keyword"):
+            title = str(info.get(key) or "").strip()
+            if title and title.lower() not in ("none", "null") and title != tmdb_id:
+                return title
+
+        if not tmdb_id:
+            return "-"
+        if tmdb_id in self._title_cache:
+            return self._title_cache[tmdb_id] or tmdb_id
+
+        title = ""
+        try:
+            title = watchlist_db.get_watchlist_item_name(tmdb_id) or ""
+        except Exception:
+            title = ""
+        if not title:
+            try:
+                with connection.get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            SELECT title
+                            FROM media_metadata
+                            WHERE tmdb_id = %s AND item_type IN ('Series', 'Movie')
+                            ORDER BY CASE WHEN item_type = 'Series' THEN 0 ELSE 1 END
+                            LIMIT 1
+                            """,
+                            (tmdb_id,),
+                        )
+                        row = cursor.fetchone() or {}
+                        title = str(row.get("title") or "").strip()
+            except Exception:
+                title = ""
+
+        self._title_cache[tmdb_id] = title or tmdb_id
+        return self._title_cache[tmdb_id]
 
     def _delete_fingerprint(self, task: Dict[str, Any]) -> str:
         raw = "|".join([
