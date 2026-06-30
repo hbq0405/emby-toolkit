@@ -7430,6 +7430,11 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             existing_names = {}      
             existing_tv_eps = {}     
             existing_movie_vids = [] 
+            batch_new_fids = {
+                str(item.get('fid') or item.get('file_id') or '').strip()
+                for item in items
+                if str(item.get('fid') or item.get('file_id') or '').strip()
+            }
             
             try:
                 from database.connection import get_db_connection
@@ -7451,6 +7456,41 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                         existing_tv_eps[(s, e)].append(e_fid)
                                 else:
                                     existing_movie_vids.append(e_fid)
+
+                        if self.media_type == 'tv':
+                            target_eps = sorted({
+                                (int(item.get('_season_num')), int(item.get('_episode_num')))
+                                for item in items
+                                if item.get('_season_num') is not None and item.get('_episode_num') is not None
+                            })
+                            if target_eps:
+                                cursor.execute(
+                                    """
+                                    SELECT file_id, original_name, renamed_name, season_number
+                                    FROM p115_organize_records
+                                    WHERE tmdb_id = %s
+                                      AND media_type = 'tv'
+                                      AND status = 'success'
+                                      AND season_number = ANY(%s)
+                                      AND file_id IS NOT NULL
+                                    """,
+                                    (str(self.tmdb_id), sorted({s for s, _ in target_eps})),
+                                )
+                                target_ep_set = set(target_eps)
+                                for row in cursor.fetchall():
+                                    fid = str(row.get('file_id') or '').strip()
+                                    if not fid or fid in batch_new_fids:
+                                        continue
+                                    name = str(row.get('renamed_name') or row.get('original_name') or '')
+                                    match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b', name, re.IGNORECASE)
+                                    if not match:
+                                        continue
+                                    key = (int(match.group(1)), int(match.group(2)))
+                                    if key not in target_ep_set:
+                                        continue
+                                    existing_tv_eps.setdefault(key, [])
+                                    if fid not in existing_tv_eps[key]:
+                                        existing_tv_eps[key].append(fid)
             except Exception as e:
                 logger.warning(f"  ➜ [冲突检测] 查询本地缓存失败: {e}")
 
