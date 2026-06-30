@@ -1665,6 +1665,24 @@ class WatchlistProcessor:
         except Exception:
             return None
 
+    def _get_mp_episode_priority_map(self, tmdb_id: str, season_number: int) -> Dict[int, int]:
+        try:
+            sub = moviepilot.get_subscription_by_tmdbid(tmdb_id, season_number, self.config) or {}
+            priority = sub.get('episode_priority')
+            if isinstance(priority, str):
+                priority = json.loads(priority or '{}')
+            if not isinstance(priority, dict):
+                return {}
+            result: Dict[int, int] = {}
+            for key, value in priority.items():
+                ep = _safe_int(key)
+                if not ep:
+                    continue
+                result[ep] = _safe_int(value)
+            return result
+        except Exception:
+            return {}
+
     def _sync_version_lock_release_group_washing(
         self,
         tmdb_id: str,
@@ -1813,8 +1831,15 @@ class WatchlistProcessor:
                     ):
                         return None
 
+                    mp_priority_map = self._get_mp_episode_priority_map(tmdb_id, season_number) if mode == 'best' else {}
+                    mp_priority_case = "NULL"
+                    if mp_priority_map:
+                        parts = []
+                        for ep, priority in sorted(mp_priority_map.items()):
+                            parts.append(f"WHEN {int(ep)} THEN {int(priority)}")
+                        mp_priority_case = f"CASE e.episode_number {' '.join(parts)} ELSE NULL END"
                     order_sql = (
-                        "e.washing_level ASC NULLS LAST, e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
+                        f"mp_episode_priority DESC NULLS LAST, e.washing_level ASC NULLS LAST, e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
                         if mode == 'best'
                         else "e.episode_number ASC NULLS LAST, e.last_updated_at ASC NULLS LAST"
                     )
@@ -1826,6 +1851,7 @@ class WatchlistProcessor:
                     cursor.execute(
                         f"""
                         SELECT e.episode_number, e.washing_level,
+                               {mp_priority_case} AS mp_episode_priority,
                                COALESCE(r.original_name, c.name) AS source_name
                         FROM media_metadata e
                         LEFT JOIN LATERAL (
@@ -2182,6 +2208,7 @@ class WatchlistProcessor:
                 continue
             episode_number = row.get('episode_number')
             washing_level = row.get('washing_level')
+            mp_episode_priority = row.get('mp_episode_priority')
             try:
                 episode_number = int(episode_number) if episode_number is not None else None
             except Exception:
@@ -2190,6 +2217,10 @@ class WatchlistProcessor:
                 washing_level = int(washing_level) if washing_level is not None else None
             except Exception:
                 washing_level = None
+            try:
+                mp_episode_priority = int(mp_episode_priority) if mp_episode_priority is not None else None
+            except Exception:
+                mp_episode_priority = None
             should_lock, wait_state = self._evaluate_version_lock_level(
                 tmdb_id,
                 season_number,
@@ -2205,12 +2236,13 @@ class WatchlistProcessor:
                     'season': season_number,
                     'episode': episode_number,
                     'washing_level': washing_level,
+                    'mp_episode_priority': mp_episode_priority,
                     'source_name': row.get('source_name'),
                     'updated_at': datetime.now(timezone.utc).isoformat(),
                     **wait_state,
                 }, series_name)
                 logger.info(
-                    f"  ➜ [版本锁定] 《{series_name}》S{season_number} 当前候选优先级 {washing_level} 未达到阈值 {wait_state.get('target_level')}，继续等待。"
+                    f"  ➜ [版本锁定] 《{series_name}》S{season_number} 当前候选优先级 {washing_level}，MP优先级 {mp_episode_priority if mp_episode_priority is not None else '-'}，未达到阈值 {wait_state.get('target_level')}，继续等待。"
                 )
                 continue
             include_regex = self._build_version_lock_include_regex(row.get('source_name'))
@@ -2233,7 +2265,7 @@ class WatchlistProcessor:
                     "  ➜ [版本锁定] 《%s》S%s 已锁定版本：优先级=%s，发布组=%s。",
                     series_name or tmdb_id,
                     season_number,
-                    washing_level,
+                    f"{washing_level}/MP{mp_episode_priority}" if mp_episode_priority is not None else washing_level,
                     release_group_info.get('label') or '-',
                 )
             self._save_version_lock_wait_state(tmdb_id, season_number, {
@@ -2242,6 +2274,7 @@ class WatchlistProcessor:
                 'season': season_number,
                 'episode': episode_number,
                 'washing_level': washing_level,
+                'mp_episode_priority': mp_episode_priority,
                 'source_name': row.get('source_name'),
                 'release_group': release_group,
                 'release_group_alias': release_group_alias,

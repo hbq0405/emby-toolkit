@@ -208,28 +208,23 @@
                         <n-gi>
                           <n-select v-model:value="priority.subtitle" multiple tag :options="subOptions" placeholder="必须包含的字幕 (如 chi)" />
                         </n-gi>
-                        <n-gi span="1">
-                          <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 8px; background: var(--n-color-modal); border-radius: 4px;">
-                            <n-switch v-model:value="priority.subtitle_effect" size="small" />
-                            <span style="font-size: 12px; color: var(--n-text-color-3);">
-                              <strong>特效字幕</strong>
-                            </span>
-                          </div>
+                        <n-gi>
+                          <n-select v-model:value="priority.release_group" multiple tag filterable :options="releaseGroupOptions" placeholder="发布组 (如 观众、天空)" />
                         </n-gi>
-                        <n-gi span="1">
-                          <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 8px; background: var(--n-color-modal); border-radius: 4px;">
+                        <n-gi span="2">
+                          <div class="switch-row">
+                            <div class="switch-item">
+                              <n-switch v-model:value="priority.subtitle_effect" size="small" />
+                              <span><strong>特效字幕</strong></span>
+                            </div>
+                            <div class="switch-item">
                             <n-switch v-model:value="priority.exempt_original_lang" size="small" />
-                            <span style="font-size: 12px; color: var(--n-text-color-3);">
-                              <strong>原产国豁免音轨/字幕规则</strong>
-                            </span>
-                          </div>
-                        </n-gi>
-                        <n-gi span="1">
-                          <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 8px; background: var(--n-color-modal); border-radius: 4px;">
+                              <span><strong>原产国豁免音轨/字幕规则</strong></span>
+                            </div>
+                            <div class="switch-item">
                             <n-switch v-model:value="priority.clean_version" size="small" />
-                            <span style="font-size: 12px; color: var(--n-text-color-3);">
-                              <strong>纯净版</strong>
-                            </span>
+                              <span><strong>纯净版</strong></span>
+                            </div>
                           </div>
                         </n-gi>
                         <n-gi>
@@ -302,6 +297,7 @@ const recalcLoading = ref(false);
 const groups = ref([]);
 const activeGroupId = ref(null);
 const categoryOptions = ref([]);
+const releaseGroupOptions = ref([]);
 const config = ref({
   conflict_mode: 'replace'
 });
@@ -350,6 +346,10 @@ const getPrioritySummary = (p) => {
   const subLabels = getLabels(p.subtitle, subOptions);
   if (subLabels.length) tags.push({ type: 'default', label: '字: ' + subLabels.join(', ') });
 
+  const releaseGroupValues = Array.isArray(p.release_group) ? p.release_group : (p.release_group ? [p.release_group] : []);
+  const releaseGroupLabels = getLabels(releaseGroupValues, releaseGroupOptions.value);
+  if (releaseGroupLabels.length) tags.push({ type: 'info', label: '组: ' + releaseGroupLabels.join(', ') });
+
   if (p.subtitle_effect) tags.push({ type: 'warning', label: '特效字幕' });
   if (p.clean_version) tags.push({ type: 'success', label: '纯净版' });
   
@@ -379,6 +379,9 @@ const open = async () => {
     const rules = resRules.data.filter(r => r.enabled && r.cid && r.cid !== '0');
     categoryOptions.value = rules.map(r => ({ label: r.dir_name || r.name, value: r.cid }));
 
+    const resReleaseGroups = await axios.get('/api/p115/release_groups');
+    releaseGroupOptions.value = resReleaseGroups.data?.data || [];
+
     // 2. 获取洗版覆盖模式配置
     const resConfig = await axios.get('/api/p115/washing_priority_config');
     config.value = {
@@ -392,7 +395,10 @@ const open = async () => {
     // 为 priorities 添加内部唯一 ID 供拖拽和编辑状态使用
     groups.value.forEach(g => {
       if (g.priorities) {
-        g.priorities.forEach(p => p._uid = Math.random().toString(36).substr(2, 9));
+        g.priorities.forEach(p => {
+          p._uid = Math.random().toString(36).substr(2, 9);
+          p.release_group = Array.isArray(p.release_group) ? p.release_group : (p.release_group ? [p.release_group] : []);
+        });
       }
     });
 
@@ -419,6 +425,7 @@ const saveGroups = async () => {
                  (p.effect && p.effect.length > 0) ||
                  (p.audio && p.audio.length > 0) ||
                  (p.subtitle && p.subtitle.length > 0) ||
+                 (p.release_group && p.release_group.length > 0) ||
                  p.subtitle_effect ||
                  p.clean_version ||
                  (p.min_size_gb !== null && p.min_size_gb !== undefined) ||
@@ -522,7 +529,7 @@ const addPriority = () => {
     exempt_original_lang: false,
     clean_version: false,
     subtitle_effect: false,
-    resolution: [], codec: [], effect: [], audio: [], subtitle: [], min_size_gb: null, max_size_gb: null
+    resolution: [], codec: [], effect: [], audio: [], subtitle: [], release_group: [], min_size_gb: null, max_size_gb: null
   });
   
   // 新增后自动展开编辑
@@ -616,5 +623,29 @@ defineExpose({ open });
 }
 .edit-view {
   padding: 8px 0;
+}
+
+.switch-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.switch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px;
+  background: var(--n-color-modal);
+  border-radius: 4px;
+  color: var(--n-text-color-3);
+  font-size: 12px;
+}
+
+.switch-item span {
+  min-width: 0;
+  line-height: 1.25;
 }
 </style>

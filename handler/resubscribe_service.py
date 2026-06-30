@@ -5,7 +5,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.connection import get_db_connection
-from tasks.helpers import normalize_lang_code
+from tasks.helpers import extract_release_groups_from_filename, normalize_lang_code, normalize_release_group_name
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +345,7 @@ class WashingService:
             "resolution": "unknown",
             "codec": "unknown",
             "effect": "sdr",
+            "release_group": "",
             "original_lang": "",
             "audio_langs": set(),
             "sub_langs": set(),
@@ -408,17 +409,32 @@ class WashingService:
             norm["codec"] = raw_codec or "unknown"
 
         # 3. 特效
-        filename = str(
+        raw_filename = str(
             (parsed.get("path") if isinstance(parsed, dict) else "")
             or (parsed.get("Path") if isinstance(parsed, dict) else "")
             or (parsed.get("filename") if isinstance(parsed, dict) else "")
             or (parsed.get("name") if isinstance(parsed, dict) else "")
             or media_source.get("Path")
             or ""
-        ).lower()
+        )
+        filename = raw_filename.lower()
 
         effect_tag = _get_standardized_effect(filename, video_stream or media_source or {})
         norm["effect"] = str(effect_tag).lower().strip()
+
+        release_groups = extract_release_groups_from_filename(raw_filename)
+        release_group = release_groups[0] if release_groups else ""
+        if not release_group and isinstance(parsed, dict):
+            for key in ("release_group", "release_group_alias", "group", "release_group_raw"):
+                value = parsed.get(key)
+                values = value if isinstance(value, list) else [value]
+                for item in values:
+                    release_group = normalize_release_group_name(str(item or ""))
+                    if release_group:
+                        break
+                if release_group:
+                    break
+        norm["release_group"] = release_group
 
         # 4. 音轨 / 字幕语言
         raw_audio_langs = set()
@@ -563,6 +579,26 @@ class WashingService:
                 if match: return True, f"命中排除条件: 特效 ({file_effect})"
             else:
                 if not match: return False, f"特效未命中 ({file_effect})"
+
+        req_release_group = priority_rule.get("release_group") or priority_rule.get("release_groups") or []
+        if req_release_group:
+            if not isinstance(req_release_group, list):
+                req_release_group = [req_release_group]
+            req_groups = {
+                normalize_release_group_name(group)
+                for group in req_release_group
+                if str(group or "").strip()
+            }
+            req_groups.discard("")
+            file_group = normalize_release_group_name(norm_info.get("release_group") or "")
+            match = bool(file_group and file_group in req_groups)
+
+            if is_exclude:
+                if match:
+                    return True, f"命中排除条件: 发布组 ({file_group})"
+            else:
+                if not match:
+                    return False, f"发布组未命中 ({file_group or '未识别'})"
 
         # 4. 音轨
         original_lang = norm_info.get("original_lang") or ""
@@ -806,7 +842,14 @@ class WashingService:
                         library_target_params.append(target_cid)
 
                     sql = f"""
-                        SELECT DISTINCT pmc.sha1, pmc.mediainfo_json
+                        SELECT DISTINCT pmc.sha1, pmc.mediainfo_json,
+                            (
+                                SELECT pfc_name.name
+                                FROM p115_filesystem_cache pfc_name
+                                WHERE UPPER(pfc_name.sha1) = UPPER(pmc.sha1)
+                                ORDER BY pfc_name.updated_at DESC NULLS LAST
+                                LIMIT 1
+                            ) AS file_name
                         FROM media_metadata mm
                         JOIN LATERAL jsonb_array_elements_text(
                             CASE
@@ -885,7 +928,7 @@ class WashingService:
                             etk_params.append(int(episode_num))
 
                     etk_sql = f"""
-                        SELECT DISTINCT pmc.sha1, pmc.mediainfo_json
+                        SELECT DISTINCT pmc.sha1, pmc.mediainfo_json, pfc.name AS file_name
                         FROM p115_mediainfo_cache pmc
                         JOIN p115_filesystem_cache pfc
                           ON UPPER(pfc.sha1) = UPPER(pmc.sha1)
@@ -910,7 +953,19 @@ class WashingService:
             raw = row.get("mediainfo_json")
             parsed = cls._safe_parse_jsonish(raw)
             if parsed:
-                raw_infos.append(parsed)
+                file_name = str(row.get("file_name") or "").strip()
+                if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                    info = dict(parsed[0])
+                    if file_name and not (info.get("filename") or info.get("name") or info.get("path") or info.get("Path")):
+                        info["filename"] = file_name
+                    raw_infos.append(info)
+                elif isinstance(parsed, dict):
+                    info = dict(parsed)
+                    if file_name and not (info.get("filename") or info.get("name") or info.get("path") or info.get("Path")):
+                        info["filename"] = file_name
+                    raw_infos.append(info)
+                else:
+                    raw_infos.append(parsed)
 
         return raw_infos
 

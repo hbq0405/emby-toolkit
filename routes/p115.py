@@ -1582,6 +1582,23 @@ def handle_washing_priority_groups():
             return jsonify({"success": False, "message": str(e)}), 500
 
 
+@p115_bp.route('/release_groups', methods=['GET'])
+@admin_required
+def handle_release_groups():
+    """返回洗版优先级可选的发布组标准名。"""
+    try:
+        from tasks.helpers import RELEASE_GROUPS
+        options = [
+            {"label": str(group), "value": str(group)}
+            for group in RELEASE_GROUPS.keys()
+            if str(group or "").strip()
+        ]
+        options.sort(key=lambda item: item["label"].lower())
+        return jsonify({"success": True, "data": options})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @p115_bp.route('/washing_priority_config', methods=['GET', 'POST'])
 @admin_required
 def handle_washing_priority_config():
