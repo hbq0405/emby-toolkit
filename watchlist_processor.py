@@ -1615,6 +1615,24 @@ class WatchlistProcessor:
     def _version_lock_release_group_from_name(self, filename: str) -> str:
         return self._version_lock_release_group_info(filename).get('group') or ''
 
+    def _version_lock_release_group_from_include(self, include_regex: str) -> str:
+        include = str(include_regex or '').lower()
+        if not include:
+            return ''
+        for group_name, aliases in helpers.RELEASE_GROUPS.items():
+            group_regex = helpers.build_exclusion_regex_from_groups([group_name])
+            if group_regex and group_regex.lower() in include:
+                return str(group_name)
+            for alias in aliases or []:
+                alias_text = str(alias or '').strip()
+                if alias_text and alias_text.lower() in include:
+                    return str(group_name)
+        return ''
+
+    def _is_known_release_group(self, group_name: str) -> bool:
+        group = helpers.normalize_release_group_name(group_name)
+        return bool(group and group in helpers.RELEASE_GROUPS)
+
     def _asset_release_groups(self, asset_details_json: Any) -> set:
         try:
             assets = asset_details_json
@@ -1634,18 +1652,53 @@ class WatchlistProcessor:
             raw_values = asset.get('release_group_raw')
             if raw_values in (None, '', [], {}):
                 raw_values = asset.get('release_group') or asset.get('group')
-            if isinstance(raw_values, list):
-                values = raw_values
-            else:
-                values = [raw_values]
+            values = []
+            pending_values = raw_values if isinstance(raw_values, list) else [raw_values]
+            while pending_values:
+                value = pending_values.pop(0)
+                if isinstance(value, list):
+                    pending_values = list(value) + pending_values
+                else:
+                    values.append(value)
             for value in values:
                 group = helpers.normalize_release_group_name(value)
-                if group:
+                if self._is_known_release_group(group):
                     groups.add(group.lower())
             path_group = self._version_lock_release_group_from_name(asset.get('path') or asset.get('filename') or asset.get('name') or '')
             if path_group:
                 groups.add(path_group.lower())
         return groups
+
+    def _season_asset_release_group_counts(self, tmdb_id: str, season_number: int) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT asset_details_json
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND season_number = %s
+                          AND item_type = 'Episode'
+                          AND in_library = TRUE
+                        """,
+                        (str(tmdb_id), int(season_number)),
+                    )
+                    rows = cursor.fetchall() or []
+            for row in rows:
+                for group in self._asset_release_groups(row.get('asset_details_json')):
+                    if group:
+                        counts[group] = counts.get(group, 0) + 1
+        except Exception:
+            return {}
+        return counts
+
+    def _infer_locked_release_group_from_season_assets(self, tmdb_id: str, season_number: int) -> str:
+        counts = self._season_asset_release_group_counts(tmdb_id, season_number)
+        if len(counts) != 1:
+            return ''
+        return next(iter(counts.keys()))
 
     def _get_mp_episode_priority_baseline(self, tmdb_id: str, season_number: int) -> Optional[int]:
         try:
@@ -2138,12 +2191,21 @@ class WatchlistProcessor:
                 and state.get('include')
                 and str(state.get('mode') or '') == mode
             ):
-                release_group = str(state.get('release_group') or '').strip()
+                release_group = helpers.normalize_release_group_name(str(state.get('release_group') or '').strip())
+                if not self._is_known_release_group(release_group):
+                    release_group = ''
                 release_group_alias = str(state.get('release_group_alias') or '').strip()
                 include_regex = str(state.get('include') or '').strip()
                 derived_info = self._version_lock_release_group_info(state.get('source_name') or '')
                 derived_group = derived_info.get('group') or ''
                 derived_alias = derived_info.get('alias') or ''
+                if not derived_group:
+                    derived_group = self._version_lock_release_group_from_include(include_regex)
+                if not derived_group and release_group_alias:
+                    alias_group = helpers.normalize_release_group_name(release_group_alias)
+                    if self._is_known_release_group(alias_group):
+                        derived_group = alias_group
+                        derived_alias = release_group_alias
                 expected_group_regex = helpers.build_exclusion_regex_from_groups([derived_group]) if derived_group else ''
                 include_needs_rebuild = False
                 if derived_group:
@@ -2180,8 +2242,18 @@ class WatchlistProcessor:
                         'release_group_alias': release_group_alias,
                         'updated_at': datetime.now(timezone.utc).isoformat(),
                     }, series_name)
+                if not release_group:
+                    inferred_group = self._infer_locked_release_group_from_season_assets(tmdb_id, season_number)
+                    if inferred_group:
+                        release_group = inferred_group
+                        release_group_alias = ''
+                        self._save_version_lock_wait_state(tmdb_id, season_number, {
+                            'release_group': release_group,
+                            'release_group_alias': release_group_alias,
+                            'updated_at': datetime.now(timezone.utc).isoformat(),
+                        }, series_name)
 
-                if consistency_check_enabled:
+                if consistency_check_enabled and release_group:
                     sync_state = self._sync_version_lock_release_group_washing(
                         tmdb_id,
                         season_number,
