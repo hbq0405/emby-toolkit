@@ -298,10 +298,7 @@ def describe_release_group_match(filename: str) -> Dict[str, str]:
 
 def format_release_group_label(group_name: str, alias: str = '') -> str:
     group = str(group_name or '').strip(' ._-')
-    alias = str(alias or '').strip(' ._-')
-    if group and alias and group.lower() != alias.lower():
-        return f"{group}({alias})"
-    return group or alias
+    return group or str(alias or '').strip(' ._-')
 
 def get_keywords_by_group_name(group_name: str) -> List[str]:
     """
