@@ -779,7 +779,7 @@ const cleanupTypeOptions = [
   { label: '同 TMDb 全部季', value: 'tmdb' }
 ];
 const cleanupSceneOptions = [
-  { label: '订阅完成', value: 'completed' },
+  { label: '洗版订阅', value: 'completed' },
   { label: '状态恢复', value: 'resumed' },
   { label: '手动删除', value: 'manual_delete' },
   { label: '超时重试', value: 'timeout' }
