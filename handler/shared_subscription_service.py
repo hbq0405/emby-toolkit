@@ -154,6 +154,55 @@ def _dict_size_candidates(data: Dict[str, Any]) -> List[Any]:
     return values
 
 
+def _quality_source_from_shared_info(data: Dict[str, Any]) -> str:
+    if not isinstance(data, dict):
+        return ''
+    try:
+        from tasks.helpers import normalize_quality_source
+    except Exception:
+        normalize_quality_source = None
+
+    def _norm(value):
+        text = str(value or '').strip()
+        if not text:
+            return ''
+        normalized = normalize_quality_source(text) if normalize_quality_source else text
+        lowered = str(normalized or '').strip().lower()
+        if not lowered or lowered in {'unknown', '未知', '4k', '2k', '1080p', '720p', '480p', '2160p'}:
+            return ''
+        if re.fullmatch(r'\d{3,4}p', lowered):
+            return ''
+        return normalized
+
+    for key in ('quality_source', 'quality', 'source_quality', 'resourceType', 'resource_type', 'quality_display'):
+        value = _norm(data.get(key))
+        if value:
+            return value
+    for nested_key in ('rapid_meta_json', 'rapid_meta', 'media_signature_json', 'summary_json', 'version_summary'):
+        nested = data.get(nested_key)
+        if isinstance(nested, str):
+            try:
+                nested = json.loads(nested)
+            except Exception:
+                nested = None
+        if isinstance(nested, dict):
+            value = _quality_source_from_shared_info(nested)
+            if value:
+                return value
+    return ''
+
+
+def _apply_quality_source_to_raw(raw: Dict[str, Any], quality_source: str) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or not quality_source:
+        return raw
+    patched = dict(raw)
+    ctx = patched.get('_etk') if isinstance(patched.get('_etk'), dict) else {}
+    ctx = dict(ctx or {})
+    ctx['quality_source'] = quality_source
+    patched['_etk'] = ctx
+    return patched
+
+
 def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
     from database.connection import get_db_connection
     from handler.p115_service import P115CacheManager
@@ -212,6 +261,14 @@ def _lookup_p115_cache_for_file(file_info: Dict[str, Any]) -> Dict[str, Any]:
 def _normalize_rapid_file_info(file_info: Dict[str, Any]) -> Dict[str, Any]:
     info = dict(file_info or {})
     meta = info.get('rapid_meta_json') if isinstance(info.get('rapid_meta_json'), dict) else {}
+    quality_source = _quality_source_from_shared_info(info)
+    if quality_source:
+        info['quality_source'] = quality_source
+        info.setdefault('quality', quality_source)
+        meta = dict(meta or {})
+        meta.setdefault('quality_source', quality_source)
+        meta.setdefault('quality', quality_source)
+        info['rapid_meta_json'] = meta
     preid = _norm_sha1(info.get('preid') or meta.get('preid') or meta.get('pre_sha1') or meta.get('pre_sha1_128k'))
     sha1 = _norm_sha1(info.get('sha1') or info.get('file_sha1') or meta.get('sha1') or meta.get('file_sha1'))
     if sha1:
@@ -1358,6 +1415,8 @@ def _cache_center_raw_as_local_mediainfo(file_info: Dict[str, Any], raw: Dict[st
     sha1 = _norm_sha1((file_info or {}).get('sha1'))
     if not sha1 or not isinstance(raw, dict) or not raw:
         return False
+    quality_source = _quality_source_from_shared_info(file_info or {})
+    raw_for_cache = _apply_quality_source_to_raw(raw, quality_source)
     file_node = {
         'fn': (file_info or {}).get('file_name') or (file_info or {}).get('name') or sha1,
         'file_name': (file_info or {}).get('file_name') or (file_info or {}).get('name') or sha1,
@@ -1367,10 +1426,10 @@ def _cache_center_raw_as_local_mediainfo(file_info: Dict[str, Any], raw: Dict[st
     }
     try:
         builder = _MediainfoBuilder()
-        emby_obj = builder._build_emby_mediainfo_from_ffprobe(raw, file_node, sha1=sha1)
+        emby_obj = builder._build_emby_mediainfo_from_ffprobe(raw_for_cache, file_node, sha1=sha1)
         if not emby_obj:
             return False
-        P115CacheManager.save_mediainfo_cache(sha1, emby_obj, raw)
+        P115CacheManager.save_mediainfo_cache(sha1, emby_obj, raw_for_cache, file_info=file_info)
         return True
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 中心 RAW 转本地 MediaInfo 失败: {file_node.get('file_name')} -> {e}")

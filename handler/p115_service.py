@@ -4039,7 +4039,10 @@ class P115CacheManager:
         if isinstance(ctx, dict):
             # 只保留跨账号、长期稳定的共享字段。
             # season_number / episode_number 是媒体身份的一部分，上传到中心后可避免消费端再次从文件名正则猜集号。
-            allowed = {"tmdb_id", "type", "original_language", "sha1", "preid", "season_number", "episode_number"}
+            allowed = {
+                "tmdb_id", "type", "original_language", "sha1", "preid",
+                "season_number", "episode_number", "quality_source",
+            }
             raw_ffprobe_json["_etk"] = {
                 k: v for k, v in ctx.items()
                 if k in allowed and v not in [None, "", [], {}]
@@ -4069,6 +4072,42 @@ class P115CacheManager:
         return P115CacheManager._norm_preid(
             ctx.get('preid') or ctx.get('pre_sha1') or ctx.get('pre_sha1_128k')
         )
+
+    @staticmethod
+    def _extract_quality_source_from_context(file_info=None, file_name=None):
+        try:
+            from tasks.helpers import extract_quality_source_from_filename, normalize_quality_source
+        except Exception:
+            return ''
+
+        item = dict(file_info or {}) if isinstance(file_info, dict) else {}
+
+        def _norm(value):
+            text = str(value or '').strip()
+            if not text:
+                return ''
+            normalized = normalize_quality_source(text)
+            lowered = str(normalized or '').strip().lower()
+            if not lowered or lowered in {'unknown', '未知', '4k', '2k', '1080p', '720p', '480p', '2160p'}:
+                return ''
+            if re.fullmatch(r'\d{3,4}p', lowered):
+                return ''
+            return normalized
+
+        for key in ('quality_source', 'quality', 'source_quality', 'resourceType', 'resource_type', 'quality_display'):
+            value = _norm(item.get(key))
+            if value:
+                return value
+        name = str(
+            file_name
+            or item.get('file_name')
+            or item.get('fn')
+            or item.get('name')
+            or item.get('original_name')
+            or ''
+        ).strip()
+        detected = extract_quality_source_from_filename(name)
+        return _norm(detected)
 
     @staticmethod
     def _ensure_preid_column():
@@ -4301,6 +4340,13 @@ class P115CacheManager:
             sha1 = str(sha1).upper()
             raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
             mediainfo_json = P115CacheManager._merge_center_intro_before_mediainfo_cache(sha1, mediainfo_json)
+            quality_source = P115CacheManager._extract_quality_source_from_context(file_info, file_name=file_name)
+            if quality_source and isinstance(raw_ffprobe_json, dict):
+                ctx = raw_ffprobe_json.get('_etk') if isinstance(raw_ffprobe_json.get('_etk'), dict) else {}
+                ctx = dict(ctx or {})
+                ctx.setdefault('quality_source', quality_source)
+                raw_ffprobe_json['_etk'] = ctx
+                raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
 
             # 整理/MP直出提取媒体信息时顺手补齐 preid，并写进 RAW _etk。
             # 后续入库/共享登记可直接复用，避免再次拉直链 Range 计算前 128KB SHA1。
@@ -4328,6 +4374,26 @@ class P115CacheManager:
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    if isinstance(raw_ffprobe_json, dict):
+                        try:
+                            cursor.execute(
+                                "SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1 = %s",
+                                (sha1,),
+                            )
+                            existing_row = cursor.fetchone()
+                            existing_raw = existing_row.get('raw_ffprobe_json') if existing_row else None
+                            if isinstance(existing_raw, str):
+                                existing_raw = json.loads(existing_raw)
+                            existing_ctx = existing_raw.get('_etk') if isinstance(existing_raw, dict) and isinstance(existing_raw.get('_etk'), dict) else {}
+                            if existing_ctx.get('quality_source'):
+                                ctx = raw_ffprobe_json.get('_etk') if isinstance(raw_ffprobe_json.get('_etk'), dict) else {}
+                                ctx = dict(ctx or {})
+                                ctx.setdefault('quality_source', existing_ctx.get('quality_source'))
+                                raw_ffprobe_json['_etk'] = ctx
+                                raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
+                        except Exception as e_merge:
+                            logger.debug(f"  ➜ [媒体信息缓存] 合并旧 RAW _etk.quality_source 失败: sha1={sha1[:12]}..., err={e_merge}")
+
                     cursor.execute("""
                         INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json, raw_ffprobe_json, created_at, hit_count)
                         VALUES (%s, %s, %s, NOW(), 0)
