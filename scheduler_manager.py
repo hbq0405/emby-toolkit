@@ -480,12 +480,12 @@ class SchedulerManager:
         try:
             self.scheduler.add_job(
                 func=scheduled_play_pool_speedtest_wrapper,
-                trigger=CronTrigger.from_crontab('0 12 * * *', timezone=str(pytz.timezone(constants.TIMEZONE))),
+                trigger=CronTrigger.from_crontab('45 12 * * *', timezone=str(pytz.timezone(constants.TIMEZONE))),
                 id=PLAY_POOL_DAILY_SPEEDTEST_JOB_ID,
                 name=task_description,
                 replace_existing=True
             )
-            logger.trace("  ➜ 已设置小号池每日测速任务，执行计划：每天 12:00。")
+            logger.trace("  ➜ 已设置小号池每日测速任务，执行计划：每天 12:45。")
         except Exception as e:
             logger.error(f"设置小号池每日测速任务失败: {e}", exc_info=True)
 
