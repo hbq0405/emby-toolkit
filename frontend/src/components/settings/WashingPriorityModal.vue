@@ -285,9 +285,14 @@
     <!-- 底部操作栏 -->
     <template #action>
       <n-space justify="space-between" style="width: 100%;">
-        <n-button v-if="config.conflict_mode === 'replace'" secondary type="warning" :loading="recalcLoading" @click="confirmRecalculate">
-          一键重算媒体库优先级
-        </n-button>
+        <n-space v-if="config.conflict_mode === 'replace'">
+          <n-button secondary type="info" :loading="syncMpLoading" @click="confirmSyncMpRules">
+            同步洗版规则到 MP
+          </n-button>
+          <n-button secondary type="warning" :loading="recalcLoading" @click="confirmRecalculate">
+            一键重算媒体库优先级
+          </n-button>
+        </n-space>
         <span v-else></span>
         <n-space>
           <n-button @click="showModal = false">取消</n-button>
@@ -317,6 +322,7 @@ const dialog = useDialog();
 const showModal = ref(false);
 const loading = ref(false);
 const recalcLoading = ref(false);
+const syncMpLoading = ref(false);
 
 const groups = ref([]);
 const activeGroupId = ref(null);
@@ -436,11 +442,9 @@ const open = async () => {
   }
 };
 
-const saveGroups = async () => {
-  try {
-    loading.value = true;
+const buildGroupsPayload = () => {
     const payload = JSON.parse(JSON.stringify(groups.value));
-    
+
     // 过滤空规则并移除内部 _uid
     payload.forEach(g => {
       if (g.priorities) {
@@ -460,9 +464,20 @@ const saveGroups = async () => {
         g.priorities.forEach(p => delete p._uid);
       }
     });
+    return payload;
+};
 
-    await axios.post('/api/p115/washing_priority_config', config.value);
-    await axios.post('/api/p115/washing_priority_groups', payload);
+const saveGroupsOnly = async () => {
+  const payload = buildGroupsPayload();
+  await axios.post('/api/p115/washing_priority_config', config.value);
+  await axios.post('/api/p115/washing_priority_groups', payload);
+};
+
+const saveGroups = async () => {
+  try {
+    loading.value = true;
+
+    await saveGroupsOnly();
     message.success('保存成功');
     if (config.value.conflict_mode !== 'replace') {
       showModal.value = false;
@@ -518,6 +533,33 @@ const confirmRecalculate = () => {
     positiveText: '开始重算',
     negativeText: '取消',
     onPositiveClick: triggerRecalculate
+  });
+};
+
+const syncMpRules = async () => {
+  syncMpLoading.value = true;
+  try {
+    await saveGroupsOnly();
+    const res = await axios.post('/api/p115/sync_mp_washing_priority_rules');
+    if (res.data?.success) {
+      message.success(res.data.message || 'MP 洗版规则同步完成');
+    } else {
+      message.error(res.data?.message || 'MP 洗版规则同步失败');
+    }
+  } catch (e) {
+    message.error(e.response?.data?.message || e.message || 'MP 洗版规则同步失败');
+  } finally {
+    syncMpLoading.value = false;
+  }
+};
+
+const confirmSyncMpRules = () => {
+  dialog.warning({
+    title: '同步洗版规则到 MP',
+    content: '洗版优先级依赖分类名称。请先在“115 分类规则管理”里同步分类策略到 MP，再同步洗版规则。继续同步？',
+    positiveText: '继续同步',
+    negativeText: '取消',
+    onPositiveClick: syncMpRules
   });
 };
 

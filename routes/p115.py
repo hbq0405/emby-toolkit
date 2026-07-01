@@ -1617,6 +1617,72 @@ def handle_washing_priority_config():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+def _load_p115_sorting_rules_for_sync():
+    raw_rules = settings_db.get_setting('p115_sorting_rules') or []
+    if isinstance(raw_rules, list):
+        return raw_rules
+    if isinstance(raw_rules, str):
+        try:
+            parsed = json.loads(raw_rules)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _load_washing_priority_groups_for_sync():
+    from database.connection import get_db_connection
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM washing_priority_groups ORDER BY sort_order ASC")
+            return cursor.fetchall()
+
+
+@p115_bp.route('/sync_mp_category_rules', methods=['POST'])
+@admin_required
+def sync_mp_category_rules():
+    """把 ETK 分类规则同步到 MoviePilot 二级分类策略。"""
+    try:
+        sorting_rules = _load_p115_sorting_rules_for_sync()
+        success, data, error = moviepilot.sync_category_rules_to_mp(sorting_rules)
+        if not success:
+            return jsonify({"success": False, "message": error or "同步 MP 分类策略失败", "data": data}), 500
+        synced = data.get("synced", 0) if isinstance(data, dict) else 0
+        skipped = len(data.get("skipped", [])) if isinstance(data, dict) else 0
+        logger.info(f"  ➜ [MP规则同步] 分类策略同步完成：同步 {synced} 项，跳过 {skipped} 项。")
+        return jsonify({"success": True, "message": f"MP 分类策略同步完成：同步 {synced} 项，跳过 {skipped} 项", "data": data})
+    except Exception as e:
+        logger.error(f"  ➜ [MP规则同步] 分类策略同步失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@p115_bp.route('/sync_mp_washing_priority_rules', methods=['POST'])
+@admin_required
+def sync_mp_washing_priority_rules():
+    """把 ETK 洗版优先级规则同步到 MoviePilot 过滤规则组。"""
+    try:
+        sorting_rules = _load_p115_sorting_rules_for_sync()
+        washing_groups = _load_washing_priority_groups_for_sync()
+        success, data, error = moviepilot.sync_washing_priority_rules_to_mp(washing_groups, sorting_rules)
+        if not success:
+            return jsonify({"success": False, "message": error or "同步 MP 洗版规则失败", "data": data}), 500
+        group_count = len(data.get("groups", [])) if isinstance(data, dict) else 0
+        custom_count = len(data.get("custom_rules", [])) if isinstance(data, dict) else 0
+        skipped = len(data.get("skipped", [])) if isinstance(data, dict) else 0
+        logger.info(
+            f"  ➜ [MP规则同步] 洗版规则同步完成：规则组 {group_count} 个，"
+            f"自定义规则 {custom_count} 个，跳过 {skipped} 个。"
+        )
+        return jsonify({
+            "success": True,
+            "message": f"MP 洗版规则同步完成：规则组 {group_count} 个，自定义规则 {custom_count} 个，跳过 {skipped} 个",
+            "data": data
+        })
+    except Exception as e:
+        logger.error(f"  ➜ [MP规则同步] 洗版规则同步失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 # ======================================================================
 # ★★★ 洗版优先级一键重算 API ★★★
 # ======================================================================

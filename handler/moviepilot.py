@@ -4,6 +4,7 @@ import requests
 import json
 import re
 import logging
+import hashlib
 from typing import Dict, Any, Optional, List, Tuple
 
 import handler.tmdb as tmdb
@@ -705,6 +706,478 @@ def _get_mp_downloader_configs(moviepilot_url: str, headers: dict) -> list:
             value = data.get("value")
 
     return value if isinstance(value, list) else []
+
+
+def _get_mp_setting(moviepilot_url: str, headers: dict, key: str, default=None):
+    data, _ = _request_json("GET", f"{moviepilot_url}/api/v1/system/setting/{key}", headers=headers, timeout=15)
+    value = _extract_setting_value(data or {})
+    return default if value is None else value
+
+
+def _set_mp_setting(moviepilot_url: str, headers: dict, key: str, value) -> Tuple[bool, str]:
+    data, response = _request_json(
+        "POST",
+        f"{moviepilot_url}/api/v1/system/setting/{key}",
+        headers=headers,
+        json=value,
+        timeout=20,
+    )
+    if response is None or response.status_code not in (200, 201, 204):
+        status = response.status_code if response is not None else "请求失败"
+        return False, f"写入 MP 设置 {key} 失败：{status}"
+    return True, ""
+
+
+def _as_list(value) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]
+
+
+def _mp_join_values(values: List[Any]) -> str:
+    clean = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if text and text not in clean:
+            clean.append(text)
+    return ",".join(clean)
+
+
+def _map_etk_languages_to_mp(values: List[Any]) -> List[str]:
+    mapping = {
+        "国语": "zh", "中文": "zh", "华语": "zh", "普通话": "zh", "chi": "zh", "zh": "zh", "cn": "cn",
+        "粤语": "cn", "yue": "cn",
+        "日语": "ja", "jpn": "ja", "ja": "ja",
+        "韩语": "ko", "kor": "ko", "ko": "ko",
+        "英语": "en", "eng": "en", "en": "en",
+    }
+    result = []
+    for value in values or []:
+        mapped = mapping.get(str(value or "").strip().lower()) or mapping.get(str(value or "").strip())
+        if mapped and mapped not in result:
+            result.append(mapped)
+    return result
+
+
+def _map_etk_countries_to_mp(values: List[Any]) -> List[str]:
+    mapping = {
+        "中国": "CN", "大陆": "CN", "内地": "CN", "cn": "CN", "china": "CN",
+        "香港": "HK", "hk": "HK",
+        "台湾": "TW", "tw": "TW",
+        "日本": "JP", "jp": "JP",
+        "韩国": "KR", "kr": "KR",
+        "美国": "US", "us": "US",
+        "英国": "GB", "uk": "GB", "gb": "GB",
+    }
+    result = []
+    for value in values or []:
+        raw = str(value or "").strip()
+        mapped = mapping.get(raw.lower()) or mapping.get(raw) or raw
+        if mapped and mapped not in result:
+            result.append(mapped)
+    return result
+
+
+def sync_category_rules_to_mp(sorting_rules: List[Dict[str, Any]], config: Dict[str, Any] = None) -> Tuple[bool, Dict[str, Any], str]:
+    """把 ETK 115 分类规则同步到 MoviePilot 二级分类策略。"""
+    moviepilot_url, headers, error = _get_mp_base_and_headers(config)
+    if error:
+        return False, {}, error
+
+    category_config = {"movie": {}, "tv": {}}
+    skipped = []
+    synced = 0
+
+    for rule in sorting_rules or []:
+        if not rule or rule.get("enabled") is False:
+            continue
+        name = str(rule.get("dir_name") or rule.get("name") or "").strip()
+        if not name:
+            skipped.append({"name": str(rule.get("name") or ""), "reason": "缺少分类名称"})
+            continue
+
+        media_type = str(rule.get("media_type") or "all").lower()
+        targets = []
+        if media_type in ("movie", "all", ""):
+            targets.append("movie")
+        if media_type in ("tv", "series", "all", ""):
+            targets.append("tv")
+        if not targets:
+            skipped.append({"name": name, "reason": f"不支持的媒体类型：{media_type}"})
+            continue
+
+        cfg = {}
+        genres = _mp_join_values(rule.get("genres") or [])
+        if genres:
+            cfg["genre_ids"] = genres
+
+        languages = _map_etk_languages_to_mp(rule.get("languages") or [])
+        if languages:
+            cfg["original_language"] = _mp_join_values(languages)
+
+        year_min = rule.get("year_min")
+        year_max = rule.get("year_max")
+        if year_min or year_max:
+            cfg["release_year"] = f"{year_min or ''}-{year_max or ''}".strip("-")
+
+        countries = _map_etk_countries_to_mp(rule.get("countries") or [])
+        for target in targets:
+            target_cfg = dict(cfg)
+            if countries:
+                target_cfg["production_countries" if target == "movie" else "origin_country"] = _mp_join_values(countries)
+            category_config[target][name] = target_cfg
+            synced += 1
+
+    data, response = _request_json(
+        "POST",
+        f"{moviepilot_url}/api/v1/media/category/config",
+        headers=headers,
+        json=category_config,
+        timeout=20,
+    )
+    if response is None or response.status_code not in (200, 201, 204):
+        status = response.status_code if response is not None else "请求失败"
+        return False, {"synced": synced, "skipped": skipped}, f"同步 MP 分类策略失败：{status}"
+
+    settings_db.save_setting("mp_category_rules_last_sync", {
+        "movie": list(category_config["movie"].keys()),
+        "tv": list(category_config["tv"].keys()),
+    })
+    return True, {"synced": synced, "skipped": skipped, "config": category_config}, ""
+
+
+_MP_RULE_ID_BY_RESOLUTION = {"4k": "4K", "2160p": "4K", "1080p": "1080P", "720p": "720P"}
+_MP_RULE_ID_BY_CODEC = {"hevc": "H265", "h265": "H265", "avc": "H264", "h264": "H264"}
+_MP_RULE_ID_BY_EFFECT = {
+    "hdr": "HDR", "hdr10": "HDR", "hdr10+": "HDR", "sdr": "SDR",
+    "dovi": "DOLBY", "dolby": "DOLBY",
+}
+_MP_RULE_ID_BY_AUDIO = {"chi": "CNVOI", "zh": "CNVOI", "cn": "CNVOI", "国语": "CNVOI", "yue": "HKVOI", "粤语": "HKVOI"}
+_MP_RULE_ID_BY_SUBTITLE = {"chi": "CNSUB", "zh": "CNSUB", "cn": "CNSUB", "yue": "CNSUB", "繁体": "CNSUB", "简体": "CNSUB"}
+
+_MP_CUSTOM_EFFECT_RULES = {
+    "dovi_p8": ("DoViP8", "杜比P8", "(?=.*(dovi|dv))(?=.*hdr)"),
+    "dovi_p7": ("DoViP7", "杜比P7", "(?=.*(dovi|dv))(?=.*(p7|profile.?7))"),
+    "dovi_p5": ("DoViP5", "杜比P5", "(?=.*(dovi|dv))(?=.*(p5|profile.?5))"),
+    "dovi_other": ("DoVi", "杜比视界", "dovi|dv|dolby.?vision"),
+}
+
+
+def _mp_safe_rule_id(prefix: str, text: str) -> str:
+    digest = hashlib.md5(str(text or "").encode("utf-8")).hexdigest()[:10].upper()
+    return f"{prefix}{digest}"
+
+
+def _mp_readable_rule_id(text: str, fallback_prefix: str = "Rule") -> str:
+    clean = re.sub(r"[^A-Za-z0-9]", "", str(text or ""))
+    if clean and clean[0].isdigit():
+        clean = f"{fallback_prefix}{clean}"
+    return clean[:48]
+
+
+_MP_RELEASE_GROUP_RULE_IDS = {
+    "观众": "ADWeb",
+    "天空": "HDSWEB",
+    "杜比": "QHstudIo",
+}
+
+
+def _preferred_release_group_rule_id(group_name: str, patterns: List[str]) -> str:
+    group_name = str(group_name or "").strip()
+    if group_name in _MP_RELEASE_GROUP_RULE_IDS:
+        return _MP_RELEASE_GROUP_RULE_IDS[group_name]
+
+    for pattern in patterns or []:
+        text = str(pattern or "").strip()
+        if not text:
+            continue
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,47}", text):
+            return text
+        match = re.match(r"^([A-Za-z0-9]+)\(\?:([^)]*)\)", text)
+        if match:
+            prefix = match.group(1)
+            choices = [x for x in match.group(2).split("|") if x]
+            preferred = next((x for x in choices if x.upper() == "WEB"), None) or (choices[-1] if choices else "")
+            readable = _mp_readable_rule_id(f"{prefix}{preferred}", "RG")
+            if readable:
+                return readable
+
+    readable = _mp_readable_rule_id(group_name, "RG")
+    return readable or _mp_safe_rule_id("RG", group_name)
+
+
+def _mp_regex_or(patterns: List[str]) -> str:
+    clean = [str(p or "").strip() for p in patterns or [] if str(p or "").strip()]
+    return "|".join(clean)
+
+
+def _mp_custom_rule(custom_rules: Dict[str, dict], rule_id: str, name: str, **fields) -> str:
+    item = {"id": rule_id, "name": name}
+    for key, value in fields.items():
+        if value not in (None, ""):
+            item[key] = str(value)
+    custom_rules[rule_id] = item
+    return name
+
+
+def _mp_or_term(rule_ids: List[str]) -> str:
+    clean = [rid for rid in rule_ids if rid]
+    if not clean:
+        return ""
+    return clean[0] if len(clean) == 1 else "(" + " | ".join(clean) + ")"
+
+
+def _find_existing_custom_rule_id(existing_custom_rules: Dict[str, dict], name: str, include: str = "") -> str:
+    name = str(name or "").strip()
+    include = str(include or "").strip()
+    for rule_id, rule in (existing_custom_rules or {}).items():
+        if not isinstance(rule, dict):
+            continue
+        if name and str(rule.get("name") or "").strip() == name:
+            return str(rule_id)
+        if include and str(rule.get("include") or "").strip() == include:
+            return str(rule_id)
+    return ""
+
+
+_MP_SIZE_RULES = {
+    "0-2048": ("filterSeries2", "剧集大小：2G"),
+    "0-5120": ("filterSeries5", "剧集大小：5G"),
+    "0-10240": ("filterSeries10", "剧集大小：10G"),
+    "0-40960": ("filterMovie30", "电影大小：40G"),
+}
+
+
+def _preferred_size_rule(size_range: str, min_size_gb, max_size_gb) -> Tuple[str, str]:
+    if size_range in _MP_SIZE_RULES:
+        return _MP_SIZE_RULES[size_range]
+    label_min = str(min_size_gb or 0).replace(".", "")
+    label_max = str(max_size_gb or "Max").replace(".", "")
+    return f"Size{label_min}G{label_max}G", f"体积：{min_size_gb or 0}G-{max_size_gb or '∞'}G"
+
+
+def _priority_rule_terms(
+    priority: Dict[str, Any],
+    custom_rules: Dict[str, dict],
+    existing_custom_rules: Dict[str, dict] = None,
+) -> List[str]:
+    terms = []
+
+    for key, mapping in (
+        ("resolution", _MP_RULE_ID_BY_RESOLUTION),
+        ("codec", _MP_RULE_ID_BY_CODEC),
+        ("audio", _MP_RULE_ID_BY_AUDIO),
+        ("subtitle", _MP_RULE_ID_BY_SUBTITLE),
+    ):
+        ids = []
+        for value in _as_list(priority.get(key)):
+            rid = mapping.get(str(value or "").strip().lower()) or mapping.get(str(value or "").strip())
+            if rid and rid not in ids:
+                ids.append(rid)
+        term = _mp_or_term(ids)
+        if term:
+            terms.append(term)
+
+    effect_ids = []
+    for value in _as_list(priority.get("effect")):
+        effect = str(value or "").strip().lower()
+        custom_effect = _MP_CUSTOM_EFFECT_RULES.get(effect)
+        if custom_effect:
+            rule_id, rule_name, include = custom_effect
+            rid = _mp_custom_rule(custom_rules, rule_id, rule_name, include=include)
+        else:
+            rid = _MP_RULE_ID_BY_EFFECT.get(effect) or _MP_RULE_ID_BY_EFFECT.get(str(value or "").strip())
+        if rid and rid not in effect_ids:
+            effect_ids.append(rid)
+    term = _mp_or_term(effect_ids)
+    if term:
+        terms.append(term)
+
+    if priority.get("subtitle_effect"):
+        terms.append("SPECSUB")
+    if priority.get("clean_version"):
+        terms.append(_mp_custom_rule(custom_rules, "pure", "纯净版", include="纯净|纯享|去头"))
+
+    release_rule_ids = []
+    try:
+        from tasks.helpers import RELEASE_GROUPS
+    except Exception:
+        RELEASE_GROUPS = {}
+    for group in _as_list(priority.get("release_group") or priority.get("release_groups")):
+        group_name = str(group or "").strip()
+        patterns = RELEASE_GROUPS.get(group_name) or ([group_name] if group_name else [])
+        include = _mp_regex_or(patterns)
+        preferred_id = _preferred_release_group_rule_id(group_name, patterns)
+        if include:
+            release_rule_ids.append(_mp_custom_rule(
+                custom_rules,
+                preferred_id,
+                group_name,
+                include=include,
+            ))
+    term = _mp_or_term(release_rule_ids)
+    if term:
+        terms.append(term)
+
+    min_size = priority.get("min_size_gb")
+    max_size = priority.get("max_size_gb")
+    if min_size not in (None, "") or max_size not in (None, ""):
+        try:
+            min_mb = int(float(min_size or 0) * 1024)
+            max_mb = int(float(max_size or 0) * 1024) if max_size not in (None, "") else ""
+            size_range = f"{min_mb}-{max_mb}" if max_mb != "" else f"{min_mb}-"
+            rule_id, rule_name = _preferred_size_rule(size_range, min_size, max_size)
+            terms.append(_mp_custom_rule(
+                custom_rules,
+                rule_id,
+                rule_name,
+                size_range=size_range,
+            ))
+        except Exception:
+            pass
+
+    return terms
+
+
+def _mp_media_type(value: str) -> str:
+    value = str(value or "").lower()
+    if value == "movie":
+        return "电影"
+    if value in ("series", "tv"):
+        return "电视剧"
+    return ""
+
+
+def _build_cid_category_map(sorting_rules: List[Dict[str, Any]]) -> Dict[str, str]:
+    mapping = {}
+    for rule in sorting_rules or []:
+        cid = str(rule.get("cid") or "").strip()
+        name = str(rule.get("dir_name") or rule.get("name") or "").strip()
+        if cid and name:
+            mapping[cid] = name
+    return mapping
+
+
+def sync_washing_priority_rules_to_mp(
+    washing_groups: List[Dict[str, Any]],
+    sorting_rules: List[Dict[str, Any]] = None,
+    config: Dict[str, Any] = None,
+) -> Tuple[bool, Dict[str, Any], str]:
+    """把 ETK 阶梯洗版优先级同步为 MoviePilot 过滤规则组。"""
+    moviepilot_url, headers, error = _get_mp_base_and_headers(config)
+    if error:
+        return False, {}, error
+
+    cid_category = _build_cid_category_map(sorting_rules or [])
+    existing_custom = _get_mp_setting(moviepilot_url, headers, "CustomFilterRules", default=[])
+    existing_custom_by_id = {
+        str(item.get("id")): item
+        for item in existing_custom
+        if isinstance(item, dict) and item.get("id")
+    }
+    custom_rules = {
+        "pure": {"id": "pure", "name": "纯净版", "include": "纯净|纯享|去头"},
+    }
+    generated_groups = []
+    skipped = []
+
+    for group in washing_groups or []:
+        priorities = group.get("priorities") or []
+        if isinstance(priorities, str):
+            try:
+                priorities = json.loads(priorities)
+            except Exception:
+                priorities = []
+        if not isinstance(priorities, list):
+            priorities = []
+
+        exclude_terms = []
+        levels = []
+        for priority in priorities:
+            if not isinstance(priority, dict):
+                continue
+            terms = _priority_rule_terms(priority, custom_rules, existing_custom_by_id)
+            if not terms:
+                continue
+            if priority.get("is_exclude"):
+                exclude_terms.extend(terms)
+            else:
+                levels.append(terms)
+
+        categories = []
+        for cid in _as_list(group.get("target_cids")):
+            category = cid_category.get(str(cid))
+            if category and category not in categories:
+                categories.append(category)
+        if not categories:
+            fallback_name = str(group.get("name") or "").strip()
+            if fallback_name:
+                categories = [""]
+            else:
+                categories = []
+
+        if not categories:
+            skipped.append({"name": str(group.get("name") or ""), "reason": "缺少规则组名称"})
+            continue
+
+        negated = [f"!{term}" for term in exclude_terms]
+        if levels:
+            rule_levels = [" & ".join([*terms, *negated]) for terms in levels]
+        elif negated:
+            rule_levels = [" & ".join(negated)]
+        else:
+            skipped.append({"name": group.get("name") or "", "reason": "没有可同步的优先级或排除条件"})
+            continue
+        rule_string = " > ".join(rule_levels)
+        media_type = _mp_media_type(group.get("media_type"))
+        fallback_name = str(group.get("name") or "").strip()
+        for category in categories:
+            group_name = category or fallback_name
+            generated_groups.append({
+                "name": group_name,
+                "rule_string": rule_string,
+                "media_type": media_type,
+                "category": category,
+            })
+
+    custom_by_id = {
+        rule_id: item
+        for rule_id, item in existing_custom_by_id.items()
+        if not (rule_id.startswith("ETKRG") or rule_id.startswith("ETKSIZE"))
+    }
+    custom_by_id.update(custom_rules)
+    ok, msg = _set_mp_setting(moviepilot_url, headers, "CustomFilterRules", list(custom_by_id.values()))
+    if not ok:
+        return False, {"skipped": skipped}, msg
+
+    existing_groups = _get_mp_setting(moviepilot_url, headers, "UserFilterRuleGroups", default=[])
+    group_by_name = {str(item.get("name")): item for item in existing_groups if isinstance(item, dict) and item.get("name")}
+    for item in generated_groups:
+        group_by_name[item["name"]] = item
+    ok, msg = _set_mp_setting(moviepilot_url, headers, "UserFilterRuleGroups", list(group_by_name.values()))
+    if not ok:
+        return False, {"skipped": skipped}, msg
+
+    generated_names = [item["name"] for item in generated_groups]
+    for setting_key in ("SearchFilterRuleGroups", "SubscribeFilterRuleGroups", "BestVersionFilterRuleGroups"):
+        current = _get_mp_setting(moviepilot_url, headers, setting_key, default=[])
+        if not isinstance(current, list):
+            current = []
+        merged = list(current)
+        for name in generated_names:
+            if name not in merged:
+                merged.append(name)
+        ok, msg = _set_mp_setting(moviepilot_url, headers, setting_key, merged)
+        if not ok:
+            return False, {"skipped": skipped}, msg
+
+    return True, {
+        "groups": generated_groups,
+        "custom_rules": list(custom_rules.values()),
+        "skipped": skipped,
+    }, ""
 
 
 def _conf_get(conf: dict, *keys, default=None):

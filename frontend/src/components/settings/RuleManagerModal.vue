@@ -91,10 +91,15 @@
         </div>
       </div>
       <div style="border-top: 1px solid var(--n-divider-color); padding-top: 16px; flex-shrink: 0;">
-        <n-button type="primary" dashed block @click="addRule">
-          <template #icon><n-icon :component="AddIcon" /></template>
-          添加新规则
-        </n-button>
+        <n-space vertical>
+          <n-button type="primary" dashed block @click="addRule">
+            <template #icon><n-icon :component="AddIcon" /></template>
+            添加新规则
+          </n-button>
+          <n-button secondary type="info" block :loading="syncingMpCategory" @click="syncMpCategoryRules">
+            同步分类策略到 MP
+          </n-button>
+        </n-space>
       </div>
     </div>
   </n-modal>
@@ -253,6 +258,7 @@ const showRuleModal = ref(false);
 const sortingRules = ref([]);
 const ruleFilterType = ref('all');
 const currentRule = ref({});
+const syncingMpCategory = ref(false);
 
 // 选项数据
 const rawMovieGenres = ref([]); 
@@ -353,6 +359,23 @@ const saveSortingRules = async () => {
   try {
     await axios.post('/api/p115/sorting_rules', sortingRules.value);
   } catch (e) { message.error('保存规则失败'); }
+};
+
+const syncMpCategoryRules = async () => {
+  syncingMpCategory.value = true;
+  try {
+    await axios.post('/api/p115/sorting_rules', sortingRules.value);
+    const res = await axios.post('/api/p115/sync_mp_category_rules');
+    if (res.data?.success) {
+      message.success(res.data.message || 'MP 分类策略同步完成');
+    } else {
+      message.error(res.data?.message || 'MP 分类策略同步失败');
+    }
+  } catch (e) {
+    message.error(e.response?.data?.message || e.message || 'MP 分类策略同步失败');
+  } finally {
+    syncingMpCategory.value = false;
+  }
 };
 
 const addRule = () => {
