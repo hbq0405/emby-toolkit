@@ -786,6 +786,18 @@ def sync_category_rules_to_mp(sorting_rules: List[Dict[str, Any]], config: Dict[
     if error:
         return False, {}, error
 
+    empty_config = {"movie": {}, "tv": {}}
+    data, response = _request_json(
+        "POST",
+        f"{moviepilot_url}/api/v1/media/category/config",
+        headers=headers,
+        json=empty_config,
+        timeout=20,
+    )
+    if response is None or response.status_code not in (200, 201, 204):
+        status = response.status_code if response is not None else "请求失败"
+        return False, {}, f"清空 MP 分类策略失败：{status}"
+
     category_config = {"movie": {}, "tv": {}}
     skipped = []
     synced = 0
@@ -1152,24 +1164,13 @@ def sync_washing_priority_rules_to_mp(
     if not ok:
         return False, {"skipped": skipped}, msg
 
-    existing_groups = _get_mp_setting(moviepilot_url, headers, "UserFilterRuleGroups", default=[])
-    group_by_name = {str(item.get("name")): item for item in existing_groups if isinstance(item, dict) and item.get("name")}
-    for item in generated_groups:
-        group_by_name[item["name"]] = item
-    ok, msg = _set_mp_setting(moviepilot_url, headers, "UserFilterRuleGroups", list(group_by_name.values()))
+    ok, msg = _set_mp_setting(moviepilot_url, headers, "UserFilterRuleGroups", generated_groups)
     if not ok:
         return False, {"skipped": skipped}, msg
 
     generated_names = [item["name"] for item in generated_groups]
     for setting_key in ("SearchFilterRuleGroups", "SubscribeFilterRuleGroups", "BestVersionFilterRuleGroups"):
-        current = _get_mp_setting(moviepilot_url, headers, setting_key, default=[])
-        if not isinstance(current, list):
-            current = []
-        merged = list(current)
-        for name in generated_names:
-            if name not in merged:
-                merged.append(name)
-        ok, msg = _set_mp_setting(moviepilot_url, headers, setting_key, merged)
+        ok, msg = _set_mp_setting(moviepilot_url, headers, setting_key, generated_names)
         if not ok:
             return False, {"skipped": skipped}, msg
 
