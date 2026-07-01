@@ -31,6 +31,7 @@ def _install_test_stubs():
     settings_db_mod.get_setting = lambda key: {}
     settings_db_mod.save_setting = lambda key, value: None
     settings_db_mod.get_washing_conflict_mode = lambda default='replace': default
+    settings_db_mod.get_washing_skip_scope = lambda default='directory': default
     settings_db_mod.get_washing_priority_config = lambda default_conflict_mode='replace': {'conflict_mode': default_conflict_mode}
     settings_db_mod.save_washing_priority_config = lambda value: value
     sys.modules.setdefault("database.settings_db", settings_db_mod)

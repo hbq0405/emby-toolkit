@@ -76,6 +76,31 @@ def _normalize_washing_conflict_mode(value: Any, default: str = 'replace') -> st
     mode = aliases.get(mode, mode)
     return mode if mode in {'replace', 'keep_both', 'skip'} else default
 
+def _normalize_washing_skip_scope(value: Any, default: str = 'directory') -> str:
+    scope = str(value or default or '').strip().lower()
+    aliases = {
+        'dir': 'directory',
+        'same_dir': 'directory',
+        'same-directory': 'directory',
+        'same_directory': 'directory',
+        'folder': 'directory',
+        'current': 'directory',
+        '同目录': 'directory',
+        '当前目录': 'directory',
+        'all': 'library',
+        'global': 'library',
+        'full': 'library',
+        'full_library': 'library',
+        'full-library': 'library',
+        'all_library': 'library',
+        'all-library': 'library',
+        'library': 'library',
+        '全库': 'library',
+        '媒体库': 'library',
+    }
+    scope = aliases.get(scope, scope)
+    return scope if scope in {'directory', 'library'} else default
+
 def get_washing_priority_config(default_conflict_mode: str = 'replace') -> Dict[str, Any]:
     """读取洗版相关配置，并从旧重命名配置无感迁移覆盖模式。"""
     default_mode = _normalize_washing_conflict_mode(default_conflict_mode, 'replace')
@@ -107,18 +132,23 @@ def get_washing_priority_config(default_conflict_mode: str = 'replace') -> Dict[
                 logger.warning("  ➜ 迁移洗版覆盖模式配置失败，将仅使用内存值。", exc_info=True)
 
     config['conflict_mode'] = _normalize_washing_conflict_mode(config.get('conflict_mode'), default_mode)
+    config['skip_scope'] = _normalize_washing_skip_scope(config.get('skip_scope'), 'directory')
     return config
 
 def save_washing_priority_config(value: Dict[str, Any]) -> Dict[str, Any]:
     config = value if isinstance(value, dict) else {}
     clean_config = {
-        'conflict_mode': _normalize_washing_conflict_mode(config.get('conflict_mode'), 'replace')
+        'conflict_mode': _normalize_washing_conflict_mode(config.get('conflict_mode'), 'replace'),
+        'skip_scope': _normalize_washing_skip_scope(config.get('skip_scope'), 'directory')
     }
     save_setting('p115_washing_priority_config', clean_config)
     return clean_config
 
 def get_washing_conflict_mode(default: str = 'replace') -> str:
     return get_washing_priority_config(default_conflict_mode=default).get('conflict_mode') or default
+
+def get_washing_skip_scope(default: str = 'directory') -> str:
+    return get_washing_priority_config().get('skip_scope') or default
 
 def delete_setting(setting_key: str) -> bool:
     """从 app_settings 表中删除一个设置项。"""

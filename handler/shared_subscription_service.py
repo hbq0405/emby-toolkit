@@ -1580,6 +1580,16 @@ def _current_organize_conflict_mode(default: str = 'skip') -> str:
         return str(default or 'skip').strip().lower() or 'skip'
     return mode
 
+def _current_organize_skip_scope(default: str = 'directory') -> str:
+    """读取 skip 模式的跳过范围，并统一成 directory/library。"""
+    try:
+        scope = settings_db.get_washing_skip_scope(default=default)
+    except Exception:
+        scope = str(default or '').strip().lower()
+    if scope not in ('directory', 'library'):
+        return str(default or 'directory').strip().lower() or 'directory'
+    return scope
+
 def _preflight_context(source_kind: str, source_id: str, payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
     first = next((f for f in (files or []) if isinstance(f, dict)), {}) or {}
     return {
@@ -2770,12 +2780,14 @@ def _filter_files_before_transfer(
 
     - keep_both：只排除本机源；不做缺集过滤、不做已入库过滤，命中订阅就秒传；
     - replace：电影/单集交给洗版预检比较；完结季保留整包进入洗版，不能被缺集列表裁成单集；
-    - skip：只要本地已存在同电影/同集，就拒绝该项入库。
+    - skip + library：只要本地已存在同电影/同集，就拒绝该项入库；
+    - skip + directory：不做全库已入库过滤，交给整理阶段按目标目录判断。
     """
     payload = payload if isinstance(payload, dict) else {}
     files = [dict(f or {}) for f in (files or []) if isinstance(f, dict)]
     missing_set = set(_normalize_episode_numbers(requested_missing_episode_numbers))
     conflict_mode = _current_organize_conflict_mode(default='skip')
+    skip_scope = _current_organize_skip_scope(default='directory')
     normalized_source_kind = _normalize_source_kind(source_kind)
     is_completed_pack_source = normalized_source_kind == 'completed_season'
 
@@ -2802,6 +2814,7 @@ def _filter_files_before_transfer(
             'skipped_count': 0,
             'requested_missing_episode_numbers': sorted(missing_set),
             'conflict_mode': conflict_mode,
+            'skip_scope': skip_scope,
             'virtual_auto_promote': True,
             'reason': 'virtual_auto_promote',
             'message': '虚拟入库转正：已跳过缺集/已入库匹配过滤，交给洗版预检处理。',
@@ -2844,6 +2857,7 @@ def _filter_files_before_transfer(
             'skipped_count': total_skipped,
             'requested_missing_episode_numbers': sorted(missing_set),
             'conflict_mode': conflict_mode,
+            'skip_scope': skip_scope,
             'skipped': {k: v[:20] for k, v in skipped.items() if v},
             'reason': reason,
             'message': message,
@@ -2862,7 +2876,7 @@ def _filter_files_before_transfer(
 
         if is_movie:
             movie_tmdb = f.get('tmdb_id') or payload.get('tmdb_id') or context.get('tmdb_id')
-            if conflict_mode == 'skip' and _local_movie_in_library(movie_tmdb):
+            if conflict_mode == 'skip' and skip_scope == 'library' and _local_movie_in_library(movie_tmdb):
                 skipped['already_in_library'].append(file_name)
                 continue
             # replace 模式不在这里拦截已入库电影，交给洗版预检决定 ACCEPT/REPLACE/SKIP/REJECT。
@@ -2882,7 +2896,7 @@ def _filter_files_before_transfer(
                     skipped['unknown_identity'].append(file_name)
                     continue
 
-            if conflict_mode == 'skip':
+            if conflict_mode == 'skip' and skip_scope == 'library':
                 if e_num is None:
                     # skip 模式必须能确定集身份；否则无法证明“同集不存在”，宁可拒绝。
                     skipped['unknown_identity'].append(file_name)
@@ -2901,7 +2915,7 @@ def _filter_files_before_transfer(
     if total_skipped:
         logger.info(
             f"  ➜ [共享资源] 秒传前匹配过滤：source={source_label}, conflict_mode={conflict_mode}, "
-            f"输入 {len(files)}，保留 {len(kept)}，跳过 {total_skipped} "
+            f"skip_scope={skip_scope}, 输入 {len(files)}，保留 {len(kept)}，跳过 {total_skipped} "
             f"(非缺失集 {len(skipped['not_requested_episode'])}, 已入库 {len(skipped['already_in_library'])}, "
             f"本机源 {len(skipped['self_source'])}, 身份不明 {len(skipped['unknown_identity'])})"
         )
@@ -2923,7 +2937,7 @@ def _filter_files_before_transfer(
         elif skipped['already_in_library'] and len(skipped['already_in_library']) == len(files):
             reason = 'all_already_in_library'
             if conflict_mode == 'skip':
-                message = '本地已存在同电影/同集，conflict_mode=skip，已拒绝重复入库。'
+                message = '本地已存在同电影/同集，conflict_mode=skip 且 skip_scope=library，已拒绝重复入库。'
             else:
                 message = '中心返回的集本机均已入库，已跳过重复秒传。'
         else:
@@ -2933,7 +2947,10 @@ def _filter_files_before_transfer(
         if conflict_mode == 'replace':
             message = 'replace 模式：已保留候选进入洗版预检。'
         elif conflict_mode == 'skip':
-            message = 'skip 模式：已拒绝本地存在的同电影/同集，保留可入库候选。'
+            if skip_scope == 'library':
+                message = 'skip 模式：已拒绝本地存在的同电影/同集，保留可入库候选。'
+            else:
+                message = 'skip 模式：已跳过全库过滤，后续按目标目录判断是否已有同电影/同集。'
         else:
             message = '秒传前匹配过滤完成'
 
@@ -2946,6 +2963,7 @@ def _filter_files_before_transfer(
         'skipped_count': total_skipped,
         'requested_missing_episode_numbers': sorted(missing_set),
         'conflict_mode': conflict_mode,
+        'skip_scope': skip_scope,
         'skipped': {k: v[:20] for k, v in skipped.items() if v},
         'reason': reason,
         'message': message,

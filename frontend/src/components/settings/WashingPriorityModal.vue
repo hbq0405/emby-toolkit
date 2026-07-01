@@ -31,7 +31,31 @@
                     <template #trigger>
                       <button type="button" class="mode-help" @click.stop>?</button>
                     </template>
-                    只要目标目录已有该集/该电影，新文件直接丢入未识别，不使用洗版优先级规则。
+                    按下方跳过范围判断是否已有该集/该电影；命中后新文件直接丢入未识别，不使用洗版优先级规则。
+                  </n-tooltip>
+                </n-radio>
+              </div>
+            </n-radio-group>
+          </n-form-item>
+          <n-form-item v-if="config.conflict_mode === 'skip'" label="跳过范围">
+            <n-radio-group v-model:value="config.skip_scope">
+              <div class="mode-options compact">
+                <n-radio value="directory" class="mode-radio">
+                  <span class="mode-title">同目录</span>
+                  <n-tooltip trigger="hover" placement="top" style="max-width: 320px;">
+                    <template #trigger>
+                      <button type="button" class="mode-help" @click.stop>?</button>
+                    </template>
+                    仅目标目录中已有同集/同电影时跳过，当前默认逻辑。
+                  </n-tooltip>
+                </n-radio>
+                <n-radio value="library" class="mode-radio">
+                  <span class="mode-title">全库</span>
+                  <n-tooltip trigger="hover" placement="top" style="max-width: 320px;">
+                    <template #trigger>
+                      <button type="button" class="mode-help" @click.stop>?</button>
+                    </template>
+                    只要媒体库已存在同集/同电影就跳过，不限定当前目标目录。
                   </n-tooltip>
                 </n-radio>
               </div>
@@ -299,7 +323,8 @@ const activeGroupId = ref(null);
 const categoryOptions = ref([]);
 const releaseGroupOptions = ref([]);
 const config = ref({
-  conflict_mode: 'replace'
+  conflict_mode: 'replace',
+  skip_scope: 'directory'
 });
 
 // 当前正在编辑的优先级卡片 UID
@@ -385,7 +410,8 @@ const open = async () => {
     // 2. 获取洗版覆盖模式配置
     const resConfig = await axios.get('/api/p115/washing_priority_config');
     config.value = {
-      conflict_mode: resConfig.data?.data?.conflict_mode || 'replace'
+      conflict_mode: resConfig.data?.data?.conflict_mode || 'replace',
+      skip_scope: resConfig.data?.data?.skip_scope || 'directory'
     };
 
     // 3. 获取洗版优先级组

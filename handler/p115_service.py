@@ -7521,6 +7521,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         # ★★★ 执行批量移动与后续 STRM 生成 ★★★
         # =================================================================
         conflict_mode = settings_db.get_washing_conflict_mode(default='replace') # 获取覆盖模式，默认洗版替换
+        skip_scope = settings_db.get_washing_skip_scope(default='directory') if conflict_mode == 'skip' else 'directory'
         
         # ★★★ 洗版特权检测 (细化到单集) ★★★
         active_washing_eps = set()
@@ -7737,6 +7738,43 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     logger.debug(f"  ➜ [洗版快照] 计算失败: {_new_name} -> {e}")
                     return {}
 
+            def _library_has_same_media(_s_num, _e_num):
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            if self.media_type == 'movie':
+                                cursor.execute(
+                                    """
+                                    SELECT 1
+                                    FROM media_metadata
+                                    WHERE item_type = 'Movie'
+                                      AND tmdb_id = %s
+                                      AND COALESCE(in_library, FALSE) = TRUE
+                                    LIMIT 1
+                                    """,
+                                    (str(self.tmdb_id),),
+                                )
+                            else:
+                                if _s_num is None or _e_num is None:
+                                    return False
+                                cursor.execute(
+                                    """
+                                    SELECT 1
+                                    FROM media_metadata
+                                    WHERE item_type = 'Episode'
+                                      AND parent_series_tmdb_id = %s
+                                      AND season_number = %s
+                                      AND episode_number = %s
+                                      AND COALESCE(in_library, FALSE) = TRUE
+                                    LIMIT 1
+                                    """,
+                                    (str(self.tmdb_id), int(_s_num), int(_e_num)),
+                                )
+                            return cursor.fetchone() is not None
+                except Exception as e:
+                    logger.debug(f"  ➜ [覆盖模式:跳过] 全库存在性查询失败: {new_name if 'new_name' in locals() else '-'} -> {e}")
+                    return False
+
             def _register_batch_washing_candidate(_item, _new_name, _action, _reason, _file_size):
                 key = _batch_washing_identity_key(_item, True)
                 if key is None:
@@ -7911,6 +7949,10 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
                             valid_items.append(item)
                     else:
+                        if conflict_mode == 'skip' and skip_scope == 'library' and is_vid and _library_has_same_media(s_num, e_num):
+                            logger.info(f"  ➜ [覆盖模式:跳过/全库] 媒体库已存在同集/同电影，放弃处理: {new_name}")
+                            unrecognized_fids.append(item.get('fid') or item.get('file_id'))
+                            continue
                         if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
                         valid_items.append(item)
             
