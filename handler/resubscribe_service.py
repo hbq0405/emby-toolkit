@@ -338,11 +338,15 @@ class WashingService:
             _get_detected_languages_from_streams,
             _get_resolution_tier,
             _get_standardized_effect,
+            extract_quality_source_from_filename,
+            normalize_quality_source,
+            quality_source_tokens,
             normalize_lang_code # ★ 确保引入
         )
 
         norm = {
             "resolution": "unknown",
+            "source": "unknown",
             "codec": "unknown",
             "effect": "sdr",
             "release_group": "",
@@ -418,6 +422,20 @@ class WashingService:
             or ""
         )
         filename = raw_filename.lower()
+
+        raw_source = ""
+        if isinstance(parsed, dict):
+            raw_source = (
+                parsed.get("source")
+                or parsed.get("quality")
+                or parsed.get("quality_display")
+                or parsed.get("resourceType")
+                or parsed.get("resource_type")
+                or ""
+            )
+        norm["source"] = normalize_quality_source(raw_source) if raw_source else extract_quality_source_from_filename(raw_filename)
+        if not norm["source"]:
+            norm["source"] = "unknown"
 
         effect_tag = _get_standardized_effect(filename, video_stream or media_source or {})
         norm["effect"] = str(effect_tag).lower().strip()
@@ -579,6 +597,24 @@ class WashingService:
                 if match: return True, f"命中排除条件: 特效 ({file_effect})"
             else:
                 if not match: return False, f"特效未命中 ({file_effect})"
+
+        req_source = priority_rule.get("source") or priority_rule.get("quality") or []
+        if req_source:
+            if not isinstance(req_source, list):
+                req_source = [req_source]
+            req_source_norm = set()
+            for source in req_source:
+                req_source_norm.update(quality_source_tokens(source))
+            req_source_norm.discard("")
+            file_source_tokens = quality_source_tokens(norm_info.get("source") or "")
+            match = bool(file_source_tokens and req_source_norm and file_source_tokens & req_source_norm)
+
+            if is_exclude:
+                if match:
+                    return True, f"命中排除条件: 来源 ({norm_info.get('source')})"
+            else:
+                if not match:
+                    return False, f"来源未命中 ({norm_info.get('source') or 'unknown'})"
 
         req_release_group = priority_rule.get("release_group") or priority_rule.get("release_groups") or []
         if req_release_group:

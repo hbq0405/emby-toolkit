@@ -16,6 +16,99 @@ import constants
 
 logger = logging.getLogger(__name__)
 
+STANDARD_SOURCE_OPTIONS = [
+    ("蓝光原盘", "BluRay原盘"),
+    ("Remux", "Remux"),
+    ("UHD BluRay", "UHD BluRay"),
+    ("BluRay", "BluRay"),
+    ("UHD", "UHD"),
+    ("WEB-DL", "WEB-DL"),
+    ("HDTV", "HDTV"),
+]
+
+
+def normalize_quality_source(value: Any) -> str:
+    """标准化 ETK/MP 共用的质量来源标签。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lower = text.lower().replace("_", "-").replace(" ", "-")
+    if lower in {"bluray原盘", "blu-ray原盘", "blu-ray-原盘", "bluray-原盘", "bdmv", "bdiso", "iso"}:
+        return "BluRay原盘"
+    if lower in {"remux", "bdremux", "blu-ray-remux", "bluray-remux"}:
+        return "Remux"
+    if lower in {"uhd-bluray", "uhd-blu-ray", "ultra-hd-bluray", "ultra-hd-blu-ray"}:
+        return "UHD BluRay"
+    if lower in {"bluray", "blu-ray", "bdrip", "brrip", "bd"}:
+        return "BluRay"
+    if lower in {"uhd", "ultra-hd"}:
+        return "UHD"
+    if lower in {"web-dl", "webdl", "web", "web-dlrip"}:
+        return "WEB-DL"
+    if lower in {"webrip", "web-rip"}:
+        return "WEBRip"
+    if lower == "hdtv":
+        return "HDTV"
+    if lower in {"dvd", "dvdrip", "dvd-rip"}:
+        return "DVDRip"
+    return text
+
+
+def quality_source_tokens(value: Any) -> Set[str]:
+    """返回来源标签的匹配 token，组合来源可同时命中各组成项。"""
+    normalized = normalize_quality_source(value)
+    if not normalized:
+        return set()
+    lower = normalized.lower()
+    tokens = {lower}
+    if lower == "uhd bluray":
+        tokens.update({"uhd", "bluray"})
+    if lower == "bluray原盘":
+        tokens.update({"bluray", "原盘"})
+    if lower == "remux":
+        tokens.add("remux")
+    return tokens
+
+
+def extract_quality_source_from_filename(filename: Any) -> str:
+    """按 MP 质量识别口径从文件名识别来源，供资产、重命名、洗版规则共用。"""
+    name = str(filename or "")
+    if not name.strip():
+        return "未知"
+    upper = name.upper()
+    lower = name.lower()
+    ext = os.path.splitext(name)[1].lower()
+
+    if (
+        ext == ".iso"
+        or re.search(r"(?<![A-Z0-9])BDMV(?![A-Z0-9])", upper)
+        or re.search(r"(?<![A-Z0-9])BDISO(?![A-Z0-9])", upper)
+        or "蓝光原盘" in name
+        or "原盘" in name
+    ):
+        return "BluRay原盘"
+    if re.search(r"(?<![A-Z0-9])REMUX(?![A-Z0-9])", upper):
+        return "Remux"
+    has_uhd = bool(re.search(r"(?<![A-Z0-9])UHD(?![A-Z0-9])", upper))
+    has_bluray = bool(re.search(r"(?<![A-Z0-9])BLU[-_. ]?RAY(?![A-Z0-9])", upper))
+    if has_uhd and has_bluray:
+        return "UHD BluRay"
+    if has_uhd:
+        return "UHD"
+    if has_bluray:
+        return "BluRay"
+    if re.search(r"(?<![A-Z0-9])(?:BDRIP|BRRIP)(?![A-Z0-9])", upper):
+        return "BluRay"
+    if re.search(r"(?<![A-Z0-9])WEB[-_. ]?DL(?![A-Z0-9])", upper) or "webdl" in lower:
+        return "WEB-DL"
+    if re.search(r"(?<![A-Z0-9])WEB[-_. ]?RIP(?![A-Z0-9])", upper) or "webrip" in lower:
+        return "WEBRip"
+    if re.search(r"(?<![A-Z0-9])HDTV(?![A-Z0-9])", upper):
+        return "HDTV"
+    if re.search(r"(?<![A-Z0-9])DVD[-_. ]?RIP(?![A-Z0-9])", upper):
+        return "DVDRip"
+    return "未知"
+
 def _normalize_language_aliases(raw_aliases) -> List[str]:
     """统一清洗语言别名，兼容列表、逗号字符串和异常数据。"""
     if raw_aliases is None:
@@ -400,23 +493,7 @@ def _extract_quality_tag_from_filename(filename_lower: str) -> str:
     """
     从文件名中提取质量标签，如果找不到，则返回 '未知'。
     """
-    QUALITY_HIERARCHY = [
-        ('remux', 'Remux'),
-        ('bluray', 'BluRay'),
-        ('blu-ray', 'BluRay'),
-        ('web-dl', 'WEB-DL'),
-        ('webdl', 'WEB-DL'),
-        ('webrip', 'WEBrip'),
-        ('hdtv', 'HDTV'),
-        ('dvdrip', 'DVDrip')
-    ]
-    
-    for tag, display in QUALITY_HIERARCHY:
-        # 使用更宽松的匹配，避免因为点、空格等问题匹配失败
-        if tag in filename_lower:
-            return display
-            
-    return "未知"
+    return extract_quality_source_from_filename(filename_lower)
 
 def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
     """
@@ -946,6 +1023,9 @@ def get_standard_asset_option_values() -> Dict[str, List[Dict[str, str]]]:
             ('DoVi P8', 'DoVi_P8'), ('DoVi P7', 'DoVi_P7'), ('DoVi P5', 'DoVi_P5'),
             ('DoVi', 'DoVi'), ('HDR10+', 'HDR10+'), ('HDR', 'HDR'), ('SDR', 'SDR'),
         ]),
+        # 对应 asset_details_json.quality_display，也作为重命名 {{source}} 的标准来源。
+        'source': _unique_options(STANDARD_SOURCE_OPTIONS),
+        'quality': _unique_options(STANDARD_SOURCE_OPTIONS),
         # 对应 asset_details_json.frame_rate。匹配时按不低于该帧率处理。
         'frame_rate': _unique_options([
             ('≥ 60 fps', '60'), ('≥ 50 fps', '50'), ('≥ 30 fps', '30'), ('24 fps', '24'),

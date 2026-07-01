@@ -6,6 +6,7 @@ import re
 
 from database import settings_db
 from tasks import helpers
+from tasks.helpers import extract_quality_source_from_filename
 import utils
 
 logger = logging.getLogger(__name__)
@@ -39,14 +40,9 @@ class P115MediaAnalyzerMixin:
         name_upper = filename.upper()
 
         # 1. 来源 (Source)
-        if re.search(r'REMUX', name_upper): info_dict['source'] = 'Remux'
-        elif re.search(r'BLU-?RAY|BD', name_upper): info_dict['source'] = 'BluRay'
-        elif re.search(r'WEB-?DL', name_upper): info_dict['source'] = 'WEB-DL'
-        elif re.search(r'WEB-?RIP', name_upper): info_dict['source'] = 'WEBRip'
-        elif re.search(r'HDTV', name_upper): info_dict['source'] = 'HDTV'
-        elif re.search(r'DVD', name_upper): info_dict['source'] = 'DVD'
-        if 'UHD' in name_upper:
-            info_dict['source'] = 'UHD BluRay' if info_dict['source'] == 'BluRay' else 'UHD'
+        quality_source = extract_quality_source_from_filename(filename)
+        if quality_source != '未知':
+            info_dict['source'] = quality_source
 
         # 2. 特效 (Effect)
         is_dv = re.search(r'(?:^|[\.\s\-\_])(DV|DOVI|DOLBY\s?VISION)(?:$|[\.\s\-\_])', name_upper)
@@ -119,7 +115,6 @@ class P115MediaAnalyzerMixin:
 
         # 6. 发布组 (Group)
         try:
-            from tasks import helpers
             for group_name, patterns in helpers.RELEASE_GROUPS.items():
                 for pattern in patterns:
                     match = re.search(pattern, filename, re.IGNORECASE)
@@ -2464,9 +2459,22 @@ class P115MediaAnalyzerMixin:
             if streams:
                 # 默认全部置空。如果下方没有解析出对应属性，就会用空值彻底洗掉文件名瞎猜的错误标签
                 info = {
-                    'resolution': '', 'codec': '', 'effect': '', 
+                    'source': '', 'resolution': '', 'codec': '', 'effect': '',
                     'fps': '', 'audio': '', 'audio_count': ''
                 }
+                source_name = (
+                    source_info.get("Path")
+                    or source_info.get("Name")
+                    or source_info.get("Filename")
+                    or (file_node or {}).get("name")
+                    or (file_node or {}).get("file_name")
+                    or ""
+                )
+                quality_source = extract_quality_source_from_filename(source_name)
+                if quality_source != '未知':
+                    info['source'] = quality_source
+                elif isinstance(guessed_info, dict) and guessed_info.get('source'):
+                    info['source'] = guessed_info.get('source')
 
                 video_stream = next((s for s in streams if s.get("Type") == "Video"), None)
                 audio_streams = [s for s in streams if s.get("Type") == "Audio"]
