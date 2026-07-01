@@ -5,7 +5,12 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.connection import get_db_connection
-from tasks.helpers import extract_release_groups_from_filename, normalize_lang_code, normalize_release_group_name
+from tasks.helpers import (
+    extract_release_groups_from_filename,
+    normalize_lang_code,
+    normalize_release_group_name,
+    quality_source_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
