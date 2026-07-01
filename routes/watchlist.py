@@ -3,12 +3,88 @@
 from flask import Blueprint, request, jsonify
 import logging
 from datetime import datetime, date
+import config_manager
+import constants
 # 导入需要的模块
 
 import task_manager
 import extensions
+from handler import emby, moviepilot
 from extensions import admin_required, task_lock_required
 from database import watchlist_db, settings_db
+
+
+def _normalize_emby_ids(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _get_watchlist_delete_context(tmdb_id):
+    with watchlist_db.get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT title, emby_item_ids_json
+                FROM media_metadata
+                WHERE tmdb_id = %s AND item_type = 'Series'
+                LIMIT 1
+                """,
+                (str(tmdb_id),),
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "tmdb_id": str(tmdb_id),
+        "title": row.get("title") or str(tmdb_id),
+        "emby_ids": _normalize_emby_ids(row.get("emby_item_ids_json")),
+    }
+
+
+def _delete_watchlist_external_resources(tmdb_id):
+    context = _get_watchlist_delete_context(tmdb_id)
+    if not context:
+        return {"success": False, "status": 404, "error": "未在追剧列表中找到该项目"}
+
+    mp_config = settings_db.get_setting("mp_config") or {}
+    mp_deleted = 0
+    if mp_config.get("moviepilot_url"):
+        for sub in moviepilot.find_subscriptions(str(tmdb_id), config=config_manager.APP_CONFIG):
+            sub_id = sub.get("id")
+            if not sub_id:
+                continue
+            if not moviepilot.delete_subscription_by_id(int(sub_id), config_manager.APP_CONFIG):
+                return {"success": False, "status": 500, "error": "MoviePilot 取消订阅失败", "item": context}
+            mp_deleted += 1
+
+    app_config = config_manager.APP_CONFIG or {}
+    emby_url = app_config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+    emby_api_key = app_config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+    emby_user_id = app_config.get(constants.CONFIG_OPTION_EMBY_USER_ID)
+    failed_emby_ids = []
+    for emby_id in context["emby_ids"]:
+        if not emby.delete_item(emby_id, emby_url, emby_api_key, emby_user_id):
+            failed_emby_ids.append(emby_id)
+
+    if failed_emby_ids:
+        return {
+            "success": False,
+            "status": 500,
+            "error": "Emby 媒体项删除失败",
+            "failed_emby_ids": failed_emby_ids,
+            "item": context,
+        }
+
+    return {
+        "success": True,
+        "item": context,
+        "mp_cancelled": bool(mp_config.get("moviepilot_url")),
+        "mp_deleted": mp_deleted,
+        "emby_deleted": len(context["emby_ids"]),
+    }
 # 1. 创建追剧列表蓝图
 watchlist_bp = Blueprint('watchlist', __name__, url_prefix='/api/watchlist')
 
@@ -101,11 +177,21 @@ def api_update_watchlist_status():
 def api_remove_from_watchlist(item_id):
     logger.info(f"  ➜ API (Blueprint): 收到请求，将项目 {item_id} 从追剧列表移除。")
     try:
+        cleanup = _delete_watchlist_external_resources(item_id)
+        if not cleanup.get("success"):
+            return jsonify({
+                "error": cleanup.get("error") or "删除外部资源失败",
+                "details": cleanup,
+            }), cleanup.get("status") or 500
+
         success = watchlist_db.remove_item_from_watchlist(
             tmdb_id=item_id 
         )
         if success:
-            return jsonify({"message": "已从追剧列表移除"}), 200
+            return jsonify({
+                "message": "已从追剧列表移除，并已同步取消 MP 订阅、删除 Emby 媒体项",
+                "cleanup": cleanup,
+            }), 200
         else:
             return jsonify({"error": "未在追剧列表中找到该项目"}), 404
     except Exception as e:
@@ -218,12 +304,30 @@ def api_batch_remove_from_watchlist():
     logger.info(f"API: 收到对 {len(item_ids)} 个项目的批量移除请求。")
     
     try:
-        removed_count = watchlist_db.batch_remove_from_watchlist(item_ids)
+        cleaned_ids = []
+        failures = []
+        cleanups = []
+        for item_id in item_ids:
+            cleanup = _delete_watchlist_external_resources(item_id)
+            if cleanup.get("success"):
+                cleaned_ids.append(item_id)
+                cleanups.append(cleanup)
+            else:
+                failures.append({
+                    "tmdb_id": item_id,
+                    "error": cleanup.get("error") or "删除外部资源失败",
+                    "details": cleanup,
+                })
+
+        removed_count = watchlist_db.batch_remove_from_watchlist(cleaned_ids) if cleaned_ids else 0
+        status_code = 207 if failures and cleaned_ids else (500 if failures else 200)
         
         return jsonify({
-            "message": f"操作成功！已从追剧列表移除了 {removed_count} 个项目。",
-            "removed_count": removed_count
-        }), 200
+            "message": f"已移除 {removed_count} 个追剧项目；同步删除失败 {len(failures)} 个。",
+            "removed_count": removed_count,
+            "cleanup": cleanups,
+            "failures": failures,
+        }), status_code
     except Exception as e:
         logger.error(f"批量移除项目时发生未知错误: {e}", exc_info=True)
         return jsonify({"error": "批量移除项目时发生未知的服务器内部错误"}), 500
