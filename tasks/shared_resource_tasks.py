@@ -21,6 +21,7 @@ from handler.shared_center_client import SharedCenterClient, shared_center_enabl
 from handler import shared_subscription_service as shared_subscription_service
 from handler.shared_subscription_service import poll_and_consume_once as _raw_poll_and_consume_once
 from handler import tmdb as tmdb_handler
+from tasks.helpers import extract_quality_source_from_filename, normalize_quality_source
 
 logger = logging.getLogger(__name__)
 
@@ -3992,12 +3993,21 @@ def _file_payload_common(file_info: Dict[str, Any], raw_uploaded: bool = False, 
         'relative_path': file_info.get('relative_path') or '',
         'preid': preid or '',
     }
+    quality = normalize_quality_source(
+        file_info.get('quality')
+        or file_info.get('quality_source')
+        or file_info.get('source')
+        or (sig.get('quality') if isinstance(sig, dict) else '')
+        or extract_quality_source_from_filename(file_info.get('file_name') or file_info.get('name') or '')
+    )
+    if quality in ('未知', '鏈煡'):
+        quality = ''
     return {
         'sha1': _norm_sha1(file_info.get('sha1')),
         'preid': preid or None,
         'size': final_size or None,
         'file_name': file_info.get('file_name') or file_info.get('name') or '',
-        'quality': sig.get('resolution') or '',
+        'quality': quality,
         'has_raw_ffprobe': bool(raw_uploaded),
         'media_signature_json': sig,
         'rapid_meta_json': rapid_meta,
@@ -6374,10 +6384,32 @@ def _reregister_provider_for_row(row: Dict[str, Any], requested: str = '') -> st
     return original or 'manual_rapid'
 
 
+def _local_source_missing_pick_code(row: Dict[str, Any]) -> bool:
+    row = dict(row or {})
+    source_id = int(row.get('id') or 0)
+    if not source_id:
+        return False
+    rapid_meta = row.get('rapid_meta_json') if isinstance(row.get('rapid_meta_json'), dict) else {}
+    if str(rapid_meta.get('pick_code') or rapid_meta.get('pickcode') or rapid_meta.get('pc') or '').strip():
+        return False
+    try:
+        files = shared_share_db.list_source_files(source_id)
+    except Exception:
+        files = []
+    if not files:
+        return False
+    return all(
+        not str((item or {}).get('pick_code') or (item or {}).get('pickcode') or (item or {}).get('pc') or '').strip()
+        for item in files
+    )
+
+
 def reregister_local_source(source_id: int, *, source_provider: str = '') -> Dict[str, Any]:
     row = shared_share_db.get_local_source(int(source_id or 0))
     if not row:
         return {'ok': False, 'message': '本地共享源不存在', 'source_id': source_id}
+    if _local_source_missing_pick_code(row):
+        return {'ok': True, 'skipped': True, 'reason': 'missing_pick_code_virtual_library', 'message': '缺少 115 pick_code，按虚拟入库/不可秒传记录跳过维护补登', 'source_id': source_id}
     candidate = _candidate_from_local_source(row)
     # “重新登记”是原共享源的原地修复：重新上传 RAW/summary_json，
     # provider 保持原值，避免生成 manual_reregister 影子源。
@@ -6487,6 +6519,9 @@ def reregister_local_sources(source_ids: List[int], *, source_provider: str = ''
     ok_count = 0
     failed = 0
     for row, cand in deduped:
+        if _local_source_missing_pick_code(row):
+            items.append({'id': row.get('id'), 'candidate': cand, 'provider': _reregister_provider_for_row(row, source_provider), 'ok': True, 'skipped': True, 'reason': 'missing_pick_code_virtual_library', 'message': '缺少 115 pick_code，按虚拟入库/不可秒传记录跳过维护补登'})
+            continue
         cand['_raw_repair_only'] = True
         provider = _reregister_provider_for_row(row, source_provider)
         res = register_candidate_to_center(cand, source_provider=provider)
@@ -6694,6 +6729,7 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
 
     registered = 0
     failed = 0
+    skipped = 0
     items = []
     failed_items = []
     for cand in candidates:
@@ -6702,6 +6738,29 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
         cand['_skip_fingerprint_repair'] = True
         cand['_raw_repair_only'] = True
         label = _maintenance_candidate_label(cand)
+        try:
+            files = shared_share_db.collect_files_for_candidate(cand)
+        except Exception:
+            files = []
+        if files and _files_missing_pick_code(files):
+            skipped += 1
+            message = '缺少 115 pick_code，按虚拟入库/不可秒传记录跳过维护补登'
+            logger.info(
+                "  ➜ [共享资源维护] 追更补齐跳过虚拟/不可秒传记录：%s，tmdb=%s，season=%s，episode=%s",
+                label,
+                cand.get('tmdb_id') or cand.get('parent_series_tmdb_id'),
+                cand.get('season_number'),
+                cand.get('episode_number'),
+            )
+            items.append({
+                'candidate': cand,
+                'title': label,
+                'ok': True,
+                'skipped': True,
+                'reason': 'missing_pick_code_virtual_library',
+                'message': message,
+            })
+            continue
         try:
             res = register_candidate_to_center(cand, source_provider='rapid_followup_backfill')
         except Exception as e:
@@ -6752,13 +6811,14 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
             'result': res,
         })
 
-    if registered or failed:
+    if registered or failed or skipped:
         sample = '；'.join([f"{x.get('title')}：{x.get('message')}" for x in failed_items[:5]])
         logger.info(
-            "  ➜ [共享资源维护] 追更补齐完成：待补=%s，成功=%s，失败=%s%s",
+            "  ➜ [共享资源维护] 追更补齐完成：待补=%s，成功=%s，失败=%s，跳过=%s%s",
             len(candidates),
             registered,
             failed,
+            skipped,
             f"，失败明细={sample}" if sample else '',
         )
     return {
@@ -6767,7 +6827,77 @@ def _backfill_airing_episode_sources(limit: int = 500) -> Dict[str, Any]:
         'need_register': len(candidates),
         'registered': registered,
         'failed': failed,
+        'skipped': skipped,
         'failed_items': failed_items[:20],
+        'items': items[:50],
+    }
+
+
+def _backfill_center_missing_quality_sources(limit: int = 300) -> Dict[str, Any]:
+    client = SharedCenterClient()
+    try:
+        resp = client.list_missing_quality_sources(limit=limit)
+    except Exception as e:
+        return {'ok': False, 'checked': 0, 'reregistered': 0, 'failed': 1, 'skipped': 0, 'message': f'获取中心缺来源列表失败: {e}'}
+
+    rows = [dict(x or {}) for x in (resp.get('items') or []) if isinstance(x, dict)]
+    if not rows:
+        return {'ok': True, 'checked': 0, 'reregistered': 0, 'failed': 0, 'skipped': 0, 'items': []}
+
+    checked = 0
+    reregistered = 0
+    failed = 0
+    skipped = 0
+    items = []
+    seen = set()
+    for item in rows:
+        source_kind = str(item.get('source_kind') or '').strip()
+        center_source_id = str(item.get('center_source_id') or '').strip()
+        key = (source_kind, center_source_id)
+        if not source_kind or not center_source_id or key in seen:
+            continue
+        seen.add(key)
+        checked += 1
+        local = shared_share_db.get_local_source_by_center(source_kind, center_source_id)
+        if not local:
+            skipped += 1
+            items.append({'source_kind': source_kind, 'center_source_id': center_source_id, 'ok': True, 'skipped': True, 'reason': 'local_source_missing'})
+            continue
+        if _local_source_missing_pick_code(local):
+            skipped += 1
+            items.append({'source_kind': source_kind, 'center_source_id': center_source_id, 'id': local.get('id'), 'ok': True, 'skipped': True, 'reason': 'missing_pick_code_virtual_library'})
+            continue
+        res = reregister_local_source(int(local.get('id') or 0), source_provider='')
+        ok = bool(res.get('ok')) and not res.get('skipped')
+        if ok:
+            reregistered += 1
+        elif res.get('skipped'):
+            skipped += 1
+        else:
+            failed += 1
+        items.append({
+            'source_kind': source_kind,
+            'center_source_id': center_source_id,
+            'id': local.get('id'),
+            'ok': bool(res.get('ok')),
+            'skipped': bool(res.get('skipped')),
+            'message': res.get('message') or '',
+        })
+
+    if checked:
+        logger.info(
+            "  ➜ [共享资源维护] 中心缺来源补齐完成：待补=%s，重登=%s，跳过=%s，失败=%s",
+            checked,
+            reregistered,
+            skipped,
+            failed,
+        )
+    return {
+        'ok': failed == 0,
+        'checked': checked,
+        'reregistered': reregistered,
+        'failed': failed,
+        'skipped': skipped,
         'items': items[:50],
     }
 
@@ -7603,10 +7733,19 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
     followup = result.get('airing_episode_backfill') if isinstance(result.get('airing_episode_backfill'), dict) else {}
     if followup:
         parts.append(f"追更补齐={followup.get('registered', 0)}/{followup.get('need_register', 0)}")
+        if followup.get('skipped'):
+            parts.append(f"追更跳过={followup.get('skipped')}")
         if followup.get('failed'):
             failed_items = followup.get('failed_items') if isinstance(followup.get('failed_items'), list) else []
             names = '、'.join([str(x.get('title') or '').strip() for x in failed_items[:3] if isinstance(x, dict) and str(x.get('title') or '').strip()])
             parts.append(f"补登失败={followup.get('failed')}" + (f"（{names}）" if names else ''))
+    quality_backfill = result.get('quality_source_backfill') if isinstance(result.get('quality_source_backfill'), dict) else {}
+    if quality_backfill:
+        parts.append(f"来源补齐={quality_backfill.get('reregistered', 0)}/{quality_backfill.get('checked', 0)}")
+        if quality_backfill.get('skipped'):
+            parts.append(f"来源跳过={quality_backfill.get('skipped')}")
+        if quality_backfill.get('failed'):
+            parts.append(f"来源补齐失败={quality_backfill.get('failed')}")
     display_meta = result.get('display_meta_backfill') if isinstance(result.get('display_meta_backfill'), dict) else {}
     if display_meta:
         parts.append(f"海报元数据补齐={display_meta.get('uploaded_meta_items', 0)}/{display_meta.get('prepared_meta_items', 0)}")
@@ -7639,7 +7778,7 @@ def _shared_maintenance_log_summary(result: Dict[str, Any]) -> str:
             parts.append(f"分享全量对账跳过={share_reconcile.get('message')}")
     if credit:
         parts.append(f"同步流水={credit.get('synced_ledger', 0)}")
-    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'display_meta_backfill_error', 'raw_repair_backfill_error', 'intro_backfill_error', 'logical_season_share_repair_error', 'credit_error'):
+    for key in ('listener_error', 'offline_cleanup_error', 'non_effective_reregister_error', 'airing_episode_backfill_error', 'quality_source_backfill_error', 'display_meta_backfill_error', 'raw_repair_backfill_error', 'intro_backfill_error', 'logical_season_share_repair_error', 'credit_error'):
         if result.get(key):
             parts.append(f"{key}={result.get(key)}")
     return '，'.join(parts)
@@ -7667,6 +7806,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         result['airing_episode_backfill'] = _backfill_airing_episode_sources(limit=500)
     except Exception as e:
         result['airing_episode_backfill_error'] = str(e)
+    try:
+        result['quality_source_backfill'] = _backfill_center_missing_quality_sources(limit=300)
+    except Exception as e:
+        result['quality_source_backfill_error'] = str(e)
     try:
         result['display_meta_backfill'] = _backfill_center_display_metadata(limit=3000)
     except Exception as e:

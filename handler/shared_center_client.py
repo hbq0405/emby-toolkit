@@ -488,6 +488,11 @@ class SharedCenterClient:
     def list_display_tags(self) -> Dict[str, Any]:
         return self._get('/api/v1/sources/display-tags', {}, timeout=15)
 
+    def list_missing_quality_sources(self, limit: int = 300) -> Dict[str, Any]:
+        return self._get('/api/v1/sources/missing-quality', {
+            'limit': max(1, min(int(limit or 300), 1000)),
+        }, timeout=30)
+
     def list_cloud_search_sources(self, *, q: str = '', status: str = 'alive,available,updating,inconsistent,incomplete',
                                   item_type: str = '', tmdb_id: str = '', order_by: str = 'latest',
                                   limit: int = 200, offset: int = 0, **_ignored) -> Dict[str, Any]:
