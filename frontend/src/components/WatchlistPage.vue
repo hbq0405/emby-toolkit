@@ -370,7 +370,7 @@
               <div>
                 <div class="setting-label">增强订阅助手接管 MoviePilot</div>
                 <div class="setting-desc">
-                  移植自爱神的 MP 订阅助手增强版插件，全流程接管 MP 订阅。
+                  {{ mpSubscriptionEnabled ? '移植自爱神的 MP 订阅助手增强版插件，全流程接管 MP 订阅。' : '统一订阅未启用 MoviePilot，订阅助手已自动关闭。' }}
                   <a
                     class="assistant-wiki-link"
                     href="https://hbq0405.github.io/emby-toolkit/zh/guide/subscribe-assistant"
@@ -379,7 +379,11 @@
                   >查看使用详解</a>
                 </div>
               </div>
-              <n-switch v-model:value="watchlistConfig.subscribe_assistant.enabled" size="small">
+              <n-switch
+                v-model:value="watchlistConfig.subscribe_assistant.enabled"
+                size="small"
+                :disabled="!mpSubscriptionEnabled"
+              >
                 <template #checked>接管中</template>
                 <template #unchecked>关闭</template>
               </n-switch>
@@ -638,57 +642,62 @@
                 </div>
               </div>
 
-              <div class="settings-group-title" style="margin-top: 18px;">追剧辅助</div>
-              <div class="settings-card">
-                <div class="setting-item">
-                  <div class="setting-icon"><n-icon :component="DoubanIcon" /></div>
-                  <div class="setting-content">
-                    <div class="setting-header">
-                      <div>
-                        <div class="setting-label">豆瓣辅助修正集数</div>
-                        <div class="setting-desc">TMDb 集数滞后或错误时，尝试从豆瓣获取总集数并锁定。</div>
-                      </div>
-                      <n-switch v-model:value="watchlistConfig.douban_count_correction" size="small" />
+            </div>
+          </div>
+        </n-collapse-transition>
+
+        <div class="settings-layout assistant-aux-layout">
+          <div class="settings-col">
+            <div class="settings-group-title" style="margin-top: 18px;">追剧辅助</div>
+            <div class="settings-card">
+              <div class="setting-item">
+                <div class="setting-icon"><n-icon :component="DoubanIcon" /></div>
+                <div class="setting-content">
+                  <div class="setting-header">
+                    <div>
+                      <div class="setting-label">豆瓣辅助修正集数</div>
+                      <div class="setting-desc">TMDb 集数滞后或错误时，尝试从豆瓣获取总集数并锁定。</div>
                     </div>
+                    <n-switch v-model:value="watchlistConfig.douban_count_correction" size="small" />
                   </div>
                 </div>
-                <n-divider style="margin: 0" />
-                <div class="setting-item">
-                  <div class="setting-icon"><n-icon :component="PaperPlaneIcon" /></div>
-                  <div class="setting-content">
-                    <div class="setting-header">
-                      <div>
-                        <div class="setting-label">TG 完结包等待</div>
-                        <div class="setting-desc">保留本地完结包等待标记能力，不再触发旧 MoviePilot 洗版订阅策略。</div>
-                      </div>
-                      <n-switch v-model:value="watchlistConfig.tg_channel_tracking" size="small" />
+              </div>
+              <n-divider style="margin: 0" />
+              <div class="setting-item">
+                <div class="setting-icon"><n-icon :component="PaperPlaneIcon" /></div>
+                <div class="setting-content">
+                  <div class="setting-header">
+                    <div>
+                      <div class="setting-label">TG 追更</div>
+                      <div class="setting-desc">开启后，TG 频道资源会参与追剧；已完结且本地文件不一致时，可等待 TG 完结包替换。</div>
                     </div>
+                    <n-switch v-model:value="watchlistConfig.tg_channel_tracking" size="small" />
                   </div>
                 </div>
-                <n-divider style="margin: 0" />
-                <div class="setting-item">
-                  <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
-                  <div class="setting-content">
-                    <div class="setting-header">
-                      <div>
-                        <div class="setting-label">全量刷新回溯期</div>
-                        <div class="setting-desc">已完结超过该天数的剧集仅做轻量检查。</div>
-                      </div>
-                      <n-input-number
-                        v-model:value="watchlistConfig.revival_check_days"
-                        size="small"
-                        style="width: 140px"
-                        :min="1"
-                      >
-                        <template #suffix>天</template>
-                      </n-input-number>
+              </div>
+              <n-divider style="margin: 0" />
+              <div class="setting-item">
+                <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
+                <div class="setting-content">
+                  <div class="setting-header">
+                    <div>
+                      <div class="setting-label">全量刷新回溯期</div>
+                      <div class="setting-desc">已完结超过该天数的剧集仅做轻量检查。</div>
                     </div>
+                    <n-input-number
+                      v-model:value="watchlistConfig.revival_check_days"
+                      size="small"
+                      style="width: 140px"
+                      :min="1"
+                    >
+                      <template #suffix>天</template>
+                    </n-input-number>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-        </n-collapse-transition>
+        </div>
       </div>
 
       <template #footer>
@@ -751,6 +760,7 @@ const tempTotalEpisodes = ref(0);
 const activeTab = ref('seasons');
 const showConfigModal = ref(false);
 const configSaving = ref(false);
+const mpSubscriptionEnabled = ref(true);
 const guardModeOptions = [
   { label: '平衡', value: 'balanced' },
   { label: '严格', value: 'strict' },
@@ -858,12 +868,30 @@ const buildWatchlistConfig = (data = {}) => {
 
 const watchlistConfig = ref(buildWatchlistConfig());
 
+const refreshMpSubscriptionEnabled = async () => {
+  const [strategyRes, statusRes] = await Promise.all([
+    axios.get('/api/subscription/strategy'),
+    axios.get('/api/subscription/status')
+  ]);
+  const sources = Array.isArray(strategyRes.data?.subscription_sources) ? strategyRes.data.subscription_sources : ['shared_pool', 'hdhive', 'tg_channel', 'mp'];
+  mpSubscriptionEnabled.value = Boolean(statusRes.data?.mp_configured) && sources.includes('mp');
+  if (!mpSubscriptionEnabled.value) {
+    watchlistConfig.value.subscribe_assistant.enabled = false;
+  }
+};
+
 const openConfigModal = async () => {
   showConfigModal.value = true;
   try {
-    const { data } = await axios.get('/api/watchlist/settings');
+    const [{ data }] = await Promise.all([
+      axios.get('/api/watchlist/settings'),
+      refreshMpSubscriptionEnabled()
+    ]);
     if (data) {
        watchlistConfig.value = buildWatchlistConfig(data);
+       if (!mpSubscriptionEnabled.value) {
+         watchlistConfig.value.subscribe_assistant.enabled = false;
+       }
     }
   } catch (e) {
     console.warn('获取追剧配置失败或无配置，使用默认值', e);
@@ -874,6 +902,9 @@ const saveConfig = async () => {
   configSaving.value = true;
   try {
     const assistant = watchlistConfig.value.subscribe_assistant;
+    if (!mpSubscriptionEnabled.value) {
+      assistant.enabled = false;
+    }
     const payload = {
       ...watchlistConfig.value,
       auto_pending: {

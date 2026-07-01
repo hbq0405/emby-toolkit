@@ -40,7 +40,13 @@ MANUAL_CHANGE_GRACE_SECONDS = 3600
 
 
 def get_config() -> AssistantConfig:
-    return from_watchlist_config(settings_db.get_setting("watchlist_config") or {})
+    cfg = from_watchlist_config(settings_db.get_setting("watchlist_config") or {})
+    strategy = settings_db.get_setting("subscription_strategy_config") or {}
+    sources = strategy.get("subscription_sources")
+    mp_config = settings_db.get_setting("mp_config") or {}
+    if not mp_config.get("moviepilot_url") or (isinstance(sources, list) and "mp" not in sources):
+        cfg.enabled = False
+    return cfg
 
 
 class SubscribeAssistantManager:

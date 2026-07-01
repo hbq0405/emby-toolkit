@@ -65,7 +65,7 @@
               size="small" 
               style="width: 120px;" 
             />
-            <n-button @click="showStrategyModal = true" type="warning" ghost>
+            <n-button @click="openStrategyModal" type="warning" ghost>
               <template #icon><n-icon :component="SettingsIcon" /></template>
               策略配置
             </n-button>
@@ -269,7 +269,7 @@
         
         <n-divider title-placement="left">订阅源优先级</n-divider>
         <n-form-item label="订阅源">
-          <div class="source-list">
+          <div v-if="sourceList.length" class="source-list">
             <div 
               v-for="(source, index) in sourceList" 
               :key="source.value"
@@ -285,9 +285,10 @@
               <n-icon class="drag-handle" :component="MenuIcon" />
             </div>
           </div>
+          <n-empty v-else description="当前没有可用订阅源" />
           <template #feedback>
             <b>拖动调整优先级，勾选启用。</b><br/>
-            系统会按列表顺序依次尝试：共享池、影巢、TG频道、MoviePilot。<br/>
+            系统会按列表顺序依次尝试当前可用订阅源。<br/>
             <span style="color: var(--n-warning-color);">* 注：云资源搜索存在模糊匹配限制，剧集订阅仍需依赖本地季号过滤。</span>
           </template>
         </n-form-item>
@@ -347,12 +348,24 @@ const strategyConfig = ref({
   subscription_sources: ['shared_pool', 'hdhive', 'tg_channel', 'mp'],
 });
 
-const sourceList = ref([
+const allSubscriptionSources = [
   { label: '共享池', value: 'shared_pool', enabled: true },
   { label: '影巢', value: 'hdhive', enabled: true },
   { label: 'TG频道', value: 'tg_channel', enabled: true },
   { label: 'MoviePilot', value: 'mp', enabled: true },
-]);
+];
+const sourceList = ref([...allSubscriptionSources]);
+
+const loadAvailableSubscriptionSources = async () => {
+  const { data } = await axios.get('/api/subscription/status');
+  if (!data?.success) return allSubscriptionSources.map(o => o.value);
+  const available = [];
+  if (data.shared_pool_configured) available.push('shared_pool');
+  if (data.hdhive_configured) available.push('hdhive');
+  if (data.tg_userbot_configured) available.push('tg_channel');
+  if (data.mp_configured) available.push('mp');
+  return available;
+};
 
 let draggedIndex = null;
 const onDragStart = (index) => {
@@ -387,30 +400,40 @@ const handleHDHiveDownloadSuccess = () => {
 
 const loadStrategyConfig = async () => {
   try {
-    const res = await axios.get('/api/subscription/strategy');
+    const [strategyRes, availableSources] = await Promise.all([
+      axios.get('/api/subscription/strategy'),
+      loadAvailableSubscriptionSources()
+    ]);
     
-    let sources = Array.isArray(res.data.subscription_sources) ? res.data.subscription_sources : [];
+    let sources = Array.isArray(strategyRes.data.subscription_sources) ? strategyRes.data.subscription_sources : [];
+    sources = sources.filter(source => availableSources.includes(source));
     
     const newSourceList = [];
     sources.forEach(val => {
-      const opt = sourceList.value.find(o => o.value === val);
+      const opt = allSubscriptionSources.find(o => o.value === val);
       if (opt) {
         newSourceList.push({ ...opt, enabled: true });
       }
     });
-    sourceList.value.forEach(opt => {
-      if (!sources.includes(opt.value)) {
+    allSubscriptionSources.forEach(opt => {
+      if (availableSources.includes(opt.value) && !sources.includes(opt.value)) {
         newSourceList.push({ ...opt, enabled: false });
       }
     });
     sourceList.value = newSourceList;
 
     strategyConfig.value = {
-      ...res.data 
+      ...strategyRes.data,
+      subscription_sources: sources
     };
   } catch (e) {
     message.error('加载策略配置失败');
   }
+};
+
+const openStrategyModal = async () => {
+  showStrategyModal.value = true;
+  await loadStrategyConfig();
 };
 
 const saveStrategyConfig = async () => {

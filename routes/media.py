@@ -14,6 +14,8 @@ import extensions
 from database import custom_collection_db, media_db, user_db, request_db, settings_db
 import handler.moviepilot as moviepilot
 from extensions import admin_required, processor_ready_required
+from handler.hdhive_client import HDHiveClient
+from handler.shared_center_client import shared_center_enabled
 from urllib.parse import urlparse, urlsplit, urlunsplit, parse_qsl, urlencode
 
 # --- 蓝图 1：用于所有 /api/... 的路由 ---
@@ -23,6 +25,36 @@ media_api_bp = Blueprint('media_api', __name__, url_prefix='/api')
 media_proxy_bp = Blueprint('media_proxy', __name__)
 
 logger = logging.getLogger(__name__)
+
+
+def _disable_watchlist_subscribe_assistant() -> None:
+    config = settings_db.get_setting('watchlist_config') or {}
+    assistant = config.get('subscribe_assistant')
+    if isinstance(assistant, dict) and assistant.get('enabled'):
+        assistant['enabled'] = False
+        config['sync_mp_subscription'] = False
+        settings_db.save_setting('watchlist_config', config)
+
+
+def _available_subscription_sources() -> set:
+    sources = set()
+    mp_config = settings_db.get_setting('mp_config') or {}
+    if mp_config.get('moviepilot_url'):
+        sources.add('mp')
+    try:
+        if HDHiveClient().ping():
+            sources.add('hdhive')
+    except Exception:
+        pass
+    tg_cfg = settings_db.get_setting('tg_userbot_config') or {}
+    if tg_cfg.get('enabled') and tg_cfg.get('api_id') and tg_cfg.get('api_hash') and tg_cfg.get('channels'):
+        sources.add('tg_channel')
+    try:
+        if shared_center_enabled():
+            sources.add('shared_pool')
+    except Exception:
+        pass
+    return sources
 
 def _mask_url_query_secret(url: str) -> str:
     try:
@@ -675,6 +707,16 @@ def api_save_subscription_strategy():
         # 简单的校验
         if not isinstance(data, dict):
             return jsonify({"error": "无效的配置格式"}), 400
+
+        sources = data.get('subscription_sources')
+        if isinstance(sources, list):
+            available_sources = _available_subscription_sources()
+            data['subscription_sources'] = [
+                source for source in sources
+                if source in available_sources
+            ]
+            if 'mp' not in data['subscription_sources']:
+                _disable_watchlist_subscribe_assistant()
             
         settings_db.save_setting('subscription_strategy_config', data)
         return jsonify({"message": "策略配置已保存"})
