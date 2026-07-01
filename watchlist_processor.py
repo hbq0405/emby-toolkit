@@ -2015,6 +2015,59 @@ class WatchlistProcessor:
             )
             return {}
 
+    def _trigger_version_correction_mp_search_once(
+        self,
+        tmdb_id: str,
+        season_number: int,
+        series_name: str,
+        washing_episodes: List[int],
+        state: Dict[str, Any],
+    ) -> bool:
+        episodes = sorted({_safe_int(ep) for ep in (washing_episodes or []) if _safe_int(ep) > 0})
+        if not episodes:
+            return False
+        if episodes == (state or {}).get('last_version_correction_search_episodes'):
+            return False
+
+        try:
+            subs = moviepilot.find_subscriptions(str(tmdb_id), int(season_number), self.config)
+            sub_id = _safe_int((subs[0] if subs else {}).get('id'))
+            if not sub_id:
+                logger.info(
+                    "  ➜ [版本纠偏] 《%s》第 %s 季 已标记待洗集 %s，但未找到 MP 订阅，跳过立即搜索。",
+                    series_name or tmdb_id,
+                    season_number,
+                    episodes,
+                )
+                return False
+            if moviepilot.search_subscription(sub_id, self.config):
+                logger.info(
+                    "  ➜ [版本纠偏] 《%s》第 %s 季 已触发 MP 订阅搜索，待洗集=%s。",
+                    series_name or tmdb_id,
+                    season_number,
+                    episodes,
+                )
+                self._save_version_lock_wait_state(tmdb_id, season_number, {
+                    'last_version_correction_search_episodes': episodes,
+                    'last_version_correction_search_at': datetime.now(timezone.utc).isoformat(),
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }, series_name)
+                return True
+            logger.warning(
+                "  ➜ [版本纠偏] 《%s》第 %s 季 触发 MP 订阅搜索失败，待洗集=%s。",
+                series_name or tmdb_id,
+                season_number,
+                episodes,
+            )
+        except Exception as e:
+            logger.warning(
+                "  ➜ [版本纠偏] 《%s》第 %s 季 触发 MP 订阅搜索异常：%s",
+                series_name or tmdb_id,
+                season_number,
+                e,
+            )
+        return False
+
     def _get_version_lock_candidate(
         self,
         tmdb_id: str,
@@ -2261,6 +2314,28 @@ class WatchlistProcessor:
         except Exception:
             return {}
 
+    def _get_locked_version_lock_seasons(self, tmdb_id: str) -> List[int]:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT season_number
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND item_type = 'Season'
+                          AND season_number IS NOT NULL
+                          AND COALESCE(watchlist_version_lock_json->>'locked', 'false') = 'true'
+                          AND NULLIF(watchlist_version_lock_json->>'include', '') IS NOT NULL
+                        """,
+                        (str(tmdb_id),),
+                    )
+                    rows = cursor.fetchall() or []
+            return sorted({_safe_int(row.get('season_number')) for row in rows if _safe_int(row.get('season_number')) > 0})
+        except Exception as e:
+            logger.warning(f"  ➜ [版本锁定] 查询已锁定季失败：《{tmdb_id}》: {e}")
+            return []
+
     def _get_version_lock_library_start_at(self, tmdb_id: str, season_number: int) -> Optional[str]:
         try:
             with connection.get_db_connection() as conn:
@@ -2417,7 +2492,7 @@ class WatchlistProcessor:
                                 })
                                 self._save_version_lock_wait_state(tmdb_id, season_number, state, series_name)
                                 logger.info(
-                                    "  ➜ [版本锁定] 《%s》S%s 检测到同档 HDR 版本，已切换锁版正则：发布组=%s。",
+                                    "  ➜ [版本锁定] 《%s》第 %s 季 检测到同档 HDR 版本，已切换锁版正则：发布组=%s。",
                                     series_name or tmdb_id,
                                     season_number,
                                     replacement_group_info.get('label') or release_group_alias or release_group or '-',
@@ -2498,6 +2573,14 @@ class WatchlistProcessor:
                             'mp_episode_priority_baseline': baseline_priority,
                             'updated_at': datetime.now(timezone.utc).isoformat(),
                         }, series_name)
+                    if isinstance(sync_state, dict) and sync_state.get('mp_priority_ok'):
+                        self._trigger_version_correction_mp_search_once(
+                            tmdb_id,
+                            season_number,
+                            series_name,
+                            sync_state.get('washing_episodes') or [],
+                            state,
+                        )
                 continue
             row = self._get_version_lock_candidate(
                 tmdb_id,
@@ -2600,6 +2683,14 @@ class WatchlistProcessor:
                         'mp_episode_priority_baseline': sync_state.get('baseline_priority'),
                         'updated_at': datetime.now(timezone.utc).isoformat(),
                     }, series_name)
+                if sync_state.get('mp_priority_ok'):
+                    self._trigger_version_correction_mp_search_once(
+                        tmdb_id,
+                        season_number,
+                        series_name,
+                        sync_state.get('washing_episodes') or [],
+                        self._get_version_lock_wait_state(tmdb_id, season_number),
+                    )
 
     def _check_season_consistency(self, tmdb_id: str, season_number: int, expected_episode_count: int) -> bool:
         """统一调用 tasks.helpers.check_season_consistency，保留旧方法名兼容现有调用。"""
@@ -3818,6 +3909,16 @@ class WatchlistProcessor:
                 )
             else:
                 logger.info(f"  ➜ [版本锁定] 《{item_name}》本轮有新增分集，但未能匹配到所在季，跳过锁定。")
+        elif final_status in lockable_statuses and version_lock_mode in ('best', 'any'):
+            locked_seasons = self._get_locked_version_lock_seasons(tmdb_id)
+            if locked_seasons:
+                self._apply_watchlist_version_lock(
+                    tmdb_id=tmdb_id,
+                    series_name=item_name,
+                    seasons=locked_seasons,
+                    mode=version_lock_mode,
+                    episode_ids_by_season={},
+                )
 
     # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
