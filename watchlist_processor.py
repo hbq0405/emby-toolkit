@@ -1991,7 +1991,7 @@ class WatchlistProcessor:
 
             if enable_ids or clear_ids:
                 logger.info(
-                    "  ➜ [版本锁定] 《%s》S%s 锁版正则纠偏：锁定=%s，标记洗版=%s，清理标记=%s，未知跳过=%s。",
+                    "  ➜ [版本锁定] 《%s》第 %s 季 锁定发布组=%s，标记洗版=%s，清理标记=%s，未知跳过=%s。",
                     series_name or tmdb_id,
                     season_number,
                     locked_label or '正则',
@@ -2007,7 +2007,7 @@ class WatchlistProcessor:
             }
         except Exception as e:
             logger.warning(
-                "  ➜ [版本锁定] 锁版正则纠偏失败：《%s》S%s group=%s -> %s",
+                "  ➜ [版本锁定] 锁版正则纠偏失败：《%s》第 %s 季 group=%s -> %s",
                 series_name or tmdb_id,
                 season_number,
                 locked_label,

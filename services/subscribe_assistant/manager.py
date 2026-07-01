@@ -152,7 +152,7 @@ class SubscribeAssistantManager:
                 total_episodes=total,
             ):
                 logger.info(
-                    "  ➜ [订阅助手] 《%s》S%s 已同步 MP 状态=%s，总集数=%s，原因=%s",
+                    "  ➜ [订阅助手] 《%s》第 %s 季 已同步 MP 状态=%s，总集数=%s，原因=%s",
                     series_name,
                     season_num,
                     decision["mp_state"],
@@ -280,7 +280,7 @@ class SubscribeAssistantManager:
             if locked:
                 title = self._series_title(tmdb_id, snapshot.get("subscribe_json"))
                 logger.info(
-                    "  ➜ [订阅助手] 《%s》S%s 已由豆瓣/手动锁定为 %s 集，自动纠错跳过 MP 恢复动作。",
+                    "  ➜ [订阅助手] 《%s》第 %s 季 已由豆瓣/手动锁定为 %s 集，自动纠错跳过 MP 恢复动作。",
                     title,
                     season,
                     locked.get("count") or "未知",
@@ -292,7 +292,7 @@ class SubscribeAssistantManager:
             fixed = self._repair_snapshot_subscription(snapshot, tmdb_id, season, old_total)
             if fixed:
                 logger.info(
-                    "  ➜ [订阅助手] 已根据完成快照纠正《%s》S%s 的 MP 订阅。",
+                    "  ➜ [订阅助手] 已根据完成快照纠正《%s》第 %s 季的 MP 订阅。",
                     self._series_title(tmdb_id, snapshot.get("subscribe_json")),
                     season,
                 )
@@ -357,7 +357,7 @@ class SubscribeAssistantManager:
             "name": metadata["title"],
         }, reason="download.added")
         logger.info(
-            "  ➜ [订阅助手] 已接收 MP 下载事件：订阅 %s，%s S%s，hash=%s。",
+            "  ➜ [订阅助手] 已接收 MP 下载事件：订阅 %s，%s 第 %s 季，hash=%s。",
             subscribe_id,
             self._series_title(metadata["tmdb_id"], source_info or metadata),
             season or "-",
@@ -417,7 +417,7 @@ class SubscribeAssistantManager:
         )
         if fields:
             self._mark_active_source(subscribe_id, SOURCE_MANUAL_MP, f"MP 手动修改：{','.join(str(x) for x in fields)}")
-        logger.info(
+        logger.debug(
             "  ➜ [订阅助手] 已记录 MP 订阅修改：%s，scene=%s，fields=%s。",
             self._format_subscribe_info(info),
             scene or "-",
