@@ -2544,7 +2544,7 @@ class WatchlistProcessor:
                     **wait_state,
                 }, series_name)
                 logger.info(
-                    f"  ➜ [版本锁定] 《{series_name}》S{season_number} 当前候选优先级 {washing_level}，MP优先级 {mp_episode_priority if mp_episode_priority is not None else '-'}，未达到阈值 {wait_state.get('target_level')}，继续等待。"
+                    f"  ➜ [版本锁定] 《{series_name}》第 {season_number} 季 当前候选优先级 {washing_level}，MP优先级 {mp_episode_priority if mp_episode_priority is not None else '-'}，未达到阈值 {wait_state.get('target_level')}，继续等待。"
                 )
                 continue
             include_regex = self._build_version_lock_include_regex(row.get('source_name'))
@@ -2564,7 +2564,7 @@ class WatchlistProcessor:
             )
             if ok:
                 logger.info(
-                    "  ➜ [版本锁定] 《%s》S%s 已锁定版本：优先级=%s，发布组=%s。",
+                    "  ➜ [版本锁定] 《%s》第 %s 季 已锁定版本：优先级=%s，发布组=%s。",
                     series_name or tmdb_id,
                     season_number,
                     f"{washing_level}/MP{mp_episode_priority}" if mp_episode_priority is not None else washing_level,
