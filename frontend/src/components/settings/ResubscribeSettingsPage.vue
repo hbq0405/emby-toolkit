@@ -458,22 +458,6 @@
                     危险操作：符合左侧条件的项目将被直接删除，且不可恢复！
                   </n-alert>
                   
-                  <!-- ★★★ 新增：删除模式选择 ★★★ -->
-                  <n-form-item label="删除模式">
-                    <n-radio-group v-model:value="currentRule.delete_mode" size="small">
-                      <n-radio-button value="physical">物理删除</n-radio-button>
-                      <n-radio-button value="api">API 删除</n-radio-button>
-                    </n-radio-group>
-                    <template #feedback>
-                      <span v-if="currentRule.delete_mode === 'physical'">
-                        物理删除：删除本地文件、并通知Emby刷新。
-                      </span>
-                      <span v-else>
-                        API 删除：调用 Emby 接口让服务端自行处理删除。
-                      </span>
-                    </template>
-                  </n-form-item>
-                  
                 </div>
               </n-card>
             </n-gi>
@@ -496,7 +480,7 @@
 import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
-  useMessage, NTag, NIcon, NGrid, NGi, NRadioGroup, NRadioButton, NRadio, NInputGroup, NCheckbox, NAlert,
+  useMessage, NTag, NIcon, NGrid, NGi, NRadioGroup, NRadioButton, NInputGroup, NCheckbox, NAlert,
   NCard, NSpace, NButton, NSwitch, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber
 } from 'naive-ui';
 import draggable from 'vuedraggable';
@@ -649,11 +633,9 @@ const openRuleModal = async (rule = null) => {
     if (!currentRule.value.resubscribe_source) {
           currentRule.value.resubscribe_source = 'moviepilot';
         }
-    if (!currentRule.value.delete_mode) currentRule.value.delete_mode = 'physical'; 
   } else {
     currentRule.value = {
       name: '', enabled: true, rule_type: 'resubscribe',
-      delete_mode: 'physical', 
       scope_rules: [],
       filter_rating_enabled: false, filter_rating_min: 0, filter_rating_ignore_zero: false,
       resubscribe_resolution_enabled: false, resubscribe_resolution_threshold: 1920,

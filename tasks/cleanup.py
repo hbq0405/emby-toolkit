@@ -484,7 +484,7 @@ def task_scan_for_cleanup_issues(processor):
 def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     """
     【重构版】执行指定的一批媒体去重任务。
-    支持 物理删除 / API删除 两种模式。
+    仅支持物理删除。
     """
     if not task_ids:
         task_manager.update_status_from_thread(-1, "任务失败：缺少任务ID")
@@ -496,10 +496,6 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     config = config_manager.APP_CONFIG
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     sync_delete = config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False) 
-    
-    # ★ 读取集中式配置中的删除模式
-    cleanup_config = settings_db.get_setting('media_cleanup_config') or {}
-    delete_mode = cleanup_config.get('delete_mode', 'physical')
     
     try:
         tasks_to_execute = cleanup_db.get_cleanup_index_by_ids(task_ids)
@@ -545,110 +541,90 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                 version_id_to_check = str(version.get('id'))
                 file_path = version.get('path')
                 
-                # 先判断是不是劣质版本，如果是，再判断用什么模式删 
+                # 先判断是不是劣质版本，如果是，则物理删除并执行数据库善后。
                 if version_id_to_check not in safe_ids_set:
+                    logger.warning(f"  ➜ 准备物理删除劣质版本 (ID: {version_id_to_check}): {file_path}")
                     
-                    if delete_mode == 'api':
-                        # --- 模式 1: API 删除 ---
-                        logger.warning(f"  ➜ 准备通过 API 删除劣质版本 (ID: {version_id_to_check})")
-                        success = emby.delete_item_sy(
-                            item_id=version_id_to_check, 
-                            emby_server_url=processor.emby_url, 
-                            emby_api_key=processor.emby_api_key, 
-                            user_id=processor.emby_user_id
-                        )
-                        if success:
-                            deleted_count += 1
-                            logger.info(f"  ➜ 通过 API 成功删除版本 ID: {version_id_to_check}")
-                        else:
-                            logger.error(f"  ➜ 通过 API 删除 ID: {version_id_to_check} 失败！")
-                            
-                    else:
-                        # --- 模式 2: 物理删除 ---
-                        logger.warning(f"  ➜ 准备物理删除劣质版本 (ID: {version_id_to_check}): {file_path}")
+                    pc = media_db.get_pickcode_by_emby_id(version_id_to_check)
+                    if pc:
+                        all_pickcodes_to_delete.append(pc)
                         
-                        pc = media_db.get_pickcode_by_emby_id(version_id_to_check)
-                        if pc:
-                            all_pickcodes_to_delete.append(pc)
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                            all_deleted_paths.append(file_path)
+                            logger.debug(f"  ➜ 已删除主文件: {file_path}")
                             
-                        if file_path and os.path.exists(file_path):
-                            try:
-                                os.remove(file_path)
-                                all_deleted_paths.append(file_path)
-                                logger.debug(f"  ➜ 已删除主文件: {file_path}")
+                            base_dir = os.path.dirname(file_path)
+                            base_name = os.path.splitext(os.path.basename(file_path))[0]
+                            
+                            mi_path = os.path.join(base_dir, f"{base_name}-mediainfo.json")
+                            if os.path.exists(mi_path):
+                                os.remove(mi_path)
                                 
-                                base_dir = os.path.dirname(file_path)
-                                base_name = os.path.splitext(os.path.basename(file_path))[0]
-                                
-                                mi_path = os.path.join(base_dir, f"{base_name}-mediainfo.json")
-                                if os.path.exists(mi_path):
-                                    os.remove(mi_path)
+                            for f in os.listdir(base_dir):
+                                if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'png']:
+                                    sub_path = os.path.join(base_dir, f)
+                                    try: os.remove(sub_path)
+                                    except: pass
                                     
-                                for f in os.listdir(base_dir):
-                                    if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'png']:
-                                        sub_path = os.path.join(base_dir, f)
-                                        try: os.remove(sub_path)
-                                        except: pass
-                                        
-                                curr_dir = base_dir
-                                protected_dirs = {os.path.abspath(local_root)} if local_root else set()
-                                
-                                while curr_dir and os.path.abspath(curr_dir) not in protected_dirs:
-                                    if os.path.exists(curr_dir):
-                                        has_media = False
-                                        for root_dir, _, files in os.walk(curr_dir):
-                                            for f in files:
-                                                ext = f.split('.')[-1].lower()
-                                                if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
-                                                    has_media = True
-                                                    break
-                                            if has_media: break
-                                        
-                                        if not has_media:
-                                            shutil.rmtree(curr_dir)
-                                            logger.info(f"  ➜ 目录已无媒体文件，连目录一起删除: {curr_dir}")
-                                            curr_dir = os.path.dirname(curr_dir)
-                                        else:
-                                            break
+                            curr_dir = base_dir
+                            protected_dirs = {os.path.abspath(local_root)} if local_root else set()
+                            
+                            while curr_dir and os.path.abspath(curr_dir) not in protected_dirs:
+                                if os.path.exists(curr_dir):
+                                    has_media = False
+                                    for root_dir, _, files in os.walk(curr_dir):
+                                        for f in files:
+                                            ext = f.split('.')[-1].lower()
+                                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
+                                                has_media = True
+                                                break
+                                        if has_media: break
+                                    
+                                    if not has_media:
+                                        shutil.rmtree(curr_dir)
+                                        logger.info(f"  ➜ 目录已无媒体文件，连目录一起删除: {curr_dir}")
+                                        curr_dir = os.path.dirname(curr_dir)
                                     else:
                                         break
-                            except Exception as e:
-                                error_msg = f"物理删除主文件失败，任务已中止: {file_path} (原因: {e})"
-                                logger.warning(f"  ➜ ⚠️ {error_msg}")
-                                task_manager.update_status_from_thread(-1, error_msg)
-                                return  # 直接 return 结束整个 task_execute_cleanup 任务
-                        else:
-                            logger.debug(f"  ➜ 本地文件不存在或路径无法访问，跳过物理删除: {file_path}")
-                            if file_path:
-                                all_deleted_paths.append(file_path)
+                                else:
+                                    break
+                        except Exception as e:
+                            error_msg = f"物理删除主文件失败，任务已中止: {file_path} (原因: {e})"
+                            logger.warning(f"  ➜ ⚠️ {error_msg}")
+                            task_manager.update_status_from_thread(-1, error_msg)
+                            return  # 直接 return 结束整个 task_execute_cleanup 任务
+                    else:
+                        logger.debug(f"  ➜ 本地文件不存在或路径无法访问，跳过物理删除: {file_path}")
+                        if file_path:
+                            all_deleted_paths.append(file_path)
 
-                        maintenance_db.cleanup_deleted_media_item(
-                            item_id=version_id_to_check,
-                            item_name=item_name,
-                            item_type=task['item_type']
-                        )
-                        deleted_count += 1
-                        logger.info(f"  ➜ 成功处理劣质版本 ID: {version_id_to_check}")
+                    maintenance_db.cleanup_deleted_media_item(
+                        item_id=version_id_to_check,
+                        item_name=item_name,
+                        item_type=task['item_type']
+                    )
+                    deleted_count += 1
+                    logger.info(f"  ➜ 成功处理劣质版本 ID: {version_id_to_check}")
 
             processed_task_ids.append(task['id'])
 
         if processed_task_ids:
             cleanup_db.batch_update_cleanup_index_status(processed_task_ids, 'processed')
 
-        # ★ 只有在物理删除模式下，才执行 115 联动和 Emby 刷新
-        if delete_mode == 'physical':
-            if all_pickcodes_to_delete and sync_delete:
-                logger.info(f"  ➜ 正在将 {len(all_pickcodes_to_delete)} 个文件加入 115 网盘联动删除队列...")
-                WebhookDeleteBuffer.add(all_pickcodes_to_delete)
+        if all_pickcodes_to_delete and sync_delete:
+            logger.info(f"  ➜ 正在将 {len(all_pickcodes_to_delete)} 个文件加入 115 网盘联动删除队列...")
+            WebhookDeleteBuffer.add(all_pickcodes_to_delete)
 
-            if all_deleted_paths:
-                logger.info(f"  ➜ 正在通知 Emby 刷新 {len(all_deleted_paths)} 个被删除的路径...")
-                emby.notify_emby_file_changes(
-                    file_paths=all_deleted_paths,
-                    base_url=processor.emby_url,
-                    api_key=processor.emby_api_key,
-                    update_type="Deleted"
-                )
+        if all_deleted_paths:
+            logger.info(f"  ➜ 正在通知 Emby 刷新 {len(all_deleted_paths)} 个被删除的路径...")
+            emby.notify_emby_file_changes(
+                file_paths=all_deleted_paths,
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key,
+                update_type="Deleted"
+            )
 
         final_message = f"清理完成！共处理 {len(processed_task_ids)} 个任务，成功清理了 {deleted_count} 个多余版本。"
         task_manager.update_status_from_thread(100, final_message)

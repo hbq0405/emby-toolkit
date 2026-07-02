@@ -114,20 +114,6 @@
 
               <div class="setting-row">
                 <div class="setting-info">
-                  <div class="setting-title">删除模式</div>
-                  <div class="setting-desc">
-                    <strong>物理删除：</strong>删除本地文件、并通知Emby刷新。<br>
-                    <strong>API 删除：</strong>调用 Emby 接口让服务端自行处理删除。
-                  </div>
-                </div>
-                <n-radio-group v-model:value="deleteMode" size="small">
-                  <n-radio-button value="physical">物理删除</n-radio-button>
-                  <n-radio-button value="api">API 删除</n-radio-button>
-                </n-radio-group>
-              </div>
-
-              <div class="setting-row">
-                <div class="setting-info">
                   <div class="setting-title">手动删除无需确认</div>
                   <div class="setting-desc">
                     开启后，重复项列表里手动点击单个版本的删除按钮会直接删除，不再弹出二次确认对话框。<br>
@@ -203,7 +189,7 @@ import { ref, onMounted, defineEmits, computed } from 'vue';
 import axios from 'axios';
 import { 
   NCard, NSpace, NSwitch, NButton, useMessage, NSpin, NIcon, NModal, NTag, NText,
-  NSelect, NFormItem, NDivider, NTooltip, NRadioGroup, NRadioButton, NGrid, NGi, NInputNumber
+  NSelect, NFormItem, NDivider, NTooltip, NGrid, NGi, NInputNumber
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
@@ -219,7 +205,6 @@ const emit = defineEmits(['on-close']);
 const saving = ref(false);
 const showEditModal = ref(false);
 const keepOnePerRes = ref(false);
-const deleteMode = ref('physical');
 const manualDeleteWithoutConfirm = ref(false);
 const draggableRules = ref([]);
 const fallbackRule = ref(null);
@@ -300,7 +285,6 @@ const fetchSettings = async () => {
 
     let loadedRules = settingsRes.data.rules || [];
     keepOnePerRes.value = settingsRes.data.keep_one_per_res || false;
-    deleteMode.value = settingsRes.data.delete_mode || 'physical';
     manualDeleteWithoutConfirm.value = !!settingsRes.data.manual_delete_without_confirm;
     
     loadedRules = loadedRules.map(rule => {
@@ -353,7 +337,6 @@ const saveSettings = async () => {
       rules: rulesToSave,
       library_ids: selectedLibraryIds.value,
       keep_one_per_res: keepOnePerRes.value,
-      delete_mode: deleteMode.value,
       manual_delete_without_confirm: manualDeleteWithoutConfirm.value
     };
 
