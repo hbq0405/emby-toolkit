@@ -64,7 +64,7 @@ def quality_source_tokens(value: Any) -> Set[str]:
     if lower == "uhd bluray":
         tokens.update({"uhd", "bluray"})
     if lower == "bluray原盘":
-        tokens.update({"bluray", "原盘"})
+        tokens.add("原盘")
     if lower == "remux":
         tokens.add("remux")
     return tokens
@@ -79,13 +79,7 @@ def extract_quality_source_from_filename(filename: Any) -> str:
     lower = name.lower()
     ext = os.path.splitext(name)[1].lower()
 
-    if (
-        ext == ".iso"
-        or re.search(r"(?<![A-Z0-9])BDMV(?![A-Z0-9])", upper)
-        or re.search(r"(?<![A-Z0-9])BDISO(?![A-Z0-9])", upper)
-        or "蓝光原盘" in name
-        or "原盘" in name
-    ):
+    if ext == ".iso":
         return "BluRay原盘"
     if re.search(r"(?<![A-Z0-9])REMUX(?![A-Z0-9])", upper):
         return "Remux"
