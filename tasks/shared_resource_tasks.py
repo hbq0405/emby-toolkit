@@ -197,16 +197,21 @@ def _json_object(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _is_adult_rating_text(value: Any) -> bool:
+    text = str(value or '').strip().upper()
+    return text in {'XXX', 'ADULT', '成人'}
+
+
 def _row_has_adult_rating(row: Dict[str, Any]) -> bool:
     row = dict(row or {})
     if row.get('adult') is True or str(row.get('adult') or '').strip().lower() == 'true':
         return True
-    if str(row.get('custom_rating') or '').strip().upper() == 'XXX':
+    if _is_adult_rating_text(row.get('custom_rating')):
         return True
     ratings = _json_object(row.get('official_rating_json'))
-    if str(ratings.get('US') or ratings.get('us') or '').strip().upper() == 'XXX':
+    if _is_adult_rating_text(ratings.get('US') or ratings.get('us')):
         return True
-    return str(row.get('official_rating') or row.get('mpaa') or row.get('certification') or '').strip().upper() == 'XXX'
+    return _is_adult_rating_text(row.get('official_rating') or row.get('mpaa') or row.get('certification'))
 
 
 def _adult_rating_rows(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -253,10 +258,10 @@ def _adult_rating_block_reason(candidate: Dict[str, Any]) -> str:
                                  AND (%s IS NULL OR item_type<>'Episode' OR episode_number=%s))
                             ))
                     )
-                      AND (
-                            UPPER(COALESCE(NULLIF(custom_rating, ''), ''))='XXX'
-                         OR UPPER(COALESCE(official_rating_json->>'US', official_rating_json->>'us', ''))='XXX'
-                      )
+                       AND (
+                            UPPER(COALESCE(NULLIF(custom_rating, ''), '')) IN ('XXX', 'ADULT', '成人')
+                         OR UPPER(COALESCE(official_rating_json->>'US', official_rating_json->>'us', '')) IN ('XXX', 'ADULT', '成人')
+                       )
                     LIMIT 1
                     """,
                     (item_type, movie_tmdb_id, item_type, parent_tmdb_id, parent_tmdb_id, season, season, episode, episode),
@@ -267,6 +272,43 @@ def _adult_rating_block_reason(candidate: Dict[str, Any]) -> str:
                     return f'adult rating XXX: {title}'.strip()
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 成人分级登记前检查失败，按非成人继续: {candidate.get('title') or candidate.get('tmdb_id')} -> {e}")
+    tmdb_reason = _tmdb_adult_block_reason(candidate)
+    if tmdb_reason:
+        return tmdb_reason
+    return ''
+
+
+def _tmdb_adult_block_reason(candidate: Dict[str, Any]) -> str:
+    """本地分级尚未落库或为空时，用 TMDb adult=true 做登记前硬拦截。"""
+    candidate = dict(candidate or {})
+    item_type = str(candidate.get('item_type') or '').strip()
+    if item_type not in ('Movie', 'Series', 'Season', 'Episode'):
+        return ''
+    tmdb_id = str(
+        candidate.get('tmdb_id') if item_type == 'Movie'
+        else candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id')
+        or ''
+    ).strip()
+    if not tmdb_id or not tmdb_id.isdigit():
+        return ''
+    try:
+        api_key = _tmdb_api_key_for_clean_detect()
+        if not api_key:
+            return ''
+        if item_type == 'Movie':
+            details = tmdb_handler.get_movie_details(int(tmdb_id), api_key, append_to_response="")
+            title = (details or {}).get('title')
+        else:
+            details = tmdb_handler.get_tv_details(int(tmdb_id), api_key, append_to_response="")
+            title = (details or {}).get('name')
+        if isinstance(details, dict) and details.get('adult') is True:
+            return f"tmdb adult=true: {title or candidate.get('title') or tmdb_id}".strip()
+    except Exception as e:
+        logger.debug(
+            "  ➜ [共享资源] TMDb 成人登记前检查失败，按本地分级结果继续: %s -> %s",
+            candidate.get('title') or tmdb_id,
+            e,
+        )
     return ''
 
 
