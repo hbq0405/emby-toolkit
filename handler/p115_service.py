@@ -4110,6 +4110,39 @@ class P115CacheManager:
         return _norm(detected)
 
     @staticmethod
+    def _quality_source_from_filesystem_cache(cursor, sha1):
+        sha1 = str(sha1 or '').strip().upper()
+        if not sha1:
+            return ''
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(NULLIF(por.original_name, ''), pfc.name) AS source_name
+                FROM p115_filesystem_cache pfc
+                LEFT JOIN p115_organize_records por
+                  ON por.file_id = pfc.id
+                  OR (
+                      NULLIF(por.pick_code, '') IS NOT NULL
+                      AND por.pick_code = pfc.pick_code
+                  )
+                WHERE UPPER(pfc.sha1) = %s
+                ORDER BY
+                    CASE WHEN NULLIF(por.original_name, '') IS NOT NULL THEN 0 ELSE 1 END,
+                    por.processed_at DESC NULLS LAST,
+                    pfc.updated_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                (sha1,),
+            )
+            row = cursor.fetchone()
+            return P115CacheManager._extract_quality_source_from_context(
+                file_name=(row or {}).get('source_name') if row else ''
+            )
+        except Exception:
+            return ''
+
+    @staticmethod
     def _ensure_preid_column():
         """兼容旧调用；p115_filesystem_cache.preid 已废弃。"""
         return
@@ -4589,6 +4622,10 @@ class P115CacheManager:
                     raw_probe = row.get('raw_ffprobe_json')
                     if not raw_probe:
                         local_ctx = P115CacheManager._build_etk_context_from_media_metadata(cursor, sha1)
+                        quality_source = P115CacheManager._quality_source_from_filesystem_cache(cursor, sha1)
+                        if quality_source:
+                            local_ctx = dict(local_ctx or {})
+                            local_ctx['quality_source'] = quality_source
                         if not local_ctx:
                             return None
 
@@ -4627,12 +4664,18 @@ class P115CacheManager:
                     # 即使已有 _etk，也允许补齐缺失的 original_language / sha1 / preid / 季集号。
                     if not ctx.get('original_language') or not ctx.get('sha1') or not P115CacheManager._norm_preid(ctx.get('preid')):
                         need_backfill = True
+                    if not ctx.get('quality_source'):
+                        need_backfill = True
                     if str(ctx.get('type') or '').strip().lower() in ('tv', 'series', 'season', 'episode'):
                         if ctx.get('season_number') in (None, '') or ctx.get('episode_number') in (None, ''):
                             need_backfill = True
 
                     if need_backfill:
                         local_ctx = P115CacheManager._build_etk_context_from_media_metadata(cursor, sha1)
+                        quality_source = P115CacheManager._quality_source_from_filesystem_cache(cursor, sha1)
+                        if quality_source:
+                            local_ctx = dict(local_ctx or {})
+                            local_ctx['quality_source'] = quality_source
                         if local_ctx:
                             clean_ctx = {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
                             if P115CacheManager._raw_ffprobe_has_useful_etk(raw_probe):
