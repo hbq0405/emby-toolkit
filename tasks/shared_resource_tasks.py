@@ -197,137 +197,6 @@ def _json_object(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _is_adult_rating_text(value: Any) -> bool:
-    text = str(value or '').strip().upper()
-    return text in {'XXX', 'ADULT', '成人'}
-
-
-def _row_has_adult_rating(row: Dict[str, Any]) -> bool:
-    row = dict(row or {})
-    if row.get('adult') is True or str(row.get('adult') or '').strip().lower() == 'true':
-        return True
-    if _is_adult_rating_text(row.get('custom_rating')):
-        return True
-    ratings = _json_object(row.get('official_rating_json'))
-    if _is_adult_rating_text(ratings.get('US') or ratings.get('us')):
-        return True
-    return _is_adult_rating_text(row.get('official_rating') or row.get('mpaa') or row.get('certification'))
-
-
-def _adult_rating_rows(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows = [dict(candidate or {})]
-    raw = _json_object((candidate or {}).get('raw_json'))
-    if raw:
-        rows.append(raw)
-        for key in ('candidate', 'media_row', 'source', 'shared_source'):
-            nested = raw.get(key)
-            if isinstance(nested, dict):
-                rows.append(nested)
-    return rows
-
-
-def _adult_rating_block_reason(candidate: Dict[str, Any]) -> str:
-    candidate = dict(candidate or {})
-    for row in _adult_rating_rows(candidate):
-        if _row_has_adult_rating(row):
-            title = row.get('title') or candidate.get('title') or row.get('tmdb_id') or candidate.get('tmdb_id') or ''
-            return f'adult rating XXX: {title}'.strip()
-
-    item_type = str(candidate.get('item_type') or '').strip()
-    season = _safe_int_or_none(candidate.get('season_number'))
-    episode = _safe_int_or_none(candidate.get('episode_number'))
-    parent_tmdb_id = str(candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id') or '').strip()
-    movie_tmdb_id = str(candidate.get('tmdb_id') or '').strip()
-    if item_type not in ('Movie', 'Season', 'Episode'):
-        return ''
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT title, tmdb_id
-                    FROM media_metadata
-                    WHERE (
-                            (%s='Movie' AND item_type='Movie' AND tmdb_id=%s)
-                         OR (%s<>'Movie' AND (
-                                (item_type='Series' AND tmdb_id=%s)
-                             OR (item_type IN ('Season','Episode')
-                                 AND COALESCE(NULLIF(parent_series_tmdb_id, ''), tmdb_id)=%s
-                                 AND (%s IS NULL OR season_number=%s)
-                                 AND (%s IS NULL OR item_type<>'Episode' OR episode_number=%s))
-                            ))
-                    )
-                       AND (
-                            UPPER(COALESCE(NULLIF(custom_rating, ''), '')) IN ('XXX', 'ADULT', '成人')
-                         OR UPPER(COALESCE(official_rating_json->>'US', official_rating_json->>'us', '')) IN ('XXX', 'ADULT', '成人')
-                       )
-                    LIMIT 1
-                    """,
-                    (item_type, movie_tmdb_id, item_type, parent_tmdb_id, parent_tmdb_id, season, season, episode, episode),
-                )
-                row = dict(cur.fetchone() or {})
-                if row:
-                    title = row.get('title') or candidate.get('title') or row.get('tmdb_id') or parent_tmdb_id or movie_tmdb_id
-                    return f'adult rating XXX: {title}'.strip()
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 成人分级登记前检查失败，按非成人继续: {candidate.get('title') or candidate.get('tmdb_id')} -> {e}")
-    tmdb_reason = _tmdb_adult_block_reason(candidate)
-    if tmdb_reason:
-        return tmdb_reason
-    return ''
-
-
-def _tmdb_adult_block_reason(candidate: Dict[str, Any]) -> str:
-    """本地分级尚未落库或为空时，用 TMDb adult=true 做登记前硬拦截。"""
-    candidate = dict(candidate or {})
-    item_type = str(candidate.get('item_type') or '').strip()
-    if item_type not in ('Movie', 'Series', 'Season', 'Episode'):
-        return ''
-    tmdb_id = str(
-        candidate.get('tmdb_id') if item_type == 'Movie'
-        else candidate.get('parent_series_tmdb_id') or candidate.get('series_tmdb_id') or candidate.get('tmdb_id')
-        or ''
-    ).strip()
-    if not tmdb_id or not tmdb_id.isdigit():
-        return ''
-    try:
-        api_key = _tmdb_api_key_for_clean_detect()
-        if not api_key:
-            return ''
-        if item_type == 'Movie':
-            details = tmdb_handler.get_movie_details(int(tmdb_id), api_key, append_to_response="")
-            title = (details or {}).get('title')
-        else:
-            details = tmdb_handler.get_tv_details(int(tmdb_id), api_key, append_to_response="")
-            title = (details or {}).get('name')
-        if isinstance(details, dict) and details.get('adult') is True:
-            return f"tmdb adult=true: {title or candidate.get('title') or tmdb_id}".strip()
-    except Exception as e:
-        logger.debug(
-            "  ➜ [共享资源] TMDb 成人登记前检查失败，按本地分级结果继续: %s -> %s",
-            candidate.get('title') or tmdb_id,
-            e,
-        )
-    return ''
-
-
-def _adult_block_result(candidate: Dict[str, Any], reason: str) -> Dict[str, Any]:
-    title = (candidate or {}).get('title') or (candidate or {}).get('tmdb_id') or 'unknown'
-    return {
-        'ok': False,
-        'message': f'成人资源不参与共享登记：{title}',
-        'adult_blocked': True,
-        'reason': reason,
-        'registered_count': 0,
-        'raw_uploaded_count': 0,
-        'raw_ready_count': 0,
-        'raw_skipped_existing': 0,
-        'errors': [],
-        'fingerprint_repair': {},
-    }
-
-
 def _rapid_size_to_int(value, default=0) -> int:
     """把 size / file_size / 27.9 GB 这类值统一转成字节数。"""
     try:
@@ -3965,6 +3834,7 @@ def _backfill_center_raw_repair_queue(limit: int = 200) -> Dict[str, Any]:
         sha1 = _norm_sha1((item or {}).get('sha1'))
         if not sha1:
             continue
+        from handler.p115_service import P115CacheManager
         try:
             cache = P115CacheManager.get_file_cache_by_sha1(sha1) or {}
         except Exception as e:
@@ -5547,11 +5417,6 @@ def register_candidate_to_center(candidate: Dict[str, Any], *, source_provider: 
     item_type = str(candidate.get('item_type') or '').strip()
     effective_provider = 'rapid_logical_season' if str(source_provider or '').strip().lower() == 'rapid_completed_season' else source_provider
 
-    adult_reason = _adult_rating_block_reason(candidate)
-    if adult_reason:
-        logger.warning(f"  ➜ [共享资源] 跳过成人资源登记: {candidate.get('title') or candidate.get('tmdb_id') or 'unknown'}，reason={adult_reason}")
-        return _adult_block_result(candidate, adult_reason)
-
     files = shared_share_db.collect_files_for_candidate(candidate)
     if not files:
         return {
@@ -5765,14 +5630,6 @@ def trigger_shared_rapid_register_batch_for_library_items(processor=None, regist
     for raw_item in items:
         candidate = _library_register_candidate_from_kwargs(raw_item)
         candidate = _normalize_series_candidate_identity(dict(candidate or {}))
-        adult_reason = _adult_rating_block_reason(candidate)
-        if adult_reason:
-            prepared.append({
-                'item': raw_item,
-                'candidate': candidate,
-                'blocked_result': _adult_block_result(candidate, adult_reason),
-            })
-            continue
         files = shared_share_db.collect_files_for_candidate(candidate)
         files = _prime_candidate_files_for_registration(candidate, files)
         if files and _files_missing_pick_code(files):
