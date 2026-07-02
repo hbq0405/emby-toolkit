@@ -297,7 +297,7 @@ def _load_notice_asset_details_by_emby_id(emby_item_id: str) -> list:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT asset_details_json
+                    SELECT asset_details_json, washing_level
                     FROM media_metadata
                     WHERE asset_details_json IS NOT NULL
                       AND (
@@ -329,13 +329,17 @@ def _load_notice_asset_details_by_emby_id(emby_item_id: str) -> list:
     if not row:
         return []
 
-    assets = _notice_asset_list(dict(row).get('asset_details_json'))
+    row_data = dict(row)
+    assets = _notice_asset_list(row_data.get('asset_details_json'))
     if not assets:
         return []
 
     # 一条剧集/季记录里可能有多个 asset，优先只取当前 Emby Item 对应的那一个。
     matched = [item for item in assets if str(item.get('emby_item_id') or '').strip() == emby_item_id]
-    return matched or assets
+    selected = matched or assets
+    for asset in selected:
+        asset['_notice_washing_level'] = row_data.get('washing_level')
+    return selected
 
 
 def _notice_asset_value(asset: dict, *keys) -> str:
@@ -385,6 +389,36 @@ def _notice_join_unique(values, limit: int = 4) -> str:
     return text
 
 
+def _notice_asset_washing_level(asset: dict):
+    try:
+        return int((asset or {}).get('_notice_washing_level'))
+    except Exception:
+        return None
+
+
+def _build_notice_washing_text(assets: list) -> str:
+    levels = sorted({
+        level
+        for level in (_notice_asset_washing_level(asset) for asset in assets)
+        if level is not None
+    })
+    if not levels:
+        return ''
+
+    def comment_for_level(level: int) -> str:
+        if level == 1:
+            return "最佳版本"
+        if level == 2:
+            return "差点意思"
+        if level == 3:
+            return "凑合看吧"
+        return "太烂了"
+
+    level_text = ' / '.join(f"P{level} {comment_for_level(level)}" for level in levels)
+    label = f"🏆 *洗版优先级*: `{_markdown_code_text(level_text)}`"
+    return label
+
+
 def _build_notice_asset_params_text(emby_item_ids: list) -> str:
     """生成入库/追更通知参数，数据源固定为 media_metadata.asset_details_json。"""
     assets = []
@@ -412,6 +446,10 @@ def _build_notice_asset_params_text(emby_item_ids: list) -> str:
     file_count = len(assets)
 
     lines = []
+    washing_text = _build_notice_washing_text(assets)
+    if washing_text:
+        lines.append(washing_text)
+
     quality_parts = [part for part in (quality, resolution, codec) if part]
     if quality_parts:
         lines.append(f"🎞️ *画质*: `{_markdown_code_text(' / '.join(quality_parts))}`")
