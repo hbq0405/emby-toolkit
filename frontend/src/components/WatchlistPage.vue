@@ -180,7 +180,7 @@
                     <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.item_name }}</n-ellipsis>
                     <n-popconfirm @positive-click="() => removeFromWatchlist(item.parent_tmdb_id, item.item_name)">
                       <template #trigger><n-button text type="error" circle title="移除" size="tiny"><template #icon><n-icon :component="TrashIcon" /></template></n-button></template>
-                      确定要从追剧列表中移除《{{ item.item_name }}》吗？
+                      确定要媒体库彻底删除《{{ item.item_name }}》吗？
                     </n-popconfirm>
                   </div>
                   <div class="card-status-area">
@@ -1353,9 +1353,9 @@ const handleBatchAction = (key) => {
   else if (key === 'remove') {
     const parentIds = getParentIds(); // 获取剧集ID
     dialog.warning({
-      title: '确认移除',
-      content: `确定要从追剧列表中移除选中的 ${parentIds.length} 个项目吗？此操作不可恢复。`,
-      positiveText: '确定移除',
+      title: '确认删除',
+      content: `确定要媒体库彻底删除选中的 ${parentIds.length} 个项目吗？此操作不可恢复。`,
+      positiveText: '确定删除',
       negativeText: '取消',
       onPositiveClick: async () => {
         try {
