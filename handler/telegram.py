@@ -415,7 +415,7 @@ def _build_notice_washing_text(assets: list) -> str:
         return "太烂了"
 
     level_text = ' / '.join(f"P{level} {comment_for_level(level)}" for level in levels)
-    label = f"🏆 *洗版优先级*: `{_markdown_code_text(level_text)}`"
+    label = f"🏆 *版本*: `{_markdown_code_text(level_text)}`"
     return label
 
 
