@@ -407,12 +407,12 @@ def _build_notice_washing_text(assets: list) -> str:
 
     def comment_for_level(level: int) -> str:
         if level == 1:
-            return "最佳版本"
+            return "太棒了！是你想要的版本！！"
         if level == 2:
-            return "差点意思"
+            return "差点意思，坐等洗版"
         if level == 3:
-            return "凑合看吧"
-        return "太烂了"
+            return "凑合看吧，也不是不行"
+        return "太烂了，你确定入库吗？"
 
     level_text = ' / '.join(f"P{level} {comment_for_level(level)}" for level in levels)
     label = f"🏆 *版本*: `{_markdown_code_text(level_text)}`"
