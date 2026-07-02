@@ -179,7 +179,7 @@
                   <div class="card-header">
                     <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.item_name }}</n-ellipsis>
                     <n-popconfirm @positive-click="() => removeFromWatchlist(item.parent_tmdb_id, item.item_name)">
-                      <template #trigger><n-button text type="error" circle title="移除" size="tiny"><template #icon><n-icon :component="TrashIcon" /></template></n-button></template>
+                      <template #trigger><n-button text type="error" circle title="删除" size="tiny"><template #icon><n-icon :component="TrashIcon" /></template></n-button></template>
                       确定要媒体库彻底删除《{{ item.item_name }}》吗？
                     </n-popconfirm>
                   </div>
@@ -1005,7 +1005,7 @@ const sortKeyOptions = [
 
 const batchActions = computed(() => {
   const removeAction = {
-    label: '批量移除',
+    label: '批量删除',
     key: 'remove',
     icon: () => h(NIcon, { component: TrashIcon })
   };
@@ -1363,11 +1363,11 @@ const handleBatchAction = (key) => {
           const response = await axios.post('/api/watchlist/batch_remove', {
             item_ids: parentIds
           });
-          message.success(response.data.message || '批量移除成功！');
+          message.success(response.data.message || '批量删除成功！');
           await fetchWatchlist();
           selectedItems.value = [];
         } catch (err) {
-          message.error(err.response?.data?.error || '批量移除失败。');
+          message.error(err.response?.data?.error || '批量删除失败。');
         }
       }
     });
@@ -1520,7 +1520,7 @@ const updateStatus = async (itemId, newStatus) => {
 const removeFromWatchlist = async (seriesId, itemName) => {
   try {
     await axios.post(`/api/watchlist/remove/${seriesId}`);
-    message.success(`已将《${itemName}》从追剧列表移除。`);
+    message.success(`已将《${itemName}》从追剧列表删除。`);
     
     // ★★★ 修正：比对 parent_tmdb_id，把该剧的所有季都移出视图 ★★★
     rawWatchlist.value = rawWatchlist.value.filter(i => i.parent_tmdb_id !== seriesId);
@@ -1528,7 +1528,7 @@ const removeFromWatchlist = async (seriesId, itemName) => {
     // 如果是在已完结视图（聚合模式），也需要确保清理干净
     selectedItems.value = []; 
   } catch (err) {
-    message.error(err.response?.data?.error || '移除失败。');
+    message.error(err.response?.data?.error || '删除失败。');
   }
 };
 
