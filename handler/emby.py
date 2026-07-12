@@ -2954,19 +2954,130 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
         return False
     
 # --- Playback Reporting 插件集成 ---
+def _get_user_usage_stats_urls(base_url: str, endpoint: str) -> List[str]:
+    base = base_url.rstrip('/')
+    urls = []
+    if base.lower().endswith('/emby'):
+        urls.append(f"{base}{endpoint}")
+        urls.append(f"{base[:-5]}{endpoint}")
+    else:
+        urls.append(f"{base}/emby{endpoint}")
+        urls.append(f"{base}{endpoint}")
+    return list(dict.fromkeys(urls))
+
+def _request_user_usage_stats(base_url: str, endpoint: str, params: dict, timeout: int = 20):
+    not_found = False
+    for api_url in _get_user_usage_stats_urls(base_url, endpoint):
+        logger.debug(f"正在请求 Playback Reporting 接口: {api_url}")
+        response = emby_client.get(api_url, params=params, timeout=timeout)
+        if response.status_code == 404:
+            not_found = True
+            continue
+        response.raise_for_status()
+        return response.json()
+    if not_found:
+        return None
+    return []
+
+def _parse_play_duration(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (ValueError, TypeError):
+        if isinstance(value, str) and ":" in value:
+            try:
+                parts = [int(part) for part in value.split(':')]
+                if len(parts) == 3:
+                    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+                if len(parts) == 2:
+                    return parts[0] * 60 + parts[1]
+            except ValueError:
+                return 0
+    return 0
+
+def _get_jellyfin_playback_reporting_items(
+    base_url: str,
+    api_key: str,
+    days: int,
+    user_id: str = "",
+) -> Optional[List[Dict[str, Any]]]:
+    user_params = {"api_key": api_key}
+    users = _request_user_usage_stats(base_url, "/user_usage_stats/user_list", user_params, timeout=20)
+    if users is None:
+        return None
+    if not isinstance(users, list):
+        return []
+
+    target_users = []
+    for user in users:
+        current_user_id = str(user.get("id") or "")
+        if user_id and current_user_id != user_id:
+            continue
+        if not user_id and user.get("in_list"):
+            continue
+        target_users.append({
+            "id": current_user_id,
+            "name": user.get("name") or current_user_id or "Unknown",
+        })
+
+    items = []
+    today = datetime.now().date()
+    start_date = today - timedelta(days=max(days, 1) - 1)
+    for user in target_users:
+        if not user["id"]:
+            continue
+        for offset in range(max(days, 1)):
+            current_date = (start_date + timedelta(days=offset)).isoformat()
+            endpoint = f"/user_usage_stats/{user['id']}/{current_date}/GetItems"
+            params = {
+                "api_key": api_key,
+                "filter": "Movie,Episode",
+            }
+            day_items = _request_user_usage_stats(base_url, endpoint, params, timeout=20)
+            if not isinstance(day_items, list):
+                continue
+            for item in day_items:
+                play_time = item.get("Time") or ""
+                items.append({
+                    "Name": item.get("Name") or "未知影片",
+                    "Date": f"{current_date} {play_time}".strip(),
+                    "PlayDuration": _parse_play_duration(item.get("Duration")),
+                    "ItemType": item.get("Type") or "Video",
+                    "ItemId": item.get("Id"),
+                    "UserName": user["name"],
+                })
+
+    items.sort(key=lambda item: item.get("Date") or "", reverse=True)
+    return items
+
+def get_playback_reporting_dashboard_data(base_url: str, api_key: str, days: int = 30) -> dict:
+    params = {
+        "api_key": api_key,
+        "days": days,
+        "user_id": "",
+        "include_stats": "true",
+        "limit": 100000
+    }
+
+    raw_data = _request_user_usage_stats(
+        base_url,
+        "/user_usage_stats/UserPlaylist",
+        params,
+        timeout=30
+    )
+    if raw_data is not None:
+        return {"data": raw_data if isinstance(raw_data, list) else []}
+
+    fallback_data = _get_jellyfin_playback_reporting_items(base_url, api_key, days)
+    if fallback_data is None:
+        return {"error": "plugin_not_installed"}
+    return {"data": fallback_data}
+
 def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days: int = 30) -> dict:
     """
     获取【个人】详细播放流水
     【V5 - 修复版】
     适配实际浏览器响应：snake_case 字段、字符串类型的秒数时长、日期时间合并。
     """
-    # 1. 构造 URL
-    if "/emby" not in base_url:
-        api_url = f"{base_url.rstrip('/')}/emby/user_usage_stats/UserPlaylist"
-    else:
-        api_url = f"{base_url.rstrip('/')}/user_usage_stats/UserPlaylist"
-    
-    # 2. 构造参数
     params = {
         "api_key": api_key,
         "user_id": user_id,
@@ -2976,15 +3087,18 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
     }
     
     try:
-        logger.debug(f"正在请求 UserPlaylist 接口: {api_url} | User: {user_id}")
-        response = emby_client.get(api_url, params=params, timeout=20)
-        
-        if response.status_code == 404:
-            return {"error": "plugin_not_installed"}
-        response.raise_for_status()
-        
-        # 3. 解析数据
-        raw_data = response.json()
+        raw_data = _request_user_usage_stats(
+            base_url,
+            "/user_usage_stats/UserPlaylist",
+            params,
+            timeout=20
+        )
+        if raw_data is None:
+            fallback_data = _get_jellyfin_playback_reporting_items(base_url, api_key, days, user_id)
+            if fallback_data is None:
+                return {"error": "plugin_not_installed"}
+            raw_data = fallback_data
+
         cleaned_data = []
         
         if raw_data and isinstance(raw_data, list):
@@ -3009,32 +3123,7 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
                 # --- 3. 时长 (修复：处理字符串类型的纯数字) ---
                 # 实际返回: "duration": "2513" (字符串秒数)
                 raw_duration = item.get('duration') or item.get('PlayDuration') or item.get('total_time') or 0
-                final_duration_sec = 0
-                
-                try:
-                    # 尝试直接转 float/int (处理 "2513" 或 2513)
-                    val = float(raw_duration)
-                    
-                    # 策略判定：
-                    # 如果数值巨大(>100000)，可能是 Ticks (1秒=1000万Ticks)，但这里不太像
-                    # 根据你的日志 "2513" 对应 41分钟，说明这就是【秒】
-                    # 如果数值很小 (<300)，也可能是【分钟】？
-                    # 但根据 API 响应 "2513" ≈ 41分钟，可以直接认定为秒。
-                    final_duration_sec = int(val)
-                    
-                except (ValueError, TypeError):
-                    # 如果转换失败，尝试处理 "HH:MM:SS" 格式
-                    if isinstance(raw_duration, str) and ":" in raw_duration:
-                        try:
-                            parts = raw_duration.split(':')
-                            if len(parts) == 3:
-                                h, m, s = map(int, parts)
-                                final_duration_sec = h * 3600 + m * 60 + s
-                            elif len(parts) == 2:
-                                m, s = map(int, parts)
-                                final_duration_sec = m * 60 + s
-                        except:
-                            final_duration_sec = 0
+                final_duration_sec = _parse_play_duration(raw_duration)
                             
                 normalized_item['PlayDuration'] = final_duration_sec
                 

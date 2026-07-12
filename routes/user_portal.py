@@ -571,26 +571,18 @@ def get_dashboard_stats():
     days = request.args.get('days', 30, type=int)
     config = config_manager.APP_CONFIG
     
-    # 2. 从 Emby 获取全站原始流水
-    endpoint = "/user_usage_stats/UserPlaylist"
-    base_url = config['emby_server_url']
-    api_url = f"{base_url.rstrip('/')}/emby{endpoint}" if "/emby" not in base_url else f"{base_url.rstrip('/')}{endpoint}"
-    
-    params = {
-        "api_key": config['emby_api_key'],
-        "days": days,
-        "user_id": "", # 全站
-        "include_stats": "true",
-        "limit": 100000 
-    }
-    
-    try:
-        response = requests.get(api_url, params=params, timeout=30)
-        response.raise_for_status()
-        raw_data = response.json()
-    except Exception as e:
-        logger.error(f"获取仪表盘数据失败: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    # 2. 从 Playback Reporting 获取全站原始流水
+    report_res = emby.get_playback_reporting_dashboard_data(
+        config['emby_server_url'],
+        config['emby_api_key'],
+        days
+    )
+    if "error" in report_res:
+        if report_res["error"] == "plugin_not_installed":
+            return jsonify({"status": "error", "message": "服务端未安装 Playback Reporting 插件"}), 404
+        logger.error(f"获取仪表盘数据失败: {report_res['error']}")
+        return jsonify({"status": "error", "message": report_res["error"]}), 500
+    raw_data = report_res.get("data", [])
 
     # 3. 数据聚合
     server_id = extensions.EMBY_SERVER_ID
