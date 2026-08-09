@@ -1965,12 +1965,16 @@ class P115CookieClient:
     def _json_result(self, resp):
         if isinstance(resp, dict):
             return resp
+        status_code = getattr(resp, 'status_code', None)
+        if status_code == 405:
+            return {'state': False, 'code': 405, 'error_msg': 'HTTP 405 Method Not Allowed'}
         if hasattr(resp, 'json'):
             try:
                 return resp.json()
             except Exception as e:
                 text = getattr(resp, 'text', '')
-                return {'state': False, 'error_msg': f'Cookie 接口返回非 JSON: {e}; {text[:200]}'}
+                status_text = f'HTTP {status_code}; ' if status_code else ''
+                return {'state': False, 'error_msg': f'{status_text}Cookie 接口返回非 JSON: {e}; {text[:200]}'}
         return {'state': False, 'error_msg': str(resp)}
 
     def fs_files(self, payload):
@@ -2013,7 +2017,13 @@ class P115CookieClient:
     def fs_get_info(self, file_id):
         """Cookie/webapi 获取单个文件/目录信息，返回格式向 OpenAPI 对齐。"""
         payload = {'file_id': str(file_id)}
-        url = "https://webapi.115.com/files/get_info"
+        if self.webapi and hasattr(self.webapi, 'fs_file_skim'):
+            try:
+                return _p115_normalize_info_response(self.webapi.fs_file_skim(payload))
+            except Exception as e:
+                if not _p115_is_severe_failure(e):
+                    raise
+        url = "https://webapi.115.com/files/file"
         r = self.request(url, method='GET', params=payload)
         return _p115_normalize_info_response(self._json_result(r))
 
@@ -2384,6 +2394,7 @@ class P115Service:
     _cookie_cache = None
     
     _last_request_time = 0
+    _rate_limit_not_before = 0
     _last_downurl_time = 0 # 直链专用时间戳
 
     @classmethod
@@ -2477,32 +2488,39 @@ class P115Service:
                     raise Exception("未配置 115 Token (OpenAPI)，无法执行管理操作")
 
             def _rate_limit(self):
-                """底层统一 API 流控拦截器 (修复高并发死锁)"""
+                """按用户配置对主账号的所有 115 请求做全局串行流控。"""
                 try:
-                    interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 1.5))
-                    if interval < 1.5:
-                        interval = 1.5
+                    interval = max(0.0, float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 1.0)))
                 except (ValueError, TypeError):
-                    interval = 1.5
-                
-                sleep_time = 0
+                    interval = 1.0
+
                 with P115Service._rate_limit_lock:
                     current_time = time.time()
-                    elapsed = current_time - P115Service._last_request_time
-                    
-                    if elapsed < interval:
-                        import random
-                        jitter = random.uniform(0.1, 0.5)
-                        # 计算当前线程需要休眠的时间
-                        sleep_time = (interval - elapsed) + jitter
-                        # ★ 核心修复：提前预支下一次的放行时间，让后续线程基于这个未来时间计算，而不是排队死等
-                        P115Service._last_request_time = current_time + sleep_time
-                    else:
-                        P115Service._last_request_time = current_time
+                    scheduled_time = max(
+                        current_time,
+                        P115Service._last_request_time + interval,
+                        P115Service._rate_limit_not_before,
+                    )
+                    sleep_time = scheduled_time - current_time
+                    P115Service._last_request_time = scheduled_time
 
-                # ★ 核心修复：把 sleep 移出锁的范围！让多线程可以同时并发 sleep
                 if sleep_time > 0:
                     time.sleep(sleep_time)
+
+            def _defer_rate_limit(self, seconds=10.0):
+                with P115Service._rate_limit_lock:
+                    P115Service._rate_limit_not_before = max(
+                        P115Service._rate_limit_not_before,
+                        time.time() + max(0.0, float(seconds)),
+                    )
+
+            def _defer_cookie_405(self, label, error):
+                text = _p115_error_text(error)
+                if str(label).lower() != 'cookie' or ('405' not in text and 'method not allowed' not in text.lower()):
+                    return False
+                self._defer_rate_limit()
+                logger.warning("  ➜ [115] Cookie 接口触发 HTTP 405，主账号所有请求统一冷却 10 秒。")
+                return True
 
             def _api_order(self, force_openapi=False, force_cookie=False):
                 if force_openapi:
@@ -2541,6 +2559,7 @@ class P115Service:
                             if len(attempted) > 1:
                                 logger.info(f"  ➜ [115] {method_name} 已自动切换到 {label} 接口成功。")
                             return resp
+                        self._defer_cookie_405(label, resp)
                         # 115 秒传返回 status=7 不是接口故障，而是需要供给方 holder 按 sign_check
                         # 读取源文件片段生成 sign_val。消费端本机通常没有源文件，切换 Cookie/OpenAPI
                         # 或尝试“本机 Holder”只会浪费请求；直接把签名需求返回给共享资源消费层，
@@ -2557,6 +2576,7 @@ class P115Service:
                             logger.warning(f"  ➜ [115] {label} 接口 {method_name} 返回失败，准备尝试备用接口: {_p115_error_text(resp)}")
                     except Exception as e:
                         last_err = e
+                        self._defer_cookie_405(label, e)
                         if force_openapi or force_cookie:
                             logger.warning(f"  ➜ [115] {label} 接口 {method_name} 异常，固定后端不切换备用接口: {e}")
                         else:
@@ -2889,6 +2909,7 @@ class P115Service:
 
                             return resp
 
+                        self._defer_cookie_405(api_name, resp)
                         # 已存在不是接口失败，直接回查，不要切备用接口
                         if self._is_exists_error(resp):
                             existed_cid = self._find_child_dir(parent_cid, folder_name)
@@ -2938,6 +2959,7 @@ class P115Service:
                                             retry_resp["data"]["file_id"] = new_cid
                                             retry_resp["data"]["cid"] = new_cid
                                         return retry_resp
+                                    self._defer_cookie_405(api_name, retry_resp)
                                     logger.warning(
                                         f"  ➜ [115回收站] 删除目录后重建仍失败: "
                                         f"parent={parent_cid}, name={folder_name}, err={_p115_error_text(retry_resp)}"
@@ -2958,6 +2980,7 @@ class P115Service:
 
                     except Exception as e:
                         last_resp = {"state": False, "message": str(e)}
+                        self._defer_cookie_405(api_name, e)
                         if self._is_exists_error(last_resp):
                             existed_cid = self._find_child_dir(parent_cid, folder_name)
                             if existed_cid:
@@ -3062,12 +3085,14 @@ class P115Service:
                             logger.debug(f"  ➜ [批量重命名] 已通过 115 批量接口重命名 {len(pairs)} 个文件。")
                             return resp
 
+                        self._defer_cookie_405('cookie', resp)
                         logger.warning(
                             f"  ➜ [批量重命名] Cookie 批量接口失败，回退逐条重命名: "
                             f"{_p115_error_text(resp)}"
                         )
                         return _sequential_rename(reason=_p115_error_text(resp))
                     except Exception as e:
+                        self._defer_cookie_405('cookie', e)
                         if _p115_is_severe_failure(e):
                             P115Service.reset_cookie_client()
                         logger.warning(f"  ➜ [批量重命名] Cookie 批量接口异常，回退逐条重命名: {e}")
@@ -7448,6 +7473,34 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             logger.warning(f"  ➜ 扫描目录出错 (CID: {cid}): {e}")
         return all_files
 
+    def _fill_file_node_info(self, file_node, info_cache):
+        """按文件 ID 单次补齐扫描节点缺失字段，失败结果也在本批次内缓存。"""
+        if not isinstance(file_node, dict):
+            return {}
+        fid = str(file_node.get('fid') or file_node.get('file_id') or '').strip()
+        if not fid:
+            return {}
+
+        if fid not in info_cache:
+            data = {}
+            try:
+                info_res = self.client.fs_get_info(fid)
+                if _p115_success(info_res):
+                    raw_data = info_res.get('data')
+                    if isinstance(raw_data, list):
+                        raw_data = raw_data[0] if raw_data else {}
+                    if isinstance(raw_data, dict):
+                        data = _p115_normalize_item(raw_data)
+            except Exception as e:
+                logger.debug(f"  ➜ [115整理] 文件详情补齐失败，批次内不再重复请求: fid={fid}, err={e}")
+            info_cache[fid] = data
+
+        data = info_cache[fid]
+        for key, value in data.items():
+            if value not in (None, '') and file_node.get(key) in (None, ''):
+                file_node[key] = value
+        return data
+
     def _get_junk_file_match(self, filename):
         """
         返回命中的垃圾文件/样本/花絮文本 (基于 MP 规则)
@@ -7726,6 +7779,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
         if not candidates: return True
 
+        file_info_cache = {}
+
         # =================================================================
         # ★★★ 3. 核心重构：提前提取物理视频流信息 (替代原有的冗余嗅探逻辑) ★★★
         # =================================================================
@@ -7744,12 +7799,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             v_fid = first_video.get('fid') or first_video.get('file_id')
             
             if not v_sha1 and v_fid:
-                try:
-                    info_res = self.client.fs_get_info(v_fid)
-                    if info_res.get('state') and info_res.get('data'):
-                        v_sha1 = info_res['data'].get('sha1')
-                        first_video['sha1'] = v_sha1
-                except: pass
+                self._fill_file_node_info(first_video, file_info_cache)
+                v_sha1 = first_video.get('sha1') or first_video.get('sha')
 
             if v_sha1 or v_fid:
                 # 提前解析媒体信息。内部会直读本地 DB；DB 没有时才 ffprobe。
@@ -8170,14 +8221,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 if not sha1:
                     fid = file_item.get('fid') or file_item.get('file_id')
                     if fid:
-                        try:
-                            info_res = self.client.fs_get_info(fid)
-                            if info_res.get('state') and info_res.get('data'):
-                                sha1 = info_res['data'].get('sha1')
-                                if sha1:
-                                    file_item['sha1'] = sha1
-                        except Exception:
-                            pass
+                        self._fill_file_node_info(file_item, file_info_cache)
 
         # 自动整理发现相同 SHA1 已经在库时，直接交给现有未识别搬运链路。
         # 手动重组处理的本来就是在库文件，必须跳过去重才能修正目录和媒体身份。
@@ -8417,14 +8461,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
             file_sha1 = file_item.get('sha1') or file_item.get('sha')
             if not file_sha1 and fid and ext in known_video_exts:
-                try:
-                    info_res = self.client.fs_get_info(fid)
-                    if info_res.get('state') and info_res.get('data'):
-                        fetched_sha1 = info_res['data'].get('sha1')
-                        if fetched_sha1:
-                            file_item['sha1'] = fetched_sha1 
-                except Exception:
-                    pass
+                self._fill_file_node_info(file_item, file_info_cache)
 
             # =================================================================
             # ★ 保留原名模式：只保留文件名，不跳过内部解析
@@ -9533,12 +9570,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
 
                             if is_video:
                                 if not file_sha1 and fid:
-                                    try:
-                                        info_res = self.client.fs_get_info(fid)
-                                        if info_res.get('state') and info_res.get('data'):
-                                            file_sha1 = info_res['data'].get('sha1')
-                                    except Exception:
-                                        pass
+                                    self._fill_file_node_info(file_item, file_info_cache)
+                                    file_sha1 = file_item.get('sha1') or file_item.get('sha')
 
                                 # STRM 一落盘就会触发监控，必须先提交 PC/SHA1 缓存。
                                 if self.media_type == 'tv' and season_num is not None and s_name:
