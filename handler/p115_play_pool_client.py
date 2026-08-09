@@ -188,6 +188,9 @@ class P115PlayPoolClient:
     def download_url(self, pick_code, user_agent=None):
         return self.resolve_download_url(pick_code, user_agent=user_agent)
 
+    def _use_openapi_first(self):
+        return bool(self.openapi) and not (get_115_api_priority() == "cookie" and bool(self.cookie_str))
+
     def resolve_download_url(self, pick_code, user_agent=None, return_backend=False, stop_on_exception=None):
         method_order = (
             [("_cookie_download_url", "Cookie"), ("_openapi_downurl", "OpenAPI")]
@@ -250,7 +253,7 @@ class P115PlayPoolClient:
             params.update(payload)
         elif payload is not None:
             params["cid"] = payload
-        if self.openapi:
+        if self._use_openapi_first():
             return _p115_normalize_list_response(self.openapi.fs_files(params))
         if self.webapi and hasattr(self.webapi, "fs_files"):
             try:
@@ -263,20 +266,14 @@ class P115PlayPoolClient:
 
     def fs_get_info(self, file_id):
         file_id = str(file_id)
-        if self.openapi:
+        if self._use_openapi_first():
             return _p115_normalize_info_response(self.openapi.fs_get_info(file_id))
         payload = {"file_id": file_id}
-        if self.webapi and hasattr(self.webapi, "fs_file_skim"):
-            try:
-                return _p115_normalize_info_response(self.webapi.fs_file_skim(payload))
-            except Exception as e:
-                if not _p115_is_severe_failure(e):
-                    raise
-        resp = self.request("https://webapi.115.com/files/file", method="GET", params=payload)
+        resp = self.request("https://webapi.115.com/files/get_info", method="GET", params=payload)
         return _p115_normalize_info_response(self._json_result(resp))
 
     def fs_mkdir(self, name, pid):
-        if self.openapi:
+        if self._use_openapi_first():
             return _p115_normalize_mkdir_response(self.openapi.fs_mkdir(str(name), str(pid)))
         payload = {"cname": str(name), "pid": str(pid)}
         if self.webapi and hasattr(self.webapi, "fs_mkdir"):
@@ -290,7 +287,7 @@ class P115PlayPoolClient:
 
     def fs_delete(self, fids):
         ids = [str(i) for i in _p115_as_list(fids) if i is not None]
-        if self.openapi:
+        if self._use_openapi_first():
             return _p115_normalize_common_response(self.openapi.fs_delete(ids))
         if self.webapi and hasattr(self.webapi, "fs_delete"):
             try:
@@ -338,7 +335,7 @@ class P115PlayPoolClient:
             return {"state": False, "error_msg": "小号专用秒传缺少文件大小", "_rapid_upload_backend": "play_pool_cookie"}
         if not file_name:
             file_name = f"{sha1}.mkv"
-        if self.openapi:
+        if self._use_openapi_first():
             logger.debug(
                 "  ➜ [小号专用秒传] OpenAPI 初始化上传: %s | sha1=%s... | preid=%s | size=%s",
                 file_name,

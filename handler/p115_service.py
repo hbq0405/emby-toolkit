@@ -1640,7 +1640,7 @@ def _p115_normalize_common_response(resp):
     return resp
 
 
-def get_115_api_priority(default='openapi'):
+def get_115_api_priority(default='cookie'):
     """
     115 API 优先级。
     当前可选值：openapi / cookie。
@@ -2013,13 +2013,7 @@ class P115CookieClient:
     def fs_get_info(self, file_id):
         """Cookie/webapi 获取单个文件/目录信息，返回格式向 OpenAPI 对齐。"""
         payload = {'file_id': str(file_id)}
-        if self.webapi and hasattr(self.webapi, 'fs_file_skim'):
-            try:
-                return _p115_normalize_info_response(self.webapi.fs_file_skim(payload))
-            except Exception as e:
-                if not _p115_is_severe_failure(e):
-                    raise
-        url = "https://webapi.115.com/files/file"
+        url = "https://webapi.115.com/files/get_info"
         r = self.request(url, method='GET', params=payload)
         return _p115_normalize_info_response(self._json_result(r))
 
@@ -2117,6 +2111,21 @@ class P115CookieClient:
             payload.update({f'fid[{i}]': fid for i, fid in enumerate(ids)})
         url = "https://webapi.115.com/rb/delete"
         r = self.request(url, method='POST', data=payload)
+        return _p115_normalize_common_response(self._json_result(r))
+
+    def rb_del(self, tids=None):
+        payload = {'password': '000000'}
+        ids = [str(i).strip() for i in _p115_as_list(tids) if str(i or '').strip()]
+        if ids:
+            payload['tid'] = ','.join(ids)
+        url = "https://webapi.115.com/rb/secret_del"
+        r = self.request(url, method='POST', data=payload)
+        return _p115_normalize_common_response(self._json_result(r))
+
+    def rb_list(self, limit=100, offset=0):
+        payload = {'limit': int(limit or 100), 'offset': int(offset or 0)}
+        url = "https://webapi.115.com/rb"
+        r = self.request(url, method='GET', params=payload)
         return _p115_normalize_common_response(self._json_result(r))
 
     def offline_add_urls(self, payload):
@@ -2442,7 +2451,7 @@ class P115Service:
         """
         获取统一客户端：
         文件管理/整理操作 -> 按 115 API 优先级 Cookie/OpenAPI 自动切换
-        清空回收站/上传初始化 -> 强制 OpenAPI
+        清空回收站 -> 按 115 API 优先级 Cookie/OpenAPI 自动切换；上传初始化 -> 强制 OpenAPI
         转存/离线/生活事件 -> 强制 Cookie
         """
         openapi = cls.get_openapi_client()
@@ -2667,37 +2676,6 @@ class P115Service:
                         data = data[0] if data else {}
                         resp['data'] = data
 
-                    parent_id = ''
-                    if isinstance(data, dict):
-                        parent_id = str(data.get('parent_id') or data.get('pid') or '').strip()
-
-                    # Cookie 详情本身没有父目录 ID；先走本地缓存/路径推导，仍推导不出时再用 OpenAPI 兜底。
-                    if not parent_id and get_115_api_priority() == 'cookie' and self._openapi:
-                        openapi_resp = self._call_api(
-                            'fs_get_info',
-                            file_id,
-                            normalizer=_p115_normalize_info_response,
-                            force_openapi=True,
-                        )
-                        if _p115_success(openapi_resp):
-                            openapi_data = openapi_resp.get('data')
-                            if isinstance(openapi_data, list):
-                                openapi_data = openapi_data[0] if openapi_data else {}
-                                openapi_resp['data'] = openapi_data
-                            if isinstance(openapi_data, dict):
-                                openapi_parent_id = str(openapi_data.get('parent_id') or openapi_data.get('pid') or '').strip()
-                                if openapi_parent_id:
-                                    if isinstance(data, dict):
-                                        data['parent_id'] = openapi_parent_id
-                                        data['pid'] = openapi_parent_id
-                                        data.setdefault('_parent_id_source', 'openapi_fallback')
-                                        for key, value in openapi_data.items():
-                                            data.setdefault(key, value)
-                                    else:
-                                        openapi_data.setdefault('_parent_id_source', 'openapi_fallback')
-                                        resp['data'] = openapi_data
-                                    logger.debug(f"  ➜ [115] Cookie 文件详情父目录推导失败，已兜底 OpenAPI 补齐: fid={file_id}, parent_id={openapi_parent_id}")
-                                    return resp
                     return resp
                 return resp
 
@@ -3102,16 +3080,12 @@ class P115Service:
                     return self._call_api('fs_delete', fids, normalizer=_p115_normalize_common_response)
             
             def rb_del(self, tids=None):
-                # 清空回收站是 OpenAPI 独有，强制 OpenAPI，不参与 Cookie 优先级。
-                self._check_openapi()
-                return self._call_api('rb_del', tids, normalizer=_p115_normalize_common_response, force_openapi=True)
+                return self._call_api('rb_del', tids, normalizer=_p115_normalize_common_response)
 
             def rb_list(self, limit=100, offset=0):
-                self._check_openapi()
                 return self._call_api(
                     'rb_list', limit, offset,
                     normalizer=_p115_normalize_common_response,
-                    force_openapi=True,
                 )
             
             def life_behavior_detail(self, payload=None):

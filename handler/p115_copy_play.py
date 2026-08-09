@@ -453,7 +453,7 @@ def _find_clone_in_temp_dir(client, temp_cid, source_row, file_name):
 
 def _copy_backend_order():
     primary = str(
-        (config_manager.APP_CONFIG or {}).get(constants.CONFIG_OPTION_115_API_PRIORITY, "openapi") or "openapi"
+        (config_manager.APP_CONFIG or {}).get(constants.CONFIG_OPTION_115_API_PRIORITY, "cookie") or "cookie"
     ).strip().lower()
     if primary == "cookie":
         return ["cookie", "openapi"]

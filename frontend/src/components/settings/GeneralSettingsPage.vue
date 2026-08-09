@@ -708,8 +708,8 @@
                     <n-form-item label="115接口" path="p115_api_priority">
                       <n-radio-group v-model:value="configModel.p115_api_priority" name="api_priority_group">
                         <n-space>
-                          <n-radio value="openapi">优先 OpenAPI</n-radio>
                           <n-radio value="cookie">优先 Cookie</n-radio>
+                          <n-radio value="openapi">优先 OpenAPI</n-radio>
                         </n-space>
                       </n-radio-group>
                       <template #feedback>
