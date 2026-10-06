@@ -21,8 +21,10 @@ export default defineConfig({
       { text: '快速开始', link: '/zh/guide/quick-start' },
       { text: '部署', link: '/zh/guide/docker' },
       { text: '配置', link: '/zh/guide/config' },
+      { text: '媒体管理', link: '/zh/guide/media-management' },
+      { text: '任务中心', link: '/zh/guide/scheduler' },
       { text: '共享资源', link: '/zh/guide/shared-resource' },
-      { text: '洗版', link: '/zh/guide/washing' },
+      { text: '播放中心', link: '/zh/guide/playback' },
       { text: 'FAQ', link: '/zh/faq/troubleshooting' }
     ],
 
@@ -48,20 +50,23 @@ export default defineConfig({
           text: '使用指南',
           items: [
             { text: 'Web 控制台', link: '/zh/guide/web-ui' },
+            { text: '媒体管理', link: '/zh/guide/media-management' },
+            { text: '播放中心', link: '/zh/guide/playback' },
+            { text: '整理记录', link: '/zh/guide/organize-records' },
             { text: '115 网盘', link: '/zh/guide/p115' },
             { text: '共享资源中心', link: '/zh/guide/shared-resource' },
             { text: '洗版功能', link: '/zh/guide/washing' },
             { text: '任务与调度', link: '/zh/guide/scheduler' },
             { text: '实时监控', link: '/zh/guide/monitor' },
-      { text: 'Emby 与事件', link: '/zh/guide/webhook' },
+            { text: '事件与 Webhook', link: '/zh/guide/webhook' },
             { text: '智能追剧', link: '/zh/guide/watchlist' },
             { text: '订阅中心', link: '/zh/guide/subscribe-assistant' },
             { text: '演员订阅', link: '/zh/guide/actor-subscriptions' },
-            { text: '虚拟库', link: '/zh/guide/custom-collections' },
-            { text: '封面生成', link: '/zh/guide/cover-generator' },
+            { text: '虚拟媒体库', link: '/zh/guide/custom-collections' },
+            { text: '封面与增强功能', link: '/zh/guide/enhancements' },
             { text: '外部服务集成', link: '/zh/guide/integrations' },
             { text: '用户与权限', link: '/zh/guide/user-management' },
-            { text: '反向代理与虚拟库', link: '/zh/guide/reverse-proxy' }
+            { text: '外部反向代理', link: '/zh/guide/reverse-proxy' }
           ]
         },
         {

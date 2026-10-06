@@ -1,33 +1,36 @@
 # API 概览
 
-API 由多个蓝图组成，统一挂载在 `web_app.py` 中。
+新版 API 使用 FastAPI，默认由 `5257` 提供。管理接口需要 ETKN 登录，部分媒体服务和图片接口按客户端协议开放。
 
-## 系统与状态
+## 认证和健康检查
 
-- `routes/system.py`：系统状态、配置读取/保存、任务控制、代理测试、AI 测试等。
-- `routes/logs.py`：日志与前端日志流。
+- `POST /api/auth/login`：登录 ETKN 账号。
+- `GET /api/health`：服务健康检查。
+- `GET /api/modules`：查看模块是否已配置，不返回密钥。
 
-## 媒体与处理
+## 配置和任务
 
-- `routes/media.py`：媒体查询、代理、刷新相关接口。
-- `routes/tasks.py`：任务触发与任务链控制。
-- `routes/actions.py`：批量操作入口。
+- `/api/configuration`：模块配置读取和保存。
+- `/api/organize-settings`：整理规则配置。
+- `/api/tasks`、`/api/workflows`：任务目录、运行状态、历史、日志和诊断。
+- `/api/automation-plans`：自动任务计划。
 
-## 订阅与合集
+## 资源和订阅
 
-- `routes/watchlist.py`：追剧管理与状态更新。
-- `routes/actor_subscriptions.py`：演员订阅管理。
-- `routes/custom_collections.py`：自建合集管理。
-- `routes/tmdb_collections.py`：TMDb 合集处理。
-- `routes/resubscribe.py`：补订阅/统一订阅。
+- `/api/p115`：115 文件、目录、播放和整理记录。
+- `/api/share-imports`：115 分享链接导入、检查和重试。
+- `/api/shared-pool`：共享池资源、共享源、获取和虚拟入库。
+- `/api/resources/moviepilot`：MoviePilot 状态、配置和连接测试。
+- `/webhook`：MoviePilot 事件接收。
+- `/api/re0`：re0 授权和资源获取。
+- `/api/subscriptions`、`/api/watchlist`、`/api/actor-subscriptions`：统一订阅、智能追剧和演员订阅。
+- `/api/virtual-libraries`：虚拟媒体库配置、刷新和条目匹配。
 
-## 用户与权限
+## 媒体和播放
 
-- `routes/user_management.py`：用户同步与权限策略。
-- `routes/user_portal.py`：用户门户相关接口。
+- `/api/media-management`：媒体库、媒体项、刷新、重处理、MediaInfo、图片和版本操作。
+- `/api/emby/events`、`/api/media-server/events`：内置媒体服务事件。
+- `/api/media-server`：兼容 Emby/Jellyfin 的媒体服务路径和播放能力。
+- `/api/playback`：管理员播放会话、最近播放记录和统计。
 
-## 其他
-
-- `routes/cover_generator_config.py`：封面生成配置。
-- `routes/database_admin.py`：数据库管理与维护。
-- `routes/webhook.py`：Webhook 接入（`/webhook/emby`）。
+接口是实现细节，用户操作优先通过 Web 控制台完成。生产环境不要把数据库端口或管理 API 直接暴露到公网。
