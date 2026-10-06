@@ -11,6 +11,10 @@ services:
   etkn:
     image: hbq0405/etkn:latest
     container_name: etkn
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     init: true
     volumes:
@@ -19,6 +23,12 @@ services:
     environment:
       - APP_DATA_DIR=/config
       - ETKN_CONFIG_DIR=/config
+      - PUID=1000
+      - PGID=1000
+      - UMASK=022
+      - ETKN_ADMIN_USERNAME=admin
+      # 留空时首次启动自动生成随机密码并打印到容器日志
+      - ETKN_ADMIN_PASSWORD=
       - DB_HOST=db
       - DB_PORT=5432
       - DB_USER=etkn
@@ -27,14 +37,18 @@ services:
       - CONTAINER_NAME=etkn
       - DOCKER_IMAGE_NAME=hbq0405/etkn:latest
       - TZ=Asia/Shanghai
-      - ETKN_ADMIN_USERNAME=admin
-      - ETKN_ADMIN_PASSWORD=
     ports:
       - "5257:5257"
       - "8097:8097"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5257/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10m
 
   db:
     image: postgres:16-alpine
