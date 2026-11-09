@@ -40,7 +40,6 @@ services:
       - DOCKER_IMAGE_NAME=hbq0405/etkn:latest
       - TZ=Asia/Shanghai
     ports:
-      - "5257:5257"
       - "8097:8097"
     depends_on:
       db:
