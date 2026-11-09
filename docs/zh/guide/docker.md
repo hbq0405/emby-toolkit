@@ -23,8 +23,10 @@ services:
     environment:
       - APP_DATA_DIR=/config
       - ETKN_CONFIG_DIR=/config
-      - PUID=1000
-      - PGID=1000
+      # 首次部署媒体端口；已有后台配置优先，host 模式无端口映射。
+      - ETKN_MEDIA_PORT=${ETKN_MEDIA_PORT:-8097}
+      - PUID=0
+      - PGID=0
       - UMASK=022
       - ETKN_ADMIN_USERNAME=admin
       # 留空时首次启动自动生成随机密码并打印到容器日志
