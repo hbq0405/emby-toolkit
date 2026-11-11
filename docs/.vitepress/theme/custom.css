@@ -1,0 +1,163 @@
+:root {
+  --vp-font-family-base: 'Inter', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --vp-c-brand-1: #6064b9; --vp-c-brand-2: #7376ce; --vp-c-brand-3: #6064b9;
+  --vp-c-brand-soft: rgba(112, 113, 194, .12);
+  --vp-c-bg: #faf9f6; --vp-c-bg-alt: #f1f0ed; --vp-c-bg-soft: #f1f0ed;
+  --wiki-panel: #fffefa; --wiki-muted: #65646d; --wiki-border: #e2e1e8; --wiki-accent: #6566b2;
+}
+.dark {
+  --vp-c-brand-1: #b6b7f2; --vp-c-brand-2: #cbcaff; --vp-c-brand-3: #9698de;
+  --vp-c-brand-soft: rgba(168, 169, 238, .12);
+  --vp-c-bg: #101116; --vp-c-bg-alt: #14151d; --vp-c-bg-soft: #191b24;
+  --vp-c-text-1: #efeff5; --vp-c-text-2: #b3b4c2;
+  --wiki-panel: #171820; --wiki-muted: #a6a8ba; --wiki-border: #2a2c39; --wiki-accent: #b7b8f5;
+}
+.VPNavBarTitle .title { font-size: 20px; letter-spacing: 1px; }
+.VPNavBarTitle .logo { height: 34px; }
+.VPNavBar { background: var(--vp-c-bg); }
+.VPNavBarMenuLink, .VPNavBarMenuGroup { font-size: 13px; }
+.VPSidebar { scrollbar-width: thin; }
+.VPSidebarItem.level-0 { padding-bottom: 13px; }
+.vp-doc { font-size: 15px; line-height: 1.9; }
+.vp-doc h1 { letter-spacing: -.8px; font-size: 32px; line-height: 1.4; }
+.vp-doc h2 { padding-top: 26px; margin-top: 40px; font-size: 23px; letter-spacing: -.3px; }
+.vp-doc h3 { line-height: 1.5; }
+.vp-doc a { text-decoration-thickness: 1px; text-underline-offset: 4px; }
+.vp-doc table { width: 100%; font-size: 14px; }
+.vp-doc .custom-block { border-radius: 12px; }
+.VPDoc .content-container { max-width: 780px !important; }
+.wiki-home, .guide-hub { color: var(--vp-c-text-1); }
+.wiki-home { max-width: 1180px; margin: 0 auto; padding: 0 32px; }
+.eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 1.5px; color: var(--wiki-accent); line-height: 1.7; }
+.status-dot { display: inline-block; width: 6px; height: 6px; background: var(--wiki-accent); border-radius: 50%; margin-right: 9px; vertical-align: middle; }
+.home-hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px; align-items: center; padding: 92px 0 86px; }
+.hero-copy h1 { font-family: 'Songti SC', 'Noto Serif SC', 'SimSun', serif; font-size: clamp(40px, 4.2vw, 59px); line-height: 1.38; font-weight: 500; letter-spacing: -2px; margin: 24px 0; }
+.hero-copy h1 em { color: var(--wiki-accent); font-style: normal; }
+.hero-description { font-size: 16px; line-height: 1.95; color: var(--wiki-muted); }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 30px 0 19px; }
+.wiki-button { display: inline-flex; align-items: center; justify-content: center; gap: 22px; padding: 12px 19px; border: 1px solid var(--wiki-border); border-radius: 10px; font-size: 13px; font-weight: 600; background: var(--wiki-panel); transition: background .2s, border-color .2s; cursor: pointer; }
+.wiki-button:hover { border-color: var(--wiki-accent); }
+.wiki-button.primary { background: #b9baf5; border-color: #b9baf5; color: #1a1c30; }
+.wiki-button.primary:hover { background: #cccdff; }
+.hero-footnote { color: var(--wiki-muted); font-size: 11px; }
+.hero-footnote span { margin: 0 9px; }
+.library-scene { position: relative; border: 1px solid var(--wiki-border); border-radius: 20px; padding: 26px; background: var(--wiki-panel); box-shadow: 0 24px 70px rgba(0, 0, 0, .1); transform: rotate(1deg); }
+.scene-topline { display: flex; justify-content: space-between; gap: 12px; align-items: center; font-size: 10px; color: var(--wiki-muted); }
+.scene-badge { border: 1px solid var(--wiki-border); border-radius: 4px; padding: 0 6px; font-size: 9px; }
+.scene-title { font-family: 'Songti SC', SimSun, serif; font-size: 28px; line-height: 1.5; margin: 25px 0; }
+.scene-posters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.scene-poster { position: relative; isolation: isolate; overflow: hidden; display: flex; flex-direction: column; aspect-ratio: .7; padding: 14px 11px; border-radius: 6px; color: #fff; }
+.scene-poster::before { content: ''; position: absolute; z-index: -1; width: 170%; height: 90%; left: -35%; top: 42%; border-radius: 50%; transform: rotate(-32deg); border: 1px solid rgba(255, 255, 255, .28); background: rgba(0, 0, 0, .2); }
+.poster-a { background: linear-gradient(145deg, #849e9b, #293f47 70%); }
+.poster-b { background: linear-gradient(150deg, #bdb3a4, #665a79 70%); }
+.poster-c { background: linear-gradient(145deg, #bc977e, #66472f 70%); }
+.scene-poster span { font-size: 7px; letter-spacing: 1.2px; opacity: .8; }
+.scene-poster strong { margin: auto 0; font-family: 'Songti SC', SimSun, serif; font-weight: 400; font-size: 25px; line-height: 1.5; }
+.scene-poster small { font-size: 8px; opacity: .8; }
+.scene-pipeline { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 21px 0 0; color: var(--wiki-muted); font-size: 10px; }
+.scene-pipeline i { font-style: normal; color: var(--wiki-accent); }
+.scene-note { display: flex; gap: 12px; align-items: center; border: 1px solid var(--wiki-border); background: var(--vp-c-bg); padding: 15px; border-radius: 10px; margin: 24px -42px -46px 32px; box-shadow: 0 12px 30px rgba(0, 0, 0, .1); }
+.note-check { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #95cfb8; background: rgba(89, 156, 129, .12); }
+.scene-note strong, .scene-note small { display: block; }
+.scene-note strong { font-size: 11px; font-weight: 500; }
+.scene-note small { font-size: 9px; color: var(--wiki-muted); }
+.note-spark { margin-left: auto; color: var(--wiki-accent); font-size: 24px; }
+.home-section { padding: 58px 0; }
+.section-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 28px; }
+.section-heading h2, .flow-section h2, .home-help h2 { font-size: 28px; line-height: 1.5; letter-spacing: -.6px; margin-top: 10px; font-weight: 600; }
+.section-heading > p { font-size: 12px; line-height: 1.9; color: var(--wiki-muted); }
+.text-link { font-size: 12px; color: var(--wiki-accent); white-space: nowrap; }
+.journey-section { border-top: 1px solid var(--wiki-border); }
+.journey-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.journey-card { display: flex; flex-direction: column; padding: 23px; border: 1px solid var(--wiki-border); border-radius: 13px; background: var(--wiki-panel); transition: border-color .2s, transform .2s; }
+.journey-card:hover, .highlight-card:hover { border-color: var(--wiki-accent); transform: translateY(-3px); }
+.card-number { font-family: monospace; font-size: 13px; color: var(--wiki-accent); margin-bottom: 20px; }
+.journey-card h3, .journey-card h2 { font-size: 16px; font-weight: 600; margin: 0 0 10px; line-height: 1.5; }
+.journey-card p { font-size: 12px; color: var(--wiki-muted); line-height: 1.9; margin-bottom: 24px; }
+.card-link { color: var(--wiki-accent); font-size: 11px; display: flex; justify-content: space-between; margin-top: auto; }
+.highlight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+.highlight-card { position: relative; padding: 28px; border: 1px solid var(--wiki-border); border-radius: 13px; min-height: 210px; transition: border-color .2s, transform .2s; }
+.highlight-card h3 { font-size: 18px; font-weight: 550; margin: 21px 0 12px; line-height: 1.6; }
+.highlight-card p { font-size: 12px; line-height: 1.95; color: var(--wiki-muted); max-width: 93%; }
+.highlight-arrow { position: absolute; top: 22px; right: 23px; color: var(--wiki-accent); }
+.flow-section { display: grid; grid-template-columns: 1fr 1.5fr; gap: 70px; border-top: 1px solid var(--wiki-border); margin-top: 35px; }
+.flow-section > div > p:last-child { font-size: 13px; color: var(--wiki-muted); line-height: 1.9; margin-top: 20px; }
+.home-flow { list-style: none; padding: 0; margin: 0; }
+.home-flow li { display: flex; gap: 23px; padding: 0 0 26px; margin-bottom: 25px; border-bottom: 1px solid var(--wiki-border); }
+.home-flow li:last-child { border: 0; margin: 0; padding-bottom: 0; }
+.home-flow li > span { font-family: monospace; color: var(--wiki-accent); font-size: 12px; padding-top: 4px; }
+.home-flow h3 { font-weight: 550; font-size: 17px; margin-bottom: 7px; }
+.home-flow p { font-size: 12px; color: var(--wiki-muted); margin-bottom: 10px; }
+.home-flow a { font-size: 11px; color: var(--wiki-accent); }
+.home-help { display: flex; justify-content: space-between; align-items: center; gap: 30px; margin: 35px 0 75px; padding: 35px; border: 1px solid var(--wiki-border); border-radius: 15px; background: var(--wiki-panel); }
+.home-help h2 { font-size: 22px; }
+.home-help p:last-child { color: var(--wiki-muted); font-size: 11px; margin-top: 12px; line-height: 1.9; }
+.home-help .wiki-button { flex-shrink: 0; }
+.guide-hub { max-width: 1100px; margin: 0 auto; padding: 58px 32px 64px; }
+.hub-hero { text-align: center; }
+.hub-hero h1 { font-family: 'Songti SC', SimSun, serif; font-weight: 500; font-size: 43px; line-height: 1.5; margin: 18px 0; letter-spacing: -1px; }
+.hub-hero > p:last-child { color: var(--wiki-muted); font-size: 14px; line-height: 1.95; }
+.hub-search { max-width: 640px; margin: 36px auto 48px; }
+.hub-search label { display: block; font-size: 12px; color: var(--wiki-muted); margin-bottom: 7px; }
+.hub-search > div { display: flex; align-items: center; gap: 13px; padding: 12px 17px; border: 1px solid var(--wiki-border); border-radius: 10px; background: var(--wiki-panel); }
+.hub-search > div:focus-within { outline: 2px solid var(--wiki-accent); outline-offset: 3px; }
+.hub-search input { min-width: 0; flex: 1; width: 100%; font-size: 13px; background: transparent; outline: none; }
+.hub-search kbd { color: var(--wiki-muted); font-size: 10px; white-space: nowrap; }
+.hub-search p { font-size: 11px; color: var(--wiki-muted); text-align: center; margin-top: 10px; min-height: 23px; }
+.hub-journeys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 52px; }
+.hub-directory { display: grid; grid-template-columns: repeat(3, 1fr); gap: 35px 28px; }
+.directory-group header { border-bottom: 1px solid var(--wiki-border); padding-bottom: 13px; margin-bottom: 9px; }
+.directory-group h2 { font-size: 17px; font-weight: 600; }
+.directory-group header p { font-size: 11px; color: var(--wiki-muted); margin-top: 4px; }
+.directory-group ul { list-style: none; padding: 0; }
+.directory-group li a { display: flex; justify-content: space-between; gap: 10px; padding: 9px 4px; font-size: 13px; color: var(--vp-c-text-2); border-radius: 5px; }
+.directory-group li a:hover { color: var(--wiki-accent); background: var(--vp-c-brand-soft); }
+.directory-group li a > span:last-child { color: var(--wiki-muted); }
+.hub-empty { grid-column: 1 / -1; text-align: center; padding: 30px; }
+.hub-empty p { color: var(--wiki-muted); margin: 10px 0 20px; }
+.hub-support { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px 24px; border-top: 1px solid var(--wiki-border); margin-top: 50px; padding-top: 25px; font-size: 12px; }
+.hub-support > span { color: var(--wiki-muted); }
+.hub-support a { color: var(--wiki-accent); }
+.wiki-home a:focus-visible, .guide-hub a:focus-visible, .guide-hub button:focus-visible { outline: 2px solid var(--wiki-accent); outline-offset: 4px; }
+@media (min-width: 1440px) { .wiki-home { max-width: 1240px; } }
+@media (max-width: 959px) {
+  .home-hero { gap: 28px; padding-top: 65px; }
+  .hero-copy h1 { font-size: 42px; }
+  .library-scene { padding: 20px; }
+  .scene-title { font-size: 23px; }
+  .scene-note { margin-right: -28px; margin-left: 0; }
+  .journey-grid, .hub-journeys { grid-template-columns: repeat(2, 1fr); }
+  .highlight-grid { grid-template-columns: repeat(2, 1fr); }
+  .hub-directory { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 639px) {
+  .wiki-home { padding: 0 22px; }
+  .home-hero { grid-template-columns: 1fr; gap: 44px; padding: 45px 0 62px; }
+  .hero-copy h1 { font-size: 41px; letter-spacing: -1.8px; }
+  .hero-description { font-size: 14px; }
+  .hero-footnote { font-size: 10px; }
+  .hero-footnote span { margin: 0 5px; }
+  .library-scene { margin: 0 8px 15px 0; transform: none; }
+  .scene-title { font-size: 26px; }
+  .scene-poster { max-height: 185px; }
+  .scene-note { margin-bottom: -40px; }
+  .home-section { padding: 36px 0; }
+  .section-heading { display: block; }
+  .section-heading h2, .flow-section h2 { font-size: 25px; }
+  .section-heading > p, .section-heading > a { display: block; margin-top: 13px; }
+  .journey-grid, .highlight-grid { grid-template-columns: 1fr; }
+  .journey-card { padding: 23px; }
+  .journey-card .card-number { margin-bottom: 13px; }
+  .journey-card p { margin-bottom: 17px; }
+  .highlight-card { min-height: auto; padding: 25px; }
+  .highlight-card h3 { margin-top: 16px; }
+  .flow-section { grid-template-columns: 1fr; gap: 30px; }
+  .home-help { display: block; padding: 25px; margin-bottom: 40px; }
+  .home-help .wiki-button { margin-top: 23px; }
+  .guide-hub { padding: 38px 22px; }
+  .hub-hero h1 { font-size: 31px; }
+  .hub-hero > p:last-child { font-size: 13px; }
+  .hub-search kbd { display: none; }
+  .hub-journeys, .hub-directory { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .wiki-home *, .guide-hub * { scroll-behavior: auto !important; transition: none !important; } }

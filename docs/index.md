@@ -1,5 +1,5 @@
 ---
-title: Emby Toolkit Wiki
+title: ETKN 文档
 ---
 
 <script setup>
@@ -11,4 +11,4 @@ if (typeof window !== 'undefined') {
 </script>
 
 正在跳转到中文首页，如果没有自动跳转，请访问
-[中文首页](/emby-toolkit/zh/).
+[中文首页](/zh/).

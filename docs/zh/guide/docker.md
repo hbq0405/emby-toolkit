@@ -1,44 +1,43 @@
 # Docker 部署
 
-ETKvNext 推荐使用 Docker Compose 或 Unraid Compose。当前模板包含一个 ETKN 服务和一个 PostgreSQL 服务。
+推荐 Docker Compose。下面的示例包含 ETKN 和 PostgreSQL，只对外发布默认媒体端口，适合首次部署；所有示例密码均需自行替换。
 
-## 当前 Compose 结构
+## Compose 示例
 
-核心配置如下：
+保存为 `compose.yml`：
 
 ```yaml
 services:
   etkn:
     image: hbq0405/etkn:latest
     container_name: etkn
-    cap_add:
-      - SYS_NICE
-    security_opt:
-      - no-new-privileges:true
     restart: unless-stopped
     init: true
     volumes:
       - ./local_data:/config
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ./media:/strm
+      # 使用容器自更新功能时再添加 Docker socket 映射
+      # - /var/run/docker.sock:/var/run/docker.sock
+      # 本地视频、音乐另加所需目录，例如：
+      # - /你的媒体目录:/media
     environment:
-      - APP_DATA_DIR=/config
-      - ETKN_CONFIG_DIR=/config
-      - PUID=1000
-      - PGID=1000
-      - UMASK=022
-      - ETKN_ADMIN_USERNAME=admin
-      # 留空时首次启动自动生成随机密码并打印到容器日志
-      - ETKN_ADMIN_PASSWORD=
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=etkn
-      - DB_PASSWORD=etkn
-      - DB_NAME=etkn
-      - CONTAINER_NAME=etkn
-      - DOCKER_IMAGE_NAME=hbq0405/etkn:latest
-      - TZ=Asia/Shanghai
+      APP_DATA_DIR: /config
+      ETKN_CONFIG_DIR: /config
+      ETKN_MEDIA_PORT: 8097
+      ETKN_ADMIN_USERNAME: admin
+      ETKN_ADMIN_PASSWORD: ""
+      PUID: 1000
+      PGID: 1000
+      UMASK: "022"
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: etkn
+      DB_PASSWORD: change-this-database-password
+      DB_NAME: etkn
+      CONTAINER_NAME: etkn
+      DOCKER_IMAGE_NAME: hbq0405/etkn:latest
+      TZ: Asia/Shanghai
     ports:
-      - "5257:5257"
       - "8097:8097"
     depends_on:
       db:
@@ -54,49 +53,60 @@ services:
     image: postgres:16-alpine
     container_name: etkn-db
     restart: unless-stopped
+    environment:
+      POSTGRES_USER: etkn
+      POSTGRES_PASSWORD: change-this-database-password
+      POSTGRES_DB: etkn
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=etkn
-      - POSTGRES_PASSWORD=etkn
-      - POSTGRES_DB=etkn
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etkn -d etkn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
 ```
 
-完整默认值以新版仓库的 `compose.yml` 为准。生产环境请修改默认数据库密码，并把 `./local_data` 换成稳定的宿主机目录。
+数据库密码在两个服务中必须一致。`PUID/PGID` 改为拥有配置和媒体目录读写权限的用户组。`ETKN_ADMIN_PASSWORD` 留空时首次启动生成随机初始密码并写入容器日志。
 
-## 持久化什么
+此示例可直接拉取公开镜像部署，不需要访问新版私有源码仓库。
 
-必须持久化 `/config`，它包含：
-
-- 应用配置和授权辅助文件。
-- 图片仓库和媒体处理缓存。
-- Telegram 频道监听会话。
-- 其他需要跨容器重建保留的运行数据。
-
-PostgreSQL 的 `postgres_data` 也必须持久化。不要把数据库容器删掉再重新创建来处理普通升级问题。
-
-如果要处理宿主机本地视频，还需要按自己的目录规划增加媒体目录映射，并在“设置中心 -> 媒体库”中选择容器内路径。容器内路径和宿主机路径不是同一个字符串时，要以容器内路径为准。
-
-## 启动检查
+## 启动和登录
 
 ```bash
 docker compose up -d
 docker compose ps
-docker compose logs --tail=200 etkn
+docker compose logs --tail=100 etkn
 ```
 
-管理 API 健康检查：
+打开 `http://服务器IP:8097/web/`，登录后通过管理入口或 `/profile` 进入后台。公开健康检查为 `http://服务器IP:8097/api/health`。
 
-```text
-http://服务器IP:5257/api/health
-```
+容器内部健康检查仍访问 `127.0.0.1:5257`，这是内部 API 上游，不代表还要映射一个管理端口。
 
-正常时应返回状态为 `ok` 的 JSON。健康检查只能说明服务已启动，真正使用前还要登录控制台完成 115、TMDb 和媒体库配置。
+## 持久化目录
 
-## 升级
+| 容器位置 | 用途 |
+| --- | --- |
+| `/config` | 授权辅助文件、图片、Telegram 会话及运行数据；默认播放缓存在其子目录 |
+| `/strm` | 示例媒体主目录，保存生成的 STRM、外挂等内容 |
+| PostgreSQL 数据卷 | 保存用户、配置、媒体、任务、订阅与整理记录 |
+| 自选本地媒体挂载 | 已有视频、家庭视频、音乐；设置中使用容器内路径 |
+
+媒体目录需要写外挂字幕时必须可写。播放缓存默认 `/config/playback-cache`，容量单独配置；可映射到其他磁盘，见 [缓存教程](/zh/guide/playback-cache)。
+
+## 修改端口
+
+- **首次 bridge 部署**：例如改成 `18097`，同时把 `ETKN_MEDIA_PORT` 和两端映射改成 `18097`。
+- **已有配置**：后台保存的媒体端口优先于环境变量。先核对后台配置，再同步容器映射与客户端地址。
+- **host 模式**：不写 `ports`，确保实际监听端口没有被占用；数据库地址按所选网络调整。
+
+ETKN IP 填客户端可达的服务器地址。STRM 使用该地址与媒体端口组合，不能填容器内环回地址。需要域名与 HTTPS 时见 [反向代理](/zh/guide/reverse-proxy)。
+
+## 升级与旧端口迁移
+
+先备份数据库、`/config` 和媒体目录，再执行：
 
 ```bash
 docker compose pull
@@ -104,11 +114,10 @@ docker compose up -d
 docker compose ps
 ```
 
-容器启动时会先执行版本化迁移，成功后才启动应用。升级不要删除 `/config` 或 `postgres_data`。如果升级后业务异常，先在任务中心和容器日志中确认具体失败阶段，不要直接清空数据库重来。
+启动先执行数据库迁移。旧 STRM 地址迁移会把原内容备份到 `/config/migrations/strm-media-port-v1`，再按统一媒体端口改写符合条件的旧地址；备份和完成标记请保留。已有自定义域名与端口仍需按实际配置核对。
 
-## 端口与网络
+不要通过删除数据库卷或 `/config` 来解决一般升级问题。出现错误时，保留日志并查看 [故障排查](/zh/faq/troubleshooting)。
 
-- `5257` 面向管理页面和 API。
-- `8097` 面向内置媒体服务和虚拟媒体库。
-- 修改 `8097` 时，要同时修改 Compose 端口映射和 ETKN“媒体服务器端口”，再重启容器。
-- 需要给 STRM 或客户端访问时，在“媒体库”中填写客户端真正能访问的 ETKN 地址；不要填写容器内的 `127.0.0.1`。
+## 可选硬件转码
+
+宿主机具备可用的 GPU 与驱动时，再添加相应设备映射；Intel 常见为 `/dev/dri:/dev/dri`。设备映射与转码开关是两步，完成后还要验证真实编码路径和播放效果，见 [内网缓存与转码](/zh/guide/playback-cache)。
