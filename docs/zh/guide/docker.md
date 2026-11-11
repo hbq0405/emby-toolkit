@@ -23,11 +23,12 @@ services:
     environment:
       APP_DATA_DIR: /config
       ETKN_CONFIG_DIR: /config
-      ETKN_MEDIA_PORT: 8097
+      # 首次部署媒体端口；已有后台配置优先，host 模式无端口映射。
+      ETKN_MEDIA_PORT: "${ETKN_MEDIA_PORT:-8097}"
       ETKN_ADMIN_USERNAME: admin
       ETKN_ADMIN_PASSWORD: ""
-      PUID: 1000
-      PGID: 1000
+      PUID: 0
+      PGID: 0
       UMASK: "022"
       DB_HOST: db
       DB_PORT: 5432
@@ -38,7 +39,7 @@ services:
       DOCKER_IMAGE_NAME: hbq0405/etkn:latest
       TZ: Asia/Shanghai
     ports:
-      - "8097:8097"
+      - "${ETKN_MEDIA_PORT:-8097}:${ETKN_MEDIA_PORT:-8097}"
     depends_on:
       db:
         condition: service_healthy
